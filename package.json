@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Peer rendezvous for Fabric.",
   "main": "scripts/hub.js",
+  "engines": {
+    "node": "^12.16.0"
+  },
   "scripts": {
     "start": "node scripts/hub.js",
     "test": "mocha tests"

@@ -13,8 +13,12 @@ const settings = {
 async function main () {
   const hub = new Peer(settings);
 
+  hub.on('ready', function (node) {
+    console.log('[FABRIC:HUB]', `Hub is now started, listening on:`, node.address);
+  });
+
   hub.on('peer', function (peer) {
-    console.log('[SCRIPTS:HUB]', `New peer connected: ${JSON.stringify(peer)}`);
+    console.log('[FABRIC:HUB]', `New peer connected: ${JSON.stringify(peer)}`);
   });
 
   await hub.start();
@@ -22,5 +26,5 @@ async function main () {
 
 // Start & handle errors
 main().catch((exception) => {
-  console.error('[SCRIPTS:HUB]', 'Main process threw Exception:', exception);
+  console.error('[FABRIC:HUB]', 'Main process threw Exception:', exception);
 });
