@@ -1,0 +1,30 @@
+{
+  "name": "@fabric/hub",
+  "version": "0.1.0",
+  "description": "Peer rendezvous for Fabric.",
+  "main": "scripts/hub.js",
+  "scripts": {
+    "start": "node scripts/hub.js",
+    "test": "mocha tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FabricLabs/hub.fabric.pub.git"
+  },
+  "keywords": [
+    "fabric",
+    "p2p",
+    "bitcoin",
+    "blockchain",
+    "sidechain"
+  ],
+  "author": "Fabric Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/FabricLabs/hub.fabric.pub/issues"
+  },
+  "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
+  "dependencies": {
+    "@fabric/core": "martindale/fabric#peering-wallet"
+  }
+}
