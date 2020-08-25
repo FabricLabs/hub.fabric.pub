@@ -4,7 +4,7 @@
   "description": "Peer rendezvous for Fabric.",
   "main": "scripts/hub.js",
   "engines": {
-    "node": "^12.16.0"
+    "node": "^10.17.0"
   },
   "scripts": {
     "start": "node scripts/hub.js",
@@ -29,5 +29,8 @@
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
     "@fabric/core": "martindale/fabric#peering-wallet"
+  },
+  "devDependencies": {
+    "mocha": "^8.1.1"
   }
 }
