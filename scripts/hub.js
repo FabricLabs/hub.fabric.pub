@@ -6,6 +6,7 @@ const Peer = require('@fabric/core/types/peer');
 // Configuration
 const settings = {
   listen: true,
+  port: process.env.FABRIC_PORT,
   seed: process.env.FABRIC_SEED
 };
 
