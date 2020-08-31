@@ -15,7 +15,7 @@ async function main () {
   const hub = new Peer(settings);
 
   hub.on('ready', function (node) {
-    console.log('[FABRIC:HUB]', `Hub is now started, listening on:`, node.address);
+    console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
   });
 
   hub.on('peer', function (peer) {
