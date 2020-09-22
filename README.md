@@ -2,8 +2,8 @@
 Runs a simple Fabric peer with listening enabled by default.
 
 ## Quick Start
-1. `yarn install`
-2. `yarn start`
+1. `npm install`
+2. `npm start`
 
 ## Configuration
 Use environment variable `FABRIC_SEED` to provide a 24-word mnemonic for
