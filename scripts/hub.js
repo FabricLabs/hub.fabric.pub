@@ -2,12 +2,13 @@
 
 // Dependencies
 const Peer = require('@fabric/core/types/peer');
+const defaults = require('../settings/default');
 
 // Configuration
 const settings = {
   listen: true,
-  port: process.env.FABRIC_PORT,
-  seed: process.env.FABRIC_SEED
+  port: process.env.FABRIC_PORT || defaults.port,
+  seed: process.env.FABRIC_SEED || defaults.seed
 };
 
 // Main process
@@ -20,6 +21,10 @@ async function main () {
 
   hub.on('peer', function (peer) {
     console.log('[FABRIC:HUB]', `New peer connected: ${JSON.stringify(peer)}`);
+  });
+
+  hub.on('connections:close', function (peer) {
+    console.log('[FABRIC:HUB]', `Peer closed connection: ${JSON.stringify(peer)}`);
   });
 
   await hub.start();

@@ -28,7 +28,7 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "martindale/fabric#peering-wallet"
+    "@fabric/core": "Fabric/fabric#master"
   },
   "devDependencies": {
     "mocha": "^8.1.1"
