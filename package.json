@@ -28,7 +28,7 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#0.1.0-PR1",
+    "@fabric/core": "FabricLabs/fabric#swaps-develop",
     "@fabric/http": "FabricLabs/fabric-http#portal-develop"
   },
   "devDependencies": {
