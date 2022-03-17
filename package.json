@@ -28,7 +28,8 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "Fabric/fabric#0.1.0-PR1"
+    "@fabric/core": "FabricLabs/fabric#0.1.0-PR1",
+    "@fabric/http": "FabricLabs/fabric-http#portal-develop"
   },
   "devDependencies": {
     "mocha": "^8.1.1"

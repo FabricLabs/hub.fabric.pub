@@ -1,8 +1,13 @@
 'use strict';
 
-// Dependencies
-const Peer = require('@fabric/core/types/peer');
+// Settings
 const defaults = require('../settings/default');
+
+// Dependencies
+const Node = require('@fabric/core/types/node');
+
+// Services
+const HubService = require('../services/hub');
 
 // Configuration
 const settings = {
@@ -12,8 +17,11 @@ const settings = {
 };
 
 // Main process
-async function main () {
-  const hub = new Peer(settings);
+async function main (input = {}) {
+  const hub = new Node({
+    service: HubService,
+    settings: input
+  });
 
   hub.on('ready', function (node) {
     console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
@@ -28,9 +36,13 @@ async function main () {
   });
 
   await hub.start();
+
+  return {
+    id: hub.id
+  };
 }
 
 // Start & handle errors
-main().catch((exception) => {
+main(settings).catch((exception) => {
   console.error('[FABRIC:HUB]', 'Main process threw Exception:', exception);
 });
