@@ -1,7 +1,6 @@
 'use strict';
 
 const Service = require('@fabric/core/types/service');
-const Peer = require('@fabric/core/types/peer');
 const HTTP = require('@fabric/http/types/server');
 
 class Hub extends Service {
@@ -25,7 +24,6 @@ class Hub extends Service {
     }, settings);
 
     this.http = new HTTP(this.settings.http);
-    this.peer = new Peer(this.settings);
 
     this._state = {
       contracts: [],
@@ -86,8 +84,6 @@ class Hub extends Service {
 
   async stop () {
     await this.http.stop();
-    // await this.portal.stop();
-    await this.zapier.stop();
     this._state.status = 'STOPPED';
     return this;
   }
