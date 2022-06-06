@@ -28,8 +28,8 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#swaps-develop",
-    "@fabric/http": "FabricLabs/fabric-http#portal-develop"
+    "@fabric/core": "FabricLabs/fabric#feature/node-16",
+    "@fabric/http": "FabricLabs/fabric-http#feature/node-16"
   },
   "devDependencies": {
     "mocha": "^8.1.1"
