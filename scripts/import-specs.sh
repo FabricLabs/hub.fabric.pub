@@ -43,13 +43,18 @@ cd ../..
 
 # Confirm before execution
 echo "Will execute: $COMMAND_TO_RUN"
-read -p "Are you sure? (y/n)?" choice
-case "$CHOICE" in
-  y ) echo "No: $COMMAND_TO_RUN";; #eval $COMMAND_TO_RUN;;
-  n ) echo "Aborting";;
-  * ) echo "Invalid choice";;
+read -r -p "Are you sure? (y/n)? " CHOICE
+case $CHOICE in
+  [yY][eE][sS]|[yY])
+    echo "Running: $COMMAND_TO_RUN"
+    eval $COMMAND_TO_RUN
+    echo "All done!  The latest schemas should now be located in ./assets/schemas"
+    ;;
+  [nN][oO]|[nN])
+    echo "Import canceled.";;
+  *)
+    echo "Invalid choice";;
  esac
 
 # Report
-echo "All done!  The latest schemas should now be located in `./assets/schemas`"
 echo "Have a productive day!"
