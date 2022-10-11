@@ -2,10 +2,10 @@
 
 # Variables
 # You can change these if you want.
-REPO_STORE=./stores/schemas
-ASSETS_OUT=./assets/schemas
+REPO_STORE=./stores/schemata
+ASSETS_OUT=./assets/schemata
 TARGET_BRANCH=feature/federation
-COMMAND_TO_RUN="cp $REPO_STORE/schemas/* $ASSETS_OUT"
+COMMAND_TO_RUN="cp $REPO_STORE/schemata/* $ASSETS_OUT"
 
 echo "# Import Latest Fabric Schemas"
 echo "## Configuration:"
@@ -48,7 +48,7 @@ case $CHOICE in
   [yY][eE][sS]|[yY])
     echo "Running: $COMMAND_TO_RUN"
     eval $COMMAND_TO_RUN
-    echo "All done!  The latest schemas should now be located in ./assets/schemas"
+    echo "All done!  The latest schemata should now be located in ./assets/schemata"
     ;;
   [nN][oO]|[nN])
     echo "Import canceled.";;
