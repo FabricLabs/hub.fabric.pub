@@ -1,6 +1,6 @@
 'use strict';
 
-const Peer = require('@fabric/core/types/peer');
+// const Peer = require('@fabric/core/types/peer');
 const Service = require('@fabric/core/types/service');
 const HTTP = require('@fabric/http/types/server');
 
@@ -24,7 +24,7 @@ class Hub extends Service {
       documents: {}
     }, settings);
 
-    this.agent = new Peer(this.settings);
+    // this.agent = new Peer(this.settings);
     this.http = new HTTP(this.settings.http);
 
     this._state = {
@@ -70,13 +70,13 @@ class Hub extends Service {
     // Bind event listeners
     // this.trust(this.spa, 'FABRIC:SPA');
     this.trust(this.http, 'FABRIC:HTTP');
-    this.trust(this.agent, 'FABRIC:AGENT');
+    // this.trust(this.agent, 'FABRIC:AGENT');
 
     // Services (primarily HTTP)
     await Promise.all([
       // this.spa.start(),
       this.http.start(),
-      this.agent.start()
+      // this.agent.start()
     ]);
 
     // Local State
