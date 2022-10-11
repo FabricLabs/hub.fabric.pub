@@ -4,8 +4,8 @@
 # You can change these if you want.
 REPO_STORE=./stores/schemata
 ASSETS_OUT=./assets/schemata
-TARGET_BRANCH=feature/federation
-COMMAND_TO_RUN="cp $REPO_STORE/schemata/* $ASSETS_OUT"
+TARGET_BRANCH=master
+COMMAND_TO_RUN="mkdir -p $ASSETS_OUT && cp $REPO_STORE/schemata/* $ASSETS_OUT"
 
 echo "# Import Latest Fabric Schemas"
 echo "## Configuration:"

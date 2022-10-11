@@ -8,6 +8,8 @@
   },
   "scripts": {
     "start": "node scripts/hub.js",
+    "sync": "npm run sync:specs",
+    "sync:specs": "scripts/import-specs.sh",
     "test": "mocha tests"
   },
   "repository": {
