@@ -4,7 +4,7 @@
   "description": "Peer rendezvous for Fabric.",
   "main": "scripts/hub.js",
   "engines": {
-    "node": "^12.20.2"
+    "node": "16.17.1"
   },
   "scripts": {
     "start": "node scripts/hub.js",
@@ -28,10 +28,10 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#feature/node-16",
-    "@fabric/http": "FabricLabs/fabric-http#feature/node-16"
+    "@fabric/core": "FabricLabs/fabric#master",
+    "@fabric/http": "FabricLabs/fabric-http#feature/compiler"
   },
   "devDependencies": {
-    "mocha": "^8.1.1"
+    "mocha": "10"
   }
 }
