@@ -27,8 +27,21 @@ async function main (input = {}) {
     console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
   });
 
+  hub.on('log', function (log) {
+    console.log('[FABRIC:HUB]', `[LOG] ${JSON.stringify(log)}`);
+  });
+
   hub.on('peer', function (peer) {
     console.log('[FABRIC:HUB]', `New peer connected: ${JSON.stringify(peer)}`);
+  });
+
+  hub.on('chat', function (chat) {
+    const ts = new Date(chat.object.created);
+    console.log('[FABRIC:CHAT]', `[${ts.toISOString()}]`, `[@${chat.actor.id}]: ${chat.object.content}`);
+  });
+
+  hub.on('connections:open', function (peer) {
+    console.log('[FABRIC:HUB]', `Peer opened connection: ${JSON.stringify(peer)}`);
   });
 
   hub.on('connections:close', function (peer) {

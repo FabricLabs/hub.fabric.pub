@@ -83,7 +83,7 @@ class Hub extends Service {
     this._state.status = 'STARTED';
 
     // Alert message
-    await this.alert(`Portal HTTP service started.  Agent ID: ${this.id}`);
+    await this.alert(`Hub HTTP service started.  Agent ID: ${this.id}`);
 
     return this;
   }
