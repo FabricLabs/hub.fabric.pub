@@ -11,6 +11,7 @@
     "coverage": "c8 npm test",
     "make:coverage": "npm run coverage && c8 report --reporter html",
     "report:coverage": "npm run make:coverage && c8 report --reporter=text-lcov > reports/coverage.lcov",
+    "report:install": "rm -rf node_modules && echo \"\n\" > package-lock.json && echo \"$ npm i\" > reports/install.log && npm i >> reports/install.log",
     "start": "node scripts/hub.js",
     "sync": "npm run sync:specs",
     "sync:specs": "scripts/import-specs.sh",
