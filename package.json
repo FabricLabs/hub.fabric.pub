@@ -34,8 +34,8 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#master",
-    "@fabric/http": "FabricLabs/fabric-http#feature/compiler"
+    "@fabric/core": "FabricLabs/fabric#feature/noise-channels",
+    "@fabric/http": "FabricLabs/fabric-http#feature/v0.1.0-RC1"
   },
   "devDependencies": {
     "c8": "7.11.3",
