@@ -11,5 +11,6 @@ module.exports = Object.assign({}, defaults, {
   http: {
     port: process.env.PORT || 8080
   },
-  path: './stores/hub'
+  path: './stores/hub',
+  peering: true
 });
