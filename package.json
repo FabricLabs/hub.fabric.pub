@@ -1,6 +1,6 @@
 {
   "name": "@fabric/hub",
-  "version": "0.1.0",
+  "version": "0.1.0-RC1",
   "description": "Peer rendezvous for Fabric.",
   "main": "scripts/hub.js",
   "engines": {
@@ -10,6 +10,7 @@
     "build": "node scripts/build.js",
     "coverage": "c8 npm test",
     "make:coverage": "npm run coverage && c8 report --reporter html",
+    "reports": "npm run report:install && npm run report:coverage",
     "report:coverage": "npm run make:coverage && c8 report --reporter=text-lcov > reports/coverage.lcov",
     "report:install": "rm -rf node_modules && echo \"\n\" > package-lock.json && echo \"$ npm i\" > reports/install.log && npm i >> reports/install.log",
     "start": "node scripts/hub.js",

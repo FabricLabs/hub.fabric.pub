@@ -7,7 +7,7 @@ const defaults = require('../settings/default');
 const Node = require('@fabric/core/types/node');
 
 // Services
-const HubService = require('../services/hub');
+const Hub = require('../services/hub');
 
 // Configuration
 const settings = {
@@ -19,7 +19,7 @@ const settings = {
 // Main process
 async function main (input = {}) {
   const hub = new Node({
-    service: HubService,
+    service: Hub,
     settings: input
   });
 
