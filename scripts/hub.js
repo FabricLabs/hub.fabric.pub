@@ -23,6 +23,10 @@ async function main (input = {}) {
     settings: input
   });
 
+  hub.on('error', (error) => {
+    console.error('[FABRIC:HUB]', `Error: ${error}`);
+  });
+
   hub.on('ready', function (node) {
     console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
   });
