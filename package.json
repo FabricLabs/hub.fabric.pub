@@ -36,7 +36,7 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#feature/noise-channels",
+    "@fabric/core": "FabricLabs/fabric#feature/v0.1.0-RC1",
     "@fabric/http": "FabricLabs/fabric-http#feature/v0.1.0-RC1"
   },
   "devDependencies": {
