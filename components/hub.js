@@ -1,8 +1,8 @@
 const LIMIT_PER_PAGE = 3;
 
 import React from 'react';
-import '../styles/dashboard.css';
-import '../libraries/fomantic/dist/semantic.css';
+// import '../styles/dashboard.css';
+// import '../libraries/fomantic/dist/semantic.css';
 
 import {
   Header,
@@ -55,7 +55,7 @@ export default class Hub extends React.Component {
             <h1>@fabric/hub</h1>
           </Header>
         </Segment>
-        <FabricBridge path="/" onChange={this._handleBridgeChange.bind(this)} host="localhost" port="3000" secure="false" />
+        {/* <FabricBridge path="/" onChange={this._handleBridgeChange.bind(this)} host="localhost" port="3000" secure="false" /> */}
         {/* <Sample host="localhost" secure="false" port="3000" /> */}
       </fabric-content-page>
     );
