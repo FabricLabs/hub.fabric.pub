@@ -1,7 +1,6 @@
 const LIMIT_PER_PAGE = 3;
 
 import React from 'react';
-// import '../styles/dashboard.css';
 // import '../libraries/fomantic/dist/semantic.css';
 
 import {
@@ -28,7 +27,7 @@ export default class Hub extends React.Component {
   }
 
   componentDidMount () {
-    console.log('[DASHBOARD]', 'Mounted!', this);
+    console.log('[HUB]', 'Mounted!', this);
   }
 
   trust (source) {
@@ -36,11 +35,11 @@ export default class Hub extends React.Component {
   }
 
   _handleBridgeChange (change) {
-    console.log('[DASHBOARD] Bridge Reported Change:', change);
+    console.log('[HUB] Bridge Reported Change:', change);
   }
 
   _handleBridgeReady (info) {
-    console.log('[DASHBOARD] Bridge Reported Ready:', info);
+    console.log('[HUB] Bridge Reported Ready:', info);
   }
 
   _handleSourceLog (log) {
