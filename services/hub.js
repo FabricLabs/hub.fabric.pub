@@ -15,6 +15,7 @@ class Hub extends Service {
 
     // Settings
     this.settings = Object.assign({
+      alias: '@fabric/hub',
       port: 7777,
       peers: [],
       http: {
@@ -22,6 +23,7 @@ class Hub extends Service {
         port: 8080,
         secure: false
       },
+      interval: 60000, // 1 minute
       routes: [
         { method: 'GET', route: '/contracts', handler: this._handleContractListRequest.bind(this) },
         { method: 'GET', route: '/contracts/:id', handler: this._handleContractViewRequest.bind(this) },
@@ -32,14 +34,16 @@ class Hub extends Service {
       fs: {
         path: `stores/hub`
       },
-      state: {
+      state: Object.assign({
         status: 'PAUSED'
-      }
+      }, settings.state)
     }, settings);
 
     // Fabric
     this.agent = new Peer(this.settings);
-    this.contract = new Contract(this.settings);
+    this.contract = new Contract({
+      state: this.settings.state
+    });
 
     // Storage and Network
     this.fs = new Filesystem(this.settings.fs);
@@ -47,7 +51,7 @@ class Hub extends Service {
 
     // State
     this._state = {
-      content: this.state,
+      content: this.settings.state,
       contracts: [],
       documents: {},
       status: 'PAUSED'
@@ -105,7 +109,7 @@ class Hub extends Service {
     // Bind event listeners
     // this.trust(this.spa, 'FABRIC:SPA');
     this.trust(this.http, 'FABRIC:HTTP');
-    // this.trust(this.agent, 'FABRIC:AGENT');
+    this.trust(this.agent, 'FABRIC:AGENT');
 
     // Services (primarily HTTP)
     await Promise.all([
