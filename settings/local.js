@@ -1,18 +1,20 @@
 'use strict';
 
 const defaults = require('./default');
-const Environment = require('@fabric/core/types/environment');
-const environment = new Environment();
 
 module.exports = Object.assign({}, defaults, {
-  _environment: {
-    id: environment.id
-  },
+  alias: '@fabric/hub',
   http: {
     port: process.env.PORT || 8080
+  },
+  key: {
+    seed: process.env.FABRIC_SEED || ''
   },
   listen: true,
   path: './stores/hub',
   peering: true,
-  port: 7777
+  peers: [
+    'hub.fabric.pub:7777'
+  ],
+  port: process.env.FABRIC_PORT || 7777
 });

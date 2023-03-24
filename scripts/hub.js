@@ -1,20 +1,10 @@
 'use strict';
 
 // Settings
-const defaults = require('../settings/default');
+const settings = require('../settings/local');
 
 // Services
 const Hub = require('../services/hub');
-
-// Configuration
-const settings = {
-  listen: true,
-  port: process.env.FABRIC_PORT || defaults.port,
-  seed: process.env.FABRIC_SEED || defaults.seed,
-  peers: [
-    'localhost:7779'
-  ]
-};
 
 // Main process
 async function main (input = {}) {
