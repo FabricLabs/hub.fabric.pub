@@ -1,27 +1,14 @@
 'use strict';
 
 // Settings
-const defaults = require('../settings/default');
-
-// Dependencies
-const Node = require('@fabric/core/types/node');
+const settings = require('../settings/local');
 
 // Services
 const Hub = require('../services/hub');
 
-// Configuration
-const settings = {
-  listen: true,
-  port: process.env.FABRIC_PORT || defaults.port,
-  seed: process.env.FABRIC_SEED || defaults.seed
-};
-
 // Main process
 async function main (input = {}) {
-  const hub = new Node({
-    service: Hub,
-    settings: input
-  });
+  const hub = new Hub(input);
 
   hub.on('error', (error) => {
     console.error('[FABRIC:HUB]', `Error: ${error}`);
