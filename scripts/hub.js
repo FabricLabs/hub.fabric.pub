@@ -3,9 +3,6 @@
 // Settings
 const defaults = require('../settings/default');
 
-// Dependencies
-const Node = require('@fabric/core/types/node');
-
 // Services
 const Hub = require('../services/hub');
 
@@ -13,15 +10,15 @@ const Hub = require('../services/hub');
 const settings = {
   listen: true,
   port: process.env.FABRIC_PORT || defaults.port,
-  seed: process.env.FABRIC_SEED || defaults.seed
+  seed: process.env.FABRIC_SEED || defaults.seed,
+  peers: [
+    'localhost:7779'
+  ]
 };
 
 // Main process
 async function main (input = {}) {
-  const hub = new Node({
-    service: Hub,
-    settings: input
-  });
+  const hub = new Hub(input);
 
   hub.on('error', (error) => {
     console.error('[FABRIC:HUB]', `Error: ${error}`);

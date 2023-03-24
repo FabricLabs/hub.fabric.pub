@@ -1,15 +1,22 @@
 'use strict';
 
+// Fabric Types
+const Contract = require('@fabric/core/types/contract');
+const Filesystem = require('@fabric/core/types/filesystem');
 const Peer = require('@fabric/core/types/peer');
 const Service = require('@fabric/core/types/service');
+
+// Fabric HTTP
 const HTTP = require('@fabric/http/types/server');
 
 class Hub extends Service {
   constructor (settings = {}) {
     super(settings);
 
+    // Settings
     this.settings = Object.assign({
       port: 7777,
+      peers: [],
       http: {
         host: 'localhost',
         port: 8080,
@@ -21,19 +28,36 @@ class Hub extends Service {
         { method: 'POST', route: '/contracts', handler: this._handleContractCreateRequest.bind(this) }
       ],
       contracts: [],
-      documents: {}
+      documents: {},
+      fs: {
+        path: `stores/hub`
+      },
+      state: {
+        status: 'PAUSED'
+      }
     }, settings);
 
+    // Fabric
     this.agent = new Peer(this.settings);
+    this.contract = new Contract(this.settings);
+
+    // Storage and Network
+    this.fs = new Filesystem(this.settings.fs);
     this.http = new HTTP(this.settings.http);
 
+    // State
     this._state = {
+      content: this.state,
       contracts: [],
       documents: {},
       status: 'PAUSED'
     };
 
     return this;
+  }
+
+  commit () {
+    this.fs.publish('STATE', JSON.stringify(this.state, null, '  '));
   }
 
   // TODO: upstream
@@ -64,6 +88,17 @@ class Hub extends Service {
   }
 
   async start () {
+    await this.fs.start();
+
+    // Load prior state
+    const file = this.fs.readFile('STATE');
+    const state = (file) ? JSON.parse(file) : this.state;
+
+    // Assign properties
+    Object.assign(this._state.content, state);
+
+    this.commit();
+
     // Configure routes
     this._addAllRoutes();
 
@@ -76,7 +111,7 @@ class Hub extends Service {
     await Promise.all([
       // this.spa.start(),
       this.http.start(),
-      // this.agent.start()
+      this.agent.start()
     ]);
 
     // Local State
