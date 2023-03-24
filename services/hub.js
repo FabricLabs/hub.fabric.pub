@@ -9,7 +9,15 @@ const Service = require('@fabric/core/types/service');
 // Fabric HTTP
 const HTTP = require('@fabric/http/types/server');
 
+/**
+ * Defines the Hub service, known as `@fabric/hub` within the network.
+ */
 class Hub extends Service {
+  /**
+   * Create an instance of the {@link Hub} service.
+   * @param {Object} [settings] Settings for the Hub instance.
+   * @returns {Hub} Instance of the {@link Hub}.
+   */
   constructor (settings = {}) {
     super(settings);
 
@@ -60,6 +68,9 @@ class Hub extends Service {
     return this;
   }
 
+  /**
+   * Finalizes the current state.
+   */
   commit () {
     this.fs.publish('STATE', JSON.stringify(this.state, null, '  '));
   }
@@ -91,6 +102,10 @@ class Hub extends Service {
     return res.send({ status: 'error', message: 'Not yet implemented.' });
   }
 
+  /**
+   * Start the instance.
+   * @returns {Hub} Instance of the {@link Hub}.
+   */
   async start () {
     await this.fs.start();
 
@@ -127,6 +142,10 @@ class Hub extends Service {
     return this;
   }
 
+  /**
+   * Stop the instance.
+   * @returns {Hub} Instance of the {@link Hub}.
+   */
   async stop () {
     await this.agent.stop();
     await this.http.stop();
