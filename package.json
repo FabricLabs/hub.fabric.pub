@@ -38,8 +38,8 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#feature/cleanup",
-    "@fabric/http": "FabricLabs/fabric-http#feature/cleanup"
+    "@fabric/core": "FabricLabs/fabric#feature/validation",
+    "@fabric/http": "FabricLabs/fabric-http#feature/graphql"
   },
   "devDependencies": {
     "@babel/preset-env": "7.20.2",
