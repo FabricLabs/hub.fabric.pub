@@ -4,17 +4,19 @@
 const settings = require('../settings/local');
 
 // Types
-const Site = require('@fabric/http/types/site');
 const Compiler = require('@fabric/http/types/compiler');
+
+// Components
+const Interface = require('../components/interface');
 
 // Program Body
 async function main (input = {}) {
-  const site = new Site(input);
+  const site = new Interface(input);
   const compiler = new Compiler({
     document: site
   });
 
-  await compiler.compileTo('assets/hub.html');
+  await compiler.compileTo('assets/index.html');
 
   return {
     site: site.id
