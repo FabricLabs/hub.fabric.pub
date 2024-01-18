@@ -2,9 +2,9 @@
   "name": "@fabric/hub",
   "version": "0.1.0-RC1",
   "description": "Peer rendezvous for Fabric.",
-  "main": "scripts/hub.js",
+  "main": "services/hub.js",
   "engines": {
-    "node": "16.17.1"
+    "node": "18.19.0"
   },
   "scripts": {
     "build": "node scripts/build.js",
@@ -40,7 +40,7 @@
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
     "@fabric/core": "FabricLabs/fabric#feature/v0.1.0-RC1",
-    "@fabric/http": "FabricLabs/fabric-http#fix/http"
+    "@fabric/http": "FabricLabs/fabric-http#feature/v0.1.0-RC1"
   },
   "devDependencies": {
     "@babel/preset-env": "7.20.2",
