@@ -16,7 +16,8 @@ module.exports = Object.assign({}, defaults, {
   path: './stores/hub',
   peering: true,
   peers: [
-    'hub.fabric.pub:7777'
+    'hub.fabric.pub:7777',
+    'beta.jeeves.dev:7777'
   ],
   port: process.env.FABRIC_PORT || 7777,
   resources: {
@@ -26,6 +27,14 @@ module.exports = Object.assign({}, defaults, {
         { name: 'created', type: 'String', required: true },
         { name: 'definition', type: 'String', required: true },
         { name: 'author', type: 'String', required: true }
+      ]
+    },
+    'Document': {
+      fields: [
+        { name: 'id', type: 'String', required: true },
+        { name: 'content', type: 'String', required: true },
+        { name: 'created', type: 'String', required: true },
+        { name: 'author', type: 'String' }
       ]
     }
   }

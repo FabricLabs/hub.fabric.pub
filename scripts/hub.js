@@ -10,16 +10,16 @@ const Hub = require('../services/hub');
 async function main (input = {}) {
   const hub = new Hub(input);
 
-  hub.on('error', (error) => {
-    console.error('[FABRIC:HUB]', `Error: ${error}`);
+  hub.on('error', (...error) => {
+    console.error('[FABRIC:HUB]', `Error: ${error}`, ...error);
   });
 
   hub.on('ready', function (node) {
     console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
   });
 
-  hub.on('log', function (log) {
-    console.log('[FABRIC:HUB]', `[LOG] ${JSON.stringify(log)}`);
+  hub.on('log', function (...log) {
+    console.log('[FABRIC:HUB]', `[LOG] ${log}`, ...log);
   });
 
   hub.on('peer', function (peer) {
