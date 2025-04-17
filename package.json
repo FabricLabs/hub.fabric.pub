@@ -4,7 +4,7 @@
   "description": "Peer rendezvous for Fabric.",
   "main": "services/hub.js",
   "engines": {
-    "node": "18.19.1"
+    "node": "22.14.0"
   },
   "scripts": {
     "build": "npm run build:browser",
