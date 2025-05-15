@@ -15,11 +15,11 @@ const settings = require('../settings/local');
 const Compiler = require('../types/compiler');
 
 // Components
-const HubUI = require('../components/interface');
+const HubInterface = require('../components/HubInterface');
 
 // Program Body
 async function main (input = {}) {
-  const site = new HubUI(input);
+  const site = new HubInterface(input);
   const compiler = new Compiler({
     document: site,
     webpack: {

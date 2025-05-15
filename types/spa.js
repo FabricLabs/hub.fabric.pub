@@ -31,12 +31,11 @@ class SPA extends FabricSPA {
     <title>${this.title || this.settings.title}</title>
     <!-- <link rel="manifest" href="/manifest.json"> -->
     <link rel="stylesheet" type="text/css" href="/semantic.min.css" />
-    <link rel="stylesheet" type="text/css" href="/styles/styles.css" />
     <!-- <link rel="stylesheet" type="text/css" href="/styles/screen.css" /> -->
-    <link rel="stylesheet" type="text/css" href="/styles/ReactToastify.css">
+    <!-- <link rel="stylesheet" type="text/css" href="/styles/ReactToastify.css"> -->
     <script src="/scripts/jquery-3.4.1.js"></script>
     <script src="/semantic.min.js"></script>
-    <link rel="icon" href="/images/sensemaker-icon.png" />
+    <!-- <link rel="icon" href="/images/sensemaker-icon.png" /> -->
   </head>
   <body>
     <div data-hash="${hash}" id="application-target">${html}</div>

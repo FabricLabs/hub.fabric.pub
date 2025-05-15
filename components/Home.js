@@ -10,12 +10,11 @@ const {
   Segment
 } = require('semantic-ui-react');
 
-const MenuBar = require('./MenuBar');
+const ActivityStream = require('./ActivityStream');
 
 class Home extends React.Component {
   componentDidUpdate (prevProps) {
     if (this.props.location?.key !== prevProps.location?.key) {
-      // console.debug('[!!!]', 'location changed:', this.props.location, '!==', prevProps.location);
       this.setState({
         chat: {
           message: null,
@@ -28,12 +27,19 @@ class Home extends React.Component {
 
   render () {
     return (
-      <sensemaker-home class='fade-in' style={{ marginRight: '1em' }}>
+      <fabric-hub-home class='fade-in'>
         <Segment fluid style={{ clear: 'both' }}>
-          <Header as='h1'>Welcome home, <abbr>{this.props.auth.username}</abbr>.</Header>
-          <p>You have <strong>{this.props.unreadMessageCount || 0}</strong> unread messages.</p>
+          <Header as='h1'><code>hub.fabric.pub</code></Header>
+          <p>all things fabric</p>
         </Segment>
-      </sensemaker-home>
+        <Segment>
+          <Header as='h2'>Network Status</Header>
+        </Segment>
+        <Segment>
+          <Header as='h2'>Activity</Header>
+          <ActivityStream />
+        </Segment>
+      </fabric-hub-home>
     );
   }
 }

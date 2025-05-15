@@ -14,6 +14,10 @@ async function main (input = {}) {
     console.error('[FABRIC:HUB]', `Error: ${error}`, ...error);
   });
 
+  hub.on('debug', (...debug) => {
+    console.debug('[FABRIC:HUB]', `Debug: ${debug}`, ...debug);
+  });
+
   hub.on('ready', function (node) {
     console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
   });

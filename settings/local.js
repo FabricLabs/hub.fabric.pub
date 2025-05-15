@@ -4,13 +4,19 @@ const defaults = require('./default');
 
 module.exports = Object.assign({}, defaults, {
   alias: '@fabric/hub',
+  created: '2017-11-11:00:00.000Z',
+  mode: 'production',
   http: {
-    hostname: process.env.HOSTNAME || 'localhost',
-    interface: process.env.INTERFACE || '0.0.0.0',
-    port: process.env.PORT || 8080
+    hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',
+    interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || '0.0.0.0',
+    port: process.env.FABRIC_HUB_PORT || process.env.PORT || 8080
   },
   key: {
-    seed: process.env.FABRIC_SEED || ''
+    mnemonic: process.env.FABRIC_MNEMONIC || process.env.FABRIC_SEED || null,
+    seed: process.env.FABRIC_SEED || null,
+    xprv: process.env.FABRIC_XPRV || null,
+    xpub: process.env.FABRIC_XPUB || null,
+    passphrase: process.env.FABRIC_PASSPHRASE || null
   },
   listen: true,
   path: './stores/hub',
@@ -37,5 +43,9 @@ module.exports = Object.assign({}, defaults, {
         { name: 'author', type: 'String' }
       ]
     }
+  },
+  state: {
+    contracts: [],
+    documents: []
   }
 });

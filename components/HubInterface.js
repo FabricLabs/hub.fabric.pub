@@ -12,19 +12,11 @@ const React = require('react');
 const ReactDOMServer = require('react-dom/server');
 const { renderToString } = require('react-dom/server');
 const {
-  BrowserRouter,
-  useNavigate,
-  Navigate
+  BrowserRouter
 } = require('react-router-dom');
 
-// Actions
-// const { loginSuccess } = require('../actions/authActions');
-
 // Components
-const Splash = require('./Splash');
-const Dashboard = require('./Dashboard');
-const TermsOfUseModal = require('./TermsOfUseModal');
-// const Waitlist = require('./Waitlist');
+const Home = require('./Home');
 
 // Semantic UI
 const {
@@ -49,96 +41,11 @@ class HubUI extends React.Component {
     };
   }
 
-  handleLoginSuccess = () => {
-    console.debug('setting isAuthenticated = true ...');
-    this.setState({ isAuthenticated: true });
-  }
-
-  handleMessageSuccess = (result) => {
-    console.debug('message success! result:', result);
-    this.setState({ incomingMessage: result });
-  }
-
-  handleRegisterSuccess = () => {
-    console.debug('registered = true ...');
-    this.setState({ registered: true });
-  }
-
-  handleLogout = () => {
-    this.setState({
-      modalLogOut: true
-    });
-  }
-
-  handleLogoutSuccess = () => {
-    console.debug('setting isAuthenticated = false ...');
-    this.setState({ loggedOut: true });
-
-    setTimeout(() => {
-      this.setState({
-        isAuthenticated: false,
-        isLoading: false,
-        modalLogOut: false,
-        loggedOut: false
-      });
-
-      // Destroy Session
-      this.props.logout();
-
-      // Redirect User
-      window.location.href = '/';
-
-      //window.location.reload();
-    }, 2000);
-  }
-
-  handleModalClose = () =>{
-    this.setState({
-      isAuthenticated: false,
-      isLoading: false,
-      modalLogOut: false
-    });
-  }
-
   componentDidMount () {
-    //if the user was already logged in previously, we reload the session
-    const dbRequest = indexedDB.open(BROWSER_DATABASE_NAME, 1);
-
-    dbRequest.onupgradeneeded = function (event) {
-      const db = event.target.result;
-
-      if (!db.objectStoreNames.contains(BROWSER_DATABASE_TOKEN_TABLE)) {
-        const objectStore = db.createObjectStore(BROWSER_DATABASE_TOKEN_TABLE, { keyPath: 'id' });
-        objectStore.createIndex("authToken", "authToken", { unique: false });
-      }
-    };
-
-    dbRequest.onsuccess = (event) => {
-        const db = event.target.result;
-        const transaction = db.transaction([BROWSER_DATABASE_TOKEN_TABLE], 'readonly');
-        const objectStore = transaction.objectStore(BROWSER_DATABASE_TOKEN_TABLE);
-        const request = objectStore.get('authToken');
-
-        request.onsuccess = (event) => {
-          if (request.result) {
-            this.setState({ isAuthenticated: true });
-            this.props.reLogin(request.result.value);
-          }
-        };
-
-        request.onerror = (event) => {
-          console.error("IndexedDB error:", event.target.errorCode);
-        };
-    };
-
-    dbRequest.onerror = function(event) {
-      console.error("IndexedDB error:", event.target.errorCode);
-    };
+    console.debug('[HUB]', 'Component mounted!');
   }
 
   render () {
-    const { modalLogOut, loggedOut } = this.state;
-
     return (
       <fabric-hub-ui id={this.id} class="fabric-site">
         <fabric-container id="react-application">{/* TODO: render string here */}</fabric-container>
@@ -146,89 +53,14 @@ class HubUI extends React.Component {
           {(this.props.auth && this.props.auth.loading) ? (
             <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <Loader active inline="centered" size='huge' />
-            </div>) :
-            (<BrowserRouter>
-              {!this.props.isAuthenticated ? (
-                <Splash
-                  onLoginSuccess={this.handleLoginSuccess}
-                  onRegisterSuccess={this.handleRegisterSuccess}
-                  login={this.props.login}
-                  register={this.props.register}
-                  error={this.props.error}
-                  checkInvitationToken={this.props.checkInvitationToken}
-                  checkUsernameAvailable={this.props.checkUsernameAvailable}
-                  checkEmailAvailable={this.props.checkEmailAvailable}
-                  invitation={this.props.invitation}
-                  auth={this.props.auth}
-                  fullRegister={this.props.fullRegister}
-                  acceptInvitation={this.props.acceptInvitation}
-                  declineInvitation={this.props.declineInvitation}
-                  createInquiry={this.props.createInquiry}
-                  inquiries={this.props.inquiries}
-                />
-              ) : !this.props.auth.isCompliant ? (
-                <TermsOfUseModal
-                  {...this.props}
-                  auth={this.props.auth}
-                  signContract={this.props.signContract}
-                  logout={this.props.logout}
-                  isCompliant={this.props.isCompliant}
-                />
-              ) : (
-                <Dashboard
-                  auth={this.props.auth}
-                  onLogoutSuccess={this.handleLogout}
-                  fetchContract={this.props.fetchContract}
-                  fetchAdminStats={this.props.fetchAdminStats}
-                  register={this.props.register}
-                  contracts={this.props.contracts}
-                  isAdmin={this.props.auth.isAdmin}
-                  isCompliant={this.props.auth.isCompliant}
-                  {...this.props}
-                />
-              )}
-              <Modal
-                onClose={this.handleModalClose}
-                open={modalLogOut}
-                size='mini'>
-                <Modal.Header centered>
-                  Log Out of {BRAND_NAME}?
-                </Modal.Header>
-                <Modal.Content>
-                  <Modal.Description>
-                    {!loggedOut ? (
-                      <Header as='h4'>Are you sure you want to log out?</Header>
-                    ) : (
-                      <Header as='h5' className='center aligned'>You have been logged out.<br /><br />Returning to the home page...</Header>
-                    )
-                    }
-                  </Modal.Description>
-                </Modal.Content>
-                <Modal.Actions>
-                  {!loggedOut && (
-                    <Button.Group>
-                      <Button
-                        content='Cancel'
-                        icon='close'
-                        onClick={this.handleModalClose}
-                        labelPosition='right'
-                        size='small'
-                        secondary
-                      />
-                      <Button
-                        content='Log out'
-                        icon='log out'
-                        onClick={this.handleLogoutSuccess}
-                        labelPosition='right'
-                        size='small'
-                        primary
-                      />
-                    </Button.Group>
-                  )}
-                </Modal.Actions>
-              </Modal>
-            </BrowserRouter>
-            )}
+            </div>) : <BrowserRouter>
+            <Home
+              auth={this.props.auth}
+              fetchContract={this.props.fetchContract}
+              contracts={this.props.contracts}
+              {...this.props}
+            />
+          </BrowserRouter>}
         </fabric-react-component>
       </fabric-hub-ui>
     )
@@ -248,7 +80,7 @@ class HubUI extends React.Component {
   }
 
   toHTML () {
-    return this.applicationString;
+    return this._toHTML();
   }
 }
 

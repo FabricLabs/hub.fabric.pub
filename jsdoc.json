@@ -1,0 +1,10 @@
+{
+  "name": "@fabric/hub",
+  "chat": "https://hub.fabric.pub",
+  "source": "https://github.com/FabricLabs/hub.fabric.pub",
+  "templates": {
+    "default": {
+      "layoutFile": "assets/docs.tmpl"
+    }
+  }
+}

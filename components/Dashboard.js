@@ -4,7 +4,6 @@
 const React = require('react');
 const { Link, Navigate, Route, Routes, Switch, useLocation, useParams, useNavigate } = require('react-router-dom');
 const { ToastContainer, toast, Slide } = require('react-toastify');
-const { helpMessageToastEmitter, helpMessageSound } = require('../functions/toastifyProps.js')
 
 // const LoadingBar = require('react-top-loading-bar');
 
@@ -38,16 +37,12 @@ const {
 
 // Components
 const Home = require('./Home');
-const ContractHome = require('./ContractHome');
-const NetworkHome = require('./NetworkHome');
-const Library = require('./Library');
-const DocumentHome = require('./DocumentHome');
-const DocumentView = require('./DocumentView');
-const UserView = require('./UserView');
-const Changelog = require('./Changelog');
-const Settings = require('./Settings');
+// const ContractHome = require('./ContractHome');
+//const DocumentHome = require('./DocumentHome');
+//const DocumentView = require('./DocumentView');
+//const UserView = require('./UserView');
+//const Settings = require('./Settings');
 // const AdminSettings = require('./AdminSettings');
-const TermsOfUse = require('./TermsOfUse');
 
 // Fabric Bridge
 const Bridge = require('./Bridge');
@@ -156,40 +151,6 @@ class Dashboard extends React.Component {
     this.setState({ search: e.target.value });
   };
 
-  //this is the handler that sets which section is opened in the section bar in the left
-  handleMenuItemClick = (menu) => {
-    const newState = {
-      openLibrary: false,
-      openConversations: false,
-    };
-
-    // Update the state based on the menu item clicked
-    switch (menu) {
-      case 'home':
-        this.setState({ openSectionBar: false });
-        this.props.resetChat();
-        break;
-      case 'library':
-        if (this.state.openLibrary && this.state.openSectionBar) {
-          this.setState({ openSectionBar: false });
-          newState.openLibrary = true;
-        } else {
-          newState.openLibrary = true;
-          this.setState({ openSectionBar: true });
-          if (!this.state.openLibrary) {
-            this.props.resetChat();
-          }
-        }
-        break;
-      default:
-        console.error('Unknown menu item');
-        return;
-    }
-
-    // Set the new state
-    this.setState(newState);
-  };
-
   responseCapture = (action) => {
     const { id, isAdmin } = this.props.auth;
     const sound = new Audio(helpMessageSound);
@@ -203,7 +164,10 @@ class Dashboard extends React.Component {
       }
 
       if (action.type == 'IngestDocument' && isAdmin) {
-        toast(<p>Your document "{action.title}"" has been ingested!  You can check it <a href={`${window.location.protocol}//${window.location.hostname}:${window.location.port}/documents/${action.fabric_id}`}>Here</a></p>, helpMessageToastEmitter);
+        toast(
+          <p>Your document <Link to={`/documents/${action.fabric_id}`}>{action.title}</Link> has been indexed for search!</p>,
+          helpMessageToastEmitter
+        );
       }
     }
 
@@ -255,11 +219,15 @@ class Dashboard extends React.Component {
     };
 
     return (
-      <sensemaker-dashboard style={{ height: '100%' }} className='fade-in'>
+      <hub-dashboard style={{ height: '100%' }} className='fade-in'>
         {/* <LoadingBar color="#f11946" progress={this.state.progress} /> */}
         {/* <Joyride steps={this.state.steps} /> */}
         {/* <div id="sidebar" attached="bottom" style={{ overflow: 'hidden', borderRadius: 0, height: '100vh', backgroundColor: '#eee' }}> */}
-        <div attached="bottom" style={{ overflowX: 'hidden', borderRadius: 0, height: '100vh', backgroundColor: '#ffffff', display: 'flex' }}>
+        <div attached="bottom" style={{
+          display: 'flex',
+          height: '100vh',
+          backgroundColor: '#ffffff'
+        }}>
           {/* Small sidebar to the left, with the icons, always visible */}
           <Sidebar as={Menu} id="main-sidebar" animation='overlay' icon='labeled' inverted vertical visible size='huge' style={{ overflow: 'hidden' }} onClick={() => { this.toggleInformationSidebar(); this.closeHelpBox(); }}>
             <div>
@@ -326,7 +294,7 @@ class Dashboard extends React.Component {
           </Sidebar>
           <Sidebar as={Menu} animation='overlay' id="collapse-sidebar" icon='labeled' inverted vertical visible={openSectionBar} style={sidebarStyle} size='huge' onClick={() => { this.toggleInformationSidebar(); this.closeHelpBox(); }}>
             <div className='collapse-sidebar-arrow'>
-              <Icon name='caret left' size='large' white className='fade-in' style={{ cursor: 'pointer' }} onClick={() => this.setState({ openSectionBar: false })} />
+              <Icon name='caret left' size='large' color='white' className='fade-in' style={{ cursor: 'pointer' }} onClick={() => this.setState({ openSectionBar: false })} />
             </div>
             <Menu.Item as={Link} to="/" style={{ paddingBottom: '0em', marginTop: '-1.5em' }}
               onClick={() => { this.setState({ openSectionBar: false }); this.props.resetChat() }}>
@@ -353,34 +321,20 @@ class Dashboard extends React.Component {
             </section>
           </Sidebar>
           <Container fluid style={containerStyle} onClick={this.closeSidebars}>
-            {this.state.debug ? (
-              <div>
-                <strong><code>isAdmin</code>:</strong> <span>{(this.props.isAdmin) ? 'yes' : 'no'}</span><br />
-                <strong><code>isCompliant</code>:</strong> <span>{(this.props.isCompliant) ? 'yes' : 'no'}</span><br />
-                <strong><code>auth</code>:</strong> <code>{(this.props.auth) ? JSON.stringify(this.props.auth, null, '  ') : 'undefined'}</code>
-                {/* <strong><code>state.auth.isAdmin</code></strong> <span>{this.state.auth.isAdmin}</span>
-                <strong><code>state.auth.isCompliant</code></strong> <span>{this.state.auth.isCompliant}</span> */}
-              </div>
-            ) : null}
             {this.state.isLoading ? null : (
               <Routes>
                 <Route path="*" element={<Navigate to='/' replace />} />
                 <Route path="/" element={<Home auth={this.props.auth} />} />
-                <Route path='/settings/library' element={<Library />} />
-                <Route path="/updates" element={<Changelog {...this.props} />} />
-                <Route path="/documents" element={<DocumentHome documents={this.props.documents} uploadDocument={this.props.uploadDocument} fetchDocuments={this.props.fetchDocuments} searchDocument={this.props.searchDocument} chat={this.props.chat} resetChat={this.props.resetChat} files={this.props.files} uploadFile={this.props.uploadFile} />} />
-                <Route path="/documents/:fabricID" element={<DocumentView  {...this.props} documents={this.props.documents} fetchDocument={this.props.fetchDocument} resetChat={this.props.resetChat} />} />
-                <Route path="/users/:username" element={<UserView {...this.props} />} />
-                <Route path="/settings" element={<Settings {...this.props} auth={this.props.auth} login={this.props.login} />} />
-                <Route path="/peers" element={<NetworkHome {...this.props} network={{ peers: [] }} />} />
-                <Route path="/contracts" element={<ContractHome {...this.props} fetchContract={this.props.fetchContract} fetchContracts={this.props.fetchContracts} />} />
-                <Route path="/contracts/terms-of-use" element={<TermsOfUse {...this.props} fetchContract={this.props.fetchContract} />} />
+                {/* <Route path="/documents" element={<DocumentHome documents={this.props.documents} uploadDocument={this.props.uploadDocument} fetchDocuments={this.props.fetchDocuments} searchDocument={this.props.searchDocument} chat={this.props.chat} resetChat={this.props.resetChat} files={this.props.files} uploadFile={this.props.uploadFile} />} /> */}
+                {/* <Route path="/documents/:fabricID" element={<DocumentView  {...this.props} documents={this.props.documents} fetchDocument={this.props.fetchDocument} resetChat={this.props.resetChat} />} /> */}
+                {/* <Route path="/peers" element={<NetworkHome {...this.props} network={{ peers: [] }} />} /> */}
+                {/* <Route path="/contracts" element={<ContractHome {...this.props} fetchContract={this.props.fetchContract} fetchContracts={this.props.fetchContracts} />} /> */}
               </Routes>
             )}
           </Container>
         </div>
         <ToastContainer />
-      </sensemaker-dashboard>
+      </hub-dashboard>
     );
   }
 }

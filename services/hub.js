@@ -17,9 +17,6 @@ const Token = require('@fabric/core/types/token'); // fabric tokens
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
 
-// Services
-const Matrix = require('@fabric/matrix');
-
 // Hub Services
 const Fabric = require('../services/fabric');
 // const Queue = require('../types/queue');
@@ -51,7 +48,6 @@ class Hub extends Service {
       precision: 8, // precision in bits for floating point compression
       persistent: true,
       path: './logs/hub.fabric.pub',
-      coordinator: '!TsLXBhlUcDLbRtOYIU:fabric.pub',
       frequency: 0.01, // Hz (once every ~100 seconds)
       fs: {
         path: `stores/hub`
@@ -62,18 +58,11 @@ class Hub extends Service {
         port: 8080
       },
       routes: [
-        { method: 'POST', route: '/accounts', handler: ROUTES.accounts.create.bind(this) },
-        { method: 'GET', route: '/accounts', handler: ROUTES.accounts.list.bind(this) },
-        { method: 'GET', route: '/accounts/:id', handler: ROUTES.accounts.view.bind(this) },
         { method: 'GET', route: '/contracts', handler: ROUTES.contracts.list.bind(this) },
         { method: 'GET', route: '/contracts/:id', handler: ROUTES.contracts.view.bind(this) },
         { method: 'POST', route: '/contracts', handler: ROUTES.contracts.create.bind(this) },
         { method: 'POST', route: '/peers', handler: ROUTES.peers.create.bind(this) },
-        { method: 'GET', route: '/peers', handler: ROUTES.peers.list.bind(this) },
-        { method: 'GET', route: '/sessions', handler: ROUTES.sessions.list.bind(this) },
-        { method: 'POST', route: '/sessions', handler: ROUTES.sessions.create.bind(this) },
-        { method: 'GET', route: '/settings', handler: ROUTES.settings.list.bind(this) },
-        { method: 'PATCH', route: '/settings', handler: ROUTES.settings.update.bind(this) }
+        { method: 'GET', route: '/peers', handler: ROUTES.peers.list.bind(this) }
       ],
       commitments: [],
       constraints: {
@@ -82,11 +71,9 @@ class Hub extends Service {
           max: Math.pow(2, 26) // ~64MB RAM
         }
       },
-      matrix: {},
       agents: null,
       services: [
-        'bitcoin',
-        'matrix'
+        'bitcoin'
       ],
       state: {
         status: 'INITIALIZED',
@@ -113,23 +100,15 @@ class Hub extends Service {
     }, settings);
 
     // Vector Clock
-    this.clock = this.settings.clock || 0 | 0;
+    this.clock = this.settings.clock;
+
+    // Root Key
+    this._rootKey = new Key(this.settings.key);
 
     // Internals
     this.agent = new Peer(this.settings);
-    // this.brain = new Brain(this.settings);
     this.chain = new Chain(this.settings);
-    // this.queue = new Queue(this.settings);
     this.audits = new Logger(this.settings);
-    // this.sandbox = new Sandbox(this.settings.sandbox);
-    // this.worker = new Worker(this.settings);
-
-     // Services
-    // Optional Services
-    // this.email = (this.settings.email && this.settings.email.enable) ? new EmailService(this.settings.email) : null;
-    this.matrix = (this.settings.matrix && this.settings.matrix.enable) ? new Matrix(this.settings.matrix) : null;
-    // this.github = (this.settings.github.enable) ? new GitHub(this.settings.github) : null;
-    // this.discord = (this.settings.discord.enable) ? new Discord(merge({}, this.settings.discord, { authority: this.settings.authority })) : null;
 
     // Collections
     this.actors = new Collection({ name: 'Actors' });
@@ -139,7 +118,6 @@ class Hub extends Service {
     this.sources = new Collection({ name: 'Sources' });
 
     // Fabric Setup
-    this._rootKey = new Key({ xprv: this.settings.xprv });
     this._fabric = {
       ephemera: this._rootKey,
       token: new Token({ issuer: this._rootKey })
@@ -169,9 +147,11 @@ class Hub extends Service {
     };
 
     // Fabric
-    this.agent = new Peer(this.settings);
     this.contract = new Contract({
-      state: this.settings.state
+      state: this.settings.state,
+      key: {
+        xprv: this._rootKey.xprv
+      }
     });
 
     // Storage and Network
@@ -289,8 +269,8 @@ class Hub extends Service {
     Object.assign(this._state.content, state);
 
     // Contract deploy
-    console.debug('[HUB]', 'Contract:', this.contract);
-    console.debug('[HUB]', 'Contract state:', this.contract.state);
+    console.debug('[HUB]', 'Contract ID:', this.contract.id);
+    console.debug('[HUB]', 'Contract State:', this.contract.state);
 
     // TODO: retrieve contract ID, add to local state
     this.contract.deploy();
