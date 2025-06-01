@@ -18,20 +18,27 @@
   <!-- <link rel="icon" href="/images/sensemaker-icon.png" /> -->
 </head>
 <body>
-  <div data-hash="7ebc992202a33ae4330553ce0fad363e4750d260aa46bec1e1213ebb92f1e900" id="application-target"><fabric-hub-ui class="fabric-site"><fabric-container id="react-application"></fabric-container><fabric-react-component id="fabric-hub-application" style="height:100vh;display:flex;flex-direction:column"><fabric-hub-home class="fade-in">
+  <div data-hash="b63646eaded10849d23b842675ecb38ea4264c0396ef6d9fe7333911fe75f13f" id="application-target"><fabric-interface class="fabric-site">
+      <style>
+        fabric-react-component {
+          margin: 1em;
+        }
+      </style><fabric-container id="react-application"></fabric-container><fabric-react-component id="fabric-hub-application" style="height:100vh;display:flex;flex-direction:column"><fabric-bridge></fabric-bridge><fabric-hub-home class="fade-in">
           <div style="clear:both" class="ui segment">
             <h1 class="ui header"><code>hub.fabric.pub</code></h1>
             <p>all things fabric</p>
           </div>
           <div class="ui segment">
             <h2 class="ui header">Network Status</h2>
+            <p>Loading network status...</p>
           </div>
           <div class="ui segment">
             <h2 class="ui header">Activity</h2><fabric-activity-stream className="activity-stream">
               <div></div>
             </fabric-activity-stream>
           </div>
-        </fabric-hub-home></fabric-react-component></fabric-hub-ui></div>
+        </fabric-hub-home></fabric-react-component>
+    </fabric-interface></div>
   <script src="/bundles/browser.min.js"></script>
 </body>
 </html>

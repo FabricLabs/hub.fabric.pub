@@ -13,6 +13,16 @@ const {
 const ActivityStream = require('./ActivityStream');
 
 class Home extends React.Component {
+  constructor (props) {
+    super(props);
+
+    this.state = {
+      networkStatus: null
+    };
+
+    return this;
+  }
+
   componentDidUpdate (prevProps) {
     if (this.props.location?.key !== prevProps.location?.key) {
       this.setState({
@@ -25,7 +35,22 @@ class Home extends React.Component {
     }
   }
 
+  componentDidMount () {
+    this.trySendNetworkStatusRequest();
+  }
+
+  trySendNetworkStatusRequest () {
+    const { bridge } = this.props;
+    if (bridge && bridge.sendNetworkStatusRequest && typeof bridge.sendNetworkStatusRequest === 'function') {
+      bridge.sendNetworkStatusRequest();
+    } else {
+      // Try again shortly if not ready
+      setTimeout(() => this.trySendNetworkStatusRequest(), 250);
+    }
+  }
+
   render () {
+    const { network } = this.state;
     return (
       <fabric-hub-home class='fade-in'>
         <Segment fluid style={{ clear: 'both' }}>

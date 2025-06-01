@@ -17,6 +17,7 @@ const {
 
 // Components
 const Home = require('./Home');
+const Bridge = require('./Bridge');
 
 // Semantic UI
 const {
@@ -29,27 +30,52 @@ const {
 /**
  * The Hub UI.
  */
-class HubUI extends React.Component {
+class HubInterface extends React.Component {
   constructor (props) {
     super(props);
 
     this.state = {
+      debug: false,
       isAuthenticated: false,
       isLoading: true,
       modalLogOut: false,
       loggedOut: false,
     };
+
+    this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
+
+    // Instantiate Bridge once here
+    this.bridgeRef = React.createRef();
+
+    this._state = {
+      actors: {},
+      content: this.state
+    };
+
+    return this;
   }
 
   componentDidMount () {
     console.debug('[HUB]', 'Component mounted!');
   }
 
+  handleBridgeStateUpdate (newState) {
+    this.setState(newState);
+  }
+
   render () {
     return (
-      <fabric-hub-ui id={this.id} class="fabric-site">
+      <fabric-interface id={this.id} class="fabric-site">
+        <style>
+          {`
+            fabric-react-component {
+              margin: 1em;
+            }
+          `}
+        </style>
         <fabric-container id="react-application">{/* TODO: render string here */}</fabric-container>
         <fabric-react-component id='fabric-hub-application' style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+          <Bridge ref={this.bridgeRef} debug={this.state.debug} onStateUpdate={this.handleBridgeStateUpdate} />
           {(this.props.auth && this.props.auth.loading) ? (
             <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <Loader active inline="centered" size='huge' />
@@ -58,11 +84,13 @@ class HubUI extends React.Component {
               auth={this.props.auth}
               fetchContract={this.props.fetchContract}
               contracts={this.props.contracts}
+              bridge={this.bridgeRef.current}
+              state={this.state}
               {...this.props}
             />
           </BrowserRouter>}
         </fabric-react-component>
-      </fabric-hub-ui>
+      </fabric-interface>
     )
   }
 
@@ -84,4 +112,4 @@ class HubUI extends React.Component {
   }
 }
 
-module.exports = HubUI;
+module.exports = HubInterface;

@@ -135,6 +135,19 @@ class Bridge extends React.Component {
     );
   }
 
+  _handleJSONCall (message) {
+    try {
+      const { method, params } = JSON.parse(message.body);
+      switch (method) {
+        case 'JSONCallResult':
+          this.setState(params[1]);
+          break;
+      }
+    } catch (exception) {
+      console.debug('[BRIDGE]', 'Could not process JSONCall:', message.body, exception);
+    }
+  }
+
   start () {
     this.connect('/');
     // this.connect('/conversations');
@@ -178,18 +191,21 @@ class Bridge extends React.Component {
       default:
         console.debug('[BRIDGE]', 'Unhandled message type:', message.type);
         break;
+      case 'JSONCall':
+        this._handleJSONCall(message);
+        break;
+      case 'Pong':
+        console.debug('[BRIDGE]', 'Pong:', message.body);
+        break;
       case 'GenericMessage':
         try {
           const chunk = JSON.parse(message.body);
-
           switch (chunk.type) {
             case 'MessageStart':
               const selector = `[data-message-id="` + chunk.message_id + `"]`;
-
               setTimeout(() => {
                 const target = document.querySelector(selector);
               }, 250);
-
               this.addJob('MessageStart', chunk);
               break;
             case 'MessageChunk':
@@ -205,9 +221,8 @@ class Bridge extends React.Component {
               break;
           }
         } catch (exception) {
-          console.error('Could not process message:', exception);
+          console.debug('[BRIDGE]', 'Could not process message:', message.body, exception);
         }
-
         break;
     }
 
@@ -222,8 +237,17 @@ class Bridge extends React.Component {
   async onSocketOpen () {
     this.attempts = 1;
     const now = Date.now();
+
+    this.sendNetworkStatusRequest();
+
     const message = Message.fromVector(['Ping', now.toString()]);
     this.ws.send(message.toBuffer());
+  }
+
+  sendNetworkStatusRequest () {
+    const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [] })]);
+    const buffer = message.toBuffer();
+    this.ws.send(buffer);
   }
 }
 
