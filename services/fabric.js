@@ -113,10 +113,7 @@ class FabricService extends Service {
 
       // Documents
       await Promise.allSettled([
-        this.syncRemoteDocuments(remote),
-        // this.syncRemoteCases(remote),
-        this.syncRemoteCourts(remote),
-        this.syncRemotePeople(remote)
+        this.syncRemoteDocuments(remote)
       ]);
     }
 

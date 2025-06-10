@@ -5,7 +5,8 @@ const defaults = require('./default');
 module.exports = Object.assign({}, defaults, {
   alias: '@fabric/hub',
   created: '2017-11-11:00:00.000Z',
-  mode: 'production',
+  debug: false,
+  mode: process.env.NODE_ENV || 'production',
   http: {
     hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',
     interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || '0.0.0.0',

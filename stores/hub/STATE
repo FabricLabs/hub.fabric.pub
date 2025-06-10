@@ -1,5 +1,5 @@
 {
-  "status": "PAUSED",
+  "status": "INITIALIZED",
   "agents": {},
   "collections": {
     "documents": {},

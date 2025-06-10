@@ -155,7 +155,7 @@ class Hub extends Service {
     });
 
     // Storage and Network
-    this.fs = new Filesystem(this.settings.fs);
+    this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
 
     // HTTP Server
     this.http = new HTTPServer({
@@ -284,12 +284,26 @@ class Hub extends Service {
     this.trust(this.http, 'FABRIC:HTTP');
     this.trust(this.agent, 'FABRIC:AGENT');
 
-    // Services (primarily HTTP)
-    await Promise.all([
-      // this.spa.start(),
-      this.http.start(),
-      this.agent.start()
-    ]);
+    this.http._registerMethod('GetNetworkStatus', (...params) => {
+      const status = {
+        clock: this.http.clock,
+        contract: this.contract.id,
+        documents: this._state.documents,
+        network: {
+          address: this.http.agent.listenAddress,
+          listening: this.http.agent.listening
+        },
+        peers: this.http.agent.publicPeers,
+        state: this.http.state,
+        xpub: this._rootKey.xpub
+      };
+
+      return status;
+    });
+
+    console.trace('[HUB]', 'Starting agent...', this.agent.settings);
+    await this.agent.start();
+    await this.http.start();
 
     // Local State
     this._state.status = 'STARTED';
@@ -305,8 +319,8 @@ class Hub extends Service {
    * @returns {Hub} Instance of the {@link Hub}.
    */
   async stop () {
-    await this.agent.stop();
     await this.http.stop();
+    await this.agent.stop();
 
     this._state.status = 'STOPPED';
     return this;
