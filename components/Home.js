@@ -59,6 +59,23 @@ class Home extends React.Component {
         </Segment>
         <Segment>
           <Header as='h2'>Network Status</Header>
+          {network ? (
+            <Card fluid>
+              <Card.Content>
+                <Card.Header>Network Status</Card.Header>
+                <Card.Description>
+                  {network && network.address ? (
+                    <div style={{ marginBottom: '1em' }}>
+                      <strong>Address:</strong> {network.address}
+                    </div>
+                  ) : null}
+                  <pre>{JSON.stringify(networkStatus, null, 2)}</pre>
+                </Card.Description>
+              </Card.Content>
+            </Card>
+          ) : (
+            <p>Loading network status...</p>
+          )}
         </Segment>
         <Segment>
           <Header as='h2'>Activity</Header>

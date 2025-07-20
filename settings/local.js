@@ -48,5 +48,6 @@ module.exports = Object.assign({}, defaults, {
   state: {
     contracts: [],
     documents: []
-  }
+  },
+  transparent: false
 });
