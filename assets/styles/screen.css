@@ -1,10 +1,10 @@
-@media (min-width:961px)  {
+@media (min-width: 961px) {
   .desktop-only {
     display: block;
   }
 }
 
-@media (max-width:960px)  {
+@media (max-width: 960px) {
   .desktop-only {
     display: none;
   }
@@ -105,39 +105,6 @@ verse-dialogue-stack {
   height: 30em;
 }
 
-#character-creator {
-  position: fixed;
-  margin: 1em 0 0;
-  left: 1em;
-  top: 7em;
-  right: 1em;
-  bottom: 7em;
-  width: calc(100% - 2em);
-}
-
-#character-creator .field label {
-  margin-top: 1em;
-}
-
-#character-creator label {
-  color: #fff;
-}
-
-#character-selection {
-  position: fixed;
-  margin: 1em 0 0;
-  left: 1em;
-  top: 7em;
-  right: 1em;
-  bottom: 7em;
-  width: calc(100% - 2em);
-}
-
-#character-selection img {
-  border: 1px solid white;
-  margin-bottom: 0;
-}
-
 #console {
   position: fixed;
   top: 4em;
@@ -171,7 +138,7 @@ verse-dialogue-stack {
   top: 20%;
   bottom: 20%;
   left: 10%;
-  width: 80%
+  width: 80%;
 }
 
 #tray {
