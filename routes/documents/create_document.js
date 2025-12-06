@@ -1,5 +1,9 @@
 'use strict';
 
 module.exports = async function (req, res, next) {
-  return res.send({ status: 'error', message: 'Not yet implemented.' });
+  const data = { status: 'error', message: 'Not yet implemented.' };
+  return this.http.formatResponse(req, res, data, {
+    title: 'Create Document',
+    resourceName: 'Create Document'
+  });
 };

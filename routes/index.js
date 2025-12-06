@@ -8,6 +8,13 @@ module.exports = {
     // destroy: require('./contracts/destroy_contract'),
     // update: require('./contracts/update_contract')
   },
+  documents: {
+    create: require('./documents/create_document'),
+    view: require('./documents/view_document'),
+    list: require('./documents/list_documents'),
+    // destroy: require('./documents/destroy_document'),
+    // update: require('./documents/update_document')
+  },
   messages: {
     create: require('./messages/create_message'),
     view: require('./messages/view_message'),
@@ -21,5 +28,5 @@ module.exports = {
     list: require('./peers/list_peers'),
     // destroy: require('./peers/destroy_peer'),
     // update: require('./peers/update_peer')
-  }
+  },
 };
