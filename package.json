@@ -85,7 +85,7 @@
     "style-loader": "=3.3.4",
     "vm-browserify": "=1.1.2",
     "webpack-cli": "=5.1.4",
-    "webpack-dev-server": "=4.15.1"
+    "webpack-dev-server": "=5.2.2"
   },
   "c8": {
     "exclude": [
