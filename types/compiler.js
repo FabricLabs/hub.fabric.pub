@@ -41,10 +41,8 @@ class Compiler extends HTTPCompiler {
       state: {
         title: settings.title || 'Fabric HTTP Document'
       },
-      // TODO: load from:
-      // 1. webpack.config.js (local)
-      // 2. @fabric/http/webpack.config
-      webpack: {
+      // Use provided webpack config if present, otherwise use default
+      webpack: settings.webpack || {
         mode: settings.mode || 'development',
         entry: path.resolve('./scripts/browser.js'),
         experiments: {
@@ -53,16 +51,13 @@ class Compiler extends HTTPCompiler {
         resolve: {
           fallback: {
             crypto: require.resolve('crypto-browserify'),
-            stream: require.resolve('stream-browserify'),
-            querystring: require.resolve('querystring-es3'),
             path: require.resolve('path-browserify'),
-            assert: require.resolve('assert-browserify'),
-            util: require.resolve('node-util'),
-            fs: require.resolve('browserify-fs')
+            buffer: require.resolve('buffer'),
+            process: require.resolve('process/browser')
           },
           symlinks: false
         },
-        target: 'node',
+        target: 'web',
         output: {
           path: path.resolve('./assets/bundles'),
           filename: 'browser.min.js',
@@ -94,7 +89,8 @@ class Compiler extends HTTPCompiler {
           }),
           new webpack.ProvidePlugin({
             Buffer: ['buffer', 'Buffer'],
-          }),
+            process: 'process/browser'
+          })
         ],
         watch: false
       }

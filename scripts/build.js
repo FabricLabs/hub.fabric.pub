@@ -5,6 +5,7 @@ require('@babel/register');
 const React = require('react');
 const ReactDOM = require('react-dom');
 const ReactDOMServer = require('react-dom/server');
+const webpack = require('webpack');
 
 // Settings
 const settings = require('../settings/local');
@@ -13,6 +14,7 @@ const settings = require('../settings/local');
 // const Compiler = require('@fabric/http/types/compiler');
 
 const Compiler = require('../types/compiler');
+const webpackConfig = require('../webpack.config');
 
 // Components
 const HubInterface = require('../components/HubInterface');
@@ -22,31 +24,7 @@ async function main (input = {}) {
   const site = new HubInterface(input);
   const compiler = new Compiler({
     document: site,
-    webpack: {
-      mode: settings.mode || 'development',
-      module: {
-        rules: [
-          {
-            test: /\.(js|jsx)$/,
-            exclude: /node_modules/,
-            use: {
-              loader: 'babel-loader',
-              options: {
-                presets: ['@babel/preset-env', '@babel/preset-react']
-              }
-            }
-          },
-          {
-            test: /\.css$/,
-            use: [
-              { loader: 'style-loader' },
-              { loader: 'css-loader' }
-            ]
-          }
-        ]
-      },
-      target: 'web'
-    },
+    webpack: webpackConfig,
     ...input
   });
 

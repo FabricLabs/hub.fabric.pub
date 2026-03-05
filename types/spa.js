@@ -36,6 +36,12 @@ class SPA extends FabricSPA {
     <script src="/scripts/jquery-3.4.1.js"></script>
     <script src="/semantic.min.js"></script>
     <!-- <link rel="icon" href="/images/sensemaker-icon.png" /> -->
+    <style>
+      body {
+        margin: 0;
+        padding: 0 1em;
+      }
+    </style>
   </head>
   <body>
     <div data-hash="${hash}" id="application-target">${html}</div>

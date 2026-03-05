@@ -633,7 +633,7 @@ class Bridge extends React.Component {
 
     const message = Message.fromVector(['SUBSCRIBE', path]);
     const messageBuffer = message.toBuffer();
-    this.sendMessage(messageBuffer);
+    this.sendSignedMessage(messageBuffer);
 
     this.state.subscriptions.add(path);
     console.debug('[BRIDGE]', 'Subscribed to:', path);
@@ -651,7 +651,7 @@ class Bridge extends React.Component {
 
     const message = Message.fromVector(['UNSUBSCRIBE', path]);
     const messageBuffer = message.toBuffer();
-    this.sendMessage(messageBuffer);
+    this.sendSignedMessage(messageBuffer);
 
     this.state.subscriptions.delete(path);
     console.debug('[BRIDGE]', 'Unsubscribed from:', path);
@@ -825,7 +825,7 @@ class Bridge extends React.Component {
 
     const message = Message.fromVector(['Ping', now.toString()]);
     const messageBuffer = message.toBuffer();
-    this.sendMessage(messageBuffer);
+    this.sendSignedMessage(messageBuffer);
   }
 
   /**
@@ -836,7 +836,49 @@ class Bridge extends React.Component {
     const buffer = message.toBuffer();
     console.debug('[BRIDGE]', 'JSONCall:', message);
     console.debug('[BRIDGE]', 'Sending network status request:', buffer);
-    this.sendMessage(buffer);
+    this.sendSignedMessage(buffer);
+  }
+
+  /**
+   * Request an updated peer list from the hub.
+   * This uses the ListPeers JSONCall method, which returns
+   * the same status shape as GetNetworkStatus (including peers).
+   */
+  sendListPeersRequest () {
+    const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'ListPeers', params: [] })]);
+    const buffer = message.toBuffer();
+    console.debug('[BRIDGE]', 'JSONCall:', message);
+    console.debug('[BRIDGE]', 'Sending ListPeers request:', buffer);
+    this.sendSignedMessage(buffer);
+  }
+
+  /**
+   * Send a request to add a peer.
+   * @param {Object} peer - Peer descriptor (e.g. { address }).
+   */
+  sendAddPeerRequest (peer = {}) {
+    try {
+      const payload = {
+        method: 'AddPeer',
+        params: [peer]
+      };
+
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      const buffer = message.toBuffer();
+      this.sendSignedMessage(buffer);
+
+      // After requesting a new peer, refresh the peer list so
+      // the UI reflects the updated peer set.
+      setTimeout(() => {
+        try {
+          this.sendListPeersRequest();
+        } catch (refreshError) {
+          console.error('[BRIDGE]', 'Error refreshing peer list after AddPeer:', refreshError);
+        }
+      }, 1000);
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending AddPeer request:', error);
+    }
   }
 }
 

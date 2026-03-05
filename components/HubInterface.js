@@ -39,10 +39,11 @@ class HubInterface extends React.Component {
       isAuthenticated: false,
       isLoading: true,
       modalLogOut: false,
-      loggedOut: false,
+      loggedOut: false
     };
 
     this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
+    this.responseCapture = this.responseCapture.bind(this);
 
     // Instantiate Bridge once here
     this.bridgeRef = React.createRef();
@@ -59,8 +60,40 @@ class HubInterface extends React.Component {
     console.debug('[HUB]', 'Component mounted!');
   }
 
+  componentWillUnmount () {
+    console.debug('[HUB]', 'Cleaning up...');
+  }
+
   handleBridgeStateUpdate (newState) {
+    console.log('handleBridgeStateUpdate', newState);
     this.setState(newState);
+  }
+
+  responseCapture (action) {
+    try {
+      if (!action || !action.content) return;
+
+      const payload = JSON.parse(action.content);
+
+      if (payload && payload.method === 'JSONCallResult') {
+        let status = null;
+
+        if (Array.isArray(payload.params) && payload.params.length > 0) {
+          const candidate = payload.params[payload.params.length - 1];
+          if (candidate && typeof candidate === 'object') {
+            status = candidate;
+          }
+        } else if (payload.result && typeof payload.result === 'object') {
+          status = payload.result;
+        }
+
+        if (status && this.props.bridgeNetworkStatusUpdate) {
+          this.props.bridgeNetworkStatusUpdate(status);
+        }
+      }
+    } catch (error) {
+      console.error('[HUB]', 'Error handling bridge response:', error);
+    }
   }
 
   render () {
@@ -73,23 +106,38 @@ class HubInterface extends React.Component {
             }
           `}
         </style>
-        <fabric-container id="react-application">{/* TODO: render string here */}</fabric-container>
-        <fabric-react-component id='fabric-hub-application' style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-          <Bridge ref={this.bridgeRef} debug={this.state.debug} onStateUpdate={this.handleBridgeStateUpdate} />
-          {(this.props.auth && this.props.auth.loading) ? (
-            <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-              <Loader active inline="centered" size='huge' />
-            </div>) : <BrowserRouter>
-            <Home
-              auth={this.props.auth}
-              fetchContract={this.props.fetchContract}
-              contracts={this.props.contracts}
-              bridge={this.bridgeRef.current}
-              state={this.state}
-              {...this.props}
+        <fabric-container id="react-application">
+          <fabric-react-component id='fabric-hub-application'>
+            <Bridge
+              ref={this.bridgeRef}
+              debug={this.state.debug}
+              onStateUpdate={this.handleBridgeStateUpdate}
+              responseCapture={this.responseCapture}
             />
-          </BrowserRouter>}
-        </fabric-react-component>
+            {(this.props.auth && this.props.auth.loading) ? (
+              <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <Loader active inline="centered" size='huge' />
+              </div>
+            ) : (
+              <BrowserRouter>
+                <Home
+                  auth={this.props.auth}
+                  fetchContract={this.props.fetchContract}
+                  contracts={this.props.contracts}
+                  bridge={this.props.bridge}
+                  onAddPeer={(peer) => {
+                    if (!peer || !this.bridgeRef || !this.bridgeRef.current) return;
+                    const bridgeInstance = this.bridgeRef.current;
+                    if (typeof bridgeInstance.sendAddPeerRequest === 'function') {
+                      bridgeInstance.sendAddPeerRequest(peer);
+                    }
+                  }}
+                  {...this.props}
+                />
+              </BrowserRouter>
+            )}
+          </fabric-react-component>
+        </fabric-container>
       </fabric-interface>
     )
   }

@@ -1,7 +1,8 @@
 const {
   BRIDGE_SYNC_REQUEST,
   BRIDGE_SYNC_SUCCESS,
-  BRIDGE_SYNC_FAILURE
+  BRIDGE_SYNC_FAILURE,
+  BRIDGE_NETWORK_STATUS_UPDATE
 } = require('../actions/bridgeActions');
 
 const initialState = {
@@ -19,6 +20,14 @@ function bridgeReducer (state = initialState, action) {
       return { ...state, loading: false, current: action.payload };
     case BRIDGE_SYNC_FAILURE:
       return { ...state, loading: false, error: action.payload };
+    case BRIDGE_NETWORK_STATUS_UPDATE:
+      return {
+        ...state,
+        current: {
+          ...state.current,
+          networkStatus: action.payload
+        }
+      };
     default:
       // console.warn('Unhandled action in bridge reducer:', action);
       return state;

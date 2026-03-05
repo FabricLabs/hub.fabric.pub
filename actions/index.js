@@ -29,6 +29,11 @@ const {
   searchGlobal
 } = require('../actions/searchActions');
 
+// ## Bridge Actions
+const {
+  bridgeNetworkStatusUpdate
+} = require('../actions/bridgeActions');
+
 module.exports = {
   fetchContract: fetchContract,
   fetchContracts: fetchContracts,
@@ -40,5 +45,6 @@ module.exports = {
   createDocument: createDocument,
   editDocument: editDocument,
   deleteDocument: deleteDocument,
-  searchGlobal: searchGlobal
+  searchGlobal: searchGlobal,
+  bridgeNetworkStatusUpdate: bridgeNetworkStatusUpdate
 };

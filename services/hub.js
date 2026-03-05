@@ -2,6 +2,8 @@
 
 // Dependencies
 const merge = require('lodash.merge');
+const fs = require('fs');
+const path = require('path');
 
 // Fabric Types
 const Chain = require('@fabric/core/types/chain'); // fabric chains
@@ -58,11 +60,16 @@ class Hub extends Service {
         port: 8080
       },
       routes: [
+        // TODO: define all resource routes at the Resource level
+        { method: 'POST', route: '/contracts', handler: ROUTES.contracts.create.bind(this) },
         { method: 'GET', route: '/contracts', handler: ROUTES.contracts.list.bind(this) },
         { method: 'GET', route: '/contracts/:id', handler: ROUTES.contracts.view.bind(this) },
-        { method: 'POST', route: '/contracts', handler: ROUTES.contracts.create.bind(this) },
+        { method: 'POST', route: '/documents', handler: ROUTES.documents.create.bind(this) },
+        { method: 'GET', route: '/documents', handler: ROUTES.documents.list.bind(this) },
+        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) },
         { method: 'POST', route: '/peers', handler: ROUTES.peers.create.bind(this) },
-        { method: 'GET', route: '/peers', handler: ROUTES.peers.list.bind(this) }
+        { method: 'GET', route: '/peers', handler: ROUTES.peers.list.bind(this) },
+        { method: 'GET', route: '/peers/:id', handler: ROUTES.peers.view.bind(this) }
       ],
       commitments: [],
       constraints: {
@@ -164,9 +171,6 @@ class Hub extends Service {
       hostname: this.settings.http.hostname,
       interface: this.settings.http.interface,
       port: this.settings.http.port,
-      middlewares: {
-        userIdentifier: this._userMiddleware.bind(this)
-      },
       // TODO: use Fabric Resources; routes and components will be defined there
       resources: {
         Contract: {
@@ -224,6 +228,8 @@ class Hub extends Service {
       status: 'PAUSED'
     };
 
+    this.buffers = {};
+
     return this;
   }
 
@@ -241,7 +247,6 @@ class Hub extends Service {
 
   // TODO: upstream to @fabric/http (deprecate, should already exist there)
   _addRoute (options) {
-    console.debug('Adding route:', options);
     this.http._addRoute(options.method, options.route, options.handler);
     return this;
   }
@@ -259,59 +264,125 @@ class Hub extends Service {
    * @returns {Hub} Instance of the {@link Hub}.
    */
   async start () {
-    await this.fs.start();
+    try {
+      // Listen for agent errors
+      this.agent.on('error', (err) => {
+        console.error('[HUB:AGENT:ERROR]', err && err.stack ? err.stack : err);
+      });
 
-    // Load prior state
-    const file = this.fs.readFile('STATE');
-    const state = (file) ? JSON.parse(file) : this.state;
+      this.agent.on('debug', (err) => {
+        console.debug('[HUB:AGENT:DEBUG]', err && err.stack ? err.stack : err);
+      });
 
-    // Assign properties
-    Object.assign(this._state.content, state);
+      // Listen for HTTP server errors
+      this.http.on('error', (err) => {
+        console.error('[HUB:HTTP:ERROR]', err && err.stack ? err.stack : err);
+      });
+      await this.fs.start();
 
-    // Contract deploy
-    console.debug('[HUB]', 'Contract ID:', this.contract.id);
-    console.debug('[HUB]', 'Contract State:', this.contract.state);
+      // Load prior state
+      const file = this.fs.readFile('STATE');
+      const state = (file) ? JSON.parse(file) : this.state;
 
-    // TODO: retrieve contract ID, add to local state
-    this.contract.deploy();
-    this.commit();
+      // Assign properties
+      Object.assign(this._state.content, state);
 
-    // Configure routes
-    this._addAllRoutes();
+      // Contract deploy
+      console.debug('[HUB]', 'Contract ID:', this.contract.id);
+      console.debug('[HUB]', 'Contract State:', this.contract.state);
 
-    // Bind event listeners
-    // this.trust(this.spa, 'FABRIC:SPA');
-    this.trust(this.http, 'FABRIC:HTTP');
-    this.trust(this.agent, 'FABRIC:AGENT');
+      // TODO: retrieve contract ID, add to local state
+      this.contract.deploy();
+      this.commit();
 
-    this.http._registerMethod('GetNetworkStatus', (...params) => {
-      const status = {
-        clock: this.http.clock,
-        contract: this.contract.id,
-        documents: this._state.documents,
-        network: {
-          address: this.http.agent.listenAddress,
-          listening: this.http.agent.listening
-        },
-        peers: this.http.agent.publicPeers,
-        state: this.http.state,
-        xpub: this._rootKey.xpub
+      // Load DEVELOPERS.md into buffer
+      const devMdPath = path.resolve(__dirname, '../DEVELOPERS.md');
+      try {
+        this.buffers.DEVELOPERS = fs.readFileSync(devMdPath, 'utf8');
+        console.log('[HUB] Loaded DEVELOPERS.md into buffer.');
+      } catch (err) {
+        this.buffers.DEVELOPERS = '# Not found';
+        console.warn('[HUB] DEVELOPERS.md not found:', devMdPath);
+      }
+
+      // Add API route for /api/developers
+      this.http._addRoute('GET', '/api/developers', (req, res) => {
+        const accept = req.headers['accept'] || '';
+        if (accept.includes('text/html')) {
+          res.setHeader('Content-Type', 'text/html');
+          res.send(`<html><body><pre>${this.buffers.DEVELOPERS.replace(/</g, '&lt;')}</pre></body></html>`);
+        } else if (accept.includes('application/json')) {
+          res.setHeader('Content-Type', 'application/json');
+          res.send({ content: this.buffers.DEVELOPERS });
+        } else {
+          res.setHeader('Content-Type', 'text/plain');
+          res.send(this.buffers.DEVELOPERS);
+        }
+      });
+
+      // Configure routes
+      this._addAllRoutes();
+
+      // Bind event listeners
+      // this.trust(this.spa, 'FABRIC:SPA');
+      this.trust(this.http, 'FABRIC:HTTP');
+      this.trust(this.agent, 'FABRIC:AGENT');
+
+      this.http._registerMethod('AddPeer', (...params) => {
+        const peer = params[0];
+        console.debug('adding peer:', peer);
+        this.agent._connect(peer.address);
+        // this.agent.connectTo(peer.address);
+        return { status: 'success' };
+      });
+
+      const buildNetworkStatus = () => {
+        console.debug('getting network status (settings):', this.http.agent.settings);
+        console.debug('getting network status (address):', this.http.agent.listenAddress);
+        return {
+          clock: this.http.clock,
+          contract: this.contract.id,
+          documents: this._state.documents,
+          network: {
+            address: this.http.agent.listenAddress,
+            listening: this.http.agent.listening
+          },
+          // Use the Peer service's view of the network so we include
+          // both known peers and their connection status.
+          peers: this.agent.publicPeers,
+          // settings: this.settings,
+          state: this.http.state,
+          xpub: this._rootKey.xpub
+        };
       };
 
-      return status;
-    });
+      this.http._registerMethod('GetNetworkStatus', (...params) => {
+        const status = buildNetworkStatus();
+        return status;
+      });
 
-    console.trace('[HUB]', 'Starting agent...', this.agent.settings);
-    await this.agent.start();
-    await this.http.start();
+      this.http._registerMethod('ListPeers', (...params) => {
+        // For the UI we return the same shape as GetNetworkStatus
+        // so the bridge/networkStatus wiring can remain consistent.
+        const status = buildNetworkStatus();
+        return status;
+      });
 
-    // Local State
-    this._state.status = 'STARTED';
+      console.trace('[HUB]', 'Starting agent...', this.agent.settings);
+      await this.agent.start();
+      await this.http.start();
 
-    // Alert message
-    await this.alert(`Hub HTTP service started.  Agent ID: ${this.id}`);
+      // Local State
+      this._state.status = 'STARTED';
 
-    return this;
+      // Alert message
+      await this.alert(`Hub HTTP service started.  Agent ID: ${this.id}`);
+
+      return this;
+    } catch (err) {
+      console.error('[HUB:STARTUP:ERROR]', err && err.stack ? err.stack : err);
+      throw err;
+    }
   }
 
   /**
@@ -326,65 +397,6 @@ class Hub extends Service {
     return this;
   }
 
-  _userMiddleware (req, res, next) {
-    // Initialize user object (null id = anonymous)
-    req.user = {
-      id: null
-    };
-
-    // TODO: use response signing (`X-Fabric-HTTP-Signature`, etc.)
-    // const ephemera = new Key();
-    let token = null;
-
-    // Does the request have a cookie?
-    if (req.headers.cookie) {
-      // has cookie, parse it
-      req.cookies = req.headers.cookie
-        .split(';')
-        .map((x) => x.trim().split(/=(.+)/))
-        .reduce((acc, curr) => {
-          acc[curr[0]] = curr[1];
-          return acc;
-        }, {});
-
-      token = req.cookies['token'];
-    }
-
-    // no cookie, has authorization header
-    if (!token && req.headers.authorization) {
-      if (this.settings.debug) console.debug('found authorization header:', req.headers.authorization);
-      const header = req.headers.authorization.split(' ');
-      if (header[0] == 'Bearer' && header[1]) {
-        token = header[1];
-      }
-    }
-
-    // read token
-    if (token) {
-      const parts = token.split('.');
-      if (parts && parts.length == 3) {
-        // Named parts
-        const headers = parts[0]; // TODO: check headers
-        const payload = parts[1];
-        const signature = parts[2]; // TODO: check signature
-
-        // Decode the payload
-        const inner = Token.base64UrlDecode(payload);
-
-        try {
-          const obj = JSON.parse(inner);
-          if (this.settings.audit) this.emit('debug', `[AUTH] Bearer Token: ${JSON.stringify(obj)}`);
-          req.user.id = obj.sub;
-          req.user.role = obj.role || 'asserted';
-          req.user.state = obj.state || {};
-        } catch (exception) {
-          console.error('Invalid Bearer Token:', inner)
-        }
-      }
-    }
-
-    next();
-  }
 }
 
 module.exports = Hub;
