@@ -47,8 +47,9 @@ module.exports = {
     // (like elliptic via browserify-sign) can resolve @noble/curves regardless
     // of subpath form used in requires.
     alias: {
-      '@noble/curves/secp256k1': path.resolve(__dirname, 'node_modules/@noble/curves/secp256k1.js'),
-      '@noble/curves/secp256k1.js': path.resolve(__dirname, 'node_modules/@noble/curves/secp256k1.js'),
+      // Shim ensures secp256k1 is loaded via relative require so Webpack wraps it as CJS
+      '@noble/curves/secp256k1': path.resolve(__dirname, 'shims/noble-secp256k1.js'),
+      '@noble/curves/secp256k1.js': path.resolve(__dirname, 'shims/noble-secp256k1.js'),
       // NIST curves shim for noble-curves v1.x
       '@noble/curves/nist': path.resolve(__dirname, 'shims/noble-nist.js'),
       '@noble/curves/nist.js': path.resolve(__dirname, 'shims/noble-nist.js'),
