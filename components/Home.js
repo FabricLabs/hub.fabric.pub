@@ -27,6 +27,7 @@ class Home extends React.Component {
     const networkStatus = isNetworkStatus(candidate) ? candidate : (isNetworkStatus(fallback) ? fallback : null);
     const network = networkStatus && networkStatus.network;
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
+    const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
     const state = networkStatus && networkStatus.state;
     const isOnline = !!networkStatus;
     const publishedMap = networkStatus && networkStatus.publishedDocuments && typeof networkStatus.publishedDocuments === 'object'
@@ -41,54 +42,58 @@ class Home extends React.Component {
       });
     return (
       <fabric-hub-home class='fade-in'>
-        {networkStatus ? (
-          <Card fluid>
-            <Card.Content>
-              <Card.Header>
-                Network{' '}
-                <Label size='small' color={isOnline ? 'green' : 'grey'}>
-                  {isOnline ? 'Online' : 'Offline'}
-                </Label>
-              </Card.Header>
-              <Card.Meta>
-                <span>
-                  <strong>State:</strong> {(state && state.status) || 'unknown'}
-                </span>
-              </Card.Meta>
-              <Card.Description>
-                {network && network.address ? (
-                  <div style={{ marginBottom: '1em' }}>
-                    <strong>Address:</strong> {network.address}
+        <Card fluid>
+          <Card.Content>
+            {networkStatus ? (
+              <>
+                <Card.Header>
+                  Bridge{' '}
+                  <Label size='small' color={isOnline ? 'green' : 'grey'}>
+                    {isOnline ? 'Online' : 'Offline'}
+                  </Label>
+                </Card.Header>
+                <Card.Meta>
+                  <span>
+                    <strong>State:</strong> {(state && state.status) || 'unknown'}
+                  </span>
+                </Card.Meta>
+                <Card.Description>
+                  {network && network.address ? (
+                    <div style={{ marginBottom: '1em' }}>
+                      <strong>Address:</strong> {network.address}
+                    </div>
+                  ) : null}
+                  <div
+                    style={{
+                      marginBottom: '0.75em',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.75em',
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    <div>
+                      <strong>Bridge Peers:</strong> {peers.length}{' '}
+                      <span style={{ color: '#777' }}>·</span>{' '}
+                      <strong>WebRTC Peers:</strong> {webrtcPeers.length}{' '}
+                      <span style={{ color: '#777' }}>·</span>{' '}
+                      <strong>Documents:</strong> {published.length}
+                    </div>
                   </div>
-                ) : null}
-                <div
-                  style={{
-                    marginBottom: '0.75em',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '0.75em',
-                    flexWrap: 'wrap'
-                  }}
-                >
                   <div>
-                    <strong>Peers:</strong> {peers.length}{' '}
-                    <span style={{ color: '#777' }}>·</span>{' '}
-                    <strong>Published documents:</strong> {published.length}
+                    <h3>Debug</h3>
+                    <pre>{JSON.stringify(current && typeof current.getGlobalState === 'function' ? current.getGlobalState() : {}, null, 2)}</pre>
                   </div>
-                </div>
-                <div>
-                  <h3>Debug</h3>
-                  <pre>{JSON.stringify(current && typeof current.getGlobalState === 'function' ? current.getGlobalState() : {}, null, 2)}</pre>
-                </div>
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : (
-          <p>Loading network status...</p>
-        )}
+                </Card.Description>
+              </>
+            ) : (
+              <p>Loading network status...</p>
+            )}
+          </Card.Content>
+        </Card>
         <Segment>
-          <Header as='h2'>Published Documents</Header>
+          <Header as='h2'>Library</Header>
           <Card fluid>
             <Card.Content>
               <Card.Description>

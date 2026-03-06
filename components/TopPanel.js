@@ -35,10 +35,10 @@ function TopPanel (props) {
     return `${head}…${tail}`;
   };
 
-  // Treat any non-null auth object as "authenticated" so we never
-  // accidentally trigger host onLogin handlers that might log out.
-  const isAuthed = !!auth;
-  const isLockedState = !isAuthed && hasLocalIdentity && hasLockedIdentity;
+  // Authenticated = have identity with private key (can sign/encrypt).
+  // Locked = have identity but private key is locked (can unlock with password).
+  const isAuthed = !!(auth && (auth.xprv || auth.private));
+  const isLockedState = hasLocalIdentity && hasLockedIdentity;
   const identityLabel = (() => {
     if (!auth) return 'Login';
     if (auth.username) return auth.username;
@@ -96,6 +96,14 @@ function TopPanel (props) {
             {hubAddress}
           </Label>
         ) : null}
+        {hasLocalIdentity && (
+          <Icon
+            name={hasLockedIdentity ? 'lock' : 'unlock'}
+            color={hasLockedIdentity ? 'orange' : 'green'}
+            title={hasLockedIdentity ? 'Identity locked' : 'Identity unlocked'}
+            style={{ marginRight: '0.25em' }}
+          />
+        )}
         <Button
           size="small"
           basic={!isAuthed && !isLockedState}

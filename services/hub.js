@@ -397,6 +397,54 @@ class Hub extends Service {
         }
       });
 
+      // Send a file to a peer via P2P_FILE_SEND. Params: (idOrAddress, document)
+      // document: { id, name, mime, size, contentBase64 } or { id } (hub fetches content)
+      this.http._registerMethod('SendPeerFile', async (...params) => {
+        const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
+        const docParam = params[1] || params[0];
+        if (!idOrAddress) return { status: 'error', message: 'peer id/address required' };
+        const address = typeof this.agent._resolveToAddress === 'function'
+          ? this.agent._resolveToAddress(idOrAddress)
+          : idOrAddress;
+        if (!address || !this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
+
+        let doc = docParam && typeof docParam === 'object' ? docParam : null;
+        const docId = doc && (doc.id || docParam);
+        if (!docId) return { status: 'error', message: 'document id required' };
+
+        try {
+          if (!doc.contentBase64 && docId) {
+            const raw = this.fs.readFile(`documents/${docId}.json`);
+            if (!raw) return { status: 'error', message: 'document not found' };
+            doc = JSON.parse(raw);
+          }
+          if (!doc || !doc.contentBase64) return { status: 'error', message: 'document content required' };
+
+          const filePayload = {
+            type: 'P2P_FILE_SEND',
+            actor: { id: this.agent.identity.id },
+            object: {
+              id: doc.id,
+              name: doc.name,
+              mime: doc.mime || 'application/octet-stream',
+              size: doc.size,
+              sha256: doc.sha256 || doc.id,
+              contentBase64: doc.contentBase64,
+              created: doc.created || new Date().toISOString(),
+              target: address
+            }
+          };
+
+          const vector = ['P2P_FILE_SEND', JSON.stringify(filePayload)];
+          const msg = Message.fromVector(vector).signWithKey(this.agent.key);
+          this.agent.connections[address]._writeFabric(msg.toBuffer());
+          return { status: 'success' };
+        } catch (err) {
+          console.error('[HUB] SendPeerFile error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'send failed' };
+        }
+      });
+
       // Submit a chat message for broadcast to all connected clients AND all Fabric nodes.
       // Params: (body: { text: string, clientId?: string, actor?: { id } })
       this.http._registerMethod('SubmitChatMessage', (...params) => {
@@ -593,6 +641,8 @@ class Hub extends Service {
           },
           // Use the Peer's persistent known-peers list (scores, metadata) with current status.
           peers: this.agent.knownPeers,
+          // WebRTC peers connected via PeerJS signaling at /services/peering
+          webrtcPeers: this.http.webrtcPeerList || [],
           // settings: this.settings,
           state: this.http.state,
           xpub: this._rootKey.xpub
@@ -630,6 +680,10 @@ class Hub extends Service {
 
       this.agent.on('connections:open', pushNetworkStatus);
       this.agent.on('connections:close', pushNetworkStatus);
+
+      // Push network status when WebRTC peers connect/disconnect
+      this.http.on('webrtc:connection', pushNetworkStatus);
+      this.http.on('webrtc:disconnect', pushNetworkStatus);
 
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
       // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
@@ -693,6 +747,67 @@ class Hub extends Service {
         };
       });
 
+      // WebRTC Peer Mesh Management
+      // Register a browser client's WebRTC peer ID for peer discovery
+      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
+        const info = params[0] || {};
+        const peerId = info.peerId;
+        if (!peerId) return { status: 'error', message: 'peerId required' };
+
+        console.debug('[HUB] RegisterWebRTCPeer:', peerId);
+
+        // The peer is already tracked by the PeerServer coordinator events
+        // This method allows clients to provide additional metadata
+        const existing = this.http.webrtcPeers.get(peerId);
+        if (existing) {
+          existing.metadata = info.metadata || existing.metadata;
+          existing.registeredAt = Date.now();
+          this.http.webrtcPeers.set(peerId, existing);
+        }
+
+        pushNetworkStatus();
+        return { status: 'success', peerId };
+      });
+
+      // List available WebRTC peers for mesh connections
+      this.http._registerMethod('ListWebRTCPeers', (...params) => {
+        const options = params[0] || {};
+        const excludeSelf = options.excludeSelf !== false;
+        const requestingPeerId = options.peerId;
+
+        const peers = this.http.webrtcPeerList || [];
+        const filtered = excludeSelf && requestingPeerId
+          ? peers.filter(p => p.id !== requestingPeerId)
+          : peers;
+
+        console.debug('[HUB] ListWebRTCPeers:', filtered.length, 'peers available');
+
+        return {
+          type: 'ListWebRTCPeersResult',
+          peers: filtered.map(p => ({
+            id: p.id,
+            peerId: p.id,
+            connectedAt: p.connectedAt,
+            status: p.status,
+            metadata: p.metadata
+          }))
+        };
+      });
+
+      // Track when browsers establish direct WebRTC connections
+      this.http._registerMethod('WebRTCPeerConnected', (...params) => {
+        const info = params[0] || {};
+        console.debug('[HUB] WebRTCPeerConnected:', info.peerId, 'direction:', info.direction);
+        return { status: 'success' };
+      });
+
+      // Track when browsers disconnect from direct WebRTC connections
+      this.http._registerMethod('WebRTCPeerDisconnected', (...params) => {
+        const info = params[0] || {};
+        console.debug('[HUB] WebRTCPeerDisconnected:', info.peerId);
+        return { status: 'success' };
+      });
+
       // Broadcast chat messages received from the P2P network to UI clients.
       // The UI Bridge will parse `ChatMessage` and append it to client-side state.
       this.agent.on('chat', (chat) => {
@@ -708,7 +823,34 @@ class Hub extends Service {
         }
       });
 
-      console.trace('[HUB]', 'Starting agent...', this.agent.settings);
+      // Handle files received from peers via P2P_FILE_SEND. Store and broadcast to clients.
+      this.agent.on('file', async ({ message, origin }) => {
+        try {
+          const obj = message && message.object;
+          if (!obj || !obj.contentBase64 || !obj.id) return;
+          const doc = {
+            id: obj.id,
+            name: obj.name || 'received',
+            mime: obj.mime || 'application/octet-stream',
+            size: obj.size,
+            sha256: obj.sha256 || obj.id,
+            contentBase64: obj.contentBase64,
+            created: obj.created || new Date().toISOString(),
+            receivedFrom: origin && origin.name
+          };
+          await this.fs.publish(`documents/${doc.id}.json`, doc);
+          this._state.documents = this._state.documents || {};
+          this._state.documents[doc.id] = { id: doc.id, sha256: doc.sha256, name: doc.name, mime: doc.mime, size: doc.size, created: doc.created };
+          if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+          const payload = JSON.stringify({ type: 'P2P_FILE_SEND', object: doc });
+          const msg = Message.fromVector(['FileMessage', payload]);
+          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
+        } catch (err) {
+          console.error('[HUB] Failed to handle received file:', err);
+        }
+      });
+
       await this.agent.start();
       await this.http.start();
 

@@ -41,8 +41,31 @@ const {
   Header,
   Icon,
   Input,
-  Loader
-  } = require('semantic-ui-react');
+  Loader,
+  Segment
+} = require('semantic-ui-react');
+
+/**
+ * Login wall: shown when user tries to access a gated route without a local identity.
+ */
+function LoginGate (props) {
+  const onLogin = props && typeof props.onLogin === 'function' ? props.onLogin : null;
+  return (
+    <Segment placeholder style={{ marginTop: '2em', textAlign: 'center' }}>
+      <Header icon>
+        <Icon name="lock" />
+        Log in required
+      </Header>
+      <p style={{ color: '#666', marginBottom: '1em' }}>
+        Create or restore a local identity to access this feature.
+      </p>
+      <Button primary onClick={() => onLogin && onLogin()}>
+        <Icon name="user circle" />
+        Log in
+      </Button>
+    </Segment>
+  );
+}
 
 /**
  * The Hub UI.
@@ -73,12 +96,13 @@ class HubInterface extends React.Component {
         const raw = window.localStorage.getItem('fabric.identity.local');
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (parsed && parsed.xprv) {
+          if (parsed && parsed.xprv && !parsed.passwordProtected) {
             try {
               const ident = new Identity({ xprv: parsed.xprv });
               initialLocalIdentity = {
                 id: ident.id,
-                xpub: ident.key.xpub
+                xpub: ident.key.xpub,
+                xprv: parsed.xprv
               };
             } catch (e) {}
           } else if (parsed && parsed.xpub) {
@@ -197,11 +221,9 @@ class HubInterface extends React.Component {
   }
 
   render () {
-    const networkStatus = this.state && this.state.networkStatus ? this.state.networkStatus : null;
-    const network = networkStatus && networkStatus.network ? networkStatus.network : null;
-    const nodePubkey = network
-      ? (network.pubkey || network.id || network.address || '')
-      : '';
+    // Prefer Bridge ref (live from WebSocket), then Redux, then local state
+    const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
+    const nodePubkey = (bridgeInstance && typeof bridgeInstance.getNodePubkey === 'function' && bridgeInstance.getNodePubkey());
 
     return (
       <fabric-interface id={this.id} class="fabric-site">
@@ -216,6 +238,7 @@ class HubInterface extends React.Component {
           <fabric-react-component id='fabric-hub-application'>
             <Bridge
               ref={this.bridgeRef}
+              auth={this.props.auth || this.state.uiLocalIdentity}
               debug={this.state.debug}
               hubAddress={this.state.uiHubAddress}
               onStateUpdate={this.handleBridgeStateUpdate}
@@ -261,6 +284,11 @@ class HubInterface extends React.Component {
                       }}
                       onLockStateChange={(locked) => {
                         this.setState({ uiHasLockedIdentity: !!locked });
+                      }}
+                      onForgetIdentity={() => {
+                        if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
+                          this.bridgeRef.current.clearAllDocuments();
+                        }
                       }}
                     />
                   </Modal.Content>
@@ -387,6 +415,20 @@ class HubInterface extends React.Component {
                             bridgeInstance.sendSetPeerNicknameRequest(address, nickname);
                           }
                         }}
+                        onDiscoverWebRTCPeers={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.discoverAndConnectToPeers === 'function') {
+                            bridgeInstance.discoverAndConnectToPeers();
+                          }
+                        }}
+                        onRepublishWebRTCOffer={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.publishWebRTCOffer === 'function') {
+                            bridgeInstance.publishWebRTCOffer();
+                          }
+                        }}
                         {...this.props}
                       />
                     )}
@@ -447,11 +489,26 @@ class HubInterface extends React.Component {
                     element={(
                       <DocumentList
                         bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
                         onListDocuments={() => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
                           if (typeof bridgeInstance.sendListDocumentsRequest === 'function') {
                             bridgeInstance.sendListDocumentsRequest();
+                          }
+                        }}
+                        onAddLocalDocument={(doc) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.addLocalDocument === 'function') {
+                            bridgeInstance.addLocalDocument(doc);
+                          }
+                        }}
+                        onPublishLocalDocument={(doc) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendPublishDocumentRequest === 'function') {
+                            bridgeInstance.sendPublishDocumentRequest(doc.id);
                           }
                         }}
                         onCreateDocument={(doc) => {
@@ -476,6 +533,13 @@ class HubInterface extends React.Component {
                           if (typeof bridgeInstance.sendGetDocumentRequest === 'function') {
                             bridgeInstance.sendGetDocumentRequest(id);
                           }
+                        }}
+                        onGetDecryptedContent={(id) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return null;
+                          const bridgeInstance = this.bridgeRef.current;
+                          return typeof bridgeInstance.getDecryptedDocumentContent === 'function'
+                            ? bridgeInstance.getDecryptedDocumentContent(id)
+                            : null;
                         }}
                         onPublishDocument={(id) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;

@@ -2,16 +2,21 @@
 
 const path = require('path');
 const webpack = require('webpack');
+const TerserPlugin = require('terser-webpack-plugin');
 
 module.exports = {
-  mode: 'production',
+  mode: 'development',
   devtool: 'eval-source-map',
   entry: './scripts/browser.js',
+  // Sequential processing to avoid intermittent race conditions (concatenateModules
+  // is already disabled for similar reasons with @msgpack/msgpack). Trades build speed for reliability.
+  parallelism: 1,
   output: {
     path: path.resolve(__dirname, 'assets/bundles'),
     filename: 'browser.min.js',
     publicPath: '/bundles/'
   },
+  cache: false,
   experiments: {
     asyncWebAssembly: true
   },
@@ -19,7 +24,10 @@ module.exports = {
     // Disable module concatenation to avoid intermittent "Cannot read properties of undefined (reading 'module')"
     // when bundling ESM packages like @msgpack/msgpack via peerjs
     concatenateModules: false,
-    minimize: true
+    minimize: true,
+    minimizer: [
+      new TerserPlugin({ parallel: false })
+    ]
   },
   module: {
     rules: [
@@ -68,11 +76,9 @@ module.exports = {
       'node:crypto': require.resolve('crypto-browserify'),
       // Use browser build of react-dom/server (avoids TextEncoder error from Node build)
       'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js'),
-      // Shim ensures secp256k1 loads with proper CJS wrapper (avoids "exports is not defined" in production)
-      '@noble/curves/secp256k1': path.resolve(__dirname, 'shims/noble-secp256k1.js'),
-      '@noble/curves/secp256k1.js': path.resolve(__dirname, 'shims/noble-secp256k1.js'),
-      // Raw CJS file for shim to require; separate alias avoids circular resolution
-      'noble-secp256k1-raw': path.resolve(__dirname, 'node_modules/@noble/curves/secp256k1.js'),
+      // Use ESM build to avoid CJS "exports is not defined" (CJS file uses exports at top level)
+      '@noble/curves/secp256k1': path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js'),
+      '@noble/curves/secp256k1.js': path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js'),
       // NIST curves shim for noble-curves v1.x
       '@noble/curves/nist': path.resolve(__dirname, 'shims/noble-nist.js'),
       '@noble/curves/nist.js': path.resolve(__dirname, 'shims/noble-nist.js'),
@@ -135,7 +141,12 @@ module.exports = {
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],
       process: 'process/browser'
-    })
+    }),
+    // Force ESM build for secp256k1 regardless of resolution path (avoids CJS "exports is not defined")
+    new webpack.NormalModuleReplacementPlugin(
+      /[\\/]@noble[\\/]curves[\\/]secp256k1(\.js)?$/,
+      path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js')
+    )
   ],
   watch: true
 };

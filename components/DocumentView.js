@@ -20,6 +20,8 @@ function DocumentDetail (props) {
   const id = encoded ? decodeURIComponent(encoded) : '';
 
   const [doc, setDoc] = React.useState(null);
+  const [decryptedContent, setDecryptedContent] = React.useState(null);
+  const [unlocked, setUnlocked] = React.useState(false);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
@@ -31,29 +33,43 @@ function DocumentDetail (props) {
       const gs = event && event.detail && event.detail.globalState;
       if (!gs || !gs.documents) return;
       const candidate = gs.documents[id];
-      if (candidate) setDoc(candidate);
+      if (candidate) {
+        setDoc(candidate);
+        setDecryptedContent(null);
+        setUnlocked(false);
+      }
     };
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
   }, [id]);
 
+  // Decrypt only when user clicks Unlock (for encrypted docs)
+  const handleUnlock = React.useCallback(() => {
+    if (!doc || decryptedContent !== null) return;
+    const raw = doc.contentBase64 || (typeof props.onGetDecryptedContent === 'function' && props.onGetDecryptedContent(id));
+    if (raw) setDecryptedContent(raw);
+    setUnlocked(true);
+  }, [doc, id, decryptedContent, props.onGetDecryptedContent]);
+
+  const isEncrypted = !!(doc && doc.contentEncrypted);
   const name = (doc && doc.name) || id;
   const mime = (doc && doc.mime) || 'application/octet-stream';
   const created = doc && doc.created ? new Date(doc.created).toLocaleString() : '';
   const publishedAt = doc && doc.published ? new Date(doc.published).toLocaleString() : '';
 
+  const contentBase64 = doc && (doc.contentBase64 || decryptedContent);
   let downloadHref = null;
-  if (doc && doc.contentBase64) {
-    downloadHref = `data:${mime};base64,${doc.contentBase64}`;
+  if (contentBase64) {
+    downloadHref = `data:${mime};base64,${contentBase64}`;
   }
 
   // Text preview
   let text = null;
-  if (doc && doc.contentBase64) {
+  if (contentBase64) {
     const looksText = (mime && mime.startsWith('text/')) || /\.(md|txt|json|js|ts|html|css|log)$/i.test(name || '');
     if (looksText) {
       try {
-        text = atob(doc.contentBase64);
+        text = atob(contentBase64);
       } catch (e) {}
     }
   }
@@ -67,6 +83,12 @@ function DocumentDetail (props) {
             Back
           </Button>
           <span>{name}</span>
+          {isEncrypted && (
+            <Label size="small" color="green" title="Encrypted with your key">
+              <Icon name="lock" />
+              Encrypted
+            </Label>
+          )}
           {doc && doc.published && (
             <Label size="small" color="blue" title={publishedAt ? `Published: ${publishedAt}` : 'Published'}>
               <Icon name="bullhorn" />
@@ -86,6 +108,14 @@ function DocumentDetail (props) {
               <div><strong>MIME:</strong> {mime}</div>
               <div><strong>Size:</strong> {doc && doc.size != null ? `${doc.size} bytes` : ''}</div>
               <div><strong>SHA-256:</strong> <code>{doc && (doc.sha256 || doc.id) ? (doc.sha256 || doc.id) : id}</code></div>
+              {isEncrypted && !contentBase64 && (
+                <div style={{ marginTop: '0.5em' }}>
+                  <Button size="small" onClick={handleUnlock} title="Decrypt and show content">
+                    <Icon name="unlock" />
+                    Unlock
+                  </Button>
+                </div>
+              )}
             </Card.Description>
           </Card.Content>
           <Card.Content extra>
@@ -128,6 +158,12 @@ function DocumentDetail (props) {
           </Card.Content>
         </Card>
 
+        {isEncrypted && !contentBase64 && (
+          <Segment secondary style={{ marginTop: '1em' }}>
+            <Header as="h3">Contents</Header>
+            <p style={{ color: '#666' }}>Encrypted. Click Unlock above to decrypt and view.</p>
+          </Segment>
+        )}
         {text != null && (
           <Segment style={{ marginTop: '1em' }}>
             <Header as="h3">Contents</Header>

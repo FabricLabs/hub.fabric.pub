@@ -16,7 +16,7 @@ const {
 
 class PeersPage extends React.Component {
   render () {
-    const { bridge, onAddPeer, onRefreshPeers, onDisconnectPeer, onSendPeerMessage, onSetPeerNickname } = this.props;
+    const { bridge, onAddPeer, onRefreshPeers, onDisconnectPeer, onSendPeerMessage, onSetPeerNickname, onDiscoverWebRTCPeers, onRepublishWebRTCOffer } = this.props;
     const current = bridge && bridge.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
@@ -26,6 +26,19 @@ class PeersPage extends React.Component {
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
     const state = networkStatus && networkStatus.state;
     const isOnline = !!networkStatus;
+
+    // WebRTC peers from the hub's PeerServer signaling
+    const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
+
+    // Local browser WebRTC connections (browser-to-browser)
+    const localWebrtcPeers = (current && typeof current.localWebrtcPeers !== 'undefined')
+      ? current.localWebrtcPeers
+      : [];
+
+    // WebRTC mesh status
+    const meshStatus = (current && typeof current.webrtcMeshStatus !== 'undefined')
+      ? current.webrtcMeshStatus
+      : null;
 
     return (
       <fabric-hub-peers class='fade-in'>
@@ -44,7 +57,7 @@ class PeersPage extends React.Component {
             <Card fluid>
               <Card.Content>
                 <Card.Header>
-                  Network{' '}
+                  Bridge{' '}
                   <Label size='small' color={isOnline ? 'green' : 'grey'}>
                     {isOnline ? 'Online' : 'Offline'}
                   </Label>
@@ -139,6 +152,176 @@ class PeersPage extends React.Component {
           ) : (
             <p>Loading network status...</p>
           )}
+
+          {/* WebRTC Peers Section */}
+          <Card fluid style={{ marginTop: '1em' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name='video' />
+                WebRTC Peers{' '}
+                <Label size='small' color={webrtcPeers.length > 0 ? 'blue' : 'grey'}>
+                  {webrtcPeers.length} via signaling
+                </Label>
+                {localWebrtcPeers.length > 0 && (
+                  <Label size='small' color='teal' style={{ marginLeft: '0.5em' }}>
+                    {localWebrtcPeers.length} mesh
+                  </Label>
+                )}
+              </Card.Header>
+              <Card.Meta>
+                {meshStatus ? (
+                  <div style={{ display: 'flex', gap: '1em', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span>
+                      <strong>Your ID:</strong> <code style={{ fontSize: '0.85em' }}>{meshStatus.peerId || 'initializing...'}</code>
+                    </span>
+                    <span>
+                      <strong>Status:</strong> {meshStatus.ready ? 'Ready' : 'Initializing'}
+                    </span>
+                    <span>
+                      <strong>Mesh:</strong> {meshStatus.connected}/{meshStatus.maxPeers} connected
+                      {meshStatus.connecting > 0 && `, ${meshStatus.connecting} connecting`}
+                    </span>
+                  </div>
+                ) : (
+                  <span>
+                    Peers connected via WebRTC signaling at <code>/services/peering</code>
+                  </span>
+                )}
+              </Card.Meta>
+              <Card.Description>
+                {meshStatus && (
+                  <div style={{ marginBottom: '1em', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+                    {typeof onRepublishWebRTCOffer === 'function' && (
+                      <Button
+                        size='small'
+                        basic
+                        onClick={onRepublishWebRTCOffer}
+                        title='Republish your peer offer to the signaling server'
+                      >
+                        <Icon name='refresh' />
+                        Republish Offer
+                      </Button>
+                    )}
+                    {meshStatus.ready && meshStatus.slotsAvailable > 0 && typeof onDiscoverWebRTCPeers === 'function' && (
+                      <>
+                        <Button
+                          size='small'
+                          primary
+                          onClick={onDiscoverWebRTCPeers}
+                          title={`Discover and connect to WebRTC peers (${meshStatus.slotsAvailable} slots available)`}
+                        >
+                          <Icon name='search' />
+                          Discover Peers
+                        </Button>
+                        <span style={{ color: '#666', fontSize: '0.9em' }}>
+                          {meshStatus.slotsAvailable} slot{meshStatus.slotsAvailable !== 1 ? 's' : ''} available
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
+                {webrtcPeers.length === 0 && localWebrtcPeers.length === 0 ? (
+                  <p style={{ color: '#666', fontStyle: 'italic' }}>
+                    No WebRTC peers connected. Peers will appear here when browsers connect via PeerJS signaling.
+                  </p>
+                ) : (
+                  <>
+                    {webrtcPeers.length > 0 && (
+                      <>
+                        <div style={{ marginBottom: '0.5em' }}>
+                          <strong>Hub Signaling Peers:</strong>
+                        </div>
+                        <List size='small' divided relaxed>
+                          {webrtcPeers.map((peer, idx) => {
+                            const id = peer && (peer.id || `webrtc-${idx}`);
+                            const status = (peer && peer.status) || 'connected';
+                            const isConnected = status === 'connected';
+                            const connectedAt = peer && peer.connectedAt;
+                            return (
+                              <List.Item key={id}>
+                                <List.Icon name='wifi' color={isConnected ? 'green' : 'grey'} verticalAlign='middle' />
+                                <List.Content>
+                                  <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+                                    <code style={{ fontSize: '0.9em' }}>{id}</code>
+                                    <Label size='tiny' color={isConnected ? 'green' : 'grey'} horizontal>
+                                      {isConnected ? (
+                                        <><Icon name='check circle' /> Connected</>
+                                      ) : (
+                                        <><Icon name='minus circle' /> {status}</>
+                                      )}
+                                    </Label>
+                                  </List.Header>
+                                  {connectedAt && (
+                                    <List.Description style={{ fontSize: '0.85em', color: '#666' }}>
+                                      Connected: {new Date(connectedAt).toLocaleString()}
+                                    </List.Description>
+                                  )}
+                                </List.Content>
+                              </List.Item>
+                            );
+                          })}
+                        </List>
+                      </>
+                    )}
+
+                    {localWebrtcPeers.length > 0 && (
+                      <>
+                        <div style={{ marginTop: webrtcPeers.length > 0 ? '1em' : 0, marginBottom: '0.5em' }}>
+                          <strong>Local Browser Connections:</strong>
+                        </div>
+                        <List size='small' divided relaxed>
+                          {localWebrtcPeers.map((peer, idx) => {
+                            const id = peer && (peer.id || `local-${idx}`);
+                            const status = (peer && peer.status) || 'unknown';
+                            const isConnected = status === 'connected';
+                            const direction = peer && peer.direction;
+                            const connectedAt = peer && peer.connectedAt;
+                            return (
+                              <List.Item key={id}>
+                                <List.Icon
+                                  name={direction === 'inbound' ? 'arrow down' : 'arrow up'}
+                                  color={isConnected ? 'teal' : 'grey'}
+                                  verticalAlign='middle'
+                                  title={direction === 'inbound' ? 'Inbound connection' : 'Outbound connection'}
+                                />
+                                <List.Content>
+                                  <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+                                    <code style={{ fontSize: '0.9em' }}>{id}</code>
+                                    <Label size='tiny' color={isConnected ? 'teal' : 'grey'} horizontal>
+                                      {isConnected ? (
+                                        <><Icon name='check circle' /> Connected</>
+                                      ) : (
+                                        <><Icon name='minus circle' /> {status}</>
+                                      )}
+                                    </Label>
+                                    {direction && (
+                                      <Label size='tiny' basic horizontal title={`${direction} connection`}>
+                                        {direction === 'inbound' ? 'Inbound' : 'Outbound'}
+                                      </Label>
+                                    )}
+                                  </List.Header>
+                                  {connectedAt && (
+                                    <List.Description style={{ fontSize: '0.85em', color: '#666' }}>
+                                      Connected: {new Date(connectedAt).toLocaleString()}
+                                    </List.Description>
+                                  )}
+                                  {peer.error && (
+                                    <List.Description style={{ fontSize: '0.85em', color: '#b00' }}>
+                                      Error: {peer.error}
+                                    </List.Description>
+                                  )}
+                                </List.Content>
+                              </List.Item>
+                            );
+                          })}
+                        </List>
+                      </>
+                    )}
+                  </>
+                )}
+              </Card.Description>
+            </Card.Content>
+          </Card>
       </fabric-hub-peers>
     );
   }

@@ -39,7 +39,9 @@ class Bridge extends React.Component {
       secure: window.location.protocol === 'https:',
       debug: false,
       tickrate: 250,
-      signingKey: props.auth ? new Key(props.auth) : null
+      signingKey: props.auth ? new Key(props.auth) : null,
+      maxWebrtcPeers: 5, // Maximum number of WebRTC peer connections to maintain
+      webrtcPeerDiscoveryDelay: 2000 // Delay before discovering peers (ms)
     }, props);
 
     // Optional override via a single hub address string.
@@ -80,6 +82,10 @@ class Bridge extends React.Component {
     this.webrtcConnection = null;
     this._webrtcConnected = false;
     this.peerId = null;
+    this.webrtcPeers = new Map(); // Track all WebRTC peer connections
+    this._webrtcReady = false; // True once PeerJS peer is open and ready
+    this._peerDiscoveryTimer = null; // Timer for peer discovery after startup
+    this._connectingPeers = new Set(); // Track peers we're currently connecting to
 
     // Initialize key if provided
     if (props.key) {
@@ -112,6 +118,30 @@ class Bridge extends React.Component {
       } catch (e) {
         console.warn('[BRIDGE]', 'Could not restore messages from storage:', e);
       }
+
+      // Restore documents (unified store: all docs with content; publish adds ref to hub index)
+      try {
+        let docs = {};
+        const rawDocs = window.localStorage.getItem('fabric:documents');
+        if (rawDocs) {
+          const parsed = JSON.parse(rawDocs);
+          if (parsed && typeof parsed === 'object') docs = parsed;
+        }
+        // Migrate from legacy localDocuments into documents
+        const rawLocal = window.localStorage.getItem('fabric:localDocuments');
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          if (parsed && typeof parsed === 'object') {
+            Object.assign(docs, parsed);
+            window.localStorage.removeItem('fabric:localDocuments');
+          }
+        }
+        if (Object.keys(docs).length > 0) {
+          this.globalState.documents = { ...(this.globalState.documents || {}), ...docs };
+        }
+      } catch (e) {
+        console.warn('[BRIDGE]', 'Could not restore documents from storage:', e);
+      }
     }
 
     return this;
@@ -124,6 +154,69 @@ class Bridge extends React.Component {
 
   get networkStatus () {
     return this.state.networkStatus || null;
+  }
+
+  /**
+   * Get a list of WebRTC peers connected to this browser client.
+   * @returns {Array} Array of WebRTC peer objects with id, status, direction, connectedAt
+   */
+  get localWebrtcPeers () {
+    const peers = Array.from(this.webrtcPeers.values()).map(p => ({
+      id: p.id,
+      status: p.status,
+      direction: p.direction,
+      connectedAt: p.connectedAt,
+      error: p.error,
+      lastSeen: p.lastSeen
+    }));
+
+    // Also include peers that are currently connecting
+    for (const peerId of this._connectingPeers) {
+      if (!peers.find(p => p.id === peerId)) {
+        peers.push({
+          id: peerId,
+          status: 'connecting',
+          direction: 'outbound',
+          connectedAt: null
+        });
+      }
+    }
+
+    return peers;
+  }
+
+  /**
+   * Get the WebRTC mesh status summary.
+   * @returns {Object} Summary of WebRTC mesh state
+   */
+  get webrtcMeshStatus () {
+    const connected = this.getWebRTCPeerCount();
+    const connecting = this._connectingPeers ? this._connectingPeers.size : 0;
+    const maxPeers = this.settings.maxWebrtcPeers || 5;
+    return {
+      peerId: this.peerId,
+      ready: this._webrtcReady,
+      connected,
+      connecting,
+      maxPeers,
+      slotsAvailable: Math.max(0, maxPeers - connected - connecting)
+    };
+  }
+
+  /**
+   * Return the hub node's pubkey for display (e.g. in footer).
+   * Reads from networkStatus.network or top-level status fields.
+   * @returns {string} pubkey, id, or address from network status, or empty string
+   */
+  getNodePubkey () {
+    const ns = this.state?.networkStatus || this.state?.lastNetworkStatus;
+    if (!ns || typeof ns !== 'object') return '';
+    const network = ns.network;
+    if (network && typeof network === 'object') {
+      const v = network.pubkey || network.id || network.address;
+      if (v) return String(v);
+    }
+    return ns.pubkey || ns.id || ns.address || '';
   }
 
   // Global state management methods
@@ -144,6 +237,9 @@ class Bridge extends React.Component {
         if (typeof path === 'string' && (path === '/messages' || path.startsWith('/messages/'))) {
           this._persistMessages();
         }
+        if (typeof path === 'string' && (path === '/documents' || path.startsWith('/documents/'))) {
+          this._persistDocuments();
+        }
 
         // Emit a custom event to notify components of state changes
         const event = new CustomEvent('globalStateUpdate', {
@@ -161,6 +257,84 @@ class Bridge extends React.Component {
     } catch (error) {
       console.error('[BRIDGE]', 'Error updating global state:', error);
     }
+  }
+
+  _persistDocuments () {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    try {
+      const docs = this.globalState.documents || {};
+      window.localStorage.setItem('fabric:documents', JSON.stringify(docs));
+    } catch (e) {
+      console.warn('[BRIDGE]', 'Could not persist documents:', e);
+    }
+  }
+
+  /** @returns {import('@fabric/core/types/key')|null} Key with private for document encrypt/decrypt */
+  _getDocumentKey () {
+    const key = this.settings.signingKey || this.key;
+    if (!key || typeof key.encrypt !== 'function' || typeof key.decrypt !== 'function') return null;
+    if (key.private == null) return null;
+    return key;
+  }
+
+  /** @returns {boolean} True if we have a key for document encryption (required for adding files). */
+  hasDocumentEncryptionKey () {
+    return !!this._getDocumentKey();
+  }
+
+  _encryptContent (contentBase64) {
+    const key = this._getDocumentKey();
+    if (!key) return null;
+    try {
+      return key.encrypt(contentBase64);
+    } catch (e) {
+      console.warn('[BRIDGE]', 'Document encrypt failed:', e);
+      return null;
+    }
+  }
+
+  _decryptContent (contentEncrypted) {
+    const key = this._getDocumentKey();
+    if (!key || !contentEncrypted) return null;
+    try {
+      return key.decrypt(contentEncrypted);
+    } catch (e) {
+      console.warn('[BRIDGE]', 'Document decrypt failed:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Return document content (base64) for display or upload. Decrypts if stored encrypted.
+   * @param {string} id - Document id
+   * @returns {string|null} contentBase64 or null
+   */
+  getDecryptedDocumentContent (id) {
+    if (!id || !this.globalState.documents) return null;
+    const doc = this.globalState.documents[id];
+    if (!doc) return null;
+    if (doc.contentBase64) return doc.contentBase64;
+    if (doc.contentEncrypted) return this._decryptContent(doc.contentEncrypted);
+    return null;
+  }
+
+  /** Normalize incoming doc for storage: encrypt content if we have a key, store only encrypted or plain. */
+  _storeDocument (id, doc) {
+    if (!doc || !id) return;
+    this.globalState.documents = this.globalState.documents || {};
+    const existing = this.globalState.documents[id] || {};
+    const merged = { ...existing, ...doc, id };
+    const hasContent = merged.contentBase64 != null;
+    const encrypted = hasContent ? this._encryptContent(merged.contentBase64) : null;
+    const toStore = { ...merged };
+    if (encrypted != null) {
+      toStore.contentEncrypted = encrypted;
+      delete toStore.contentBase64;
+    } else if (!hasContent && merged.contentEncrypted != null) {
+      toStore.contentEncrypted = merged.contentEncrypted;
+      delete toStore.contentBase64;
+    }
+    this.globalState.documents[id] = toStore;
   }
 
   _persistMessages () {
@@ -182,13 +356,71 @@ class Bridge extends React.Component {
     }
   }
 
+  /**
+   * Add a document to the unified store. Content is encrypted with the user's keypair when available.
+   * @param {Object} doc - { id, name, mime, size, sha256, contentBase64, created? }
+   */
+  addLocalDocument (doc) {
+    if (!doc || !doc.id || !doc.contentBase64) return;
+    const created = doc.created || new Date().toISOString();
+    const encrypted = this._encryptContent(doc.contentBase64);
+    this.globalState.documents = this.globalState.documents || {};
+    const toStore = {
+      ...doc,
+      created,
+      contentBase64: undefined
+    };
+    if (encrypted != null) {
+      toStore.contentEncrypted = encrypted;
+    } else {
+      toStore.contentBase64 = doc.contentBase64;
+    }
+    this.globalState.documents[doc.id] = toStore;
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/documents/${doc.id}`, value: this.globalState.documents[doc.id] },
+        globalState: this.globalState
+      }
+    }));
+  }
+
+  /**
+   * Remove a document from local state (e.g. after publishing).
+   * @param {string} id - Document id
+   */
+  removeLocalDocument (id) {
+    if (!id || !this.globalState.documents) return;
+    delete this.globalState.documents[id];
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'remove', path: `/documents/${id}` },
+        globalState: this.globalState
+      }
+    }));
+  }
+
+  /**
+   * Clear all local documents (e.g. on logout / destroy identity). Persists empty store.
+   */
+  clearAllDocuments () {
+    this.globalState.documents = {};
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'replace', path: '/documents', value: {} },
+        globalState: this.globalState
+      }
+    }));
+  }
+
   resetGlobalState () {
     this.globalState = {
       conversations: {},
       messages: {},
       users: {},
-      documents: {},
-      tasks: {}
+      documents: {}
     };
   }
 
@@ -204,6 +436,13 @@ class Bridge extends React.Component {
     // Call onStateUpdate prop if provided for backward compatibility
     if (this.props.onStateUpdate && typeof this.props.onStateUpdate === 'function') {
       this.props.onStateUpdate(this.state);
+    }
+  }
+
+  componentDidUpdate (prevProps) {
+    // Update signing key when auth changes (e.g. user unlocks identity)
+    if (prevProps.auth !== this.props.auth) {
+      this.settings.signingKey = this.props.auth ? new Key(this.props.auth) : null;
     }
   }
 
@@ -401,7 +640,16 @@ class Bridge extends React.Component {
       this.peer.on('open', (id) => {
         console.debug('[BRIDGE]', 'WebRTC peer opened with ID:', id);
         this.peerId = id;
-        this.connectToServerWebRTC();
+        this._webrtcReady = true;
+
+        // Publish our presence to the Bridge (our peer ID is now registered with the signaling server)
+        this.publishWebRTCOffer();
+
+        // Schedule peer discovery after startup procedures complete
+        if (this._peerDiscoveryTimer) clearTimeout(this._peerDiscoveryTimer);
+        this._peerDiscoveryTimer = setTimeout(() => {
+          this.discoverAndConnectToPeers();
+        }, this.settings.webrtcPeerDiscoveryDelay);
       });
 
       this.peer.on('connection', (conn) => {
@@ -520,8 +768,49 @@ class Bridge extends React.Component {
    * Handle incoming WebRTC connections
    */
   handleIncomingWebRTCConnection (connection) {
-    console.debug('[BRIDGE]', 'Setting up incoming WebRTC connection from:', connection.peer);
-    this.setupWebRTCConnectionHandlers(connection);
+    const peerId = connection.peer;
+    console.debug('[BRIDGE]', 'Setting up incoming WebRTC connection from:', peerId);
+
+    // Track this peer connection
+    this.webrtcPeers.set(peerId, {
+      id: peerId,
+      connection: connection,
+      connectedAt: Date.now(),
+      status: 'connecting',
+      direction: 'inbound'
+    });
+
+    // Set up handlers with peer tracking
+    connection.on('open', () => {
+      console.debug('[BRIDGE]', 'Incoming WebRTC connection opened:', peerId);
+      const peerInfo = this.webrtcPeers.get(peerId);
+      if (peerInfo) {
+        peerInfo.status = 'connected';
+        this.webrtcPeers.set(peerId, peerInfo);
+      }
+      this.forceUpdate();
+    });
+
+    connection.on('close', () => {
+      console.debug('[BRIDGE]', 'Incoming WebRTC connection closed:', peerId);
+      this.webrtcPeers.delete(peerId);
+      this.forceUpdate();
+    });
+
+    connection.on('error', (error) => {
+      console.error('[BRIDGE]', 'Incoming WebRTC connection error:', peerId, error);
+      const peerInfo = this.webrtcPeers.get(peerId);
+      if (peerInfo) {
+        peerInfo.status = 'error';
+        peerInfo.error = error.message || 'Unknown error';
+        this.webrtcPeers.set(peerId, peerInfo);
+      }
+    });
+
+    connection.on('data', (data) => {
+      console.debug('[BRIDGE]', 'WebRTC data received from:', peerId, data);
+      this.handleWebRTCMessage(data);
+    });
 
     // Store the connection for potential use
     this.webrtcConnection = connection;
@@ -558,6 +847,308 @@ class Bridge extends React.Component {
 
     } catch (error) {
       console.error('[BRIDGE]', 'Error handling WebRTC message:', error);
+    }
+  }
+
+  /**
+   * Publish our WebRTC presence/offer to the Bridge.
+   * This notifies the server that we're available for peer connections.
+   */
+  publishWebRTCOffer () {
+    if (!this.peerId) {
+      console.warn('[BRIDGE]', 'Cannot publish WebRTC offer: no peer ID');
+      return;
+    }
+
+    console.debug('[BRIDGE]', 'Publishing WebRTC offer with peer ID:', this.peerId);
+
+    // Send our peer info to the server via WebSocket RPC
+    const payload = {
+      method: 'RegisterWebRTCPeer',
+      params: [{
+        peerId: this.peerId,
+        timestamp: Date.now(),
+        metadata: {
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+          capabilities: ['data-channel']
+        }
+      }]
+    };
+
+    this._sendJSONRPC(payload);
+  }
+
+  /**
+   * Request peer candidates from the Bridge and connect to available peers.
+   * Respects the maxWebrtcPeers setting.
+   */
+  discoverAndConnectToPeers () {
+    if (!this._webrtcReady || !this.peer) {
+      console.warn('[BRIDGE]', 'Cannot discover peers: WebRTC not ready');
+      return;
+    }
+
+    const currentConnections = this.webrtcPeers.size;
+    const maxPeers = this.settings.maxWebrtcPeers || 5;
+
+    if (currentConnections >= maxPeers) {
+      console.debug('[BRIDGE]', `Already at max WebRTC peers (${currentConnections}/${maxPeers})`);
+      return;
+    }
+
+    console.debug('[BRIDGE]', 'Discovering WebRTC peer candidates...');
+
+    // Request peer list from the server
+    const payload = {
+      method: 'ListWebRTCPeers',
+      params: [{ excludeSelf: true, peerId: this.peerId }]
+    };
+
+    // Store callback for when we receive the response
+    this._pendingPeerDiscovery = true;
+    this._sendJSONRPC(payload);
+  }
+
+  /**
+   * Handle the response from ListWebRTCPeers and initiate connections.
+   * @param {Array} candidates - Array of peer candidate objects
+   */
+  handlePeerCandidates (candidates) {
+    if (!Array.isArray(candidates)) {
+      console.warn('[BRIDGE]', 'Invalid peer candidates:', candidates);
+      return;
+    }
+
+    const currentConnections = this.webrtcPeers.size + this._connectingPeers.size;
+    const maxPeers = this.settings.maxWebrtcPeers || 5;
+    const slotsAvailable = Math.max(0, maxPeers - currentConnections);
+
+    if (slotsAvailable === 0) {
+      console.debug('[BRIDGE]', 'No slots available for new WebRTC peers');
+      return;
+    }
+
+    // Filter out ourselves and already connected/connecting peers
+    const eligiblePeers = candidates.filter(candidate => {
+      const peerId = candidate.id || candidate.peerId;
+      if (!peerId) return false;
+      if (peerId === this.peerId) return false;
+      if (this.webrtcPeers.has(peerId)) return false;
+      if (this._connectingPeers.has(peerId)) return false;
+      return true;
+    });
+
+    // Connect to peers up to available slots
+    const peersToConnect = eligiblePeers.slice(0, slotsAvailable);
+
+    console.debug('[BRIDGE]', `Connecting to ${peersToConnect.length} WebRTC peers (${currentConnections}/${maxPeers} current)`);
+
+    for (const candidate of peersToConnect) {
+      const peerId = candidate.id || candidate.peerId;
+      this.connectToWebRTCPeer(peerId, candidate);
+    }
+  }
+
+  /**
+   * Initiate a WebRTC connection to a specific peer.
+   * @param {string} peerId - The PeerJS ID of the peer to connect to
+   * @param {Object} metadata - Optional metadata about the peer
+   */
+  connectToWebRTCPeer (peerId, metadata = {}) {
+    if (!this.peer || !this._webrtcReady) {
+      console.warn('[BRIDGE]', 'Cannot connect to peer: WebRTC not ready');
+      return;
+    }
+
+    if (this.webrtcPeers.has(peerId) || this._connectingPeers.has(peerId)) {
+      console.debug('[BRIDGE]', 'Already connected/connecting to peer:', peerId);
+      return;
+    }
+
+    console.debug('[BRIDGE]', 'Initiating WebRTC connection to peer:', peerId);
+
+    // Mark as connecting
+    this._connectingPeers.add(peerId);
+
+    try {
+      const connection = this.peer.connect(peerId, {
+        label: this.peerId,
+        reliable: true,
+        metadata: {
+          type: 'peer-mesh',
+          initiator: this.peerId,
+          timestamp: Date.now()
+        }
+      });
+
+      // Track this peer connection
+      const peerInfo = {
+        id: peerId,
+        connection: connection,
+        connectedAt: null,
+        status: 'connecting',
+        direction: 'outbound',
+        metadata: metadata
+      };
+
+      // Set up connection event handlers
+      connection.on('open', () => {
+        console.debug('[BRIDGE]', 'Outbound WebRTC connection opened to:', peerId);
+        this._connectingPeers.delete(peerId);
+        peerInfo.status = 'connected';
+        peerInfo.connectedAt = Date.now();
+        this.webrtcPeers.set(peerId, peerInfo);
+        this.forceUpdate();
+
+        // Notify the server of the successful connection
+        this._sendJSONRPC({
+          method: 'WebRTCPeerConnected',
+          params: [{ peerId: peerId, direction: 'outbound' }]
+        });
+      });
+
+      connection.on('data', (data) => {
+        console.debug('[BRIDGE]', 'WebRTC data from peer:', peerId, data);
+        this.handleWebRTCPeerMessage(peerId, data);
+      });
+
+      connection.on('error', (error) => {
+        console.error('[BRIDGE]', 'WebRTC connection error to peer:', peerId, error);
+        this._connectingPeers.delete(peerId);
+        peerInfo.status = 'error';
+        peerInfo.error = error.message || 'Connection failed';
+        this.webrtcPeers.set(peerId, peerInfo);
+        this.forceUpdate();
+      });
+
+      connection.on('close', () => {
+        console.debug('[BRIDGE]', 'WebRTC connection closed to peer:', peerId);
+        this._connectingPeers.delete(peerId);
+        this.webrtcPeers.delete(peerId);
+        this.forceUpdate();
+
+        // Notify the server of the disconnection
+        this._sendJSONRPC({
+          method: 'WebRTCPeerDisconnected',
+          params: [{ peerId: peerId }]
+        });
+      });
+
+    } catch (error) {
+      console.error('[BRIDGE]', 'Failed to connect to WebRTC peer:', peerId, error);
+      this._connectingPeers.delete(peerId);
+    }
+  }
+
+  /**
+   * Handle messages received from a WebRTC peer (not the server).
+   * @param {string} peerId - The peer ID that sent the message
+   * @param {*} data - The message data
+   */
+  handleWebRTCPeerMessage (peerId, data) {
+    try {
+      console.debug('[BRIDGE]', 'Processing message from WebRTC peer:', peerId);
+
+      // Emit event for application-level handling
+      const event = new CustomEvent('webrtcPeerMessage', {
+        detail: { peerId, data }
+      });
+      window.dispatchEvent(event);
+
+      // Handle specific message types
+      if (data && typeof data === 'object') {
+        switch (data.type) {
+          case 'ping':
+            this.sendToWebRTCPeer(peerId, { type: 'pong', timestamp: Date.now() });
+            break;
+          case 'pong':
+            // Update last seen for the peer
+            const peerInfo = this.webrtcPeers.get(peerId);
+            if (peerInfo) {
+              peerInfo.lastSeen = Date.now();
+              this.webrtcPeers.set(peerId, peerInfo);
+            }
+            break;
+          case 'chat':
+            // Relay chat messages to the global state
+            if (data.content) {
+              this.handleWebRTCMessage(data);
+            }
+            break;
+          default:
+            // Pass through to the general WebRTC message handler
+            this.handleWebRTCMessage(data);
+        }
+      }
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error handling WebRTC peer message:', error);
+    }
+  }
+
+  /**
+   * Send a message to a specific WebRTC peer.
+   * @param {string} peerId - The peer ID to send to
+   * @param {*} data - The data to send
+   * @returns {boolean} True if sent successfully
+   */
+  sendToWebRTCPeer (peerId, data) {
+    const peerInfo = this.webrtcPeers.get(peerId);
+    if (!peerInfo || !peerInfo.connection || peerInfo.status !== 'connected') {
+      console.warn('[BRIDGE]', 'Cannot send to WebRTC peer:', peerId, '- not connected');
+      return false;
+    }
+
+    try {
+      peerInfo.connection.send(data);
+      return true;
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending to WebRTC peer:', peerId, error);
+      return false;
+    }
+  }
+
+  /**
+   * Broadcast a message to all connected WebRTC peers.
+   * @param {*} data - The data to broadcast
+   * @returns {number} Number of peers the message was sent to
+   */
+  broadcastToWebRTCPeers (data) {
+    let sent = 0;
+    for (const [peerId, peerInfo] of this.webrtcPeers) {
+      if (peerInfo.status === 'connected' && this.sendToWebRTCPeer(peerId, data)) {
+        sent++;
+      }
+    }
+    return sent;
+  }
+
+  /**
+   * Get the count of active WebRTC peer connections.
+   * @returns {number} Number of connected peers
+   */
+  getWebRTCPeerCount () {
+    let count = 0;
+    for (const peerInfo of this.webrtcPeers.values()) {
+      if (peerInfo.status === 'connected') count++;
+    }
+    return count;
+  }
+
+  /**
+   * Send a JSON-RPC message via WebSocket.
+   * @param {Object} payload - The JSON-RPC payload
+   */
+  _sendJSONRPC (payload) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[BRIDGE]', 'Cannot send JSON-RPC: WebSocket not connected');
+      return;
+    }
+
+    try {
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.ws.send(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending JSON-RPC:', error);
     }
   }
 
@@ -632,6 +1223,12 @@ class Bridge extends React.Component {
       this._heartbeat = null;
     }
 
+    // Clean up peer discovery timer
+    if (this._peerDiscoveryTimer) {
+      clearTimeout(this._peerDiscoveryTimer);
+      this._peerDiscoveryTimer = null;
+    }
+
     // Clean up WebSocket
     if (this.ws) {
       try {
@@ -647,6 +1244,19 @@ class Bridge extends React.Component {
       }
       this.ws = null;
     }
+
+    // Clean up all WebRTC peer connections
+    for (const [peerId, peerInfo] of this.webrtcPeers) {
+      try {
+        if (peerInfo.connection) {
+          peerInfo.connection.close();
+        }
+      } catch (e) {
+        console.warn('[BRIDGE]', 'Error closing WebRTC peer connection:', peerId, e);
+      }
+    }
+    this.webrtcPeers.clear();
+    this._connectingPeers.clear();
 
     // Clean up WebRTC
     if (this.webrtcConnection) {
@@ -668,6 +1278,7 @@ class Bridge extends React.Component {
     }
 
     this._webrtcConnected = false;
+    this._webrtcReady = false;
     this.setState({ webrtcConnected: false });
   }
 
@@ -904,7 +1515,7 @@ class Bridge extends React.Component {
                 this.globalState.documents = this.globalState.documents || {};
                 for (const doc of result.documents) {
                   if (!doc || !doc.id) continue;
-                  this.globalState.documents[doc.id] = { ...(this.globalState.documents[doc.id] || {}), ...doc };
+                  this._storeDocument(doc.id, { ...(this.globalState.documents[doc.id] || {}), ...doc });
                 }
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
@@ -915,8 +1526,7 @@ class Bridge extends React.Component {
               }
               if (result && typeof result === 'object' && result.type === 'GetDocumentResult' && result.document && result.document.id) {
                 const id = result.document.id;
-                this.globalState.documents = this.globalState.documents || {};
-                this.globalState.documents[id] = result.document;
+                this._storeDocument(id, result.document);
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
                     operation: { op: 'add', path: `/documents/${id}`, value: result.document },
@@ -926,8 +1536,7 @@ class Bridge extends React.Component {
               }
               if (result && typeof result === 'object' && result.type === 'CreateDocumentResult' && result.document && result.document.id) {
                 const id = result.document.id;
-                this.globalState.documents = this.globalState.documents || {};
-                this.globalState.documents[id] = { ...(this.globalState.documents[id] || {}), ...result.document };
+                this._storeDocument(id, { ...(this.globalState.documents[id] || {}), ...result.document });
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
                     operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
@@ -946,6 +1555,11 @@ class Bridge extends React.Component {
                   }
                 }));
               }
+              // WebRTC peer discovery response
+              if (result && typeof result === 'object' && result.type === 'ListWebRTCPeersResult' && Array.isArray(result.peers)) {
+                console.debug('[BRIDGE]', 'Received WebRTC peer candidates:', result.peers.length);
+                this.handlePeerCandidates(result.peers);
+              }
               if (typeof this.props.responseCapture === 'function') {
                 this.props.responseCapture({
                   type: 'GenericMessage',
@@ -958,7 +1572,24 @@ class Bridge extends React.Component {
           }
           break;
         case 'GenericMessage':
-          // Pass through GenericMessage as-is
+          // Check for FileMessage (broadcast as GenericMessage when FileMessage type unknown)
+          try {
+            const parsed = JSON.parse(message.body);
+            if (parsed && parsed.type === 'P2P_FILE_SEND' && parsed.object) {
+              const doc = parsed.object;
+              if (doc.id && doc.contentBase64) {
+                this._storeDocument(doc.id, { ...doc, receivedFromPeer: true });
+                this._persistDocuments();
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'add', path: `/documents/${doc.id}`, value: this.globalState.documents[doc.id] },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              break;
+            }
+          } catch (e) { /* not JSON or not file message */ }
           this.props.responseCapture({
             type: 'GenericMessage',
             content: message.body
@@ -1377,7 +2008,9 @@ class Bridge extends React.Component {
   sendCreateDocumentRequest (doc) {
     if (!doc || typeof doc !== 'object') return;
     try {
-      const payload = { method: 'CreateDocument', params: [doc] };
+      const contentBase64 = doc.contentBase64 || (doc.id ? this.getDecryptedDocumentContent(doc.id) : null);
+      const payloadDoc = contentBase64 ? { ...doc, contentBase64 } : doc;
+      const payload = { method: 'CreateDocument', params: [payloadDoc] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
@@ -1394,6 +2027,26 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending PublishDocument request:', error);
+    }
+  }
+
+  /**
+   * Send a file to a peer. Document must have contentBase64 (from local or fetched).
+   * @param {string|{id,address}} idOrAddress - Peer id or address
+   * @param {Object} doc - { id, name, mime, size, sha256?, contentBase64 }
+   */
+  sendSendPeerFileRequest (idOrAddress, doc) {
+    const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
+    if (!resolved || !doc || typeof doc !== 'object') return;
+    const contentBase64 = doc.contentBase64 || (doc.id ? this.getDecryptedDocumentContent(doc.id) : null);
+    if (!contentBase64) return;
+    try {
+      const payloadDoc = { ...doc, contentBase64 };
+      const payload = { method: 'SendPeerFile', params: [resolved, payloadDoc] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending SendPeerFile request:', error);
     }
   }
 }
