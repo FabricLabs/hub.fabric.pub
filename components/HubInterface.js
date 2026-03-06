@@ -343,6 +343,7 @@ class HubInterface extends React.Component {
                         fetchContract={this.props.fetchContract}
                         contracts={this.props.contracts}
                         bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
                         {...this.props}
                       />
                     )}
@@ -396,6 +397,7 @@ class HubInterface extends React.Component {
                       <PeerView
                         auth={this.props.auth}
                         bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
                         onAddPeer={(peer) => {
                           if (!peer || !this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;

@@ -124,7 +124,7 @@ class Home extends React.Component {
         </Segment>
         <Segment>
           <Header as='h2'>Activity</Header>
-          <ActivityStream bridge={bridge} />
+          <ActivityStream bridge={bridge} bridgeRef={this.props.bridgeRef} />
         </Segment>
       </fabric-hub-home>
     );

@@ -27,6 +27,12 @@ class ActivityStreamElement extends React.Component {
     console.debug('[FABRIC:STREAM]', 'Stream mounted!');
     if (this.props.fetchResource) this.props.fetchResource('/activities');
     window.addEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
+    // Initial load from persisted/restored state (survives refresh)
+    const bridgeInstance = this.props.bridgeRef && this.props.bridgeRef.current;
+    if (bridgeInstance && typeof bridgeInstance.getGlobalState === 'function') {
+      const gs = bridgeInstance.getGlobalState();
+      if (gs) this._handleGlobalStateUpdate({ detail: { globalState: gs } });
+    }
   }
 
   componentWillUnmount () {

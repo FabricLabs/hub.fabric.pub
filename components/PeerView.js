@@ -44,7 +44,8 @@ function PeerDetail (props) {
   const [outgoingText, setOutgoingText] = React.useState('');
 
   const bridge = props.bridge;
-  const current = bridge && bridge.current;
+  const bridgeRef = props.bridgeRef;
+  const current = (bridgeRef && bridgeRef.current) || (bridge && bridge.current);
   const candidate = current && current.networkStatus;
   const fallback = current && current.lastNetworkStatus;
   const networkStatus = isNetworkStatus(candidate) ? candidate : (isNetworkStatus(fallback) ? fallback : null);
@@ -62,46 +63,54 @@ function PeerDetail (props) {
   }, [address]);
 
   React.useEffect(() => {
+    const deriveChats = (globalState, currentDetail) => {
+      if (!globalState || !globalState.messages) return;
+      const messages = globalState.messages || {};
+      const peersByAddress = globalState.peers || {};
+      const storedPeer = peersByAddress[address];
+      const peerId = (storedPeer && storedPeer.id) || (currentDetail && currentDetail.id) || address;
+
+      const chats = Object.values(messages)
+        .filter((m) => m && typeof m === 'object' && m.type === 'P2P_CHAT_MESSAGE')
+        .filter((m) => {
+          const actorId = m.actor && m.actor.id;
+          const target = m.object && m.object.target;
+          return (actorId && peerId && actorId === peerId) || (target && target === address);
+        })
+        .sort((a, b) => {
+          const ta = (a.object && a.object.created) || 0;
+          const tb = (b.object && b.object.created) || 0;
+          return ta - tb;
+        })
+        .slice(-100);
+
+      setPeerChats(chats);
+    };
+
     const handler = (event) => {
       try {
         const globalState = event && event.detail && event.detail.globalState;
         if (!globalState) return;
 
-        // Update peer detail from global state, if available
         if (globalState.peers) {
           const stored = globalState.peers[address];
           if (stored) setDetail(stored);
         }
 
-        // Derive chats for this peer from global messages
-        if (globalState.messages) {
-          const messages = globalState.messages || {};
-          const peersByAddress = globalState.peers || {};
-          const storedPeer = peersByAddress[address];
-          const peerId = (storedPeer && storedPeer.id) || (detail && detail.id) || address;
-
-          const chats = Object.values(messages)
-            .filter((m) => m && typeof m === 'object' && m.type === 'P2P_CHAT_MESSAGE')
-            .filter((m) => {
-              const actorId = m.actor && m.actor.id;
-              const target = m.object && m.object.target;
-              // Messages from this peer, or messages explicitly targeted to this peer address
-              return (actorId && peerId && actorId === peerId) || (target && target === address);
-            })
-            .sort((a, b) => {
-              const ta = (a.object && a.object.created) || 0;
-              const tb = (b.object && b.object.created) || 0;
-              return ta - tb;
-            })
-            .slice(-100);
-
-          setPeerChats(chats);
-        }
+        deriveChats(globalState, detail);
       } catch (e) {}
     };
+
+    // Initial load from persisted/restored state (survives refresh)
+    const bridgeInstance = props.bridgeRef && props.bridgeRef.current;
+    const gs = bridgeInstance && typeof bridgeInstance.getGlobalState === 'function'
+      ? bridgeInstance.getGlobalState()
+      : null;
+    if (gs) deriveChats(gs, detail);
+
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
-  }, [address]);
+  }, [address, bridge, props.bridgeRef, detail]);
 
   const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address)) || address || 'Peer';
 

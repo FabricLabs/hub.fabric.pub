@@ -99,6 +99,19 @@ class Bridge extends React.Component {
       } catch (e) {
         console.warn('[BRIDGE]', 'Could not restore peerMessageQueue from storage:', e);
       }
+
+      // Restore chat messages so they persist across refresh
+      try {
+        const raw = window.localStorage.getItem('fabric:messages');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            this.globalState.messages = parsed;
+          }
+        }
+      } catch (e) {
+        console.warn('[BRIDGE]', 'Could not restore messages from storage:', e);
+      }
     }
 
     return this;
@@ -126,6 +139,12 @@ class Bridge extends React.Component {
       if (result.newDocument) {
         this.globalState = result.newDocument;
 
+        // Persist messages when patch touches /messages
+        const path = patchMessage && patchMessage.path;
+        if (typeof path === 'string' && (path === '/messages' || path.startsWith('/messages/'))) {
+          this._persistMessages();
+        }
+
         // Emit a custom event to notify components of state changes
         const event = new CustomEvent('globalStateUpdate', {
           detail: {
@@ -141,6 +160,25 @@ class Bridge extends React.Component {
 
     } catch (error) {
       console.error('[BRIDGE]', 'Error updating global state:', error);
+    }
+  }
+
+  _persistMessages () {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    try {
+      const messages = this.globalState.messages || {};
+      const keys = Object.keys(messages);
+      // Cap at 500 messages to avoid localStorage bloat
+      const toStore = keys.length > 500
+        ? Object.fromEntries(keys.sort((a, b) => {
+            const ta = (messages[a] && messages[a].object && messages[a].object.created) || 0;
+            const tb = (messages[b] && messages[b].object && messages[b].object.created) || 0;
+            return ta - tb;
+          }).slice(-500).map((k) => [k, messages[k]]))
+        : messages;
+      window.localStorage.setItem('fabric:messages', JSON.stringify(toStore));
+    } catch (e) {
+      console.warn('[BRIDGE]', 'Could not persist messages:', e);
     }
   }
 
@@ -948,6 +986,7 @@ class Bridge extends React.Component {
                 globalState: this.globalState
               }
             }));
+            this._persistMessages();
           } catch (e) {
             console.error('[BRIDGE]', 'Could not parse ChatMessage body:', e);
           }
@@ -1122,6 +1161,7 @@ class Bridge extends React.Component {
         globalState: this.globalState
       }
     }));
+    this._persistMessages();
 
     this.chatSubmissionQueue.push({ text: trimmed, clientId, actorId });
     this._flushChatSubmissionQueue();
@@ -1197,6 +1237,7 @@ class Bridge extends React.Component {
           globalState: this.globalState
         }
       }));
+      this._persistMessages();
     } catch (e) {
       console.warn('[BRIDGE]', 'Could not create local queued peer chat message:', e);
     }
@@ -1214,7 +1255,7 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Attempt to send any queued peer messages for peers that are currently connected.
+   * Attempt to send any queued messages for peers that are currently connected.
    * Uses the latest networkStatus.peers from the hub.
    */
   _flushPeerMessageQueue () {
