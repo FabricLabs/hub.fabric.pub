@@ -15,6 +15,12 @@ module.exports = {
   experiments: {
     asyncWebAssembly: true
   },
+  optimization: {
+    // Disable module concatenation to avoid intermittent "Cannot read properties of undefined (reading 'module')"
+    // when bundling ESM packages like @msgpack/msgpack via peerjs
+    concatenateModules: false,
+    minimize: true
+  },
   module: {
     rules: [
       {
@@ -39,6 +45,13 @@ module.exports = {
   },
   resolve: {
     extensions: ['.js', '.jsx'],
+    // Prefer CJS over ESM when resolving package exports (avoids secp256k1 "exports is not defined")
+    // 'browser' before 'node' so @noble/hashes uses crypto.js not cryptoNode.js (avoids node:crypto error)
+    // Include 'browser' so react-dom/server resolves to server.browser.js (avoids TextEncoder error)
+    // Omit 'node' so @noble/hashes/crypto resolves to browser crypto.js not cryptoNode.js
+    conditionNames: ['require', 'browser', 'import'],
+    // Allow imports without extensions (fixes process/browser in @msgpack/msgpack ESM)
+    fullySpecified: false,
     // Prefer hub's node_modules so linked @fabric/core uses the same copies of
     // readable-stream, hash-base, md5.js, etc. Avoids "call is not a function"
     // from duplicate or mis-resolved modules when npm linking.
@@ -47,9 +60,19 @@ module.exports = {
     // (like elliptic via browserify-sign) can resolve @noble/curves regardless
     // of subpath form used in requires.
     alias: {
-      // Shim ensures secp256k1 is loaded via relative require so Webpack wraps it as CJS
+      // Force @noble/hashes to use browser crypto (avoids node:crypto UnhandledSchemeError)
+      '@noble/hashes/crypto': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
+      // Redirect cryptoNode.js when package exports resolve to it (e.g. from nested @noble/hashes in elliptic)
+      '@noble/hashes/esm/cryptoNode.js': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
+      // node: scheme imports - must resolve to browser polyfills
+      'node:crypto': require.resolve('crypto-browserify'),
+      // Use browser build of react-dom/server (avoids TextEncoder error from Node build)
+      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js'),
+      // Shim ensures secp256k1 loads with proper CJS wrapper (avoids "exports is not defined" in production)
       '@noble/curves/secp256k1': path.resolve(__dirname, 'shims/noble-secp256k1.js'),
       '@noble/curves/secp256k1.js': path.resolve(__dirname, 'shims/noble-secp256k1.js'),
+      // Raw CJS file for shim to require; separate alias avoids circular resolution
+      'noble-secp256k1-raw': path.resolve(__dirname, 'node_modules/@noble/curves/secp256k1.js'),
       // NIST curves shim for noble-curves v1.x
       '@noble/curves/nist': path.resolve(__dirname, 'shims/noble-nist.js'),
       '@noble/curves/nist.js': path.resolve(__dirname, 'shims/noble-nist.js'),
@@ -60,6 +83,7 @@ module.exports = {
     },
     fallback: {
       "crypto": require.resolve("crypto-browserify"),
+      "node:crypto": require.resolve("crypto-browserify"),
       "path": require.resolve("path-browserify"),
       "buffer": require.resolve("buffer"),
       // Use stream-browserify for Node.js stream polyfill in the browser
@@ -105,6 +129,9 @@ module.exports = {
     ignored: /node_modules/
   },
   plugins: [
+    new webpack.DefinePlugin({
+      'process.env.NODE_ENV': JSON.stringify('production')
+    }),
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],
       process: 'process/browser'

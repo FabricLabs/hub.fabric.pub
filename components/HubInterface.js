@@ -392,7 +392,7 @@ class HubInterface extends React.Component {
                     )}
                   />
                   <Route
-                    path="/peers/:address"
+                    path="/peers/:id"
                     element={(
                       <PeerView
                         auth={this.props.auth}

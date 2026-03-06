@@ -349,18 +349,25 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('RemovePeer', (...params) => {
-        const address = params[0] && (params[0].address || params[0]);
-        if (!address) return { status: 'error', message: 'address required' };
+        const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
+        if (!idOrAddress) return { status: 'error', message: 'id or address required' };
+        const address = typeof this.agent._resolveToAddress === 'function'
+          ? this.agent._resolveToAddress(idOrAddress)
+          : idOrAddress;
+        if (!address) return { status: 'error', message: 'peer not connected' };
         const ok = this.agent._disconnect(address);
         return ok ? { status: 'success' } : { status: 'error', message: 'peer not connected' };
       });
 
       this.http._registerMethod('SendPeerMessage', (...params) => {
-        const address = params[0] && (params[0].address || params[0]);
+        const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         const body = params[1] || params[0];
         const text = typeof body === 'string' ? body : (body && (body.text || body.content)) || '';
-        if (!address || !text) return { status: 'error', message: 'address and message text required' };
-        if (!this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
+        if (!idOrAddress || !text) return { status: 'error', message: 'id/address and message text required' };
+        const address = typeof this.agent._resolveToAddress === 'function'
+          ? this.agent._resolveToAddress(idOrAddress)
+          : idOrAddress;
+        if (!address || !this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
         try {
           const clientId = body && body.clientId ? String(body.clientId) : null;
           const chatPayload = {
@@ -625,14 +632,17 @@ class Hub extends Service {
       this.agent.on('connections:close', pushNetworkStatus);
 
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
-      // Params: (address: string, nickname: string|null)
+      // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
       this.http._registerMethod('SetPeerNickname', (...params) => {
-        const address = params[0] && (params[0].address || params[0]);
+        const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         const nickname = params[1] != null ? params[1] : (params[0] && params[0].nickname);
-        if (!address) return { status: 'error', message: 'address required' };
+        if (!idOrAddress) return { status: 'error', message: 'id or address required' };
         try {
           const clean = nickname == null ? '' : String(nickname).trim();
-          this.agent._upsertPeerRegistry(address, { nickname: clean || null });
+          const registry = this.agent._state && this.agent._state.peers ? this.agent._state.peers : {};
+          const addressToId = this.agent._addressToId || {};
+          const key = registry[idOrAddress] ? idOrAddress : (addressToId[idOrAddress] || idOrAddress);
+          this.agent._upsertPeerRegistry(key, { id: key, nickname: clean || null });
           pushNetworkStatus();
           return { status: 'success' };
         } catch (err) {
@@ -641,30 +651,23 @@ class Hub extends Service {
         }
       });
 
-      // Get rich details for a peer (registry + live connection metadata)
-      // Params: (address: string | { address: string })
+      // Get rich details for a peer (registry + live connection metadata).
+      // Params: (idOrAddress: string | { id, address }) — id (public key) or address
       this.http._registerMethod('GetPeer', (...params) => {
-        const input = params[0] && (params[0].address || params[0]);
-        if (!input) return { status: 'error', message: 'address required' };
-
-        const candidates = [];
-        if (typeof input === 'string') {
-          candidates.push(input);
-          if (!input.includes(':')) candidates.push(`${input}:7777`);
-        }
+        const input = params[0] && (params[0].address || params[0].id || params[0]);
+        if (!input) return { status: 'error', message: 'id or address required' };
 
         const registry = this.agent && this.agent._state ? (this.agent._state.peers || {}) : {};
         const connections = this.agent ? (this.agent.connections || {}) : {};
         const known = this.agent && typeof this.agent.knownPeers !== 'undefined' ? this.agent.knownPeers : [];
+        const addressToId = this.agent._addressToId || {};
 
-        const address = candidates.find((a) => {
-          if (connections[a]) return true;
-          if (registry[a]) return true;
-          return Array.isArray(known) && known.some((p) => p && p.address === a);
-        }) || candidates[0];
-
-        const entry = (Array.isArray(known) && known.find((p) => p && p.address === address)) || null;
-        const reg = registry[address] || null;
+        const entry = Array.isArray(known) && known.find((p) => p && (p.id === input || p.address === input));
+        const id = entry ? entry.id : (registry[input] && registry[input].id) || input;
+        const address = typeof this.agent._resolveToAddress === 'function'
+          ? this.agent._resolveToAddress(input)
+          : (entry && entry.address) || (registry[id] && registry[id].address) || input;
+        const reg = registry[id] || registry[address] || null;
         const socket = connections[address] || null;
 
         const connection = socket ? {
@@ -676,13 +679,11 @@ class Hub extends Service {
         } : null;
 
         const peer = {
-          address,
+          id,
+          address: address || (reg && reg.address),
           status: socket ? 'connected' : ((entry && entry.status) || 'disconnected'),
-          // Merge summary fields
           ...(entry || {}),
-          // Raw registry entry
           registry: reg,
-          // Live socket metadata (if connected)
           connection
         };
 

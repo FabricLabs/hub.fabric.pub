@@ -1116,8 +1116,8 @@ class Bridge extends React.Component {
    * Request to disconnect a peer by address.
    * @param {string|{ address: string }} address - Peer address or object with address.
    */
-  sendRemovePeerRequest (address) {
-    const resolved = typeof address === 'object' && address && address.address ? address.address : address;
+  sendRemovePeerRequest (idOrAddress) {
+    const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
     if (!resolved) return;
     try {
       const payload = { method: 'RemovePeer', params: [resolved] };
@@ -1269,7 +1269,7 @@ class Bridge extends React.Component {
 
     for (const job of this.peerMessageQueue) {
       if (!job || !job.address || !job.text) continue;
-      const isConnected = peers.some((p) => p && p.address === job.address && p.status === 'connected');
+      const isConnected = peers.some((p) => p && p.status === 'connected' && (p.id === job.address || p.address === job.address));
 
       if (!isConnected) {
         remaining.push(job);
@@ -1305,12 +1305,12 @@ class Bridge extends React.Component {
    * @param {string|{ address: string }} address - Peer address or object with address.
    * @param {string|{ text: string }} body - Message text or object with text.
    */
-  sendPeerMessageRequest (address, body) {
-    const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
+  sendPeerMessageRequest (idOrAddress, body) {
+    const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
     const resolvedText = typeof body === 'string' ? body : (body && body.text) || '';
-    if (!resolvedAddress || !resolvedText) return;
+    if (!resolved || !resolvedText) return;
     const created = Date.now();
-    this._enqueuePeerMessage({ address: resolvedAddress, text: resolvedText, created });
+    this._enqueuePeerMessage({ address: resolved, text: resolvedText, created });
     this._flushPeerMessageQueue();
   }
 
@@ -1319,12 +1319,12 @@ class Bridge extends React.Component {
    * @param {string} address
    * @param {string} nickname
    */
-  sendSetPeerNicknameRequest (address, nickname) {
-    const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
-    if (!resolvedAddress) return;
+  sendSetPeerNicknameRequest (idOrAddress, nickname) {
+    const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
+    if (!resolved) return;
     const clean = nickname == null ? '' : String(nickname);
     try {
-      const payload = { method: 'SetPeerNickname', params: [resolvedAddress, clean] };
+      const payload = { method: 'SetPeerNickname', params: [resolved, clean] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
       // Ensure UI updates even if push misses for some reason
@@ -1337,14 +1337,14 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Request rich peer details from the hub (used by `/peers/:address` page).
-   * @param {string} address
+   * Request rich peer details from the hub (used by `/peers/:id` page).
+   * @param {string|{id,address}} idOrAddress - Peer id (public key) or address
    */
-  sendGetPeerRequest (address) {
-    const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
-    if (!resolvedAddress) return;
+  sendGetPeerRequest (idOrAddress) {
+    const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
+    if (!resolved) return;
     try {
-      const payload = { method: 'GetPeer', params: [resolvedAddress] };
+      const payload = { method: 'GetPeer', params: [resolved] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {

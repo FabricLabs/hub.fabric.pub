@@ -37,8 +37,8 @@ function formatMaybeDate (value) {
 function PeerDetail (props) {
   const navigate = useNavigate();
   const params = useParams();
-  const encoded = params && params.address ? params.address : '';
-  const address = encoded ? decodeURIComponent(encoded) : '';
+  const encoded = params && params.id ? params.id : '';
+  const id = encoded ? decodeURIComponent(encoded) : '';
   const [detail, setDetail] = React.useState(null);
   const [peerChats, setPeerChats] = React.useState([]);
   const [outgoingText, setOutgoingText] = React.useState('');
@@ -51,31 +51,31 @@ function PeerDetail (props) {
   const networkStatus = isNetworkStatus(candidate) ? candidate : (isNetworkStatus(fallback) ? fallback : null);
   const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
 
-  const peerFromStatus = peers.find((p) => p && (p.address === address || p.id === address)) || null;
-  const peer = detail && detail.address ? detail : peerFromStatus;
+  const peerFromStatus = peers.find((p) => p && (p.address === id || p.id === id)) || null;
+  const peer = detail && (detail.id || detail.address) ? detail : peerFromStatus;
   const status = peer && peer.status ? peer.status : 'unknown';
   const isConnected = status === 'connected';
 
   React.useEffect(() => {
     if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
-    if (typeof props.onGetPeer === 'function' && address) props.onGetPeer(address);
+    if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address]);
+  }, [id]);
 
   React.useEffect(() => {
     const deriveChats = (globalState, currentDetail) => {
       if (!globalState || !globalState.messages) return;
       const messages = globalState.messages || {};
-      const peersByAddress = globalState.peers || {};
-      const storedPeer = peersByAddress[address];
-      const peerId = (storedPeer && storedPeer.id) || (currentDetail && currentDetail.id) || address;
+      const peersById = globalState.peers || {};
+      const storedPeer = peersById[id];
+      const peerId = (storedPeer && storedPeer.id) || (currentDetail && currentDetail.id) || id;
 
       const chats = Object.values(messages)
         .filter((m) => m && typeof m === 'object' && m.type === 'P2P_CHAT_MESSAGE')
         .filter((m) => {
           const actorId = m.actor && m.actor.id;
           const target = m.object && m.object.target;
-          return (actorId && peerId && actorId === peerId) || (target && target === address);
+          return (actorId && peerId && actorId === peerId) || (target && target === id);
         })
         .sort((a, b) => {
           const ta = (a.object && a.object.created) || 0;
@@ -93,7 +93,7 @@ function PeerDetail (props) {
         if (!globalState) return;
 
         if (globalState.peers) {
-          const stored = globalState.peers[address];
+          const stored = globalState.peers[id];
           if (stored) setDetail(stored);
         }
 
@@ -110,16 +110,16 @@ function PeerDetail (props) {
 
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
-  }, [address, bridge, props.bridgeRef, detail]);
+  }, [id, bridge, props.bridgeRef, detail]);
 
-  const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address)) || address || 'Peer';
+  const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address)) || id || 'Peer';
 
   const handleSendPeerChat = (event) => {
     event.preventDefault();
     const text = (outgoingText || '').trim();
     if (!text) return;
-    if (address && typeof props.onSendPeerMessage === 'function') {
-      props.onSendPeerMessage(address, text);
+    if (id && typeof props.onSendPeerMessage === 'function') {
+      props.onSendPeerMessage(id, text);
       setOutgoingText('');
     }
   };
@@ -162,7 +162,7 @@ function PeerDetail (props) {
                 <List.Item>
                   <List.Content>
                     <List.Header>Address</List.Header>
-                    <List.Description>{address || (peer && peer.address) || 'unknown'}</List.Description>
+                    <List.Description>{(peer && peer.address) || id || 'unknown'}</List.Description>
                   </List.Content>
                 </List.Item>
                 <List.Item>
@@ -229,55 +229,55 @@ function PeerDetail (props) {
                 Refresh
               </Button>
 
-              {address && !isConnected && typeof props.onAddPeer === 'function' && (
+              {id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
                 <Button
                   size="small"
-                  onClick={() => props.onAddPeer({ address })}
-                  title={`Reconnect to ${address}`}
+                  onClick={() => props.onAddPeer({ address: peer.address })}
+                  title={`Reconnect to ${peer.address}`}
                 >
                   <Icon name="refresh" />
                   Reconnect
                 </Button>
               )}
 
-              {address && isConnected && typeof props.onDisconnectPeer === 'function' && (
+              {id && isConnected && typeof props.onDisconnectPeer === 'function' && (
                 <Button
                   size="small"
                   color="red"
                   basic
-                  onClick={() => props.onDisconnectPeer(address)}
-                  title={`Disconnect ${address}`}
+                  onClick={() => props.onDisconnectPeer(id)}
+                  title={`Disconnect ${id}`}
                 >
                   <Icon name="remove" />
                   Disconnect
                 </Button>
               )}
 
-              {address && isConnected && typeof props.onSendPeerMessage === 'function' && (
+              {id && isConnected && typeof props.onSendPeerMessage === 'function' && (
                 <Button
                   size="small"
                   onClick={() => {
                     const text = window.prompt('Message to send:', '');
-                    if (text != null && text !== '') props.onSendPeerMessage(address, text);
+                    if (text != null && text !== '') props.onSendPeerMessage(id, text);
                   }}
-                  title={`Send message to ${address}`}
+                  title={`Send message to ${id}`}
                 >
                   <Icon name="send" />
                   Send message
                 </Button>
               )}
 
-              {address && typeof props.onSetPeerNickname === 'function' && (
+              {id && typeof props.onSetPeerNickname === 'function' && (
                 <Button
                   size="small"
                   basic
                   onClick={() => {
                     const currentNick = (peer && peer.nickname) || '';
-                    const value = window.prompt(`Node-local nickname for ${address}:`, currentNick);
+                    const value = window.prompt(`Node-local nickname for ${id}:`, currentNick);
                     if (value == null) return;
-                    props.onSetPeerNickname(address, value);
+                    props.onSetPeerNickname(id, value);
                   }}
-                  title={`Set node-local nickname for ${address}`}
+                  title={`Set node-local nickname for ${id}`}
                 >
                   <Icon name="tag" />
                   Set nickname
@@ -348,7 +348,7 @@ function PeerDetail (props) {
             ) : (
               <p style={{ color: '#666' }}>No chat messages yet for this peer.</p>
             )}
-            {address && typeof props.onSendPeerMessage === 'function' && (
+            {id && typeof props.onSendPeerMessage === 'function' && (
               <form
                 onSubmit={handleSendPeerChat}
                 style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', alignItems: 'center' }}
@@ -365,7 +365,7 @@ function PeerDetail (props) {
                   primary
                   type="submit"
                   disabled={!outgoingText || !outgoingText.trim()}
-                  title={`Send message to ${address} (queued if offline)`}
+                  title={`Send message to ${id} (queued if offline)`}
                 >
                   <Icon name="send" />
                   Send

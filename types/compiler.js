@@ -5,12 +5,50 @@ const webpack = require('webpack');
 const merge = require('lodash.merge');
 const { JSDOM } = require('jsdom');
 
-const dom = new JSDOM();
+// Use a non-opaque origin so features like localStorage are available during SSR.
+// Opaque origins (e.g. about:blank) cause jsdom to throw SecurityError on window.localStorage.
+const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+  url: 'https://hub.fabric.local'
+});
 
 // Browser Polyfills
 global.document = dom.window.document;
 global.window = dom.window;
 global.HTMLElement = dom.HTMLElement;
+
+// Provide a safe in-memory localStorage for SSR builds.
+// jsdom's default localStorage throws on some origins; we don't need persistence here.
+try {
+  const store = {};
+  const safeStorage = {
+    getItem: (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null),
+    setItem: (key, value) => { store[key] = String(value); },
+    removeItem: (key) => { delete store[key]; },
+    clear: () => {
+      for (const k of Object.keys(store)) delete store[k];
+    }
+  };
+
+  // Attempt to override any throwing accessor with a safe implementation.
+  try {
+    // Direct assignment (works when property is writable).
+    global.window.localStorage = safeStorage;
+  } catch (e) {
+    // Fallback: define property if direct assignment fails.
+    try {
+      Object.defineProperty(global.window, 'localStorage', {
+        value: safeStorage,
+        configurable: true,
+        enumerable: false,
+        writable: false
+      });
+    } catch (_) {
+      // Swallow; worst case, components must guard localStorage access.
+    }
+  }
+} catch (_) {
+  // If anything goes wrong, don't block the build.
+}
 
 // Fabric Types
 // const Service = require('@fabric/core/types/service');

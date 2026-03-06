@@ -18,8 +18,9 @@ const ActivityStream = require('./ActivityStream');
 
 class Home extends React.Component {
   render () {
-    const { bridge } = this.props;
-    const current = bridge && bridge.current;
+    const { bridge, bridgeRef } = this.props;
+    const ref = bridge || bridgeRef;
+    const current = ref && ref.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
     const isNetworkStatus = (obj) => !!(obj && typeof obj === 'object' && (obj.network || Array.isArray(obj.peers)));
@@ -75,6 +76,10 @@ class Home extends React.Component {
                     <span style={{ color: '#777' }}>·</span>{' '}
                     <strong>Published documents:</strong> {published.length}
                   </div>
+                </div>
+                <div>
+                  <h3>Debug</h3>
+                  <pre>{JSON.stringify(current && typeof current.getGlobalState === 'function' ? current.getGlobalState() : {}, null, 2)}</pre>
                 </div>
               </Card.Description>
             </Card.Content>

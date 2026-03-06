@@ -99,7 +99,7 @@ class PeersPage extends React.Component {
                         const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
                         const primary = nickname || alias || id;
                         return (
-                          <List.Item as={Link} to={`/peers/${encodeURIComponent(address)}`} key={id || idx}>
+                          <List.Item as={Link} to={`/peers/${encodeURIComponent(id)}`} key={id || idx}>
                             <List.Content>
                               <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
                                 {primary}

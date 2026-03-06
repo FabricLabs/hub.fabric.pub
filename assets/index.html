@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <div data-hash="f739a02c471e09e5918b274723540d65224f2637882926741bc3ae075a3fa940" id="application-target"><fabric-interface class="fabric-site">
+  <div data-hash="2164612d6cdbe60e2fc11a1d7f00037cc9c4da3ff4befbbe8d1976600b07cede" id="application-target"><fabric-interface class="fabric-site">
       <style>
         fabric-react-component {
           margin: 1em;
@@ -33,15 +33,43 @@
           <div style="position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:0.75em;flex-wrap:wrap;margin-top:0" class="ui segment">
             <div style="display:flex;align-items:center;gap:0.75em;flex-wrap:wrap">
               <h3 style="margin:0" class="ui header"><a href="/"><code>hub.fabric.pub</code></a></h3>
-              <div class="ui small buttons"><a class="ui basic button" role="button" href="/"><i aria-hidden="true" class="home icon"></i>Home</a><a class="ui basic button" role="button" href="/peers"><i aria-hidden="true" class="sitemap icon"></i>Peers</a><a class="ui basic button" role="button" href="/documents"><i aria-hidden="true" class="file outline icon"></i>Documents</a></div>
+              <div class="ui small buttons"><a class="ui primary button" role="button" href="/"><i aria-hidden="true" class="home icon"></i>Home</a><a class="ui basic button" role="button" href="/peers"><i aria-hidden="true" class="sitemap icon"></i>Peers</a><a class="ui basic button" role="button" href="/documents"><i aria-hidden="true" class="file outline icon"></i>Documents</a></div>
             </div>
             <div style="display:flex;align-items:center;gap:0.5em;flex-wrap:wrap">
-              <div title="Configured hub address" class="ui small label"><i aria-hidden="true" class="server icon"></i>:80</div><button title="Log in" class="ui small basic button"><i aria-hidden="true" class="user circle icon"></i>Login</button><button title="Settings" class="ui small basic icon button"><i aria-hidden="true" class="cog icon"></i></button>
+              <div title="Configured hub address" class="ui small label"><i aria-hidden="true" class="server icon"></i>fabric.http.local:443</div><button title="Log in" class="ui small basic button"><i aria-hidden="true" class="user circle icon"></i>Login</button><button title="Settings" class="ui small basic icon button"><i aria-hidden="true" class="cog icon"></i></button>
             </div>
-          </div>
+          </div><fabric-hub-home class="fade-in">
+            <p>Loading network status...</p>
+            <div class="ui segment">
+              <h2 class="ui header">Published Documents</h2>
+              <div class="ui fluid card">
+                <div class="content">
+                  <div class="description">
+                    <div role="list" class="ui divided relaxed list">
+                      <div role="listitem" class="item">
+                        <div class="content">
+                          <div style="color:#666" class="description">No published documents yet. Upload a file in <a href="/documents">Documents</a> and click Publish.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="extra content"><a title="View all documents" class="ui basic button" role="button" href="/documents"><i aria-hidden="true" class="file outline icon"></i>View all documents</a></div>
+              </div>
+            </div>
+            <div class="ui segment">
+              <h2 class="ui header">Activity</h2><fabric-activity-stream className="activity-stream">
+                <div>
+                  <div style="margin-top:1em">
+                    <h4>Chat</h4>
+                  </div>
+                </div>
+              </fabric-activity-stream>
+            </div>
+          </fabric-hub-home>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75em;flex-wrap:wrap;margin-top:1em;border-top:1px solid rgba(0,0,0,0.05)" class="ui segment">
             <div style="flex:1 1 auto;min-width:0;color:#666"><code>hub.fabric.pub</code></div>
-            <div style="flex:0 0 auto;display:flex;align-items:center;gap:0.35em;color:#999"><i aria-hidden="true" class="clock outline small icon"></i><abbr class="timestamp" title="2026-03-06T14:12:41.685Z" style="text-decoration:none;cursor:default">9:12:41 AM</abbr></div>
+            <div style="flex:0 0 auto;display:flex;align-items:center;gap:0.35em;color:#999"><i aria-hidden="true" class="clock outline small icon"></i><abbr class="timestamp" title="2026-03-06T16:24:08.596Z" style="text-decoration:none;cursor:default">11:24:08 AM</abbr></div>
           </div>
         </fabric-react-component></fabric-container>
     </fabric-interface></div>

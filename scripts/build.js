@@ -38,6 +38,9 @@ async function main (input = {}) {
 // Run Program
 main(settings).catch((exception) => {
   console.error('[BUILD:SITE]', '[EXCEPTION]', exception);
+  if (exception && exception.stack) {
+    console.error('[BUILD:SITE]', '[STACK]', exception.stack);
+  }
 }).then((output) => {
   console.log('[BUILD:SITE]', '[OUTPUT]', output);
 });
