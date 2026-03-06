@@ -42,9 +42,16 @@ class Bridge extends React.Component {
       signingKey: props.auth ? new Key(props.auth) : null
     }, props);
 
+    // Optional override via a single hub address string.
+    // Accepts: "host:port", "http(s)://host:port", "ws(s)://host:port"
+    if (this.settings && typeof this.settings.hubAddress === 'string' && this.settings.hubAddress.trim()) {
+      this._applyHubAddressString(this.settings.hubAddress);
+    }
+
     this.state = {
       data: null,
       error: null,
+      networkStatus: null,
       subscriptions: new Set(),
       isConnected: false,
       webrtcConnected: false,
@@ -81,7 +88,12 @@ class Bridge extends React.Component {
   }
 
   get authority () {
+    if (this.settings && this.settings.authority) return this.settings.authority;
     return ((this.settings.secure) ? `wss` : `ws`) + `://${this.settings.host}:${this.settings.port}`;
+  }
+
+  get networkStatus () {
+    return this.state.networkStatus || null;
   }
 
   // Global state management methods
@@ -143,6 +155,66 @@ class Bridge extends React.Component {
   componentWillUnmount () {
     this.stop();
     window.removeEventListener('popstate', this.handlePathChange);
+  }
+
+  _parseHubAddressString (input) {
+    try {
+      const raw = input == null ? '' : String(input).trim();
+      if (!raw) return null;
+
+      const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw);
+      const baseScheme = this.settings && this.settings.secure ? 'https://' : 'http://';
+      const url = new URL(hasScheme ? raw : (baseScheme + raw));
+
+      const proto = (url.protocol || '').replace(':', '');
+      const secure = proto === 'https' || proto === 'wss';
+      const host = url.hostname;
+      const port = url.port ? Number(url.port) : (secure ? 443 : 80);
+      if (!host || !port || Number.isNaN(port)) return null;
+
+      const authority = (secure ? 'wss' : 'ws') + `://${host}:${port}`;
+      return { host, port, secure, authority, raw: raw };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  _applyHubAddressString (input) {
+    const parsed = this._parseHubAddressString(input);
+    if (!parsed) return false;
+    this.settings.host = parsed.host;
+    this.settings.port = parsed.port;
+    this.settings.secure = parsed.secure;
+    this.settings.authority = parsed.authority;
+    this.settings.hubAddress = parsed.raw;
+    return true;
+  }
+
+  _sendSubscribe (path) {
+    if (!path) return;
+    const message = Message.fromVector(['SUBSCRIBE', path]);
+    const messageBuffer = message.toBuffer();
+    this.sendSignedMessage(messageBuffer);
+  }
+
+  _resubscribeAll () {
+    try {
+      const subs = this.state && this.state.subscriptions ? Array.from(this.state.subscriptions) : [];
+      subs.forEach((p) => this._sendSubscribe(p));
+    } catch (e) {}
+  }
+
+  setHubAddress (hubAddress) {
+    const ok = this._applyHubAddressString(hubAddress);
+    if (!ok) {
+      console.warn('[BRIDGE]', 'Invalid hub address:', hubAddress);
+      return false;
+    }
+
+    // Fully restart to ensure WebRTC (PeerJS) uses the new host/port.
+    try { this.stop(); } catch (e) {}
+    try { this.start(); } catch (e) {}
+    return true;
   }
 
   handlePathChange = () => {
@@ -631,9 +703,7 @@ class Bridge extends React.Component {
       return;
     }
 
-    const message = Message.fromVector(['SUBSCRIBE', path]);
-    const messageBuffer = message.toBuffer();
-    this.sendSignedMessage(messageBuffer);
+    this._sendSubscribe(path);
 
     this.state.subscriptions.add(path);
     console.debug('[BRIDGE]', 'Subscribed to:', path);
@@ -752,11 +822,77 @@ class Bridge extends React.Component {
           try {
             const jsonCall = JSON.parse(message.body);
             if (jsonCall.method === 'JSONCallResult') {
-              // Convert JSONCallResult to GenericMessage format for consumption by components
-              this.props.responseCapture({
-                type: 'GenericMessage',
-                content: message.body
-              });
+              const result = Array.isArray(jsonCall.params) && jsonCall.params.length > 0
+                ? jsonCall.params[jsonCall.params.length - 1]
+                : (jsonCall.result || null);
+              if (result && typeof result === 'object' && (result.peers || result.network)) {
+                this.setState({ networkStatus: result });
+              }
+              // Handle non-network results used by routed pages / detail views
+              if (result && typeof result === 'object' && result.type === 'GetPeerResult' && result.peer && result.peer.address) {
+                const addr = result.peer.address;
+                this.globalState.peers = this.globalState.peers || {};
+                this.globalState.peers[addr] = result.peer;
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'add', path: `/peers/${addr}`, value: result.peer },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              // Documents RPC results
+              if (result && typeof result === 'object' && result.type === 'ListDocumentsResult' && Array.isArray(result.documents)) {
+                this.globalState.documents = this.globalState.documents || {};
+                for (const doc of result.documents) {
+                  if (!doc || !doc.id) continue;
+                  this.globalState.documents[doc.id] = { ...(this.globalState.documents[doc.id] || {}), ...doc };
+                }
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'replace', path: `/documents`, value: this.globalState.documents },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              if (result && typeof result === 'object' && result.type === 'GetDocumentResult' && result.document && result.document.id) {
+                const id = result.document.id;
+                this.globalState.documents = this.globalState.documents || {};
+                this.globalState.documents[id] = result.document;
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'add', path: `/documents/${id}`, value: result.document },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              if (result && typeof result === 'object' && result.type === 'CreateDocumentResult' && result.document && result.document.id) {
+                const id = result.document.id;
+                this.globalState.documents = this.globalState.documents || {};
+                this.globalState.documents[id] = { ...(this.globalState.documents[id] || {}), ...result.document };
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              if (result && typeof result === 'object' && result.type === 'PublishDocumentResult' && result.document && result.document.id) {
+                const id = result.document.id;
+                this.globalState.documents = this.globalState.documents || {};
+                this.globalState.documents[id] = { ...(this.globalState.documents[id] || {}), ...result.document, published: result.document.published || true };
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              if (typeof this.props.responseCapture === 'function') {
+                this.props.responseCapture({
+                  type: 'GenericMessage',
+                  content: message.body
+                });
+              }
             }
           } catch (parseError) {
             console.debug('[BRIDGE]', 'JSONCall body is not valid JSON, skipping parse');
@@ -768,6 +904,25 @@ class Bridge extends React.Component {
             type: 'GenericMessage',
             content: message.body
           });
+          break;
+        case 'ChatMessage':
+          try {
+            const chat = JSON.parse(message.body);
+            const created = (chat && chat.object && chat.object.created) || (chat && chat.created) || Date.now();
+            const id = `chat:${created}:${(chat && chat.actor && chat.actor.id) || 'unknown'}`;
+            this.globalState.messages = this.globalState.messages || {};
+            this.globalState.messages[id] = chat;
+
+            // Notify UI of new chat message (re-use existing globalStateUpdate channel).
+            window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+              detail: {
+                operation: { op: 'add', path: `/messages/${id}`, value: chat },
+                globalState: this.globalState
+              }
+            }));
+          } catch (e) {
+            console.error('[BRIDGE]', 'Could not parse ChatMessage body:', e);
+          }
           break;
         case 'JSONPatch':
           // Handle JSONPatch messages (canonical path)
@@ -822,6 +977,7 @@ class Bridge extends React.Component {
     const now = Date.now();
 
     this.sendNetworkStatusRequest();
+    this._resubscribeAll();
 
     const message = Message.fromVector(['Ping', now.toString()]);
     const messageBuffer = message.toBuffer();
@@ -857,6 +1013,12 @@ class Bridge extends React.Component {
    * @param {Object} peer - Peer descriptor (e.g. { address }).
    */
   sendAddPeerRequest (peer = {}) {
+    const resolved = typeof peer === 'string' ? peer : (peer && peer.address) || '';
+    if (!resolved) {
+      console.warn('[BRIDGE] sendAddPeerRequest: no address provided');
+      return;
+    }
+
     try {
       const payload = {
         method: 'AddPeer',
@@ -878,6 +1040,130 @@ class Bridge extends React.Component {
       }, 1000);
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending AddPeer request:', error);
+    }
+  }
+
+  /**
+   * Request to disconnect a peer by address.
+   * @param {string|{ address: string }} address - Peer address or object with address.
+   */
+  sendRemovePeerRequest (address) {
+    const resolved = typeof address === 'object' && address && address.address ? address.address : address;
+    if (!resolved) return;
+    try {
+      const payload = { method: 'RemovePeer', params: [resolved] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+      setTimeout(() => {
+        try {
+          this.sendListPeersRequest();
+        } catch (e) {
+          console.error('[BRIDGE]', 'Error refreshing peer list after RemovePeer:', e);
+        }
+      }, 500);
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending RemovePeer request:', error);
+    }
+  }
+
+  /**
+   * Send a chat message to a connected peer.
+   * @param {string|{ address: string }} address - Peer address or object with address.
+   * @param {string|{ text: string }} body - Message text or object with text.
+   */
+  sendPeerMessageRequest (address, body) {
+    const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
+    const resolvedText = typeof body === 'string' ? body : (body && body.text) || '';
+    if (!resolvedAddress || !resolvedText) return;
+    try {
+      const payload = { method: 'SendPeerMessage', params: [resolvedAddress, { text: resolvedText }] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending SendPeerMessage request:', error);
+    }
+  }
+
+  /**
+   * Set a node-local nickname for a peer (stored server-side).
+   * @param {string} address
+   * @param {string} nickname
+   */
+  sendSetPeerNicknameRequest (address, nickname) {
+    const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
+    if (!resolvedAddress) return;
+    const clean = nickname == null ? '' : String(nickname);
+    try {
+      const payload = { method: 'SetPeerNickname', params: [resolvedAddress, clean] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+      // Ensure UI updates even if push misses for some reason
+      setTimeout(() => {
+        try { this.sendListPeersRequest(); } catch (e) {}
+      }, 250);
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending SetPeerNickname request:', error);
+    }
+  }
+
+  /**
+   * Request rich peer details from the hub (used by `/peers/:address` page).
+   * @param {string} address
+   */
+  sendGetPeerRequest (address) {
+    const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
+    if (!resolvedAddress) return;
+    try {
+      const payload = { method: 'GetPeer', params: [resolvedAddress] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending GetPeer request:', error);
+    }
+  }
+
+  sendListDocumentsRequest () {
+    try {
+      const payload = { method: 'ListDocuments', params: [] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending ListDocuments request:', error);
+    }
+  }
+
+  sendGetDocumentRequest (id) {
+    const resolved = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!resolved) return;
+    try {
+      const payload = { method: 'GetDocument', params: [resolved] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending GetDocument request:', error);
+    }
+  }
+
+  sendCreateDocumentRequest (doc) {
+    if (!doc || typeof doc !== 'object') return;
+    try {
+      const payload = { method: 'CreateDocument', params: [doc] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending CreateDocument request:', error);
+    }
+  }
+
+  sendPublishDocumentRequest (id) {
+    const resolved = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!resolved) return;
+    try {
+      const payload = { method: 'PublishDocument', params: [resolved] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending PublishDocument request:', error);
     }
   }
 }

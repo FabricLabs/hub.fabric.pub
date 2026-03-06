@@ -31,6 +31,16 @@ const actions = require('../actions');
 async function main (input = {}) {
   console.log('[FABRIC:HUB] main() executing...');
 
+  // Surface errors even if UI catches them.
+  window.addEventListener('error', (event) => {
+    const err = event && event.error ? event.error : event;
+    console.error('[HUB]', 'window.error:', err);
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    console.error('[HUB]', 'unhandledrejection:', event && event.reason ? event.reason : event);
+  });
+
   // ### Custom HTML Elements
   // customElements.define('fabric-chat-bar', FabricChatBar);
 
