@@ -68,6 +68,8 @@ class Bridge extends React.Component {
     this.attempts = 1;
     this.messageQueue = [];
     this.webrtcMessageQueue = [];
+    this.peerMessageQueue = [];
+    this.chatSubmissionQueue = [];
     this.queue = [];
     this.ws = null;
     this._heartbeat = null;
@@ -82,6 +84,21 @@ class Bridge extends React.Component {
     // Initialize key if provided
     if (props.key) {
       this.key = new Key(props.key);
+    }
+
+    // Restore any queued peer messages from persistent storage
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const raw = window.localStorage.getItem('fabric:peerMessageQueue');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            this.peerMessageQueue = parsed;
+          }
+        }
+      } catch (e) {
+        console.warn('[BRIDGE]', 'Could not restore peerMessageQueue from storage:', e);
+      }
     }
 
     return this;
@@ -826,7 +843,11 @@ class Bridge extends React.Component {
                 ? jsonCall.params[jsonCall.params.length - 1]
                 : (jsonCall.result || null);
               if (result && typeof result === 'object' && (result.peers || result.network)) {
-                this.setState({ networkStatus: result });
+                this.setState({ networkStatus: result }, () => {
+                  // When network status changes (especially peer connectivity),
+                  // try to flush any queued peer messages.
+                  this._flushPeerMessageQueue();
+                });
               }
               // Handle non-network results used by routed pages / detail views
               if (result && typeof result === 'object' && result.type === 'GetPeerResult' && result.peer && result.peer.address) {
@@ -911,6 +932,13 @@ class Bridge extends React.Component {
             const created = (chat && chat.object && chat.object.created) || (chat && chat.created) || Date.now();
             const id = `chat:${created}:${(chat && chat.actor && chat.actor.id) || 'unknown'}`;
             this.globalState.messages = this.globalState.messages || {};
+
+            // If this message has a clientId, remove the pending optimistic entry we stored earlier
+            const clientId = chat && chat.object && chat.object.clientId;
+            if (clientId && this.globalState.messages[clientId]) {
+              delete this.globalState.messages[clientId];
+            }
+
             this.globalState.messages[id] = chat;
 
             // Notify UI of new chat message (re-use existing globalStateUpdate channel).
@@ -978,6 +1006,8 @@ class Bridge extends React.Component {
 
     this.sendNetworkStatusRequest();
     this._resubscribeAll();
+    this._flushChatSubmissionQueue();
+    this._flushPeerMessageQueue();
 
     const message = Message.fromVector(['Ping', now.toString()]);
     const messageBuffer = message.toBuffer();
@@ -1067,7 +1097,170 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Send a chat message to a connected peer.
+   * Submit a chat message for broadcast: store locally first, queue for hub, then relay to all clients and Fabric nodes.
+   * @param {string} text - Message text.
+   */
+  submitChatMessage (text) {
+    const trimmed = typeof text === 'string' ? text.trim() : '';
+    if (!trimmed) return;
+
+    const clientId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const created = Date.now();
+    const actorId = (this.key && this.key.id) ? this.key.id : 'anonymous';
+    const chat = {
+      type: 'P2P_CHAT_MESSAGE',
+      actor: { id: actorId },
+      object: { content: trimmed, created, clientId },
+      status: 'pending'
+    };
+
+    this.globalState.messages = this.globalState.messages || {};
+    this.globalState.messages[clientId] = chat;
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/messages/${clientId}`, value: chat },
+        globalState: this.globalState
+      }
+    }));
+
+    this.chatSubmissionQueue.push({ text: trimmed, clientId, actorId });
+    this._flushChatSubmissionQueue();
+  }
+
+  _flushChatSubmissionQueue () {
+    if (!this._isConnected || !this.ws || this.ws.readyState !== 1) return;
+    while (this.chatSubmissionQueue.length > 0) {
+      const item = this.chatSubmissionQueue.shift();
+      if (!item) continue;
+      this.sendSubmitChatMessageRequest({
+        text: item.text,
+        clientId: item.clientId,
+        actor: item.actorId ? { id: item.actorId } : undefined
+      });
+    }
+  }
+
+  /**
+   * Send SubmitChatMessage JSONCall to hub (broadcast to all clients + Fabric nodes).
+   * @param {Object} body - { text, clientId?, actor? }
+   */
+  sendSubmitChatMessageRequest (body) {
+    const text = typeof body === 'string' ? body : (body && body.text) || '';
+    if (!text) return;
+    try {
+      const payload = {
+        method: 'SubmitChatMessage',
+        params: [typeof body === 'object' ? body : { text }]
+      };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending SubmitChatMessage:', error);
+    }
+  }
+
+  /**
+   * Enqueue a peer-to-peer chat message for the given address.
+   * Messages are persisted and retried when the peer is connected.
+   * @param {Object} job - { address, text, created, clientId? }
+   */
+  _enqueuePeerMessage (job) {
+    if (!job || !job.address || !job.text) return;
+
+    // Ensure a created timestamp and a stable clientId for local tracking.
+    const created = job.created || Date.now();
+    const clientId = job.clientId || `peerqueue-${created}-${Math.random().toString(36).slice(2, 10)}`;
+    job.created = created;
+    job.clientId = clientId;
+
+    // Create a local chat representation so queued messages are visible in the UI.
+    try {
+      const actorId = (this.key && this.key.id) ? this.key.id : 'local';
+      const chat = {
+        type: 'P2P_CHAT_MESSAGE',
+        actor: { id: actorId },
+        object: {
+          content: job.text,
+          created,
+          target: job.address,
+          clientId
+        },
+        status: 'queued'
+      };
+
+      this.globalState.messages = this.globalState.messages || {};
+      this.globalState.messages[clientId] = chat;
+
+      window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+        detail: {
+          operation: { op: 'add', path: `/messages/${clientId}`, value: chat },
+          globalState: this.globalState
+        }
+      }));
+    } catch (e) {
+      console.warn('[BRIDGE]', 'Could not create local queued peer chat message:', e);
+    }
+
+    // Add to in-memory queue and persist.
+    this.peerMessageQueue = this.peerMessageQueue || [];
+    this.peerMessageQueue.push(job);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.setItem('fabric:peerMessageQueue', JSON.stringify(this.peerMessageQueue));
+      } catch (e) {
+        console.warn('[BRIDGE]', 'Could not persist peerMessageQueue:', e);
+      }
+    }
+  }
+
+  /**
+   * Attempt to send any queued peer messages for peers that are currently connected.
+   * Uses the latest networkStatus.peers from the hub.
+   */
+  _flushPeerMessageQueue () {
+    if (!this._isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    const networkStatus = this.state && this.state.networkStatus;
+    const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
+    if (!this.peerMessageQueue || !this.peerMessageQueue.length) return;
+
+    const remaining = [];
+
+    for (const job of this.peerMessageQueue) {
+      if (!job || !job.address || !job.text) continue;
+      const isConnected = peers.some((p) => p && p.address === job.address && p.status === 'connected');
+
+      if (!isConnected) {
+        remaining.push(job);
+        continue;
+      }
+
+      try {
+        const payload = { method: 'SendPeerMessage', params: [job.address, { text: job.text, clientId: job.clientId }] };
+        const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+        this.sendSignedMessage(message.toBuffer());
+      } catch (error) {
+        console.error('[BRIDGE]', 'Error sending queued peer message:', error);
+        remaining.push(job);
+      }
+    }
+
+    this.peerMessageQueue = remaining;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        if (this.peerMessageQueue.length) {
+          window.localStorage.setItem('fabric:peerMessageQueue', JSON.stringify(this.peerMessageQueue));
+        } else {
+          window.localStorage.removeItem('fabric:peerMessageQueue');
+        }
+      } catch (e) {
+        console.warn('[BRIDGE]', 'Could not persist updated peerMessageQueue:', e);
+      }
+    }
+  }
+
+  /**
+   * Send a chat message to a peer (queued if the peer is not currently connected).
    * @param {string|{ address: string }} address - Peer address or object with address.
    * @param {string|{ text: string }} body - Message text or object with text.
    */
@@ -1075,13 +1268,9 @@ class Bridge extends React.Component {
     const resolvedAddress = typeof address === 'object' && address && address.address ? address.address : address;
     const resolvedText = typeof body === 'string' ? body : (body && body.text) || '';
     if (!resolvedAddress || !resolvedText) return;
-    try {
-      const payload = { method: 'SendPeerMessage', params: [resolvedAddress, { text: resolvedText }] };
-      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
-      this.sendSignedMessage(message.toBuffer());
-    } catch (error) {
-      console.error('[BRIDGE]', 'Error sending SendPeerMessage request:', error);
-    }
+    const created = Date.now();
+    this._enqueuePeerMessage({ address: resolvedAddress, text: resolvedText, created });
+    this._flushPeerMessageQueue();
   }
 
   /**

@@ -99,7 +99,7 @@ class PeersPage extends React.Component {
                         const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
                         const primary = nickname || alias || id;
                         return (
-                          <List.Item key={id || idx}>
+                          <List.Item as={Link} to={`/peers/${encodeURIComponent(address)}`} key={id || idx}>
                             <List.Content>
                               <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
                                 {primary}
@@ -127,58 +127,6 @@ class PeersPage extends React.Component {
                                   Last seen: {new Date(lastSeen).toLocaleString()}
                                 </List.Description>
                               )}
-                              <div style={{ marginTop: '0.35em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
-                                {address && (
-                                  <Button size='mini' basic as={Link} to={`/peers/${encodeURIComponent(address)}`} title={`View details for ${address}`}>
-                                    <Icon name='info circle' />
-                                    Details
-                                  </Button>
-                                )}
-                                {address && typeof onSetPeerNickname === 'function' && (
-                                  <Button
-                                    size='mini'
-                                    basic
-                                    onClick={() => {
-                                      const value = window.prompt(`Node-local nickname for ${address}:`, nickname || '');
-                                      if (value == null) return;
-                                      onSetPeerNickname(address, value);
-                                    }}
-                                    title={`Set local nickname for ${address}`}
-                                  >
-                                    <Icon name='tag' />
-                                    Nickname
-                                  </Button>
-                                )}
-                                {!isConnected && address && typeof onAddPeer === 'function' && (
-                                  <Button size='mini' onClick={() => onAddPeer({ address })} title={`Reconnect to ${address}`}>
-                                    <Icon name='refresh' />
-                                    Reconnect
-                                  </Button>
-                                )}
-                                {isConnected && address && (
-                                  <>
-                                    {typeof onSendPeerMessage === 'function' && (
-                                      <Button
-                                        size='mini'
-                                        onClick={() => {
-                                          const text = window.prompt('Message to send:', '');
-                                          if (text != null && text !== '') onSendPeerMessage(address, text);
-                                        }}
-                                        title={`Send message to ${address}`}
-                                      >
-                                        <Icon name='send' />
-                                        Send message
-                                      </Button>
-                                    )}
-                                    {typeof onDisconnectPeer === 'function' && (
-                                      <Button size='mini' color='red' basic onClick={() => onDisconnectPeer(address)} title={`Disconnect ${address}`}>
-                                        <Icon name='remove' />
-                                        Disconnect
-                                      </Button>
-                                    )}
-                                  </>
-                                )}
-                              </div>
                             </List.Content>
                           </List.Item>
                         );

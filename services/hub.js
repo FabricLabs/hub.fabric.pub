@@ -362,17 +362,63 @@ class Hub extends Service {
         if (!address || !text) return { status: 'error', message: 'address and message text required' };
         if (!this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
         try {
-          const vector = ['P2P_CHAT_MESSAGE', JSON.stringify({
+          const clientId = body && body.clientId ? String(body.clientId) : null;
+          const chatPayload = {
             type: 'P2P_CHAT_MESSAGE',
             actor: { id: this.agent.identity.id },
-            object: { content: text, created: Date.now() }
-          })];
+            object: { content: text, created: Date.now(), target: address }
+          };
+
+          if (clientId) chatPayload.object.clientId = clientId;
+
+          const vector = ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)];
           const msg = Message.fromVector(vector).signWithKey(this.agent.key);
           this.agent.connections[address]._writeFabric(msg.toBuffer());
+
+          // Locally echo the chat message so this hub's UI clients
+          // also see messages it sends to peers.
+          try {
+            this.agent.emit('chat', chatPayload);
+          } catch (echoErr) {
+            console.warn('[HUB] Failed to locally echo peer chat message:', echoErr);
+          }
+
           return { status: 'success' };
         } catch (err) {
           console.error('[HUB] SendPeerMessage error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'send failed' };
+        }
+      });
+
+      // Submit a chat message for broadcast to all connected clients AND all Fabric nodes.
+      // Params: (body: { text: string, clientId?: string, actor?: { id } })
+      this.http._registerMethod('SubmitChatMessage', (...params) => {
+        const body = params[0] || params;
+        const text = typeof body === 'string' ? body : (body && (body.text || body.content)) || '';
+        if (!text) return { status: 'error', message: 'message text required' };
+        const clientId = body && body.clientId ? String(body.clientId) : null;
+        const actorId = (body && body.actor && body.actor.id) ? body.actor.id : this.agent.identity.id;
+        const created = Date.now();
+        const chatPayload = {
+          type: 'P2P_CHAT_MESSAGE',
+          actor: { id: actorId },
+          object: { content: text, created }
+        };
+        if (clientId) chatPayload.object.clientId = clientId;
+        try {
+          const relay = Message.fromVector(['ChatMessage', JSON.stringify(chatPayload)]);
+          if (this._rootKey && this._rootKey.private) relay.signWithKey(this._rootKey);
+          // Broadcast to all WebSocket clients
+          if (typeof this.http.broadcast === 'function') {
+            this.http.broadcast(relay);
+          }
+          // Relay to all Fabric P2P peers (origin '_client' so we don't skip any connection)
+          const p2pMsg = Message.fromVector(['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)]).signWithKey(this.agent.key);
+          this.agent.relayFrom('_client', p2pMsg);
+          return { status: 'success' };
+        } catch (err) {
+          console.error('[HUB] SubmitChatMessage error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'submit failed' };
         }
       });
 

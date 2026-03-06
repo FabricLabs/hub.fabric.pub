@@ -40,6 +40,8 @@ function PeerDetail (props) {
   const encoded = params && params.address ? params.address : '';
   const address = encoded ? decodeURIComponent(encoded) : '';
   const [detail, setDetail] = React.useState(null);
+  const [peerChats, setPeerChats] = React.useState([]);
+  const [outgoingText, setOutgoingText] = React.useState('');
 
   const bridge = props.bridge;
   const current = bridge && bridge.current;
@@ -63,9 +65,38 @@ function PeerDetail (props) {
     const handler = (event) => {
       try {
         const globalState = event && event.detail && event.detail.globalState;
-        if (!globalState || !globalState.peers) return;
-        const stored = globalState.peers[address];
-        if (stored) setDetail(stored);
+        if (!globalState) return;
+
+        // Update peer detail from global state, if available
+        if (globalState.peers) {
+          const stored = globalState.peers[address];
+          if (stored) setDetail(stored);
+        }
+
+        // Derive chats for this peer from global messages
+        if (globalState.messages) {
+          const messages = globalState.messages || {};
+          const peersByAddress = globalState.peers || {};
+          const storedPeer = peersByAddress[address];
+          const peerId = (storedPeer && storedPeer.id) || (detail && detail.id) || address;
+
+          const chats = Object.values(messages)
+            .filter((m) => m && typeof m === 'object' && m.type === 'P2P_CHAT_MESSAGE')
+            .filter((m) => {
+              const actorId = m.actor && m.actor.id;
+              const target = m.object && m.object.target;
+              // Messages from this peer, or messages explicitly targeted to this peer address
+              return (actorId && peerId && actorId === peerId) || (target && target === address);
+            })
+            .sort((a, b) => {
+              const ta = (a.object && a.object.created) || 0;
+              const tb = (b.object && b.object.created) || 0;
+              return ta - tb;
+            })
+            .slice(-100);
+
+          setPeerChats(chats);
+        }
       } catch (e) {}
     };
     window.addEventListener('globalStateUpdate', handler);
@@ -73,6 +104,16 @@ function PeerDetail (props) {
   }, [address]);
 
   const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address)) || address || 'Peer';
+
+  const handleSendPeerChat = (event) => {
+    event.preventDefault();
+    const text = (outgoingText || '').trim();
+    if (!text) return;
+    if (address && typeof props.onSendPeerMessage === 'function') {
+      props.onSendPeerMessage(address, text);
+      setOutgoingText('');
+    }
+  };
 
   return (
     <fabric-peer-detail class='fade-in'>
@@ -253,6 +294,75 @@ function PeerDetail (props) {
             <p>
               This peer isn’t in the current `knownPeers` list yet. Try refreshing, or add it by address.
             </p>
+          </Segment>
+        )}
+        {peer && (
+          <Segment style={{ marginTop: '1em' }}>
+            <Header as="h3">Chat</Header>
+            {peerChats.length > 0 ? (
+              <List divided relaxed size="small">
+                {peerChats.map((chat, index) => {
+                  const created = (chat.object && chat.object.created) || Date.now();
+                  const actor = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
+                  const content = (chat.object && (chat.object.content || chat.object.text)) || '';
+                  const isPending = chat.status === 'pending';
+                  const isQueued = chat.status === 'queued';
+                  const style = {
+                    opacity: (isPending || isQueued) ? 0.7 : 1,
+                    color: isQueued ? '#888' : undefined
+                  };
+                  return (
+                    <List.Item key={`${created}-${index}`}>
+                      <List.Content>
+                        <List.Header>
+                          <span style={style}>
+                            @{actor}
+                            {isPending && ' (sending…)'}
+                            {isQueued && (
+                              <Icon
+                                name="exclamation circle"
+                                color="grey"
+                                style={{ marginLeft: '0.35em' }}
+                                title="This message will be sent when the peer is online."
+                              />
+                            )}
+                          </span>
+                        </List.Header>
+                        <List.Description style={style}>
+                          {content}
+                        </List.Description>
+                      </List.Content>
+                    </List.Item>
+                  );
+                })}
+              </List>
+            ) : (
+              <p style={{ color: '#666' }}>No chat messages yet for this peer.</p>
+            )}
+            {address && typeof props.onSendPeerMessage === 'function' && (
+              <form
+                onSubmit={handleSendPeerChat}
+                style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', alignItems: 'center' }}
+              >
+                <input
+                  type="text"
+                  placeholder="Type a message…"
+                  value={outgoingText}
+                  onChange={(e) => setOutgoingText(e.target.value)}
+                  style={{ flex: 1, padding: '0.4em 0.6em', borderRadius: '4px', border: '1px solid rgba(34,36,38,.15)' }}
+                />
+                <Button
+                  size="small"
+                  primary
+                  type="submit"
+                  disabled={!outgoingText || !outgoingText.trim()}
+                  title={`Send message to ${address} (queued if offline)`}
+                >
+                  <Icon name="send" />
+                  Send
+                </Button>
+              </form>
+            )}
           </Segment>
         )}
       </Segment>

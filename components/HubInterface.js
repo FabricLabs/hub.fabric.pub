@@ -24,6 +24,7 @@ const Identity = require('@fabric/core/types/identity');
 // Components
 const Bridge = require('./Bridge');
 const Home = require('./Home');
+const BitcoinHome = require('./BitcoinHome');
 const DocumentList = require('./DocumentList');
 const DocumentView = require('./DocumentView');
 const PeerList = require('./PeerList');
