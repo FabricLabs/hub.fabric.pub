@@ -16,7 +16,8 @@ const {
 
 class PeersPage extends React.Component {
   render () {
-    const { bridge, onAddPeer, onRefreshPeers, onDisconnectPeer, onSendPeerMessage, onSetPeerNickname, onDiscoverWebRTCPeers, onRepublishWebRTCOffer } = this.props;
+    const { auth, bridge, onAddPeer, onRefreshPeers, onDisconnectPeer, onSendPeerMessage, onSetPeerNickname, onDiscoverWebRTCPeers, onRepublishWebRTCOffer } = this.props;
+    const isLoggedIn = !!(auth && auth.id && auth.xpub);
     const current = bridge && bridge.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
@@ -77,26 +78,28 @@ class PeersPage extends React.Component {
                     <div>
                       <strong>Peers:</strong> {peers.length}
                     </div>
-                    <Button.Group size='small'>
-                      {typeof onRefreshPeers === 'function' && (
-                        <Button icon labelPosition='left' onClick={onRefreshPeers} title='Refresh peer list'>
-                          <Icon name='refresh' />
-                          Refresh
+                    {isLoggedIn && (
+                      <Button.Group size='small'>
+                        {typeof onRefreshPeers === 'function' && (
+                          <Button icon labelPosition='left' onClick={onRefreshPeers} title='Refresh peer list'>
+                            <Icon name='refresh' />
+                            Refresh
+                          </Button>
+                        )}
+                        <Button
+                          primary
+                          onClick={() => {
+                            const address = window.prompt('Enter peer address (host:port or host):');
+                            if (!address || typeof onAddPeer !== 'function') return;
+                            const normalized = address.includes(':') ? address : `${address}:7777`;
+                            onAddPeer({ address: normalized });
+                          }}
+                        >
+                          <Icon name='add' />
+                          Add Peer
                         </Button>
-                      )}
-                      <Button
-                        primary
-                        onClick={() => {
-                          const address = window.prompt('Enter peer address (host:port or host):');
-                          if (!address || typeof onAddPeer !== 'function') return;
-                          const normalized = address.includes(':') ? address : `${address}:7777`;
-                          onAddPeer({ address: normalized });
-                        }}
-                      >
-                        <Icon name='add' />
-                        Add Peer
-                      </Button>
-                    </Button.Group>
+                      </Button.Group>
+                    )}
                   </div>
 
                   {peers.length > 0 && (

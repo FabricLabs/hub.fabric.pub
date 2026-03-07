@@ -30,6 +30,16 @@ function IdentityManager (props) {
     ? props.lockTimeoutMs
     : DEFAULT_LOCK_TIMEOUT_MS;
   const [localIdentity, setLocalIdentity] = React.useState(() => {
+    // If parent already has an unlocked identity (with xprv), use that to preserve unlocked state.
+    if (props.currentIdentity && props.currentIdentity.xprv) {
+      return {
+        id: props.currentIdentity.id,
+        xpub: props.currentIdentity.xpub,
+        xprv: props.currentIdentity.xprv,
+        passwordProtected: true
+      };
+    }
+
     try {
       if (typeof window === 'undefined' || !window.localStorage) return null;
       const raw = window.localStorage.getItem('fabric.identity.local');
@@ -581,10 +591,11 @@ function IdentityManager (props) {
                   if (!xprv) throw new Error('Missing xprv for pending seed.');
                   const identity = new Identity({ xprv });
                   const key = identity.key;
+                  const pwd = String(identityPassword || '').trim();
+                  const isPasswordProtected = !!pwd;
                   if (typeof window !== 'undefined' && window.localStorage) {
-                    const pwd = String(identityPassword || '').trim();
                     let payload = null;
-                    if (pwd) {
+                    if (isPasswordProtected) {
                       const salt = crypto.randomBytes(16).toString('hex');
                       const keyBytes = crypto.createHash('sha256')
                         .update(salt + pwd)
@@ -612,7 +623,8 @@ function IdentityManager (props) {
                   setLocalIdentity({
                     id: identity.id,
                     xpub: key.xpub,
-                    xprv
+                    xprv,
+                    passwordProtected: isPasswordProtected
                   });
                   resetSeedState();
                 } catch (e) {

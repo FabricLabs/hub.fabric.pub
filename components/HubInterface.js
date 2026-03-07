@@ -91,6 +91,7 @@ class HubInterface extends React.Component {
     }
 
     let initialLocalIdentity = null;
+    let initialHasLockedIdentity = false;
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         const raw = window.localStorage.getItem('fabric.identity.local');
@@ -105,6 +106,12 @@ class HubInterface extends React.Component {
                 xprv: parsed.xprv
               };
             } catch (e) {}
+          } else if (parsed && parsed.passwordProtected && parsed.id && parsed.xpub) {
+            initialLocalIdentity = {
+              id: parsed.id,
+              xpub: parsed.xpub
+            };
+            initialHasLockedIdentity = true;
           } else if (parsed && parsed.xpub) {
             try {
               const key = new Key({ xpub: parsed.xpub });
@@ -131,7 +138,7 @@ class HubInterface extends React.Component {
       uiHubAddressError: null,
       uiIdentityOpen: false,
       uiLocalIdentity: initialLocalIdentity,
-      uiHasLockedIdentity: false
+      uiHasLockedIdentity: initialHasLockedIdentity
     };
 
     this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
@@ -276,6 +283,7 @@ class HubInterface extends React.Component {
                 >
                   <Modal.Content scrolling>
                     <IdentityManager
+                      currentIdentity={this.state.uiLocalIdentity}
                       onLocalIdentityChange={(info) => {
                         this.setState({ uiLocalIdentity: info || null });
                         if (!info) {
