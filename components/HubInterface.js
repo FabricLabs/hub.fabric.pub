@@ -94,6 +94,25 @@ class HubInterface extends React.Component {
     let initialHasLockedIdentity = false;
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
+        let unlockedSession = null;
+        try {
+          if (window.sessionStorage) {
+            const rawSession = window.sessionStorage.getItem('fabric.identity.unlocked');
+            if (rawSession) {
+              const parsedSession = JSON.parse(rawSession);
+              if (parsedSession && parsedSession.xprv) {
+                const sessionIdentity = new Identity({ xprv: parsedSession.xprv });
+                unlockedSession = {
+                  id: sessionIdentity.id,
+                  xpub: sessionIdentity.key.xpub,
+                  xprv: parsedSession.xprv,
+                  passwordProtected: !!parsedSession.passwordProtected
+                };
+              }
+            }
+          }
+        } catch (e) {}
+
         const raw = window.localStorage.getItem('fabric.identity.local');
         if (raw) {
           const parsed = JSON.parse(raw);
@@ -107,11 +126,26 @@ class HubInterface extends React.Component {
               };
             } catch (e) {}
           } else if (parsed && parsed.passwordProtected && parsed.id && parsed.xpub) {
-            initialLocalIdentity = {
-              id: parsed.id,
-              xpub: parsed.xpub
-            };
-            initialHasLockedIdentity = true;
+            const sessionMatches = !!(
+              unlockedSession &&
+              unlockedSession.xprv &&
+              (String(unlockedSession.id) === String(parsed.id) || String(unlockedSession.xpub) === String(parsed.xpub))
+            );
+
+            if (sessionMatches) {
+              initialLocalIdentity = {
+                id: unlockedSession.id,
+                xpub: unlockedSession.xpub,
+                xprv: unlockedSession.xprv,
+                passwordProtected: true
+              };
+            } else {
+              initialLocalIdentity = {
+                id: parsed.id,
+                xpub: parsed.xpub
+              };
+              initialHasLockedIdentity = true;
+            }
           } else if (parsed && parsed.xpub) {
             try {
               const key = new Key({ xpub: parsed.xpub });
@@ -192,8 +226,16 @@ class HubInterface extends React.Component {
   }
 
   handleBridgeStateUpdate (newState) {
-    console.log('handleBridgeStateUpdate', newState);
-    this.setState(newState);
+    if (!newState || typeof newState !== 'object') return;
+    // Only merge Bridge-owned state; never overwrite identity/auth state from Bridge.
+    const bridgeKeys = ['data', 'error', 'networkStatus', 'subscriptions', 'isConnected', 'webrtcConnected', 'currentPath'];
+    const patch = {};
+    for (const k of bridgeKeys) {
+      if (Object.prototype.hasOwnProperty.call(newState, k)) patch[k] = newState[k];
+    }
+    if (Object.keys(patch).length > 0) {
+      this.setState(patch);
+    }
   }
 
   responseCapture (action) {
@@ -232,6 +274,13 @@ class HubInterface extends React.Component {
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
     const nodePubkey = (bridgeInstance && typeof bridgeInstance.getNodePubkey === 'function' && bridgeInstance.getNodePubkey());
 
+    // Auth: prefer in-session local identity (with id/xpub) so button shows identity after login
+    const local = this.state.uiLocalIdentity;
+    const hasLocal = local && (local.id || local.xpub);
+    const effectiveAuth = hasLocal ? local : this.props.auth;
+    // Never show "locked" when we have the key in memory
+    const effectiveHasLockedIdentity = (local && local.xprv) ? false : this.state.uiHasLockedIdentity;
+
     return (
       <fabric-interface id={this.id} class="fabric-site">
         <style>
@@ -245,7 +294,7 @@ class HubInterface extends React.Component {
           <fabric-react-component id='fabric-hub-application'>
             <Bridge
               ref={this.bridgeRef}
-              auth={this.props.auth || this.state.uiLocalIdentity}
+              auth={effectiveAuth}
               debug={this.state.debug}
               hubAddress={this.state.uiHubAddress}
               onStateUpdate={this.handleBridgeStateUpdate}
@@ -259,9 +308,9 @@ class HubInterface extends React.Component {
               <BrowserRouter style={{ marginTop: 0 }}>
                 <TopPanel
                   hubAddress={this.state.uiHubAddress}
-                  auth={this.props.auth || this.state.uiLocalIdentity}
-                  hasLocalIdentity={!!this.state.uiLocalIdentity}
-                  hasLockedIdentity={this.state.uiHasLockedIdentity}
+                  auth={effectiveAuth}
+                  hasLocalIdentity={!!hasLocal}
+                  hasLockedIdentity={effectiveHasLockedIdentity}
                   onUnlockIdentity={() => {
                     this.setState({ uiIdentityOpen: true });
                   }}
@@ -283,15 +332,50 @@ class HubInterface extends React.Component {
                 >
                   <Modal.Content scrolling>
                     <IdentityManager
+                      key={this.state.uiIdentityOpen ? 'open' : 'closed'}
                       currentIdentity={this.state.uiLocalIdentity}
                       onLocalIdentityChange={(info) => {
-                        this.setState({ uiLocalIdentity: info || null });
-                        if (!info) {
-                          this.setState({ uiHasLockedIdentity: false });
-                        }
+                        this.setState((prev) => {
+                          if (!info) {
+                            return { uiLocalIdentity: null, uiHasLockedIdentity: false };
+                          }
+                          // Never replace an unlocked identity (have xprv) with a locked one from the modal
+                          if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv && !info.xprv) {
+                            return {};
+                          }
+                          return {
+                            uiLocalIdentity: {
+                              id: info.id,
+                              xpub: info.xpub,
+                              xprv: info.xprv || undefined,
+                              passwordProtected: !!info.passwordProtected
+                            }
+                          };
+                        });
                       }}
                       onLockStateChange={(locked) => {
-                        this.setState({ uiHasLockedIdentity: !!locked });
+                        this.setState((prev) => {
+                          // Never mark locked if we still have the key in memory
+                          if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv) return {};
+                          return { uiHasLockedIdentity: !!locked };
+                        });
+                      }}
+                      onUnlockSuccess={(identityInfo) => {
+                        if (identityInfo && typeof identityInfo === 'object' && (identityInfo.id || identityInfo.xpub)) {
+                          const next = {
+                            id: identityInfo.id,
+                            xpub: identityInfo.xpub,
+                            xprv: identityInfo.xprv || undefined,
+                            passwordProtected: !!identityInfo.passwordProtected
+                          };
+                          this.setState({
+                            uiLocalIdentity: next,
+                            uiHasLockedIdentity: false,
+                            uiIdentityOpen: false
+                          });
+                        } else {
+                          this.setState({ uiIdentityOpen: false });
+                        }
                       }}
                       onForgetIdentity={() => {
                         if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
@@ -375,7 +459,7 @@ class HubInterface extends React.Component {
                     path="/"
                     element={(
                       <Home
-                        auth={this.props.auth}
+                        auth={effectiveAuth}
                         fetchContract={this.props.fetchContract}
                         contracts={this.props.contracts}
                         bridge={this.props.bridge}
@@ -388,7 +472,7 @@ class HubInterface extends React.Component {
                     path="/peers"
                     element={(
                       <PeerList
-                        auth={this.props.auth}
+                        auth={effectiveAuth}
                         bridge={this.props.bridge}
                         onAddPeer={(peer) => {
                           if (!peer || !this.bridgeRef || !this.bridgeRef.current) return;
@@ -445,7 +529,7 @@ class HubInterface extends React.Component {
                     path="/peers/:id"
                     element={(
                       <PeerView
-                        auth={this.props.auth}
+                        auth={effectiveAuth}
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
                         onAddPeer={(peer) => {

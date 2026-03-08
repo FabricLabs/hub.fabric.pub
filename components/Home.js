@@ -81,10 +81,6 @@ class Home extends React.Component {
                       <strong>Documents:</strong> {published.length}
                     </div>
                   </div>
-                  <div>
-                    <h3>Debug</h3>
-                    <pre>{JSON.stringify(current && typeof current.getGlobalState === 'function' ? current.getGlobalState() : {}, null, 2)}</pre>
-                  </div>
                 </Card.Description>
               </>
             ) : (
