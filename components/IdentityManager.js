@@ -36,7 +36,7 @@ function IdentityManager (props) {
         id: props.currentIdentity.id,
         xpub: props.currentIdentity.xpub,
         xprv: props.currentIdentity.xprv,
-        passwordProtected: true
+        passwordProtected: !!props.currentIdentity.passwordProtected
       };
     }
 
@@ -137,6 +137,23 @@ function IdentityManager (props) {
     };
   }, [localIdentity && localIdentity.xprv, lockTimeoutMs]);
 
+  // Persist unlocked key for this browser tab/session only, so refresh keeps the user unlocked.
+  React.useEffect(() => {
+    try {
+      if (typeof window === 'undefined' || !window.sessionStorage) return;
+      if (localIdentity && localIdentity.id && localIdentity.xpub && localIdentity.xprv) {
+        window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify({
+          id: localIdentity.id,
+          xpub: localIdentity.xpub,
+          xprv: localIdentity.xprv,
+          passwordProtected: !!localIdentity.passwordProtected
+        }));
+      } else {
+        window.sessionStorage.removeItem('fabric.identity.unlocked');
+      }
+    } catch (e) {}
+  }, [localIdentity]);
+
   // Notify parent when the local identity changes so outer UI (TopPanel) and Bridge can update.
   // Include xprv when available so Bridge can encrypt documents.
   React.useEffect(() => {
@@ -145,7 +162,8 @@ function IdentityManager (props) {
       props.onLocalIdentityChange({
         id: localIdentity.id,
         xpub: localIdentity.xpub,
-        xprv: localIdentity.xprv || undefined
+        xprv: localIdentity.xprv || undefined,
+        passwordProtected: !!localIdentity.passwordProtected
       });
     } else {
       props.onLocalIdentityChange(null);
@@ -213,7 +231,90 @@ function IdentityManager (props) {
             ) : null}
             {!localIdentity.xprv && isLocked ? (
               <>
-                <Form style={{ marginTop: '0.75em', maxWidth: 360 }}>
+                <Form
+                  style={{ marginTop: '0.75em', maxWidth: 360 }}
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (busy) return;
+                    const pwd = String(unlockPassword || '').trim();
+                    if (!pwd) {
+                      setError('Please enter your decryption password.');
+                      return;
+                    }
+                    setBusy(true);
+                    setError(null);
+                    (async () => {
+                      try {
+                        if (typeof window === 'undefined' || !window.localStorage) {
+                          throw new Error('Secure storage not available in this environment.');
+                        }
+                        const raw = window.localStorage.getItem('fabric.identity.local');
+                        if (!raw) throw new Error('No stored identity found.');
+                        const parsed = JSON.parse(raw);
+                        if (parsed && parsed.passwordProtected && parsed.xprvEnc && parsed.passwordSalt) {
+                          const keyBytes = crypto.createHash('sha256')
+                            .update(String(parsed.passwordSalt) + pwd)
+                            .digest();
+                          const parts = String(parsed.xprvEnc).split(':');
+                          if (parts.length !== 2) throw new Error('Invalid encrypted key format.');
+                          const iv = Buffer.from(parts[0], 'hex');
+                          const blob = Buffer.from(parts[1], 'hex');
+                          const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
+                          let decrypted = decipher.update(blob, 'hex', 'utf8');
+                          decrypted += decipher.final('utf8');
+                          const xprv = decrypted;
+                          const identity = new Identity({ xprv });
+                          const key = identity.key;
+                          const nextIdentity = {
+                            id: identity.id != null ? String(identity.id) : undefined,
+                            xpub: key.xpub != null ? String(key.xpub) : undefined,
+                            xprv: xprv != null ? String(xprv) : undefined,
+                            passwordProtected: true
+                          };
+                          try {
+                            if (typeof window !== 'undefined' && window.sessionStorage) {
+                              window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
+                            }
+                          } catch (e) {}
+                          setLocalIdentity(nextIdentity);
+                          setUnlockPassword('');
+                          setError(null);
+                          if (typeof props.onUnlockSuccess === 'function') {
+                            props.onUnlockSuccess(nextIdentity);
+                          }
+                        } else if (parsed && parsed.xprv && !parsed.passwordProtected) {
+                          const xprv = parsed.xprv;
+                          const identity = new Identity({ xprv });
+                          const key = identity.key;
+                          const nextIdentity = {
+                            id: identity.id != null ? String(identity.id) : undefined,
+                            xpub: key.xpub != null ? String(key.xpub) : undefined,
+                            xprv: xprv != null ? String(xprv) : undefined,
+                            passwordProtected: false
+                          };
+                          try {
+                            if (typeof window !== 'undefined' && window.sessionStorage) {
+                              window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
+                            }
+                          } catch (e) {}
+                          setLocalIdentity(nextIdentity);
+                          setUnlockPassword('');
+                          setError(null);
+                          if (typeof props.onUnlockSuccess === 'function') {
+                            props.onUnlockSuccess(nextIdentity);
+                          }
+                        } else {
+                          throw new Error('Stored identity is not password-protected.');
+                        }
+                      } catch (err) {
+                        console.error('[IDENTITY]', 'Unlock failed:', err);
+                        setError('Incorrect password or corrupted identity. Please try again.');
+                      } finally {
+                        setBusy(false);
+                      }
+                    })();
+                  }}
+                >
                   <Form.Field>
                     <label>Decryption password</label>
                     <input
@@ -223,75 +324,19 @@ function IdentityManager (props) {
                       onChange={(e) => setUnlockPassword(e.target.value)}
                     />
                   </Form.Field>
+                  <Button
+                    type="submit"
+                    primary
+                    size="small"
+                    icon
+                    labelPosition="left"
+                    style={{ marginTop: '0.5em' }}
+                    disabled={busy}
+                  >
+                    <Icon name="unlock" />
+                    Unlock private key
+                  </Button>
                 </Form>
-                <Button
-                  primary
-                  size="small"
-                  icon
-                  labelPosition="left"
-                  style={{ marginTop: '0.5em' }}
-                  disabled={busy}
-                  onClick={async () => {
-                    const pwd = String(unlockPassword || '').trim();
-                    if (!pwd) {
-                      setError('Please enter your decryption password.');
-                      return;
-                    }
-                    setBusy(true);
-                    try {
-                      if (typeof window === 'undefined' || !window.localStorage) {
-                        throw new Error('Secure storage not available in this environment.');
-                      }
-                      const raw = window.localStorage.getItem('fabric.identity.local');
-                      if (!raw) throw new Error('No stored identity found.');
-                      const parsed = JSON.parse(raw);
-                      if (parsed && parsed.passwordProtected && parsed.xprvEnc && parsed.passwordSalt) {
-                        const keyBytes = crypto.createHash('sha256')
-                          .update(String(parsed.passwordSalt) + pwd)
-                          .digest();
-                        const parts = String(parsed.xprvEnc).split(':');
-                        if (parts.length !== 2) throw new Error('Invalid encrypted key format.');
-                        const iv = Buffer.from(parts[0], 'hex');
-                        const blob = Buffer.from(parts[1], 'hex');
-                        const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
-                        let decrypted = decipher.update(blob, 'hex', 'utf8');
-                        decrypted += decipher.final('utf8');
-                        const xprv = decrypted;
-                        const identity = new Identity({ xprv });
-                        const key = identity.key;
-                        setLocalIdentity({
-                          id: identity.id,
-                          xpub: key.xpub,
-                          xprv,
-                          passwordProtected: true
-                        });
-                        setUnlockPassword('');
-                        setError(null);
-                      } else if (parsed && parsed.xprv && !parsed.passwordProtected) {
-                        const xprv = parsed.xprv;
-                        const identity = new Identity({ xprv });
-                        const key = identity.key;
-                        setLocalIdentity({
-                          id: identity.id,
-                          xpub: key.xpub,
-                          xprv
-                        });
-                        setUnlockPassword('');
-                        setError(null);
-                      } else {
-                        throw new Error('Stored identity is not password-protected.');
-                      }
-                    } catch (e) {
-                      console.error('[IDENTITY]', 'Unlock failed:', e);
-                      setError('Incorrect password or corrupted identity. Please try again.');
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  <Icon name="unlock" />
-                  Unlock private key
-                </Button>
               </>
             ) : null}
             <Button
@@ -419,7 +464,60 @@ function IdentityManager (props) {
                     return;
                   }
                   setError(null);
-                  setSeedConfirmed(true);
+                  setBusy(true);
+                  try {
+                    const xprv = pendingSeed && pendingSeed.xprv;
+                    if (!xprv) throw new Error('Missing xprv for pending seed.');
+                    const identity = new Identity({ xprv });
+                    const key = identity.key;
+                    const pwd = a;
+                    const isPasswordProtected = true;
+                    if (typeof window !== 'undefined' && window.localStorage) {
+                      const salt = crypto.randomBytes(16).toString('hex');
+                      const keyBytes = crypto.createHash('sha256')
+                        .update(salt + pwd)
+                        .digest();
+                      const iv = crypto.randomBytes(16);
+                      const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
+                      let enc = cipher.update(xprv, 'utf8', 'hex');
+                      enc += cipher.final('hex');
+                      const payload = {
+                        id: identity.id,
+                        xpub: key.xpub,
+                        xprvEnc: iv.toString('hex') + ':' + enc,
+                        passwordProtected: true,
+                        passwordSalt: salt
+                      };
+                      window.localStorage.setItem('fabric.identity.local', JSON.stringify(payload));
+                    }
+                    const nextIdentity = {
+                      id: identity.id != null ? String(identity.id) : undefined,
+                      xpub: key.xpub != null ? String(key.xpub) : undefined,
+                      xprv: xprv != null ? String(xprv) : undefined,
+                      passwordProtected: isPasswordProtected
+                    };
+
+                    // Make refresh-after-login deterministic for this tab/session.
+                    try {
+                      if (typeof window !== 'undefined' && window.sessionStorage) {
+                        window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
+                      }
+                    } catch (e) {}
+
+                    setLocalIdentity(nextIdentity);
+                    if (typeof props.onLocalIdentityChange === 'function') {
+                      props.onLocalIdentityChange(nextIdentity);
+                    }
+                    resetSeedState();
+                    if (typeof props.onUnlockSuccess === 'function') {
+                      props.onUnlockSuccess(nextIdentity);
+                    }
+                  } catch (e) {
+                    console.error('[IDENTITY]', 'Save and login failed:', e);
+                    setError((e && e.message) ? e.message : String(e));
+                  } finally {
+                    setBusy(false);
+                  }
                 }}
               >
                 <Icon name="arrow right" />
@@ -627,6 +725,14 @@ function IdentityManager (props) {
                     passwordProtected: isPasswordProtected
                   });
                   resetSeedState();
+                  if (typeof props.onUnlockSuccess === 'function') {
+                    props.onUnlockSuccess({
+                      id: identity.id != null ? String(identity.id) : undefined,
+                      xpub: key.xpub != null ? String(key.xpub) : undefined,
+                      xprv: xprv != null ? String(xprv) : undefined,
+                      passwordProtected: !!isPasswordProtected
+                    });
+                  }
                 } catch (e) {
                   console.error('[IDENTITY]', 'Save local identity failed:', e);
                   setError((e && e.stack) ? e.stack : (e && e.message ? e.message : String(e)));

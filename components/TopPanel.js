@@ -37,8 +37,9 @@ function TopPanel (props) {
 
   // Authenticated = have identity with private key (can sign/encrypt).
   // Locked = have identity but private key is locked (can unlock with password).
+  // Never show "Locked" when we have the key in auth (e.g. right after first login).
   const isAuthed = !!(auth && (auth.xprv || auth.private));
-  const isLockedState = hasLocalIdentity && hasLockedIdentity;
+  const isLockedState = hasLocalIdentity && hasLockedIdentity && !isAuthed;
   const identityLabel = (() => {
     if (!auth) return 'Login';
     if (auth.username) return auth.username;
@@ -90,17 +91,11 @@ function TopPanel (props) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        {hubAddress ? (
-          <Label size="small" title="Configured hub address">
-            <Icon name="server" />
-            {hubAddress}
-          </Label>
-        ) : null}
         {hasLocalIdentity && (
           <Icon
-            name={hasLockedIdentity ? 'lock' : 'unlock'}
-            color={hasLockedIdentity ? 'orange' : 'green'}
-            title={hasLockedIdentity ? 'Identity locked' : 'Identity unlocked'}
+            name={isLockedState ? 'lock' : 'unlock'}
+            color={isLockedState ? 'orange' : 'green'}
+            title={isLockedState ? 'Identity locked' : 'Identity unlocked'}
             style={{ marginRight: '0.25em' }}
           />
         )}
