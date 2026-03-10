@@ -72,6 +72,10 @@ module.exports = {
       '@noble/hashes/crypto': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
       // Redirect cryptoNode.js when package exports resolve to it (e.g. from nested @noble/hashes in elliptic)
       '@noble/hashes/esm/cryptoNode.js': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
+      // Ensure sha2.js subpath is always resolvable for @fabric/core's hash256.js and taggedHash.js,
+      // independent of how webpack interprets @noble/hashes exports or conditions.
+      '@noble/hashes/sha2.js': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
+      '@noble/hashes/sha2': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
       // node: scheme imports - must resolve to browser polyfills
       'node:crypto': require.resolve('crypto-browserify'),
       // Use browser build of react-dom/server (avoids TextEncoder error from Node build)
