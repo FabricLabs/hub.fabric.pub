@@ -124,6 +124,8 @@ function PeerDetail (props) {
     }
   };
 
+  const isPeerLoaded = !!peer;
+
   return (
     <fabric-peer-detail class='fade-in'>
       <Segment>
@@ -158,62 +160,80 @@ function PeerDetail (props) {
           <Card.Content>
             <Card.Header>Peer Details</Card.Header>
             <Card.Description>
-              <List divided relaxed size="small">
-                <List.Item>
-                  <List.Content>
-                    <List.Header>Address</List.Header>
-                    <List.Description>{(peer && peer.address) || id || 'unknown'}</List.Description>
-                  </List.Content>
-                </List.Item>
-                <List.Item>
-                  <List.Content>
-                    <List.Header>ID</List.Header>
-                    <List.Description>{(peer && peer.id) || 'unknown'}</List.Description>
-                  </List.Content>
-                </List.Item>
-                <List.Item>
-                  <List.Content>
-                    <List.Header>Nickname (node-local)</List.Header>
-                    <List.Description>{(peer && peer.nickname) || ''}</List.Description>
-                  </List.Content>
-                </List.Item>
-                <List.Item>
-                  <List.Content>
-                    <List.Header>Alias (peer-provided)</List.Header>
-                    <List.Description>{(peer && peer.alias) || ''}</List.Description>
-                  </List.Content>
-                </List.Item>
-                <List.Item>
-                  <List.Content>
-                    <List.Header>Score</List.Header>
-                    <List.Description>{peer && peer.score != null ? String(peer.score) : ''}</List.Description>
-                  </List.Content>
-                </List.Item>
-                <List.Item>
-                  <List.Content>
-                    <List.Header>First seen</List.Header>
-                    <List.Description>{formatMaybeDate(peer && peer.firstSeen)}</List.Description>
-                  </List.Content>
-                </List.Item>
-                <List.Item>
-                  <List.Content>
-                    <List.Header>Last seen</List.Header>
-                    <List.Description>{formatMaybeDate(peer && (peer.lastSeen || peer.lastMessage))}</List.Description>
-                  </List.Content>
-                </List.Item>
-                {peer && peer.connection && (
+              {isPeerLoaded ? (
+                <List divided relaxed size="small">
                   <List.Item>
                     <List.Content>
-                      <List.Header>Connection</List.Header>
-                      <List.Description>
-                        {peer.connection.remoteAddress ? `${peer.connection.remoteAddress}:${peer.connection.remotePort || ''}` : 'connected'}
-                        {peer.connection.lastMessage ? ` — last message: ${formatMaybeDate(peer.connection.lastMessage)}` : ''}
-                        {peer.connection.failureCount != null ? ` — failures: ${peer.connection.failureCount}` : ''}
-                      </List.Description>
+                      <List.Header>Address</List.Header>
+                      <List.Description>{(peer && peer.address) || id || 'unknown'}</List.Description>
                     </List.Content>
                   </List.Item>
-                )}
-              </List>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>ID</List.Header>
+                      <List.Description>{(peer && peer.id) || 'unknown'}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>Nickname (node-local)</List.Header>
+                      <List.Description>{(peer && peer.nickname) || ''}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>Alias (peer-provided)</List.Header>
+                      <List.Description>{(peer && peer.alias) || ''}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>Score</List.Header>
+                      <List.Description>{peer && peer.score != null ? String(peer.score) : ''}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>First seen</List.Header>
+                      <List.Description>{formatMaybeDate(peer && peer.firstSeen)}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>Last seen</List.Header>
+                      <List.Description>{formatMaybeDate(peer && (peer.lastSeen || peer.lastMessage))}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  {peer && peer.connection && (
+                    <List.Item>
+                      <List.Content>
+                        <List.Header>Connection</List.Header>
+                        <List.Description>
+                          {peer.connection.remoteAddress ? `${peer.connection.remoteAddress}:${peer.connection.remotePort || ''}` : 'connected'}
+                          {peer.connection.lastMessage ? ` — last message: ${formatMaybeDate(peer.connection.lastMessage)}` : ''}
+                          {peer.connection.failureCount != null ? ` — failures: ${peer.connection.failureCount}` : ''}
+                        </List.Description>
+                      </List.Content>
+                    </List.Item>
+                  )}
+                </List>
+              ) : (
+                <Segment
+                  placeholder
+                  basic
+                  style={{ minHeight: '20vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <div>
+                    <Loader active inline="centered" />
+                    <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
+                      Loading peer details…
+                      <Header.Subheader>
+                        Fetching latest status from hub.
+                      </Header.Subheader>
+                    </Header>
+                  </div>
+                </Segment>
+              )}
             </Card.Description>
           </Card.Content>
           <Card.Content extra>

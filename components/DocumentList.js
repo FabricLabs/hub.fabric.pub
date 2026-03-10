@@ -13,6 +13,7 @@ const {
   Input,
   Label,
   List,
+  Loader,
   Segment
 } = require('semantic-ui-react');
 
@@ -282,32 +283,49 @@ function DocumentsPage (props) {
             <Icon name="refresh" />
             Refresh
           </Button>
-          <List divided relaxed style={{ marginTop: '1em' }}>
-            {docs.map((doc) => (
-              <List.Item key={doc.id}>
-                <List.Content>
-                  <List.Header>
-                    <Link to={`/documents/${encodeURIComponent(doc.id)}`}>{doc.name || doc.id}</Link>
-                    {doc.contentEncrypted && (
-                      <Label size="mini" color="green" style={{ marginLeft: '0.5em' }} title="Encrypted">
-                        <Icon name="lock" />
-                      </Label>
-                    )}
-                  </List.Header>
-                  <List.Description style={{ color: '#666' }}>
-                    {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}{doc.created ? ` — ${new Date(doc.created).toLocaleString()}` : ''}
-                  </List.Description>
-                </List.Content>
-              </List.Item>
-            ))}
-            {docs.length === 0 && (
-              <List.Item>
-                <List.Content>
-                  <List.Description style={{ color: '#666' }}>No documents yet.</List.Description>
-                </List.Content>
-              </List.Item>
-            )}
-          </List>
+          {(!indexed && allDocs.length === 0) ? (
+            <Segment
+              placeholder
+              style={{ marginTop: '1em', minHeight: '20vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <div>
+                <Loader active inline="centered" />
+                <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
+                  Loading documents…
+                  <Header.Subheader>
+                    Fetching document index from hub.
+                  </Header.Subheader>
+                </Header>
+              </div>
+            </Segment>
+          ) : (
+            <List divided relaxed style={{ marginTop: '1em' }}>
+              {docs.map((doc) => (
+                <List.Item key={doc.id}>
+                  <List.Content>
+                    <List.Header>
+                      <Link to={`/documents/${encodeURIComponent(doc.id)}`}>{doc.name || doc.id}</Link>
+                      {doc.contentEncrypted && (
+                        <Label size="mini" color="green" style={{ marginLeft: '0.5em' }} title="Encrypted">
+                          <Icon name="lock" />
+                        </Label>
+                      )}
+                    </List.Header>
+                    <List.Description style={{ color: '#666' }}>
+                      {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}{doc.created ? ` — ${new Date(doc.created).toLocaleString()}` : ''}
+                    </List.Description>
+                  </List.Content>
+                </List.Item>
+              ))}
+              {docs.length === 0 && (
+                <List.Item>
+                  <List.Content>
+                    <List.Description style={{ color: '#666' }}>No documents yet.</List.Description>
+                  </List.Content>
+                </List.Item>
+              )}
+            </List>
+          )}
         </Segment>
       </Segment>
     </fabric-documents>

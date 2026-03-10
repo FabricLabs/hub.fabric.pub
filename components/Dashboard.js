@@ -321,16 +321,14 @@ class Dashboard extends React.Component {
             </section>
           </Sidebar>
           <Container fluid style={containerStyle} onClick={this.closeSidebars}>
-            {this.state.isLoading ? null : (
-              <Routes>
-                <Route path="*" element={<Navigate to='/' replace />} />
-                <Route path="/" element={<Home auth={this.props.auth} />} />
-                {/* <Route path="/documents" element={<DocumentHome documents={this.props.documents} uploadDocument={this.props.uploadDocument} fetchDocuments={this.props.fetchDocuments} searchDocument={this.props.searchDocument} chat={this.props.chat} resetChat={this.props.resetChat} files={this.props.files} uploadFile={this.props.uploadFile} />} /> */}
-                {/* <Route path="/documents/:fabricID" element={<DocumentView  {...this.props} documents={this.props.documents} fetchDocument={this.props.fetchDocument} resetChat={this.props.resetChat} />} /> */}
-                {/* <Route path="/peers" element={<NetworkHome {...this.props} network={{ peers: [] }} />} /> */}
-                {/* <Route path="/contracts" element={<ContractHome {...this.props} fetchContract={this.props.fetchContract} fetchContracts={this.props.fetchContracts} />} /> */}
-              </Routes>
-            )}
+            <Routes>
+              <Route path="*" element={<Navigate to='/' replace />} />
+              <Route path="/" element={<Home auth={this.props.auth} />} />
+              {/* <Route path="/documents" element={<DocumentHome documents={this.props.documents} uploadDocument={this.props.uploadDocument} fetchDocuments={this.props.fetchDocuments} searchDocument={this.props.searchDocument} chat={this.props.chat} resetChat={this.props.resetChat} files={this.props.files} uploadFile={this.props.uploadFile} />} /> */}
+              {/* <Route path="/documents/:fabricID" element={<DocumentView  {...this.props} documents={this.props.documents} fetchDocument={this.props.fetchDocument} resetChat={this.props.resetChat} />} /> */}
+              {/* <Route path="/peers" element={<NetworkHome {...this.props} network={{ peers: [] }} />} /> */}
+              {/* <Route path="/contracts" element={<ContractHome {...this.props} fetchContract={this.props.fetchContract} fetchContracts={this.props.fetchContracts} />} /> */}
+            </Routes>
           </Container>
         </div>
         <ToastContainer />

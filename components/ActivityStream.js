@@ -96,7 +96,7 @@ class ActivityStreamElement extends React.Component {
               <div style={{ marginBottom: '0.75em' }}>
                 {chats.map((chat, index) => {
                   const created = (chat.object && chat.object.created) || Date.now();
-                  const actor = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
+                  const actorId = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
                   const content = (chat.object && (chat.object.content || chat.object.text)) || '';
                   const isPending = chat.status === 'pending';
                   const isQueued = chat.status === 'queued';
@@ -105,9 +105,16 @@ class ActivityStreamElement extends React.Component {
                     opacity: (isPending || isQueued) ? 0.7 : 1,
                     color: isQueued ? '#888' : undefined
                   };
+                  const actorNode = actorId && actorId !== 'unknown'
+                    ? (
+                      <a href={`/peers/${encodeURIComponent(actorId)}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                        <strong>@{actorId}</strong>
+                      </a>
+                      )
+                    : <strong>@{actorId}</strong>;
                   return (
                     <div key={`${created}-${index}`} style={style}>
-                      <strong>@{actor}</strong>
+                      {actorNode}
                       {isPending && ' (sending…)'}
                       {isQueued && ' (!)'}: {content}
                     </div>

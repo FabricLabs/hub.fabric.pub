@@ -11,6 +11,7 @@ const {
   Icon,
   Label,
   List,
+  Loader,
   Segment
 } = require('semantic-ui-react');
 
@@ -84,7 +85,22 @@ class Home extends React.Component {
                 </Card.Description>
               </>
             ) : (
-              <p>Loading network status...</p>
+              <Segment basic>
+                <Segment
+                  placeholder
+                  style={{ minHeight: '30vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <div>
+                    <Loader active inline="centered" size="large" />
+                    <Header as='h4' style={{ marginTop: '1em', textAlign: 'center' }}>
+                      Loading network status…
+                      <Header.Subheader>
+                        Connecting to hub and fetching peers.
+                      </Header.Subheader>
+                    </Header>
+                  </div>
+                </Segment>
+              </Segment>
             )}
           </Card.Content>
         </Card>

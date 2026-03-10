@@ -174,8 +174,20 @@ function DocumentDetail (props) {
         )}
 
         {!doc && (
-          <Segment secondary style={{ marginTop: '1em' }}>
-            Loading document…
+          <Segment
+            placeholder
+            secondary
+            style={{ marginTop: '1em', minHeight: '20vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <div>
+              <Loader active inline="centered" />
+              <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
+                Loading document…
+                <Header.Subheader>
+                  Fetching document details from hub.
+                </Header.Subheader>
+              </Header>
+            </div>
           </Segment>
         )}
       </Segment>
