@@ -24,14 +24,25 @@ function ChatInput (props) {
   return (
     <form
       onSubmit={handleSubmit}
-      style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', alignItems: 'center' }}
+      style={{
+        marginTop: '0.75em',
+        display: 'flex',
+        alignItems: 'stretch'
+      }}
     >
       <input
         type="text"
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange && onChange(e.target.value)}
-        style={{ flex: 1, padding: '0.4em 0.6em', borderRadius: '4px', border: '1px solid rgba(34,36,38,.15)' }}
+        style={{
+          flex: 1,
+          padding: '0.6em 0.8em',
+          borderRadius: '4px 0 0 4px',
+          border: '1px solid rgba(34,36,38,.15)',
+          borderRight: 'none',
+          outline: 'none'
+        }}
       />
       <Button
         size="small"
@@ -39,6 +50,10 @@ function ChatInput (props) {
         type="submit"
         disabled={disabled || !value || !value.trim()}
         title={title || 'Send message'}
+        style={{
+          borderRadius: '0 4px 4px 0',
+          margin: 0
+        }}
       >
         <Icon name="send" />
         Send

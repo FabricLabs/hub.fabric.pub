@@ -3,7 +3,8 @@
 // Dependencies
 const fetch = require('cross-fetch');
 const React = require('react');
-const { Form, Input } = require('semantic-ui-react');
+const { Link } = require('react-router-dom');
+const ChatInput = require('./ChatInput');
 
 class ActivityStreamElement extends React.Component {
   constructor (props) {
@@ -17,7 +18,8 @@ class ActivityStreamElement extends React.Component {
 
     this.state = {
       ...this.settings,
-      chatInput: ''
+      chatInput: '',
+      entries: []
     };
 
     return this;
@@ -44,15 +46,17 @@ class ActivityStreamElement extends React.Component {
       const globalState = event && event.detail && event.detail.globalState;
       if (!globalState) return;
       const messages = globalState.messages || {};
-      const chats = Object.values(messages)
-        .filter((m) => m && typeof m === 'object' && m.type === 'P2P_CHAT_MESSAGE')
+      const allMessages = Object.values(messages).filter((m) => m && typeof m === 'object');
+
+      const entries = allMessages
         .sort((a, b) => {
           const ta = (a.object && a.object.created) || 0;
           const tb = (b.object && b.object.created) || 0;
-          return ta - tb;
+          return ta - tb; // oldest first
         })
-        .slice(-100);
-      this.setState({ chats });
+        .slice(-200);
+
+      this.setState({ entries });
     } catch (e) {
       console.error('[FABRIC:STREAM]', 'Error processing global state update:', e);
     }
@@ -66,7 +70,7 @@ class ActivityStreamElement extends React.Component {
   }
 
   _handleChatSubmit = (e) => {
-    e.preventDefault();
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
     const text = (this.state.chatInput || '').trim();
     if (!text) return;
     const onSubmit = this.props.onSubmitChat || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function' && this.props.bridge.current.submitChatMessage.bind(this.props.bridge.current));
@@ -77,29 +81,29 @@ class ActivityStreamElement extends React.Component {
   };
 
   render () {
-    const { activities = [] } = this.props.api?.resource || {};
-    const chats = Array.isArray(this.state.chats) ? this.state.chats : [];
+    const apiActivities = (this.props.api && this.props.api.resource && this.props.api.resource.activities) || [];
+    const entries = Array.isArray(this.state.entries) && this.state.entries.length > 0
+      ? this.state.entries
+      : apiActivities;
     return (
       <fabric-activity-stream className='activity-stream'>
         {this.props.includeHeader && <h3>Activity Stream</h3>}
         <div>
-          {activities.map((activity, index) => {
-            return (
-              <div key={index}>
-                <strong>{activity.actor}</strong> {activity.verb} <strong>{activity.object}</strong>
-              </div>
-            );
-          })}
-          <div style={{ marginTop: '1em' }}>
-            <h4>Chat</h4>
-            {chats.length > 0 && (
-              <div style={{ marginBottom: '0.75em' }}>
-                {chats.map((chat, index) => {
-                  const created = (chat.object && chat.object.created) || Date.now();
-                  const actorId = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
-                  const content = (chat.object && (chat.object.content || chat.object.text)) || '';
-                  const isPending = chat.status === 'pending';
-                  const isQueued = chat.status === 'queued';
+          {entries.length > 0 && (
+            <div style={{ marginBottom: '1em' }}>
+              {entries.map((entry, index) => {
+                const isChat = entry.type === 'P2P_CHAT_MESSAGE';
+                const created = (entry.object && entry.object.created) || entry.created || null;
+                const actorId = (entry.actor && (entry.actor.username || entry.actor.id)) || (isChat ? 'unknown' : 'system');
+                const target = entry.target;
+                const targetLabel = typeof target === 'string'
+                  ? target
+                  : (target && (target.name || target.id)) || null;
+
+                if (isChat) {
+                  const content = (entry.object && (entry.object.content || entry.object.text)) || '';
+                  const isPending = entry.status === 'pending';
+                  const isQueued = entry.status === 'queued';
                   const style = {
                     marginBottom: '0.5em',
                     opacity: (isPending || isQueued) ? 0.7 : 1,
@@ -107,32 +111,98 @@ class ActivityStreamElement extends React.Component {
                   };
                   const actorNode = actorId && actorId !== 'unknown'
                     ? (
-                      <a href={`/peers/${encodeURIComponent(actorId)}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                      <Link
+                        to={`/peers/${encodeURIComponent(actorId)}`}
+                        style={{ color: 'inherit', textDecoration: 'none' }}
+                      >
                         <strong>@{actorId}</strong>
-                      </a>
+                      </Link>
                       )
                     : <strong>@{actorId}</strong>;
                   return (
-                    <div key={`${created}-${index}`} style={style}>
+                    <div key={`${created || 'chat'}-${index}`} style={style}>
                       {actorNode}
                       {isPending && ' (sending…)'}
                       {isQueued && ' (!)'}: {content}
                     </div>
                   );
-                })}
-              </div>
-            )}
+                }
+
+                const verb = entry.type || 'Activity';
+                const objectType = entry.object && entry.object.type ? entry.object.type : 'Object';
+                const objectName = entry.object && (entry.object.name || entry.object.id);
+
+                const objectId = entry.object && entry.object.id;
+                let objectHref = null;
+                if (objectType === 'Document' && objectId) {
+                  objectHref = `/documents/${encodeURIComponent(objectId)}`;
+                } else if (objectType === 'StorageContract' && objectId) {
+                  objectHref = `/contracts/${encodeURIComponent(objectId)}`;
+                }
+
+                let targetHref = null;
+                if (typeof target === 'string' && target) {
+                  targetHref = `/peers/${encodeURIComponent(target)}`;
+                } else if (target && target.type === 'Collection' && target.name === 'documents') {
+                  targetHref = '/documents';
+                }
+
+                return (
+                  <div key={`${created || 'activity'}-${index}`} style={{ marginBottom: '0.35em' }}>
+                    {actorId && actorId !== 'system'
+                      ? (
+                        <Link
+                          to={`/peers/${encodeURIComponent(actorId)}`}
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                        >
+                          <strong>@{actorId}</strong>
+                        </Link>
+                        )
+                      : <strong>@{actorId}</strong>}{' '}
+                    {verb}{' '}
+                    {objectHref
+                      ? (
+                        <Link
+                          to={objectHref}
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                        >
+                          <strong>{objectType}{objectName ? `:${objectName}` : ''}</strong>
+                        </Link>
+                        )
+                      : <strong>{objectType}{objectName ? `:${objectName}` : ''}</strong>}
+                    {targetLabel && (
+                      <> → {targetHref
+                        ? (
+                          <Link
+                            to={targetHref}
+                            style={{ color: 'inherit', textDecoration: 'none' }}
+                          >
+                            <span>{targetLabel}</span>
+                          </Link>
+                          )
+                        : <span>{targetLabel}</span>}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ marginTop: '1em' }}>
             {((typeof this.props.onSubmitChat === 'function') || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
-              <Form onSubmit={this._handleChatSubmit}>
-                <Form.Field>
-                  <Input
-                    action={{ content: 'Send', type: 'submit' }}
-                    placeholder="Type a message…"
-                    value={this.state.chatInput}
-                    onChange={(e) => this.setState({ chatInput: e.target.value })}
-                  />
-                </Form.Field>
-              </Form>
+              <ChatInput
+                value={this.state.chatInput}
+                onChange={(value) => this.setState({ chatInput: value })}
+                onSubmit={(text) => {
+                  const onSubmit = this.props.onSubmitChat || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function' && this.props.bridge.current.submitChatMessage.bind(this.props.bridge.current));
+                  if (typeof onSubmit === 'function') {
+                    onSubmit(text);
+                    this.setState({ chatInput: '' });
+                  }
+                }}
+                placeholder="Type a message…"
+                title="Send chat message"
+              />
             )}
           </div>
         </div>

@@ -143,6 +143,22 @@ function PeerDetail (props) {
 
   const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address)) || id || 'Peer';
 
+  const resolvedAddress = (peer && peer.address) || id || '';
+  let host = '';
+  let port = '';
+  if (peer && peer.connection && peer.connection.remoteAddress) {
+    host = peer.connection.remoteAddress;
+    port = peer.connection.remotePort != null ? String(peer.connection.remotePort) : '';
+  } else if (resolvedAddress) {
+    const lastColon = resolvedAddress.lastIndexOf(':');
+    if (lastColon > 0) {
+      host = resolvedAddress.slice(0, lastColon);
+      port = resolvedAddress.slice(lastColon + 1);
+    } else {
+      host = resolvedAddress;
+    }
+  }
+
   const handleSendPeerChat = (event) => {
     event.preventDefault();
     const text = (outgoingText || '').trim();
@@ -158,29 +174,109 @@ function PeerDetail (props) {
   return (
     <fabric-peer-detail class='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button
-            basic
-            size='small'
-            as={Link}
-            to="/peers"
-            title="Back to peers"
-          >
-            <Icon name="arrow left" />
-            Back
-          </Button>
-          <span>{title}</span>
-          <Label
-            size='small'
-            color={isConnected ? 'green' : 'grey'}
-            title={status}
-          >
-            {isConnected ? (
-              <><Icon name='check circle' /> Connected</>
-            ) : (
-              <><Icon name='minus circle' /> Disconnected</>
+        <Header
+          as='h2'
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '0.75em',
+            flexWrap: 'wrap'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
+            <Button
+              basic
+              size='small'
+              as={Link}
+              to="/peers"
+              title="Back to peers"
+            >
+              <Icon name="arrow left" />
+              Back
+            </Button>
+            <div>
+              <div>{title}</div>
+              {resolvedAddress && (
+                <div style={{ fontSize: '0.85em', color: '#666' }}>
+                  {host && <span>{host}</span>}
+                  {port && <span>{host ? ':' : ''}{port}</span>}
+                </div>
+              )}
+            </div>
+            <Label
+              size='small'
+              color={isConnected ? 'green' : 'grey'}
+              title={status}
+            >
+              {isConnected ? (
+                <><Icon name='check circle' /> Connected</>
+              ) : (
+                <><Icon name='minus circle' /> Disconnected</>
+              )}
+            </Label>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            <Button
+              size="small"
+              icon
+              title="Refresh peer info"
+              basic
+              onClick={() => typeof props.onRefreshPeers === 'function' && props.onRefreshPeers()}
+            >
+              <Icon name="refresh" />
+            </Button>
+            {id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
+              <Button
+                size="small"
+                basic
+                onClick={() => props.onAddPeer({ address: peer.address })}
+                title={`Reconnect to ${peer.address}`}
+              >
+                <Icon name="plug" />
+                Reconnect
+              </Button>
             )}
-          </Label>
+            {id && isConnected && typeof props.onDisconnectPeer === 'function' && (
+              <Button
+                size="small"
+                basic
+                color="red"
+                onClick={() => props.onDisconnectPeer(id)}
+                title={`Disconnect ${id}`}
+              >
+                <Icon name="remove" />
+                Disconnect
+              </Button>
+            )}
+            {id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
+              <Button
+                size="small"
+                basic
+                onClick={() => bridgeRef.current.sendPeerInventoryRequest(id, 'documents')}
+                title="Request document inventory from this peer"
+              >
+                <Icon name="list alternate outline" />
+                Docs
+              </Button>
+            )}
+            {id && typeof props.onSetPeerNickname === 'function' && (
+              <Button
+                size="small"
+                basic
+                onClick={() => {
+                  const currentNick = (peer && peer.nickname) || '';
+                  const value = window.prompt(`Node-local nickname for ${id}:`, currentNick);
+                  if (value == null) return;
+                  props.onSetPeerNickname(id, value);
+                }}
+                title={`Set node-local nickname for ${id}`}
+              >
+                <Icon name="tag" />
+                Nick
+              </Button>
+            )}
+          </div>
         </Header>
 
         <Divider />
@@ -194,7 +290,19 @@ function PeerDetail (props) {
                   <List.Item>
                     <List.Content>
                       <List.Header>Address</List.Header>
-                      <List.Description>{(peer && peer.address) || id || 'unknown'}</List.Description>
+                      <List.Description>{resolvedAddress || 'unknown'}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>Host</List.Header>
+                      <List.Description>{host || 'unknown'}</List.Description>
+                    </List.Content>
+                  </List.Item>
+                  <List.Item>
+                    <List.Content>
+                      <List.Header>Port</List.Header>
+                      <List.Description>{port || '—'}</List.Description>
                     </List.Content>
                   </List.Item>
                   <List.Item>
@@ -266,95 +374,15 @@ function PeerDetail (props) {
             </Card.Description>
           </Card.Content>
           <Card.Content extra>
-            <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
-              <Button
-                size="small"
-                icon
-                labelPosition="left"
-                onClick={() => typeof props.onRefreshPeers === 'function' && props.onRefreshPeers()}
-                title="Refresh peer info"
-              >
-                <Icon name="refresh" />
-                Refresh
-              </Button>
-
-              {id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
-                <Button
-                  size="small"
-                  onClick={() => props.onAddPeer({ address: peer.address })}
-                  title={`Reconnect to ${peer.address}`}
-                >
-                  <Icon name="refresh" />
-                  Reconnect
-                </Button>
-              )}
-
-              {id && isConnected && typeof props.onDisconnectPeer === 'function' && (
-                <Button
-                  size="small"
-                  color="red"
-                  basic
-                  onClick={() => props.onDisconnectPeer(id)}
-                  title={`Disconnect ${id}`}
-                >
-                  <Icon name="remove" />
-                  Disconnect
-                </Button>
-              )}
-
-              {id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
-                <Button
-                  size="small"
-                  basic
-                  onClick={() => bridgeRef.current.sendPeerInventoryRequest(id, 'documents')}
-                  title="Request document inventory from this peer"
-                >
-                  <Icon name="list alternate outline" />
-                  Fetch documents
-                </Button>
-              )}
-
-              {id && isConnected && typeof props.onSendPeerMessage === 'function' && (
-                <Button
-                  size="small"
-                  onClick={() => {
-                    const text = window.prompt('Message to send:', '');
-                    if (text != null && text !== '') props.onSendPeerMessage(id, text);
-                  }}
-                  title={`Send message to ${id}`}
-                >
-                  <Icon name="send" />
-                  Send message
-                </Button>
-              )}
-
-              {id && typeof props.onSetPeerNickname === 'function' && (
-                <Button
-                  size="small"
-                  basic
-                  onClick={() => {
-                    const currentNick = (peer && peer.nickname) || '';
-                    const value = window.prompt(`Node-local nickname for ${id}:`, currentNick);
-                    if (value == null) return;
-                    props.onSetPeerNickname(id, value);
-                  }}
-                  title={`Set node-local nickname for ${id}`}
-                >
-                  <Icon name="tag" />
-                  Set nickname
-                </Button>
-              )}
-
-              <Button
-                size="small"
-                basic
-                onClick={() => navigate('/peers')}
-                title="Back to list"
-              >
-                <Icon name="list" />
-                List
-              </Button>
-            </div>
+            <Button
+              size="small"
+              basic
+              onClick={() => navigate('/peers')}
+              title="Back to list"
+            >
+              <Icon name="list" />
+              Peers list
+            </Button>
           </Card.Content>
         </Card>
 

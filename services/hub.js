@@ -243,6 +243,64 @@ class Hub extends Service {
     this.fs.publish('STATE', JSON.stringify(this.state, null, '  '));
   }
 
+  /**
+   * Record an ActivityStreams-style activity and broadcast it to UI clients.
+   *
+   * Activities are stored in-memory under `this._state.messages` and sent to
+   * browsers via a `JSONPatch` message that updates `globalState.messages`
+   * on the Bridge. This powers the Activity log / ActivityStream UI.
+   *
+   * @param {Object} activity Base activity object; minimally `{ type, object }`.
+   * @returns {{ id: string, activity: Object }|null}
+   */
+  recordActivity (activity = {}) {
+    try {
+      if (!activity || typeof activity !== 'object') return null;
+
+      const actorId = (activity.actor && activity.actor.id) ||
+        (this.agent && this.agent.identity && this.agent.identity.id) ||
+        null;
+
+      const base = Object.assign(
+        {},
+        activity,
+        actorId && !activity.actor ? { actor: { id: actorId } } : {}
+      );
+
+      const objectWithCreated = Object.assign(
+        {},
+        base.object || {},
+        {
+          created: (base.object && base.object.created) || new Date().toISOString()
+        }
+      );
+      base.object = objectWithCreated;
+
+      const actor = new Actor({ content: base });
+      const id = actor.id;
+
+      this._state.messages = this._state.messages || {};
+      this._state.messages[id] = base;
+
+      const patch = {
+        op: 'add',
+        path: `/messages/${id}`,
+        value: base
+      };
+
+      const msg = Message.fromVector(['JSONPatch', JSON.stringify(patch)]);
+      if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+      if (this.http && typeof this.http.broadcast === 'function') {
+        this.http.broadcast(msg);
+      }
+
+      return { id, activity: base };
+    } catch (err) {
+      console.error('[HUB] recordActivity error:', err);
+      return null;
+    }
+  }
+
   // TODO: upstream
   _addAllRoutes () {
     return this.http._addAllRoutes();
@@ -379,9 +437,12 @@ class Hub extends Service {
         if (!address || !this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
         try {
           const clientId = body && body.clientId ? String(body.clientId) : null;
+          const actorId = (body && body.actor && body.actor.id)
+            ? String(body.actor.id)
+            : this.agent.identity.id;
           const chatPayload = {
             type: 'P2P_CHAT_MESSAGE',
-            actor: { id: this.agent.identity.id },
+            actor: { id: actorId },
             object: { content: text, created: Date.now() },
             // ActivityStreams-style: top-level target identifies the logical recipient (id or address),
             // independent of how we resolve the network connection.
@@ -488,6 +549,20 @@ class Hub extends Service {
           const vector = ['P2P_FILE_SEND', JSON.stringify(filePayload)];
           const msg = Message.fromVector(vector).signWithKey(this.agent.key);
           this.agent.connections[address]._writeFabric(msg.toBuffer());
+          // Record an activity for file distribution.
+          this.recordActivity({
+            type: 'Send',
+            object: {
+              type: 'Document',
+              id: doc.id,
+              name: doc.name,
+              mime: doc.mime || 'application/octet-stream',
+              size: doc.size,
+              sha256: doc.sha256 || doc.id
+            },
+            target: address
+          });
+
           return { status: 'success' };
         } catch (err) {
           console.error('[HUB] SendPeerFile error:', err);
@@ -593,6 +668,19 @@ class Hub extends Service {
 
           // Push network status so document lists update
           if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+
+          // Record activity for local document creation.
+          this.recordActivity({
+            type: 'Create',
+            object: {
+              type: 'Document',
+              id,
+              name,
+              mime,
+              size: meta.size,
+              sha256
+            }
+          });
 
           return { type: 'CreateDocumentResult', document: meta };
         } catch (err) {
@@ -711,6 +799,24 @@ class Hub extends Service {
           // Update UI clients
           if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
 
+          // Record a public "Publish" activity reflecting the new global state.
+          this.recordActivity({
+            type: 'Add',
+            object: {
+              type: 'Document',
+              id,
+              name: parsed.name,
+              mime: parsed.mime,
+              size: parsed.size,
+              sha256: parsed.sha256 || id,
+              published: now
+            },
+            target: {
+              type: 'Collection',
+              name: 'documents'
+            }
+          });
+
           return { type: 'PublishDocumentResult', document: this._state.content.collections.documents[id] };
         } catch (err) {
           console.error('[HUB] PublishDocument error:', err);
@@ -776,6 +882,20 @@ class Hub extends Service {
           } catch (e) {
             console.error('[HUB] Failed to persist storage contract:', e);
           }
+
+          // Record activity describing the new storage contract.
+          this.recordActivity({
+            type: 'Create',
+            object: {
+              type: 'StorageContract',
+              id: contractId,
+              document: documentId,
+              amountSats,
+              durationYears,
+              challengeCadence,
+              responseDeadline
+            }
+          });
 
           return {
             type: 'CreateStorageContractResult',
@@ -971,6 +1091,14 @@ class Hub extends Service {
       // The UI Bridge will parse `ChatMessage` and append it to client-side state.
       this.agent.on('chat', (chat) => {
         try {
+          if (this.settings && this.settings.debug) {
+            try {
+              console.log('[HUB:CHAT]', JSON.stringify(chat));
+            } catch (e) {
+              console.log('[HUB:CHAT]', chat);
+            }
+          }
+
           const payload = typeof chat === 'string' ? chat : JSON.stringify(chat);
           const msg = Message.fromVector(['ChatMessage', payload]);
           if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
@@ -1005,6 +1133,19 @@ class Hub extends Service {
           const msg = Message.fromVector(['FileMessage', payload]);
           if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
           if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
+          // Record an activity for receiving a file from a peer.
+          this.recordActivity({
+            type: 'Receive',
+            object: {
+              type: 'Document',
+              id: doc.id,
+              name: doc.name,
+              mime: doc.mime || 'application/octet-stream',
+              size: doc.size,
+              sha256: doc.sha256 || doc.id,
+              receivedFrom: doc.receivedFrom || (origin && origin.name)
+            }
+          });
         } catch (err) {
           console.error('[HUB] Failed to handle received file:', err);
         }

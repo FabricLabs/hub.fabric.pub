@@ -326,6 +326,31 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Resolve the current identity key for this Bridge instance.
+   * Prefers the signing key (auth) and falls back to the legacy `this.key` when present.
+   * @returns {import('@fabric/core/types/key')|null}
+   */
+  _getIdentityKey () {
+    const key = this.settings.signingKey || this.key;
+    if (!key || !key.id) return null;
+    return key;
+  }
+
+  /**
+   * Resolve the stable identity id for this Bridge instance.
+   * @returns {string|null}
+   */
+  _getIdentityId () {
+    // Prefer the logical identity id from auth (what IdentityManager shows),
+    // falling back to the underlying key id only when necessary.
+    const auth = this.props && this.props.auth;
+    if (auth && auth.id) return auth.id;
+
+    const key = this._getIdentityKey();
+    return (key && key.id) ? key.id : null;
+  }
+
+  /**
    * Return document content (base64) for display or upload. Decrypts if stored encrypted.
    * @param {string} id - Document id
    * @returns {string|null} contentBase64 or null
@@ -1782,6 +1807,20 @@ class Bridge extends React.Component {
             const id = `chat:${created}:${(chat && chat.actor && chat.actor.id) || 'unknown'}`;
             this.globalState.messages = this.globalState.messages || {};
 
+            if (this.settings && this.settings.debug) {
+              try {
+                // Lightweight audit log so we can see exactly how chat identities
+                // are flowing into the browser.
+                console.log('[BRIDGE:CHAT]', JSON.stringify({
+                  actorId: chat && chat.actor && chat.actor.id,
+                  clientId: chat && chat.object && chat.object.clientId,
+                  created
+                }));
+              } catch (e) {
+                console.log('[BRIDGE:CHAT]', chat);
+              }
+            }
+
             // If this message has a clientId, remove the pending optimistic entry we stored earlier
             const clientId = chat && chat.object && chat.object.clientId;
             if (clientId && this.globalState.messages[clientId]) {
@@ -1954,9 +1993,15 @@ class Bridge extends React.Component {
     const trimmed = typeof text === 'string' ? text.trim() : '';
     if (!trimmed) return;
 
+     const identityId = this._getIdentityId();
+     if (!identityId) {
+       console.warn('[BRIDGE]', 'submitChatMessage called without an unlocked identity; message will not be sent.');
+       return;
+     }
+
     const clientId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const created = Date.now();
-    const actorId = (this.key && this.key.id) ? this.key.id : 'anonymous';
+    const actorId = identityId;
     const chat = {
       type: 'P2P_CHAT_MESSAGE',
       actor: { id: actorId },
@@ -2036,7 +2081,13 @@ class Bridge extends React.Component {
 
     // Create a local chat representation so queued messages are visible in the UI.
     try {
-      const actorId = (this.key && this.key.id) ? this.key.id : 'local';
+      const identityId = this._getIdentityId();
+      if (!identityId) {
+        console.warn('[BRIDGE]', 'enqueuePeerMessage called without an unlocked identity; job will not be queued.');
+        return;
+      }
+      const actorId = identityId;
+      job.actorId = actorId;
       const chat = {
         type: 'P2P_CHAT_MESSAGE',
         actor: { id: actorId },
@@ -2105,7 +2156,14 @@ class Bridge extends React.Component {
       }
 
       try {
-        const payload = { method: 'SendPeerMessage', params: [job.address, { text: job.text, clientId: job.clientId }] };
+        const body = {
+          text: job.text,
+          clientId: job.clientId
+        };
+        if (job.actorId) {
+          body.actor = { id: job.actorId };
+        }
+        const payload = { method: 'SendPeerMessage', params: [job.address, body] };
         const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
         this.sendSignedMessage(message.toBuffer());
       } catch (error) {
