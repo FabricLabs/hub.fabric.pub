@@ -1197,9 +1197,21 @@ class Hub extends Service {
           const originAddress = origin && (origin.address || origin.id);
           if (originAddress && this.agent.connections[originAddress]) {
             this.agent.connections[originAddress]._writeFabric(reply.toBuffer());
-          } else {
-            // Fallback: relay to all peers
+          } else if (typeof this.agent.relay === 'function') {
+            // Fallback: relay to all peers (for older Peer implementations that support relay)
             this.agent.relay(reply);
+          } else {
+            // As a last resort, iterate connections and write directly.
+            try {
+              const buf = reply.toBuffer();
+              for (const sock of Object.values(this.agent.connections || {})) {
+                if (sock && typeof sock._writeFabric === 'function') {
+                  sock._writeFabric(buf);
+                }
+              }
+            } catch (e) {
+              console.warn('[HUB] Could not broadcast inventory reply via fallback:', e);
+            }
           }
 
           // Also broadcast the inventory response to all WebSocket clients so

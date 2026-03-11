@@ -676,21 +676,26 @@ function IdentityManager (props) {
                 try {
                   const xprv = pendingSeed && pendingSeed.xprv;
                   if (!xprv) return;
-                  const contents = [
-                    '# Fabric Identity Backup',
-                    '',
-                    pendingSeed.mnemonic ? 'Seed phrase (mnemonic):' : null,
-                    pendingSeed.mnemonic || null,
-                    '',
-                    'Backup key (xprv):',
+                  const backupPayload = {
+                    type: 'fabric-identity-backup',
+                    version: 1,
+                    mnemonic: pendingSeed.mnemonic || undefined,
                     xprv,
-                    ''
-                  ].filter((line) => line !== null).join('\n');
-                  const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' });
+                    xpub: undefined,
+                    id: undefined
+                  };
+                  try {
+                    const identity = new Identity({ xprv });
+                    if (identity && identity.id && identity.key && identity.key.xpub) {
+                      backupPayload.id = String(identity.id);
+                      backupPayload.xpub = String(identity.key.xpub);
+                    }
+                  } catch (e) {}
+                  const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json;charset=utf-8' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a');
                   a.href = url;
-                  a.download = 'fabric-identity-backup.txt';
+                  a.download = 'fabric-identity-backup.json';
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
@@ -798,6 +803,18 @@ function IdentityManager (props) {
                 <Icon name="shield" />
                 Generate New Identity
               </Button>
+              <Button
+                fluid
+                icon
+                labelPosition="left"
+                onClick={() => {
+                  setLoginMethod('import');
+                  setError(null);
+                }}
+              >
+                <Icon name="download" />
+                Import Backup
+              </Button>
             </div>
           </>
         ) : loginMethod === 'existing' ? (
@@ -889,6 +906,139 @@ function IdentityManager (props) {
               <Icon name="sign-in" />
               Activate xpub
             </Button>
+          </>
+        ) : loginMethod === 'import' ? (
+          <>
+            <Button
+              basic
+              size="small"
+              icon
+              labelPosition="left"
+              style={{ marginBottom: '1em' }}
+              onClick={() => {
+                setLoginMethod(null);
+                setError(null);
+              }}
+            >
+              <Icon name="arrow left" />
+              Back
+            </Button>
+            <Header as="h4" size="small">
+              <Icon name="download" />
+              <Header.Content>Import Backup</Header.Content>
+            </Header>
+            <p style={{ color: '#666' }}>
+              Select a Fabric identity backup file (JSON) exported from this or another browser.
+            </p>
+            <input
+              type="file"
+              accept=".json,application/json,text/*"
+              onChange={(event) => {
+                const file = event && event.target && event.target.files && event.target.files[0];
+                if (!file) return;
+                setBusy(true);
+                setError(null);
+                const reader = new FileReader();
+                reader.onload = () => {
+                  try {
+                    const text = String(reader.result || '');
+                    let data = null;
+                    try {
+                      data = JSON.parse(text);
+                    } catch (e) {}
+
+                    let xprv = null;
+                    let xpub = null;
+
+                    if (data && typeof data === 'object') {
+                      if (data.xprv) xprv = String(data.xprv);
+                      if (data.xpub) xpub = String(data.xpub);
+                    }
+
+                    if (!xprv || !xpub) {
+                      const mXprv = text.match(/(xprv[0-9A-Za-z]+)/);
+                      const mXpub = text.match(/(xpub[0-9A-Za-z]+)/);
+                      if (mXprv && mXprv[1]) xprv = mXprv[1];
+                      if (mXpub && mXpub[1]) xpub = mXpub[1];
+                    }
+
+                    if (!xprv && !xpub) {
+                      setError('Could not find an xprv or xpub in the selected file.');
+                      return;
+                    }
+
+                    let key = null;
+                    let identity = null;
+                    if (xprv) {
+                      key = new Key({ xprv });
+                      identity = new Identity({ xprv });
+                    } else if (xpub) {
+                      key = new Key({ xpub });
+                      identity = new Identity(key);
+                    }
+
+                    if (!key || !identity) {
+                      setError('Failed to reconstruct identity from backup file.');
+                      return;
+                    }
+
+                    try {
+                      let hasStorage = false;
+                      try {
+                        hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+                      } catch (e) {
+                        hasStorage = false;
+                      }
+                      if (hasStorage) {
+                        if (xprv) {
+                          window.localStorage.setItem('fabric.identity.local', JSON.stringify({
+                            id: identity.id,
+                            xpub: key.xpub,
+                            xprv
+                          }));
+                        } else {
+                          window.localStorage.setItem('fabric.identity.local', JSON.stringify({
+                            id: identity.id,
+                            xpub: key.xpub
+                          }));
+                        }
+                      }
+                    } catch (e) {}
+
+                    const nextIdentity = {
+                      id: identity.id,
+                      xpub: key.xpub,
+                      xprv: xprv || null,
+                      passwordProtected: false
+                    };
+
+                    setLocalIdentity(nextIdentity);
+                    resetSeedState();
+                    if (typeof props.onLocalIdentityChange === 'function') {
+                      props.onLocalIdentityChange(nextIdentity);
+                    }
+                    if (xprv && typeof props.onUnlockSuccess === 'function') {
+                      props.onUnlockSuccess({
+                        id: String(identity.id),
+                        xpub: String(key.xpub),
+                        xprv: String(xprv),
+                        passwordProtected: false
+                      });
+                    }
+                  } catch (e) {
+                    console.error('[IDENTITY]', 'Import backup failed:', e);
+                    setError((e && e.message) ? e.message : String(e));
+                  } finally {
+                    setBusy(false);
+                  }
+                };
+                reader.onerror = () => {
+                  setBusy(false);
+                  setError('Failed to read backup file.');
+                };
+                reader.readAsText(file);
+              }}
+            />
           </>
         ) : loginMethod === 'generate' ? (
           <>
