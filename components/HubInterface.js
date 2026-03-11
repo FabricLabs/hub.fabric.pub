@@ -23,15 +23,17 @@ const Identity = require('@fabric/core/types/identity');
 
 // Components
 const Bridge = require('./Bridge');
-const Home = require('./Home');
 const BitcoinHome = require('./BitcoinHome');
+const BottomPanel = require('./BottomPanel');
+const ContractList = require('./ContractList');
+const ContractView = require('./ContractView');
 const DocumentList = require('./DocumentList');
 const DocumentView = require('./DocumentView');
+const Home = require('./Home');
+const IdentityManager = require('./IdentityManager');
 const PeerList = require('./PeerList');
 const PeerView = require('./PeerView');
 const TopPanel = require('./TopPanel');
-const BottomPanel = require('./BottomPanel');
-const IdentityManager = require('./IdentityManager');
 
 // Semantic UI
 const {
@@ -676,8 +678,28 @@ class HubInterface extends React.Component {
                             bridgeInstance.sendPublishDocumentRequest(id);
                           }
                         }}
+                        onDistributeDocument={(id, config) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendDistributeDocumentRequest === 'function') {
+                            return bridgeInstance.sendDistributeDocumentRequest(id, config);
+                          }
+                          return null;
+                        }}
                         {...this.props}
                       />
+                    )}
+                  />
+                  <Route
+                    path="/contracts"
+                    element={(
+                      <ContractList {...this.props} />
+                    )}
+                  />
+                  <Route
+                    path="/contracts/:id"
+                    element={(
+                      <ContractView {...this.props} />
                     )}
                   />
                 </Routes>

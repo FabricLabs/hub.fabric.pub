@@ -41,7 +41,13 @@ function IdentityManager (props) {
     }
 
     try {
-      if (typeof window === 'undefined' || !window.localStorage) return null;
+      let hasStorage = false;
+      try {
+        hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+      } catch (e) {
+        hasStorage = false;
+      }
+      if (!hasStorage) return null;
       const raw = window.localStorage.getItem('fabric.identity.local');
       if (!raw) return null;
       const parsed = JSON.parse(raw);
@@ -245,7 +251,13 @@ function IdentityManager (props) {
                     setError(null);
                     (async () => {
                       try {
-                        if (typeof window === 'undefined' || !window.localStorage) {
+                        let hasStorage = false;
+                        try {
+                          hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+                        } catch (e) {
+                          hasStorage = false;
+                        }
+                        if (!hasStorage) {
                           throw new Error('Secure storage not available in this environment.');
                         }
                         const raw = window.localStorage.getItem('fabric.identity.local');
@@ -377,7 +389,13 @@ function IdentityManager (props) {
                       if (typeof props.onForgetIdentity === 'function') {
                         props.onForgetIdentity();
                       }
-                      if (typeof window !== 'undefined' && window.localStorage) {
+                      let hasStorage = false;
+                      try {
+                        hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+                      } catch (e) {
+                        hasStorage = false;
+                      }
+                      if (hasStorage) {
                         window.localStorage.removeItem('fabric.identity.local');
                         window.localStorage.removeItem('fabric:documents');
                       }
@@ -472,7 +490,13 @@ function IdentityManager (props) {
                     const key = identity.key;
                     const pwd = a;
                     const isPasswordProtected = true;
-                    if (typeof window !== 'undefined' && window.localStorage) {
+                    let hasStorage = false;
+                    try {
+                      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+                    } catch (e) {
+                      hasStorage = false;
+                    }
+                    if (hasStorage) {
                       const salt = crypto.randomBytes(16).toString('hex');
                       const keyBytes = crypto.createHash('sha256')
                         .update(salt + pwd)
@@ -691,7 +715,13 @@ function IdentityManager (props) {
                   const key = identity.key;
                   const pwd = String(identityPassword || '').trim();
                   const isPasswordProtected = !!pwd;
-                  if (typeof window !== 'undefined' && window.localStorage) {
+                  let hasStorage = false;
+                  try {
+                    hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+                  } catch (e) {
+                    hasStorage = false;
+                  }
+                  if (hasStorage) {
                     let payload = null;
                     if (isPasswordProtected) {
                       const salt = crypto.randomBytes(16).toString('hex');
@@ -831,7 +861,13 @@ function IdentityManager (props) {
                   const identity = new Identity(key);
 
                   try {
-                    if (typeof window !== 'undefined' && window.localStorage) {
+                    let hasStorage = false;
+                    try {
+                      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+                    } catch (e) {
+                      hasStorage = false;
+                    }
+                    if (hasStorage) {
                       window.localStorage.setItem('fabric.identity.local', JSON.stringify({ xpub: key.xpub }));
                     }
                   } catch (e) {}

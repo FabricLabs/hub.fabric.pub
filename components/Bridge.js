@@ -17,7 +17,7 @@ if (typeof window !== 'undefined') {
   }
 }
 
-// Semantic
+// Semantic UI
 const {
   Label
 } = require('semantic-ui-react');
@@ -88,13 +88,25 @@ class Bridge extends React.Component {
     this._peerDiscoveryTimer = null; // Timer for peer discovery after startup
     this._connectingPeers = new Set(); // Track peers we're currently connecting to
 
+    // Track backing SHA ids that should be published once CreateDocument succeeds.
+    this._pendingPublishBySha = new Set();
+
     // Initialize key if provided
     if (props.key) {
       this.key = new Key(props.key);
     }
 
     // Restore any queued peer messages from persistent storage
-    if (typeof window !== 'undefined' && window.localStorage) {
+    let hasStorage = false;
+    try {
+      // Accessing window.localStorage can throw under opaque origins (SSR build),
+      // so wrap in try/catch and treat failures as "no storage available".
+      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+    } catch (e) {
+      hasStorage = false;
+    }
+
+    if (hasStorage) {
       try {
         const raw = window.localStorage.getItem('fabric:peerMessageQueue');
         if (raw) {
@@ -263,7 +275,13 @@ class Bridge extends React.Component {
   }
 
   _persistDocuments () {
-    if (typeof window === 'undefined' || !window.localStorage) return;
+    let hasStorage = false;
+    try {
+      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+    } catch (e) {
+      hasStorage = false;
+    }
+    if (!hasStorage) return;
     try {
       const docs = this.globalState.documents || {};
       window.localStorage.setItem('fabric:documents', JSON.stringify(docs));
@@ -326,12 +344,29 @@ class Bridge extends React.Component {
     return null;
   }
 
-  /** Normalize incoming doc for storage: encrypt content if we have a key, store only encrypted or plain. */
+  /** Normalize incoming doc for storage: encrypt content if we have a key, store only encrypted or plain.
+   * If we already have a local alias for this document (by sha256), prefer that id over a backend sha id.
+   */
   _storeDocument (id, doc) {
     if (!doc || !id) return;
     this.globalState.documents = this.globalState.documents || {};
-    const existing = this.globalState.documents[id] || {};
-    const merged = { ...existing, ...doc, id };
+
+    let targetId = id;
+    const sha = doc.sha256 || doc.sha || null;
+
+    // If hub sends us a sha-based id but we previously created a local Actor id with the same sha,
+    // re-use the local Actor id so URLs remain opaque.
+    if (sha && id === sha) {
+      for (const [localId, existingDoc] of Object.entries(this.globalState.documents)) {
+        if (existingDoc && (existingDoc.sha256 === sha || existingDoc.sha === sha) && localId !== id) {
+          targetId = localId;
+          break;
+        }
+      }
+    }
+
+    const existing = this.globalState.documents[targetId] || {};
+    const merged = { ...existing, ...doc, id: targetId };
     const hasContent = merged.contentBase64 != null;
     const encrypted = hasContent ? this._encryptContent(merged.contentBase64) : null;
     const toStore = { ...merged };
@@ -342,11 +377,22 @@ class Bridge extends React.Component {
       toStore.contentEncrypted = merged.contentEncrypted;
       delete toStore.contentBase64;
     }
-    this.globalState.documents[id] = toStore;
+    this.globalState.documents[targetId] = toStore;
+
+    // Clean up any old sha-only entry if we moved to a local alias id.
+    if (targetId !== id && this.globalState.documents[id]) {
+      delete this.globalState.documents[id];
+    }
   }
 
   _persistMessages () {
-    if (typeof window === 'undefined' || !window.localStorage) return;
+    let hasStorage = false;
+    try {
+      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+    } catch (e) {
+      hasStorage = false;
+    }
+    if (!hasStorage) return;
     try {
       const messages = this.globalState.messages || {};
       const keys = Object.keys(messages);
@@ -1572,25 +1618,96 @@ class Bridge extends React.Component {
                 }));
               }
               if (result && typeof result === 'object' && result.type === 'CreateDocumentResult' && result.document && result.document.id) {
-                const id = result.document.id;
-                this._storeDocument(id, { ...(this.globalState.documents[id] || {}), ...result.document });
+                const backendId = result.document.id; // sha-based id from hub
+                const sha = result.document.sha256 || backendId;
+
+                this._storeDocument(backendId, { ...(this.globalState.documents[backendId] || {}), ...result.document });
+
+                // If user clicked Publish on this sha before create completed, now is the time to publish.
+                if (sha && this._pendingPublishBySha && this._pendingPublishBySha.has(sha)) {
+                  try {
+                    this.sendPublishDocumentRequest(sha);
+                  } finally {
+                    this._pendingPublishBySha.delete(sha);
+                  }
+                }
+
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
-                    operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+                    operation: { op: 'add', path: `/documents/${backendId}`, value: this.globalState.documents[backendId] },
                     globalState: this.globalState
                   }
                 }));
               }
               if (result && typeof result === 'object' && result.type === 'PublishDocumentResult' && result.document && result.document.id) {
-                const id = result.document.id;
+                const backendId = result.document.id; // sha-based id from hub
+                const sha = result.document.sha256 || backendId;
+
                 this.globalState.documents = this.globalState.documents || {};
-                this.globalState.documents[id] = { ...(this.globalState.documents[id] || {}), ...result.document, published: result.document.published || true };
+
+                // Prefer an existing local document whose sha256 matches, so we keep opaque Actor IDs stable.
+                let targetId = backendId;
+                if (sha) {
+                  for (const [localId, existingDoc] of Object.entries(this.globalState.documents)) {
+                    if (existingDoc && (existingDoc.sha256 === sha || existingDoc.sha === sha)) {
+                      targetId = localId;
+                      break;
+                    }
+                  }
+                }
+
+                const existing = this.globalState.documents[targetId] || {};
+                this.globalState.documents[targetId] = {
+                  ...existing,
+                  ...result.document,
+                  id: targetId,
+                  published: result.document.published || existing.published || true
+                };
+
+                // Optionally clean up raw backend-only entry if different.
+                if (targetId !== backendId && this.globalState.documents[backendId]) {
+                  delete this.globalState.documents[backendId];
+                }
+
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
-                    operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+                    operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
                     globalState: this.globalState
                   }
                 }));
+              }
+              if (result && typeof result === 'object' && result.type === 'CreateStorageContractResult' && result.contract && result.contract.document) {
+                const backendDocId = result.contract.document; // sha-based id
+                const contractId = result.id || result.contract.id;
+                if (backendDocId && contractId) {
+                  this.globalState.documents = this.globalState.documents || {};
+
+                  let targetId = backendDocId;
+                  // Prefer local alias by sha256 when present.
+                  for (const [localId, existingDoc] of Object.entries(this.globalState.documents)) {
+                    if (existingDoc && (existingDoc.sha256 === backendDocId || existingDoc.sha === backendDocId)) {
+                      targetId = localId;
+                      break;
+                    }
+                  }
+
+                  const existing = this.globalState.documents[targetId] || {};
+                  this.globalState.documents[targetId] = {
+                    ...existing,
+                    storageContractId: contractId
+                  };
+
+                  if (targetId !== backendDocId && this.globalState.documents[backendDocId]) {
+                    delete this.globalState.documents[backendDocId];
+                  }
+
+                  window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                    detail: {
+                      operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
+                      globalState: this.globalState
+                    }
+                  }));
+                }
               }
               // WebRTC peer discovery response
               if (result && typeof result === 'object' && result.type === 'ListWebRTCPeersResult' && Array.isArray(result.peers)) {
@@ -1609,7 +1726,7 @@ class Bridge extends React.Component {
           }
           break;
         case 'GenericMessage':
-          // Check for FileMessage (broadcast as GenericMessage when FileMessage type unknown)
+          // Check for FileMessage and Inventory responses (broadcast as GenericMessage when type unknown)
           try {
             const parsed = JSON.parse(message.body);
             if (parsed && parsed.type === 'P2P_FILE_SEND' && parsed.object) {
@@ -1620,6 +1737,32 @@ class Bridge extends React.Component {
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
                     operation: { op: 'add', path: `/documents/${doc.id}`, value: this.globalState.documents[doc.id] },
+                    globalState: this.globalState
+                  }
+                }));
+              }
+              break;
+            }
+
+            // Inventory responses from peers for documents, stored under globalState.peers[peerId].inventory.documents.
+            if (parsed && parsed.type === 'INVENTORY_RESPONSE' && parsed.object && parsed.object.kind === 'documents') {
+              const peerId = parsed.actor && parsed.actor.id;
+              const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
+              if (peerId) {
+                this.globalState.peers = this.globalState.peers || {};
+                const existing = this.globalState.peers[peerId] || {};
+                const inventory = existing.inventory || {};
+                const next = {
+                  ...existing,
+                  inventory: {
+                    ...inventory,
+                    documents: items
+                  }
+                };
+                this.globalState.peers[peerId] = next;
+                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                  detail: {
+                    operation: { op: 'add', path: `/peers/${peerId}`, value: next },
                     globalState: this.globalState
                   }
                 }));
@@ -1924,7 +2067,13 @@ class Bridge extends React.Component {
     // Add to in-memory queue and persist.
     this.peerMessageQueue = this.peerMessageQueue || [];
     this.peerMessageQueue.push(job);
-    if (typeof window !== 'undefined' && window.localStorage) {
+    let hasStorage = false;
+    try {
+      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+    } catch (e) {
+      hasStorage = false;
+    }
+    if (hasStorage) {
       try {
         window.localStorage.setItem('fabric:peerMessageQueue', JSON.stringify(this.peerMessageQueue));
       } catch (e) {
@@ -1966,7 +2115,13 @@ class Bridge extends React.Component {
     }
 
     this.peerMessageQueue = remaining;
-    if (typeof window !== 'undefined' && window.localStorage) {
+    let hasStorage = false;
+    try {
+      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
+    } catch (e) {
+      hasStorage = false;
+    }
+    if (hasStorage) {
       try {
         if (this.peerMessageQueue.length) {
           window.localStorage.setItem('fabric:peerMessageQueue', JSON.stringify(this.peerMessageQueue));
@@ -2067,14 +2222,97 @@ class Bridge extends React.Component {
   }
 
   sendPublishDocumentRequest (id) {
-    const resolved = typeof id === 'object' && id && id.id ? id.id : id;
-    if (!resolved) return;
+    const logical = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!logical) return;
+
+    const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+
+    // If this is a local-only document with a backing sha256 and not yet published,
+    // first ensure the hub has the full content via CreateDocument, then publish.
+    if (doc && doc.sha256 && !doc.published) {
+      const sha = doc.sha256;
+      const contentBase64 = this.getDecryptedDocumentContent(logical);
+      if (!contentBase64) {
+        console.warn('[BRIDGE]', 'Cannot publish document without decrypted content:', logical);
+        return;
+      }
+
+      const createDoc = {
+        id: sha,
+        sha256: sha,
+        name: doc.name,
+        mime: doc.mime,
+        size: doc.size,
+        contentBase64
+      };
+      this.sendCreateDocumentRequest(createDoc);
+      if (this._pendingPublishBySha) {
+        this._pendingPublishBySha.add(sha);
+      }
+      return;
+    }
+
+    // Fallback: publish by whatever id we have (Actor id or sha).
+    let resolved = logical;
+    if (doc && doc.sha256) {
+      resolved = doc.sha256;
+    }
+
     try {
       const payload = { method: 'PublishDocument', params: [resolved] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending PublishDocument request:', error);
+    }
+  }
+
+  /**
+   * Request a long-term storage contract for a document, paid in Bitcoin.
+   * This is a thin JSON-RPC wrapper; contract negotiation and settlement
+   * are handled by the hub/Bitcoin services.
+   *
+   * @param {string} id - Document id (Actor ID).
+   * @param {Object} config - Distribution configuration (amount, duration, cadence, deadline).
+   */
+  sendDistributeDocumentRequest (id, config = {}) {
+    const logical = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!logical) return;
+
+    let backendId = logical;
+    const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+    if (doc && doc.sha256) {
+      backendId = doc.sha256;
+    }
+
+    try {
+      const payloadConfig = {
+        documentId: backendId,
+        amountSats: config.amountSats,
+        durationYears: config.durationYears,
+        challengeCadence: config.challengeCadence,
+        responseDeadline: config.responseDeadline
+      };
+      const payload = { method: 'CreateStorageContract', params: [payloadConfig] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending DistributeDocument request:', error);
+    }
+  }
+
+  /**
+   * Request a peer's inventory (e.g., list of documents) via the hub JSON-RPC.
+   * @param {string|{id,address}} idOrAddress - Peer id or address.
+   * @param {string} kind - Inventory kind, defaults to 'documents'.
+   */
+  sendPeerInventoryRequest (idOrAddress, kind = 'documents') {
+    try {
+      const payload = { method: 'RequestPeerInventory', params: [idOrAddress, kind] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending RequestPeerInventory:', error);
     }
   }
 

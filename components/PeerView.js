@@ -20,6 +20,8 @@ const {
   Loader
 } = require('semantic-ui-react');
 
+const ChatInput = require('./ChatInput');
+
 function isNetworkStatus (obj) {
   return !!(obj && typeof obj === 'object' && (obj.network || Array.isArray(obj.peers)));
 }
@@ -43,6 +45,7 @@ function PeerDetail (props) {
   const [detail, setDetail] = React.useState(null);
   const [peerChats, setPeerChats] = React.useState([]);
   const [outgoingText, setOutgoingText] = React.useState('');
+  const [inventoryDocs, setInventoryDocs] = React.useState([]);
 
   const bridge = props.bridge;
   const bridgeRef = props.bridgeRef;
@@ -64,7 +67,7 @@ function PeerDetail (props) {
   }, [id]);
 
   React.useEffect(() => {
-    const deriveChats = (globalState, currentDetail) => {
+    const deriveChatsAndInventory = (globalState, currentDetail) => {
       if (!globalState || !globalState.messages) return;
       const messages = globalState.messages || {};
       const peersById = globalState.peers || {};
@@ -104,6 +107,13 @@ function PeerDetail (props) {
         .slice(-100);
 
       setPeerChats(chats);
+
+      // Derive inventory documents for this peer, if available.
+      const invPeer = peersById[peerId] || storedPeer;
+      const docs = invPeer && invPeer.inventory && Array.isArray(invPeer.inventory.documents)
+        ? invPeer.inventory.documents
+        : [];
+      setInventoryDocs(docs);
     };
 
     const handler = (event) => {
@@ -116,7 +126,7 @@ function PeerDetail (props) {
           if (stored) setDetail(stored);
         }
 
-        deriveChats(globalState, detail);
+        deriveChatsAndInventory(globalState, detail);
       } catch (e) {}
     };
 
@@ -125,7 +135,7 @@ function PeerDetail (props) {
     const gs = bridgeInstance && typeof bridgeInstance.getGlobalState === 'function'
       ? bridgeInstance.getGlobalState()
       : null;
-    if (gs) deriveChats(gs, detail);
+    if (gs) deriveChatsAndInventory(gs, detail);
 
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
@@ -292,6 +302,18 @@ function PeerDetail (props) {
                 </Button>
               )}
 
+              {id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
+                <Button
+                  size="small"
+                  basic
+                  onClick={() => bridgeRef.current.sendPeerInventoryRequest(id, 'documents')}
+                  title="Request document inventory from this peer"
+                >
+                  <Icon name="list alternate outline" />
+                  Fetch documents
+                </Button>
+              )}
+
               {id && isConnected && typeof props.onSendPeerMessage === 'function' && (
                 <Button
                   size="small"
@@ -388,28 +410,44 @@ function PeerDetail (props) {
               <p style={{ color: '#666' }}>No chat messages yet for this peer.</p>
             )}
             {id && typeof props.onSendPeerMessage === 'function' && (
-              <form
-                onSubmit={handleSendPeerChat}
-                style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', alignItems: 'center' }}
-              >
-                <input
-                  type="text"
-                  placeholder="Type a message…"
-                  value={outgoingText}
-                  onChange={(e) => setOutgoingText(e.target.value)}
-                  style={{ flex: 1, padding: '0.4em 0.6em', borderRadius: '4px', border: '1px solid rgba(34,36,38,.15)' }}
-                />
-                <Button
-                  size="small"
-                  primary
-                  type="submit"
-                  disabled={!outgoingText || !outgoingText.trim()}
-                  title={`Send message to ${id} (queued if offline)`}
-                >
-                  <Icon name="send" />
-                  Send
-                </Button>
-              </form>
+              <ChatInput
+                value={outgoingText}
+                onChange={setOutgoingText}
+                onSubmit={(text) => {
+                  if (id && typeof props.onSendPeerMessage === 'function') {
+                    props.onSendPeerMessage(id, text);
+                    setOutgoingText('');
+                  }
+                }}
+                placeholder="Type a message…"
+                title={`Send message to ${id} (queued if offline)`}
+              />
+            )}
+          </Segment>
+        )}
+
+        {peer && (
+          <Segment style={{ marginTop: '1em' }}>
+            <Header as="h3">Documents</Header>
+            {inventoryDocs.length > 0 ? (
+              <List divided relaxed size="small">
+                {inventoryDocs.map((doc, index) => (
+                  <List.Item key={(doc && doc.id) || index}>
+                    <List.Content>
+                      <List.Header>
+                        {(doc && doc.name) || (doc && doc.id) || 'Document'}
+                      </List.Header>
+                      <List.Description style={{ color: '#666' }}>
+                        {doc && doc.id && (<span>ID: <code>{doc.id}</code></span>)}
+                        {doc && doc.size != null && <> — {doc.size} bytes</>}
+                        {doc && doc.published && <> — published</>}
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                ))}
+              </List>
+            ) : (
+              <p style={{ color: '#666' }}>No remote document inventory yet. Use "Fetch documents" to request it.</p>
             )}
           </Segment>
         )}

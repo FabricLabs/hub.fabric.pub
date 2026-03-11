@@ -17,6 +17,7 @@ const Message = require('@fabric/core/types/message');
 const Peer = require('@fabric/core/types/peer');
 const Service = require('@fabric/core/types/service');
 const Token = require('@fabric/core/types/token'); // fabric tokens
+const Actor = require('@fabric/core/types/actor');
 
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
@@ -408,6 +409,44 @@ class Hub extends Service {
         }
       });
 
+      // Request a peer's inventory (e.g., list of documents) using INVENTORY_REQUEST.
+      // Params: (idOrAddress, kind = 'documents')
+      this.http._registerMethod('RequestPeerInventory', (...params) => {
+        const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
+        const kind = params[1] || 'documents';
+        if (!idOrAddress) return { status: 'error', message: 'id/address required' };
+
+        const address = typeof this.agent._resolveToAddress === 'function'
+          ? this.agent._resolveToAddress(idOrAddress)
+          : idOrAddress;
+        if (!address || !this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
+
+        try {
+          const targetValue = (typeof idOrAddress === 'object' && idOrAddress)
+            ? (idOrAddress.id || idOrAddress.address || String(idOrAddress))
+            : String(idOrAddress);
+
+          const payload = {
+            type: 'INVENTORY_REQUEST',
+            actor: { id: this.agent.identity.id },
+            object: {
+              kind: kind || 'documents',
+              created: Date.now()
+            },
+            target: targetValue
+          };
+
+          const vector = ['INVENTORY_REQUEST', JSON.stringify(payload)];
+          const msg = Message.fromVector(vector).signWithKey(this.agent.key);
+          this.agent.connections[address]._writeFabric(msg.toBuffer());
+
+          return { status: 'success' };
+        } catch (err) {
+          console.error('[HUB] RequestPeerInventory error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'request failed' };
+        }
+      });
+
       // Send a file to a peer via P2P_FILE_SEND. Params: (idOrAddress, document)
       // document: { id, name, mime, size, contentBase64 } or { id } (hub fetches content)
       this.http._registerMethod('SendPeerFile', async (...params) => {
@@ -566,11 +605,36 @@ class Hub extends Service {
       this.http._registerMethod('ListDocuments', async (...params) => {
         try {
           const docs = this._state.documents || {};
+          const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+          const contracts = (this._state.content && this._state.content.contracts) || {};
+
+          // Build quick index from backing document id (sha256 key) -> storageContractId (first match)
+          const contractIndex = {};
+          for (const [cid, c] of Object.entries(contracts)) {
+            if (!c || !c.document) continue;
+            if (!contractIndex[c.document]) {
+              contractIndex[c.document] = cid;
+            }
+          }
+
           const list = Object.values(docs).sort((a, b) => {
             const ta = a && a.created ? new Date(a.created).getTime() : 0;
             const tb = b && b.created ? new Date(b.created).getTime() : 0;
             return tb - ta;
+          }).map((meta) => {
+            if (!meta || !meta.id) return meta;
+            const id = meta.id;
+            const publishedMeta = collections[id];
+            const backingId = meta.sha256 || id;
+            const storageContractId = contractIndex[backingId];
+            return Object.assign(
+              {},
+              meta,
+              publishedMeta && publishedMeta.published ? { published: publishedMeta.published } : null,
+              storageContractId ? { storageContractId } : null
+            );
           });
+
           return { type: 'ListDocumentsResult', documents: list };
         } catch (err) {
           console.error('[HUB] ListDocuments error:', err);
@@ -586,6 +650,22 @@ class Hub extends Service {
           const raw = this.fs.readFile(`documents/${id}.json`);
           if (!raw) return { status: 'error', message: 'document not found' };
           const parsed = JSON.parse(raw);
+
+          // Decorate with published + storageContractId from hub state, if present
+          const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+          const publishedMeta = collections[id];
+          if (publishedMeta && publishedMeta.published && !parsed.published) {
+            parsed.published = publishedMeta.published;
+          }
+
+          const contracts = (this._state.content && this._state.content.contracts) || {};
+          for (const [cid, c] of Object.entries(contracts)) {
+            if (c && c.document === id) {
+              parsed.storageContractId = cid;
+              break;
+            }
+          }
+
           return { type: 'GetDocumentResult', document: parsed };
         } catch (err) {
           console.error('[HUB] GetDocument error:', err);
@@ -638,9 +718,77 @@ class Hub extends Service {
         }
       });
 
+      // Create a long-term storage contract for a document, funded with Bitcoin.
+      // This is a skeletal implementation that records intent; actual contract
+      // negotiation, proof-of-storage challenges, and payouts live in the
+      // Bitcoin/escrow services.
+      //
+      // Params: (config: {
+      //   documentId: string,
+      //   amountSats: number,
+      //   durationYears: number,
+      //   challengeCadence: 'hourly'|'daily'|'weekly'|'monthly',
+      //   responseDeadline: '1s'|'5s'|'10s'|'30s'|'60s'|'10m'|'60m'
+      // })
+      this.http._registerMethod('CreateStorageContract', async (...params) => {
+        const config = params[0] || {};
+        const documentId = config.documentId || config.id;
+        if (!documentId) return { status: 'error', message: 'documentId required' };
+
+        const amountSats = Number(config.amountSats || 0);
+        if (!Number.isFinite(amountSats) || amountSats <= 0) {
+          return { status: 'error', message: 'positive amountSats required' };
+        }
+
+        const durationYears = Number(config.durationYears || 4);
+        const challengeCadence = config.challengeCadence || 'daily';
+        const responseDeadline = config.responseDeadline || '10s';
+
+        try {
+          // Lightweight in-memory record for now; can later move to a dedicated
+          // contracts collection and Bitcoin-backed escrow.
+          this._state.content.contracts = this._state.content.contracts || {};
+
+          const descriptor = {
+            type: 'StorageContract',
+            document: documentId,
+            amountSats,
+            durationYears,
+            challengeCadence,
+            responseDeadline,
+            created: new Date().toISOString()
+          };
+
+          const contract = new Actor({ content: descriptor });
+          const contractId = contract.id;
+
+          this._state.content.contracts[contractId] = {
+            id: contractId,
+            ...descriptor
+          };
+
+          // Persist a minimal record alongside documents for durability
+          try {
+            await this.fs.publish(`contracts/${contractId}.json`, this._state.content.contracts[contractId]);
+            // Persist updated global state (includes contracts index)
+            this.commit();
+            if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+          } catch (e) {
+            console.error('[HUB] Failed to persist storage contract:', e);
+          }
+
+          return {
+            type: 'CreateStorageContractResult',
+            id: contractId,
+            contract: this._state.content.contracts[contractId]
+          };
+        } catch (err) {
+          console.error('[HUB] CreateStorageContract error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'create storage contract failed' };
+        }
+      });
+
       const buildNetworkStatus = () => {
-        console.debug('getting network status (settings):', this.http.agent.settings);
-        console.debug('getting network status (address):', this.http.agent.listenAddress);
         return {
           clock: this.http.clock,
           contract: this.contract.id,
@@ -859,6 +1007,71 @@ class Hub extends Service {
           if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
         } catch (err) {
           console.error('[HUB] Failed to handle received file:', err);
+        }
+      });
+
+      // Handle inventory requests from peers and respond with local document inventory.
+      this.agent.on('inventory', async ({ message, origin }) => {
+        try {
+          if (!message || !message.object || message.object.kind !== 'documents') return;
+
+          const targetId = message.actor && message.actor.id;
+
+          // Build a lightweight document inventory: id/sha256/size/mime/created/published.
+          const docs = this._state.documents || {};
+          const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+
+          const items = Object.values(docs).map((meta) => {
+            if (!meta || !meta.id) return null;
+            const id = meta.id;
+            const c = collections[id];
+            return {
+              id,
+              sha256: meta.sha256 || id,
+              name: meta.name,
+              mime: meta.mime || 'application/octet-stream',
+              size: meta.size,
+              created: meta.created,
+              published: !!(c && c.published)
+            };
+          }).filter(Boolean);
+
+          const responsePayload = {
+            type: 'INVENTORY_RESPONSE',
+            actor: { id: this.agent.identity.id },
+            object: {
+              kind: 'documents',
+              items,
+              created: Date.now()
+            },
+            target: targetId
+          };
+
+          const vector = ['INVENTORY_RESPONSE', JSON.stringify(responsePayload)];
+          const reply = Message.fromVector(vector).signWithKey(this.agent.key);
+
+          const originAddress = origin && (origin.address || origin.id);
+          if (originAddress && this.agent.connections[originAddress]) {
+            this.agent.connections[originAddress]._writeFabric(reply.toBuffer());
+          } else {
+            // Fallback: relay to all peers
+            this.agent.relay(reply);
+          }
+
+          // Also broadcast the inventory response to all WebSocket clients so
+          // browser Bridges can update their per-peer inventories.
+          try {
+            const payload = JSON.stringify(responsePayload);
+            const wsMsg = Message.fromVector(['GenericMessage', payload]);
+            if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
+            if (typeof this.http.broadcast === 'function') {
+              this.http.broadcast(wsMsg);
+            }
+          } catch (broadcastErr) {
+            console.error('[HUB] Failed to broadcast inventory response to clients:', broadcastErr);
+          }
+        } catch (err) {
+          console.error('[HUB] Failed to handle inventory request:', err);
         }
       });
 

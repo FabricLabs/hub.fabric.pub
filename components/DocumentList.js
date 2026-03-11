@@ -2,8 +2,9 @@
 
 // Dependencies
 const React = require('react');
-const { Link } = require('react-router-dom');
+const { Link, useNavigate } = require('react-router-dom');
 
+// Semantic UI
 const {
   Button,
   Divider,
@@ -18,6 +19,8 @@ const {
 } = require('semantic-ui-react');
 
 const { sha256: sha256Hash } = require('@noble/hashes/sha256');
+
+// Fabric Types
 const Actor = require('@fabric/core/types/actor');
 
 function base64FromArrayBuffer (buffer) {
@@ -53,7 +56,9 @@ function DocumentsPage (props) {
   const [createDocName, setCreateDocName] = React.useState('');
   const [createDocContent, setCreateDocContent] = React.useState('');
   const [showCreateDoc, setShowCreateDoc] = React.useState(false);
-   const [recentDocId, setRecentDocId] = React.useState(null);
+  const [recentDocId, setRecentDocId] = React.useState(null);
+
+  const navigate = useNavigate();
 
   // Pull documents index from hub networkStatus (metadata only), fallback to bridge globalState cache.
   const bridgeRef = props.bridgeRef;
@@ -102,11 +107,27 @@ function DocumentsPage (props) {
   }
 
   // Merge in published index entries and mark them as published.
+  // Prefer existing local Actor IDs (opaque ids) that share the same sha256,
+  // so the same document doesn't appear twice (once by Actor id, once by sha).
   if (indexed && typeof indexed === 'object') {
     for (const value of Object.values(indexed)) {
       if (!value || !value.id) continue;
-      const existing = docsById[value.id] || {};
-      docsById[value.id] = { ...existing, ...value, isPublished: true };
+      const sha = value.sha256 || value.id;
+
+      let targetId = value.id;
+
+      if (sha) {
+        const localMatch = allDocs.find((d) => {
+          const dSha = d.sha256 || d.sha || d.id;
+          return dSha === sha;
+        });
+        if (localMatch && localMatch.id) {
+          targetId = localMatch.id;
+        }
+      }
+
+      const existing = docsById[targetId] || {};
+      docsById[targetId] = { ...existing, ...value, id: targetId, isPublished: true };
     }
   }
 
@@ -139,6 +160,7 @@ function DocumentsPage (props) {
       const actor = new Actor({ content: payload });
       const meta = {
         id: actor.id,
+        sha256,
         name: payload.name,
         mime: payload.mime,
         size: payload.size,
@@ -149,6 +171,8 @@ function DocumentsPage (props) {
       }
       setRecentDocId(meta.id);
       setFile(null);
+      // Navigate directly to the new document detail view
+      navigate(`/documents/${encodeURIComponent(meta.id)}`);
     } catch (e) {
       setError(e && e.message ? e.message : String(e));
     } finally {
@@ -175,6 +199,7 @@ function DocumentsPage (props) {
       const actor = new Actor({ content: payload });
       const meta = {
         id: actor.id,
+        sha256,
         name: payload.name,
         mime: payload.mime,
         size: payload.size,
@@ -187,6 +212,8 @@ function DocumentsPage (props) {
       setCreateDocName('');
       setCreateDocContent('');
       setShowCreateDoc(false);
+      // Navigate directly to the new document detail view
+      navigate(`/documents/${encodeURIComponent(meta.id)}`);
     } catch (e) {
       setError(e && e.message ? e.message : String(e));
     }

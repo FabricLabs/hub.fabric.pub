@@ -2,7 +2,7 @@
 
 // Dependencies
 const React = require('react');
-const { Link, useParams, useLocation } = require('react-router-dom');
+const { Link, useParams, useLocation, useNavigate } = require('react-router-dom');
 
 const {
   Button,
@@ -14,12 +14,15 @@ const {
   Loader,
   Modal,
   Input,
-  Segment
+  Segment,
+  Form,
+  Dropdown
 } = require('semantic-ui-react');
 
 function DocumentDetail (props) {
   const params = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const encodedParam = params && params.id ? params.id : '';
   const hash = location && location.hash ? location.hash.replace(/^#/, '') : '';
   const rawId = encodedParam || hash;
@@ -30,6 +33,14 @@ function DocumentDetail (props) {
   const [unlocked, setUnlocked] = React.useState(false);
   const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  const [isPublishing, setIsPublishing] = React.useState(false);
+  const [distributeOpen, setDistributeOpen] = React.useState(false);
+  const [distributeBusy, setDistributeBusy] = React.useState(false);
+  const [distributeAmountSats, setDistributeAmountSats] = React.useState('');
+  const [distributeDurationYears, setDistributeDurationYears] = React.useState(4);
+  const [distributeCadence, setDistributeCadence] = React.useState('daily');
+  const [distributeDeadline, setDistributeDeadline] = React.useState('10s');
+  const [distributeError, setDistributeError] = React.useState(null);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
@@ -45,6 +56,9 @@ function DocumentDetail (props) {
         setDoc(candidate);
         setDecryptedContent(null);
         setUnlocked(false);
+        if (candidate.published) {
+          setIsPublishing(false);
+        }
       }
     };
     window.addEventListener('globalStateUpdate', handler);
@@ -69,6 +83,20 @@ function DocumentDetail (props) {
     } catch (e) {}
   }, [id, props.bridgeRef]);
 
+  // Stop "publishing…" state once the document has a published timestamp,
+  // or after a safety timeout if the hub reports an error.
+  React.useEffect(() => {
+    if (doc && doc.published) {
+      setIsPublishing(false);
+      return;
+    }
+    if (!isPublishing) return;
+    const timeout = setTimeout(() => {
+      setIsPublishing(false);
+    }, 10000);
+    return () => clearTimeout(timeout);
+  }, [doc && doc.published, isPublishing]);
+
   // Decrypt only when user clicks Unlock (for encrypted docs)
   const handleUnlock = React.useCallback(() => {
     if (!doc || decryptedContent !== null) return;
@@ -88,8 +116,12 @@ function DocumentDetail (props) {
   const mime = (doc && doc.mime) || 'application/octet-stream';
   const created = doc && doc.created ? new Date(doc.created).toLocaleString() : '';
   const publishedAt = doc && doc.published ? new Date(doc.published).toLocaleString() : '';
+  const storageContractId = doc && doc.storageContractId;
 
-  const contentBase64 = doc && (doc.contentBase64 || decryptedContent);
+  // Never expose decrypted content when we don't currently have a document key,
+  // even if contentBase64 is still present on the doc from a prior unlock.
+  const rawContentBase64 = doc && (doc.contentBase64 || decryptedContent);
+  const contentBase64 = props.hasDocumentKey ? rawContentBase64 : null;
   let downloadHref = null;
   if (contentBase64) {
     downloadHref = `data:${mime};base64,${contentBase64}`;
@@ -148,6 +180,23 @@ function DocumentDetail (props) {
     shareUrlCanonical = `${origin}/documents/${encodeURIComponent(id)}`;
   }
 
+  const cadenceOptions = [
+    { key: 'hourly', value: 'hourly', text: 'Hourly' },
+    { key: 'daily', value: 'daily', text: 'Daily' },
+    { key: 'weekly', value: 'weekly', text: 'Weekly' },
+    { key: 'monthly', value: 'monthly', text: 'Monthly' }
+  ];
+
+  const deadlineOptions = [
+    { key: '1s', value: '1s', text: '1 second' },
+    { key: '5s', value: '5s', text: '5 seconds' },
+    { key: '10s', value: '10s', text: '10 seconds' },
+    { key: '30s', value: '30s', text: '30 seconds' },
+    { key: '60s', value: '60s', text: '60 seconds' },
+    { key: '10m', value: '10m', text: '10 minutes' },
+    { key: '60m', value: '60m', text: '60 minutes' }
+  ];
+
   return (
     <fabric-document-detail class='fade-in'>
       <Segment>
@@ -167,6 +216,22 @@ function DocumentDetail (props) {
             <Label size="small" color="blue" title={publishedAt ? `Published: ${publishedAt}` : 'Published'}>
               <Icon name="bullhorn" />
               Published
+            </Label>
+          )}
+          {storageContractId && (
+            <Label
+              size="small"
+              color="purple"
+              title="This document has an active storage contract"
+              style={{ cursor: 'pointer' }}
+              onClick={() => {
+                if (storageContractId) {
+                  navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
+                }
+              }}
+            >
+              <Icon name="cloud" />
+              Distributed
             </Label>
           )}
         </Header>
@@ -205,15 +270,43 @@ function DocumentDetail (props) {
               </Button>
               <Button
                 size="small"
-                basic
+                basic={!doc || !doc.published}
+                color={doc && doc.published ? 'blue' : undefined}
                 icon
                 labelPosition="left"
-                onClick={() => typeof props.onPublishDocument === 'function' && props.onPublishDocument(id)}
-                disabled={!doc}
-                title="Publish this document ID to the hub global store"
+                onClick={() => {
+                  if (doc && doc.published) return;
+                  if (!id || typeof props.onPublishDocument !== 'function') return;
+                  setIsPublishing(true);
+                  props.onPublishDocument(id);
+                }}
+                disabled={!doc || isPublishing || !!(doc && doc.published)}
+                title={doc && doc.published ? 'Document is published' : 'Publish this document ID to the hub global store'}
               >
-                <Icon name="bullhorn" />
-                Publish
+                <Icon
+                  name={isPublishing ? 'spinner' : (doc && doc.published ? 'check' : 'bullhorn')}
+                  loading={isPublishing}
+                />
+                {isPublishing ? 'Publishing…' : (doc && doc.published ? 'Published' : 'Publish')}
+              </Button>
+              <Button
+                size="small"
+                basic={!storageContractId}
+                color={storageContractId ? 'purple' : undefined}
+                icon
+                labelPosition="left"
+                onClick={() => {
+                  if (storageContractId) {
+                    navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
+                    return;
+                  }
+                  if (id) setDistributeOpen(true);
+                }}
+                disabled={!id}
+                title={storageContractId ? 'View storage contract' : 'Distribute this document across other nodes'}
+              >
+                <Icon name={storageContractId ? 'cloud' : 'cloud upload'} />
+                {storageContractId ? 'Distributed' : 'Distribute'}
               </Button>
               <Button
                 size="small"
@@ -279,6 +372,138 @@ function DocumentDetail (props) {
           <Modal.Actions>
             <Button basic onClick={() => setShareOpen(false)}>
               Close
+            </Button>
+          </Modal.Actions>
+        </Modal>
+
+        <Modal
+          size="small"
+          open={distributeOpen}
+          onClose={() => {
+            if (distributeBusy) return;
+            setDistributeOpen(false);
+            setDistributeError(null);
+          }}
+        >
+          <Header icon="cloud upload" content="Distribute document" />
+          <Modal.Content>
+            <p style={{ color: '#666' }}>
+              Pay Bitcoin to have other nodes store this document under a long-term contract.
+              By default, storage is requested for 4 years with periodic random challenges.
+            </p>
+            <Form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!id || distributeBusy) return;
+                const amount = parseInt(distributeAmountSats, 10);
+                if (!Number.isFinite(amount) || amount <= 0) {
+                  setDistributeError('Enter a positive amount in sats.');
+                  return;
+                }
+                setDistributeError(null);
+                setDistributeBusy(true);
+                const config = {
+                  documentId: id,
+                  amountSats: amount,
+                  durationYears: distributeDurationYears,
+                  challengeCadence: distributeCadence,
+                  responseDeadline: distributeDeadline
+                };
+                if (typeof props.onDistributeDocument === 'function') {
+                  Promise.resolve(props.onDistributeDocument(id, config))
+                    .then(() => {
+                      setDistributeBusy(false);
+                      setDistributeOpen(false);
+                    })
+                    .catch((err) => {
+                      setDistributeBusy(false);
+                      setDistributeError(
+                        (err && err.message) ? err.message : 'Distribution request failed.'
+                      );
+                    });
+                } else {
+                  setDistributeError('Distribution is not available on this hub.');
+                  setDistributeBusy(false);
+                }
+              }}
+            >
+              <Form.Field>
+                <label>Amount (sats)</label>
+                <Input
+                  type="number"
+                  min="1"
+                  placeholder="e.g. 100000"
+                  value={distributeAmountSats}
+                  onChange={(e) => setDistributeAmountSats(e.target.value)}
+                />
+              </Form.Field>
+              <Form.Field>
+                <label>Duration</label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={distributeDurationYears}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (Number.isFinite(v)) setDistributeDurationYears(v);
+                  }}
+                  label={{ basic: true, content: 'years' }}
+                  labelPosition="right"
+                />
+              </Form.Field>
+              <Form.Field>
+                <label>Challenge frequency</label>
+                <Dropdown
+                  selection
+                  options={cadenceOptions}
+                  value={distributeCadence}
+                  onChange={(_, data) => setDistributeCadence(data.value)}
+                />
+              </Form.Field>
+              <Form.Field>
+                <label>Response deadline</label>
+                <Dropdown
+                  selection
+                  options={deadlineOptions}
+                  value={distributeDeadline}
+                  onChange={(_, data) => setDistributeDeadline(data.value)}
+                />
+              </Form.Field>
+              {distributeError && (
+                <p style={{ marginTop: '0.75em', color: '#b00' }}>
+                  {distributeError}
+                </p>
+              )}
+            </Form>
+          </Modal.Content>
+          <Modal.Actions>
+            <Button
+              basic
+              onClick={() => {
+                if (distributeBusy) return;
+                setDistributeOpen(false);
+                setDistributeError(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              primary
+              loading={distributeBusy}
+              disabled={distributeBusy}
+              onClick={() => {
+                // Submit the form programmatically
+                const node = document && document.activeElement;
+                if (node && node.form) {
+                  node.form.requestSubmit();
+                } else {
+                  const form = document.querySelector('form');
+                  if (form) form.requestSubmit();
+                }
+              }}
+            >
+              Start distribution
             </Button>
           </Modal.Actions>
         </Modal>
