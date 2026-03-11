@@ -18,6 +18,7 @@ const {
 } = require('semantic-ui-react');
 
 const { sha256: sha256Hash } = require('@noble/hashes/sha256');
+const Actor = require('@fabric/core/types/actor');
 
 function base64FromArrayBuffer (buffer) {
   const bytes = new Uint8Array(buffer);
@@ -127,12 +128,20 @@ function DocumentsPage (props) {
       const buffer = await f.arrayBuffer();
       const sha256 = sha256Hex(buffer);
       const contentBase64 = base64FromArrayBuffer(buffer);
-      const meta = {
-        id: sha256,
+      // Wrap file metadata in a Fabric Actor so the public document ID
+      // is an opaque Actor id, not the raw sha256 hash.
+      const payload = {
         sha256,
         name: f.name,
         mime: f.type || 'application/octet-stream',
-        size: f.size,
+        size: f.size
+      };
+      const actor = new Actor({ content: payload });
+      const meta = {
+        id: actor.id,
+        name: payload.name,
+        mime: payload.mime,
+        size: payload.size,
         contentBase64
       };
       if (typeof props.onAddLocalDocument === 'function') {
@@ -157,12 +166,18 @@ function DocumentsPage (props) {
       const sha256 = sha256Hex(buffer);
       const contentBase64 = textToBase64(text);
       const name = (createDocName || 'Untitled').trim() || 'Untitled';
-      const meta = {
-        id: sha256,
+      const payload = {
         sha256,
         name,
         mime: 'text/plain',
-        size: buffer.length,
+        size: buffer.length
+      };
+      const actor = new Actor({ content: payload });
+      const meta = {
+        id: actor.id,
+        name: payload.name,
+        mime: payload.mime,
+        size: payload.size,
         contentBase64
       };
       if (typeof props.onAddLocalDocument === 'function') {
@@ -254,7 +269,7 @@ function DocumentsPage (props) {
         )}
 
         <Segment>
-          <Header as="h3">Document index</Header>
+          <Header as="h3">Documents</Header>
           <Button
             size="small"
             icon

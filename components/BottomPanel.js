@@ -1,6 +1,7 @@
 'use strict';
 
 const React = require('react');
+const { Link } = require('react-router-dom');
 const {
   Segment,
   Icon
@@ -46,7 +47,8 @@ class BottomPanel extends React.Component {
       return `${head}…${tail}`;
     };
 
-    const pubkeyText = formatPubkey(this.props.pubkey);
+    const rawPubkey = this.props.pubkey;
+    const pubkeyText = formatPubkey(rawPubkey);
 
     return (
       <Segment
@@ -62,9 +64,13 @@ class BottomPanel extends React.Component {
       >
         <div style={{ flex: '1 1 auto', minWidth: 0, color: '#666' }}>
           {pubkeyText ? (
-            <span title={this.props.pubkey}>
-              Node pubkey:{' '}
-              <code>{pubkeyText}</code>
+            <span title={rawPubkey}>
+              <Link
+                to={`/peers/${encodeURIComponent(rawPubkey)}`}
+                style={{ color: 'inherit', textDecoration: 'none' }}
+              >
+                <code>{pubkeyText}</code>
+              </Link>
             </span>
           ) : (
             <code>hub.fabric.pub</code>

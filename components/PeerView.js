@@ -16,7 +16,8 @@ const {
   Icon,
   Label,
   List,
-  Segment
+  Segment,
+  Loader
 } = require('semantic-ui-react');
 
 function isNetworkStatus (obj) {

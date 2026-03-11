@@ -216,7 +216,9 @@ class Bridge extends React.Component {
       const v = network.pubkey || network.id || network.address;
       if (v) return String(v);
     }
-    return ns.pubkey || ns.id || ns.address || '';
+    // Fall back to top-level fields commonly exposed by GetNetworkStatus,
+    // including xpub for the node's long-lived identity.
+    return ns.pubkey || ns.id || ns.address || ns.xpub || '';
   }
 
   // Global state management methods
@@ -418,6 +420,32 @@ class Bridge extends React.Component {
     window.dispatchEvent(new CustomEvent('globalStateUpdate', {
       detail: {
         operation: { op: 'replace', path: '/documents', value: {} },
+        globalState: this.globalState
+      }
+    }));
+  }
+
+  /**
+   * Clear any decrypted content from documents while preserving encrypted blobs.
+   * Used when locking the identity so that previously viewed plaintext is not retained in memory/localStorage.
+   */
+  clearDecryptedDocuments () {
+    if (!this.globalState.documents) return;
+    let changed = false;
+    const docs = this.globalState.documents;
+    for (const id of Object.keys(docs)) {
+      const doc = docs[id];
+      if (!doc || !doc.contentEncrypted) continue;
+      if (doc.contentBase64 != null) {
+        delete doc.contentBase64;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'replace', path: '/documents', value: this.globalState.documents },
         globalState: this.globalState
       }
     }));

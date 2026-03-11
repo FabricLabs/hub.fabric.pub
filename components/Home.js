@@ -20,7 +20,8 @@ const ActivityStream = require('./ActivityStream');
 class Home extends React.Component {
   render () {
     const { bridge, bridgeRef } = this.props;
-    const ref = bridge || bridgeRef;
+    // Prefer the live Bridge ref; fall back to legacy `bridge` prop.
+    const ref = bridgeRef || bridge;
     const current = ref && ref.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
@@ -146,7 +147,7 @@ class Home extends React.Component {
         </Segment>
         <Segment>
           <Header as='h2'>Activity</Header>
-          <ActivityStream bridge={bridge} bridgeRef={this.props.bridgeRef} />
+          <ActivityStream bridge={ref} bridgeRef={ref} />
         </Segment>
       </fabric-hub-home>
     );

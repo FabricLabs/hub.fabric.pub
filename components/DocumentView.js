@@ -2,7 +2,7 @@
 
 // Dependencies
 const React = require('react');
-const { Link, useParams } = require('react-router-dom');
+const { Link, useParams, useLocation } = require('react-router-dom');
 
 const {
   Button,
@@ -12,18 +12,24 @@ const {
   Icon,
   Label,
   Loader,
+  Modal,
+  Input,
   Segment
 } = require('semantic-ui-react');
 
 function DocumentDetail (props) {
   const params = useParams();
-  const encoded = params && params.id ? params.id : '';
-  const id = encoded ? decodeURIComponent(encoded) : '';
+  const location = useLocation();
+  const encodedParam = params && params.id ? params.id : '';
+  const hash = location && location.hash ? location.hash.replace(/^#/, '') : '';
+  const rawId = encodedParam || hash;
+  const id = rawId ? decodeURIComponent(rawId) : '';
 
   const [doc, setDoc] = React.useState(null);
   const [decryptedContent, setDecryptedContent] = React.useState(null);
   const [unlocked, setUnlocked] = React.useState(false);
   const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
@@ -45,13 +51,37 @@ function DocumentDetail (props) {
     return () => window.removeEventListener('globalStateUpdate', handler);
   }, [id]);
 
+  // On mount, hydrate from existing Bridge globalState so locally-added documents
+  // are immediately visible without waiting for another event.
+  React.useEffect(() => {
+    try {
+      const bridgeRef = props.bridgeRef;
+      const current = bridgeRef && bridgeRef.current;
+      if (!current || typeof current.getGlobalState !== 'function') return;
+      const gs = current.getGlobalState();
+      if (!gs || !gs.documents) return;
+      const candidate = gs.documents[id];
+      if (candidate) {
+        setDoc(candidate);
+        setDecryptedContent(null);
+        setUnlocked(false);
+      }
+    } catch (e) {}
+  }, [id, props.bridgeRef]);
+
   // Decrypt only when user clicks Unlock (for encrypted docs)
   const handleUnlock = React.useCallback(() => {
     if (!doc || decryptedContent !== null) return;
+    if (!props.hasDocumentKey) {
+      if (typeof props.onRequestUnlock === 'function') {
+        props.onRequestUnlock();
+      }
+      return;
+    }
     const raw = doc.contentBase64 || (typeof props.onGetDecryptedContent === 'function' && props.onGetDecryptedContent(id));
     if (raw) setDecryptedContent(raw);
     setUnlocked(true);
-  }, [doc, id, decryptedContent, props.onGetDecryptedContent]);
+  }, [doc, id, decryptedContent, props.hasDocumentKey, props.onGetDecryptedContent, props.onRequestUnlock]);
 
   const isEncrypted = !!(doc && doc.contentEncrypted);
   const name = (doc && doc.name) || id;
@@ -71,7 +101,7 @@ function DocumentDetail (props) {
 
   // Text preview (only when it looks like text)
   let text = null;
-  if (contentBase64 && looksText) {
+  if (contentBase64 && looksText && props.hasDocumentKey) {
     try {
       text = atob(contentBase64);
     } catch (e) {}
@@ -99,6 +129,24 @@ function DocumentDetail (props) {
       }
     } catch (e) {}
   }, [doc, id, isEncrypted, contentBase64, decryptedContent, autoTriedDecrypt, props.onGetDecryptedContent]);
+
+  // When document key becomes unavailable (identity locked), drop any decrypted
+  // content held in component state so the UI reflects the locked status.
+  React.useEffect(() => {
+    if (!props.hasDocumentKey) {
+      setDecryptedContent(null);
+      setAutoTriedDecrypt(false);
+    }
+  }, [props.hasDocumentKey]);
+
+  // URLs for sharing: canonical (path param) and hash-only (keeps id client-side).
+  let shareUrlHash = '';
+  let shareUrlCanonical = '';
+  if (id && typeof window !== 'undefined' && window.location) {
+    const { origin } = window.location;
+    shareUrlHash = `${origin}/documents#${encodeURIComponent(id)}`;
+    shareUrlCanonical = `${origin}/documents/${encodeURIComponent(id)}`;
+  }
 
   return (
     <fabric-document-detail class='fade-in'>
@@ -128,12 +176,11 @@ function DocumentDetail (props) {
         <Card fluid>
           <Card.Content>
             <Card.Header>Document</Card.Header>
-            <Card.Meta>{created}</Card.Meta>
+          <Card.Meta>{created}</Card.Meta>
             <Card.Description>
               <div><strong>ID:</strong> <code>{id}</code></div>
               <div><strong>MIME:</strong> {mime}</div>
               <div><strong>Size:</strong> {doc && doc.size != null ? `${doc.size} bytes` : ''}</div>
-              <div><strong>SHA-256:</strong> <code>{doc && (doc.sha256 || doc.id) ? (doc.sha256 || doc.id) : id}</code></div>
               {isEncrypted && !contentBase64 && (
                 <div style={{ marginTop: '0.5em' }}>
                   <Button size="small" onClick={handleUnlock} title="Decrypt and show content">
@@ -168,6 +215,18 @@ function DocumentDetail (props) {
                 <Icon name="bullhorn" />
                 Publish
               </Button>
+              <Button
+                size="small"
+                basic
+                icon
+                labelPosition="left"
+                onClick={() => id && setShareOpen(true)}
+                disabled={!id}
+                title="Share a link to this document"
+              >
+                <Icon name="share alternate" />
+                Share
+              </Button>
               {downloadHref && (
                 <Button
                   size="small"
@@ -183,6 +242,46 @@ function DocumentDetail (props) {
             </div>
           </Card.Content>
         </Card>
+
+        <Modal
+          size="small"
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+        >
+          <Header icon="share alternate" content="Share document" />
+          <Modal.Content>
+            <p style={{ color: '#666' }}>
+              This link keeps the document ID on the client side using the URL hash.
+            </p>
+            <Input
+              fluid
+              readOnly
+              value={shareUrlHash}
+              onFocus={(e) => e.target.select()}
+              action={{
+                icon: 'copy',
+                title: 'Copy to clipboard',
+                onClick: () => {
+                  try {
+                    if (shareUrlHash && navigator && navigator.clipboard) {
+                      navigator.clipboard.writeText(shareUrlHash);
+                    }
+                  } catch (e) {}
+                }
+              }}
+            />
+            {shareUrlCanonical && (
+              <p style={{ marginTop: '0.75em', fontSize: '0.85em', color: '#888' }}>
+                Permanent URL: <code>{shareUrlCanonical}</code>
+              </p>
+            )}
+          </Modal.Content>
+          <Modal.Actions>
+            <Button basic onClick={() => setShareOpen(false)}>
+              Close
+            </Button>
+          </Modal.Actions>
+        </Modal>
 
         {!doc && (
           <Segment
@@ -205,7 +304,11 @@ function DocumentDetail (props) {
         {doc && isEncrypted && !contentBase64 && (
           <Segment secondary style={{ marginTop: '1em' }}>
             <Header as="h3">Contents</Header>
-            <p style={{ color: '#666' }}>Encrypted. Click Unlock above to decrypt and view.</p>
+            <p style={{ color: '#666' }}>
+              {props.hasDocumentKey
+                ? 'Encrypted. Click Unlock above to decrypt and view.'
+                : 'Encrypted. Unlock your identity to view this document.'}
+            </p>
           </Segment>
         )}
 

@@ -273,6 +273,9 @@ class HubInterface extends React.Component {
     // Prefer Bridge ref (live from WebSocket), then Redux, then local state
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
     const nodePubkey = (bridgeInstance && typeof bridgeInstance.getNodePubkey === 'function' && bridgeInstance.getNodePubkey());
+    const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus || null);
+    const services = networkStatus && networkStatus.state && networkStatus.state.services;
+    const bitcoin = services && services.bitcoin;
 
     // Auth: prefer in-session local identity (with id/xpub) so button shows identity after login
     const local = this.state.uiLocalIdentity;
@@ -287,6 +290,21 @@ class HubInterface extends React.Component {
           {`
             fabric-react-component {
               margin: 1em;
+            }
+
+            .fade-in {
+              animation: hub-fade-in 220ms ease-out;
+            }
+
+            @keyframes hub-fade-in {
+              from {
+                opacity: 0;
+                transform: translateY(2px);
+              }
+              to {
+                opacity: 1;
+                transform: translateY(0);
+              }
             }
           `}
         </style>
@@ -311,6 +329,7 @@ class HubInterface extends React.Component {
                   auth={effectiveAuth}
                   hasLocalIdentity={!!hasLocal}
                   hasLockedIdentity={effectiveHasLockedIdentity}
+                  bitcoin={bitcoin}
                   onUnlockIdentity={() => {
                     this.setState({ uiIdentityOpen: true });
                   }}
@@ -359,6 +378,14 @@ class HubInterface extends React.Component {
                           if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv) return {};
                           return { uiHasLockedIdentity: !!locked };
                         });
+                        // When locking identity, wipe any decrypted document content
+                        // while preserving encrypted blobs, so re-unlocking is required
+                        // to view protected documents again.
+                        if (locked && this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearDecryptedDocuments === 'function') {
+                          try {
+                            this.bridgeRef.current.clearDecryptedDocuments();
+                          } catch (e) {}
+                        }
                       }}
                       onUnlockSuccess={(identityInfo) => {
                         if (identityInfo && typeof identityInfo === 'object' && (identityInfo.id || identityInfo.xpub)) {
@@ -619,6 +646,15 @@ class HubInterface extends React.Component {
                     element={(
                       <DocumentView
                         bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        hasDocumentKey={
+                          !!(bridgeInstance &&
+                            typeof bridgeInstance.hasDocumentEncryptionKey === 'function' &&
+                            bridgeInstance.hasDocumentEncryptionKey())
+                        }
+                        onRequestUnlock={() => {
+                          this.setState({ uiIdentityOpen: true });
+                        }}
                         onGetDocument={(id) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;

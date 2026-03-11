@@ -25,6 +25,7 @@ function TopPanel (props) {
   const onUnlockIdentity = props && typeof props.onUnlockIdentity === 'function' ? props.onUnlockIdentity : null;
   const hasLocalIdentity = !!(props && props.hasLocalIdentity);
   const hasLockedIdentity = !!(props && props.hasLockedIdentity);
+  const bitcoin = props && props.bitcoin;
 
   const formatIdentityValue = (value) => {
     if (value == null) return '';
@@ -91,12 +92,21 @@ function TopPanel (props) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+        {isAuthed && bitcoin && typeof bitcoin.balance === 'number' && (
+          <Label size="small" basic title="Bitcoin balance">
+            <Icon name="bitcoin" color="orange" />
+            {bitcoin.balance}
+          </Label>
+        )}
         {hasLocalIdentity && (
           <Icon
             name={isLockedState ? 'lock' : 'unlock'}
             color={isLockedState ? 'orange' : 'green'}
             title={isLockedState ? 'Identity locked' : 'Identity unlocked'}
-            style={{ marginRight: '0.25em' }}
+            style={{ marginRight: '0.25em', cursor: isLockedState ? 'pointer' : 'default' }}
+            onClick={() => {
+              if (isLockedState && onUnlockIdentity) onUnlockIdentity();
+            }}
           />
         )}
         <Button
