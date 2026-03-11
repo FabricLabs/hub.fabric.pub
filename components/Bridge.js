@@ -2344,12 +2344,14 @@ class Bridge extends React.Component {
     }
 
     try {
+      const actorId = this._getIdentityId();
       const payloadConfig = {
         documentId: backendId,
         amountSats: config.amountSats,
         durationYears: config.durationYears,
         challengeCadence: config.challengeCadence,
-        responseDeadline: config.responseDeadline
+        responseDeadline: config.responseDeadline,
+        actorId
       };
       const payload = { method: 'CreateStorageContract', params: [payloadConfig] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);

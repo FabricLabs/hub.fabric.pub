@@ -849,6 +849,7 @@ class Hub extends Service {
         const durationYears = Number(config.durationYears || 4);
         const challengeCadence = config.challengeCadence || 'daily';
         const responseDeadline = config.responseDeadline || '10s';
+        const ownerId = config.actorId || (this.agent && this.agent.identity && this.agent.identity.id) || null;
 
         try {
           // Lightweight in-memory record for now; can later move to a dedicated
@@ -870,7 +871,8 @@ class Hub extends Service {
 
           this._state.content.contracts[contractId] = {
             id: contractId,
-            ...descriptor
+            ...descriptor,
+            owner: ownerId || undefined
           };
 
           // Persist a minimal record alongside documents for durability
@@ -886,6 +888,7 @@ class Hub extends Service {
           // Record activity describing the new storage contract.
           this.recordActivity({
             type: 'Create',
+            actor: ownerId ? { id: ownerId } : undefined,
             object: {
               type: 'StorageContract',
               id: contractId,

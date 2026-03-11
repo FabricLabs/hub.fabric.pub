@@ -57,7 +57,7 @@
     "fast-json-patch": "=3.1.1",
     "jquery": "=3.7.1",
     "jsdoc-to-markdown": "=8.0.0",
-    "jsdom": "=22.1.0",
+    "jsdom": "=28.1.0",
     "lodash.merge": "=4.6.2",
     "mocha": "=10.8.2",
     "path-browserify": "=1.0.1",
