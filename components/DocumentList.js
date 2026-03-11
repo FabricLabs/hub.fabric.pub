@@ -52,6 +52,7 @@ function DocumentsPage (props) {
   const [createDocName, setCreateDocName] = React.useState('');
   const [createDocContent, setCreateDocContent] = React.useState('');
   const [showCreateDoc, setShowCreateDoc] = React.useState(false);
+   const [recentDocId, setRecentDocId] = React.useState(null);
 
   // Pull documents index from hub networkStatus (metadata only), fallback to bridge globalState cache.
   const bridgeRef = props.bridgeRef;
@@ -78,6 +79,13 @@ function DocumentsPage (props) {
     }
   }, [bridgeRef]);
 
+  // Briefly highlight the most recently added document.
+  React.useEffect(() => {
+    if (!recentDocId) return;
+    const timer = setTimeout(() => setRecentDocId(null), 1500);
+    return () => clearTimeout(timer);
+  }, [recentDocId]);
+
   React.useEffect(() => {
     if (typeof props.onListDocuments === 'function') props.onListDocuments();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -85,10 +93,23 @@ function DocumentsPage (props) {
 
   // Unified model: all docs in documents store; hub index = published refs
   const allDocs = Object.values(docsState || {}).filter((d) => d && d.id);
-  const publishedIds = new Set(indexed && typeof indexed === 'object' ? Object.keys(indexed) : []);
-  const localDocs = allDocs.filter((d) => !publishedIds.has(d.id));
-  const docsIndex = indexed && typeof indexed === 'object' ? Object.values(indexed) : allDocs;
-  const docs = docsIndex
+  const docsById = {};
+
+  // Start with all local documents (private by default).
+  for (const d of allDocs) {
+    docsById[d.id] = { ...d, isLocal: true };
+  }
+
+  // Merge in published index entries and mark them as published.
+  if (indexed && typeof indexed === 'object') {
+    for (const value of Object.values(indexed)) {
+      if (!value || !value.id) continue;
+      const existing = docsById[value.id] || {};
+      docsById[value.id] = { ...existing, ...value, isPublished: true };
+    }
+  }
+
+  const docs = Object.values(docsById)
     .filter((d) => d && d.id)
     .sort((a, b) => {
       const ta = a.created ? new Date(a.created).getTime() : 0;
@@ -117,6 +138,7 @@ function DocumentsPage (props) {
       if (typeof props.onAddLocalDocument === 'function') {
         props.onAddLocalDocument(meta);
       }
+      setRecentDocId(meta.id);
       setFile(null);
     } catch (e) {
       setError(e && e.message ? e.message : String(e));
@@ -146,6 +168,7 @@ function DocumentsPage (props) {
       if (typeof props.onAddLocalDocument === 'function') {
         props.onAddLocalDocument(meta);
       }
+      setRecentDocId(meta.id);
       setCreateDocName('');
       setCreateDocContent('');
       setShowCreateDoc(false);
@@ -169,7 +192,7 @@ function DocumentsPage (props) {
         <Divider />
 
         {hasEncryptionKey && (
-          <Segment>
+          <Segment loading={busy}>
             <Header as="h3">Add content</Header>
             <p style={{ color: '#666' }}>
               Select a file or create a document from text. Publish later to add to the hub.
@@ -230,46 +253,6 @@ function DocumentsPage (props) {
           </Segment>
         )}
 
-        {hasEncryptionKey && localDocs.length > 0 && (
-          <Segment>
-            <Header as="h3">Your Documents</Header>
-            <List divided relaxed style={{ marginTop: '0.5em' }}>
-              {localDocs.map((doc) => (
-                <List.Item key={doc.id}>
-                  <List.Content>
-                    <List.Header>
-                      <Link to={`/documents/${encodeURIComponent(doc.id)}`}>{doc.name || doc.id}</Link>
-                      <Label size="mini" color="grey" style={{ marginLeft: '0.5em' }}>local</Label>
-                      {doc.contentEncrypted && (
-                        <Label size="mini" color="green" style={{ marginLeft: '0.25em' }} title="Encrypted with your key">
-                          <Icon name="lock" />
-                          Encrypted
-                        </Label>
-                      )}
-                    </List.Header>
-                    <List.Description style={{ color: '#666' }}>
-                      {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}
-                      {typeof props.onPublishLocalDocument === 'function' && (
-                        <Button
-                          size="mini"
-                          basic
-                          compact
-                          style={{ marginLeft: '0.5em' }}
-                          onClick={() => props.onPublishLocalDocument(doc)}
-                          title="Upload to hub and publish to global state"
-                        >
-                          <Icon name="bullhorn" />
-                          Publish
-                        </Button>
-                      )}
-                    </List.Description>
-                  </List.Content>
-                </List.Item>
-              ))}
-            </List>
-          </Segment>
-        )}
-
         <Segment>
           <Header as="h3">Document index</Header>
           <Button
@@ -300,23 +283,77 @@ function DocumentsPage (props) {
             </Segment>
           ) : (
             <List divided relaxed style={{ marginTop: '1em' }}>
-              {docs.map((doc) => (
-                <List.Item key={doc.id}>
-                  <List.Content>
-                    <List.Header>
-                      <Link to={`/documents/${encodeURIComponent(doc.id)}`}>{doc.name || doc.id}</Link>
-                      {doc.contentEncrypted && (
-                        <Label size="mini" color="green" style={{ marginLeft: '0.5em' }} title="Encrypted">
-                          <Icon name="lock" />
-                        </Label>
-                      )}
-                    </List.Header>
-                    <List.Description style={{ color: '#666' }}>
-                      {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}{doc.created ? ` — ${new Date(doc.created).toLocaleString()}` : ''}
-                    </List.Description>
-                  </List.Content>
-                </List.Item>
-              ))}
+              {docs.map((doc) => {
+                const labels = [];
+                if (doc.isPublished) {
+                  labels.push(
+                    <Label
+                      key="published"
+                      size="mini"
+                      color="blue"
+                      style={{ marginLeft: '0.5em' }}
+                      title="Published to hub"
+                    >
+                      <Icon name="bullhorn" />
+                      Published
+                    </Label>
+                  );
+                } else if (doc.isLocal) {
+                  labels.push(
+                    <Label
+                      key="local"
+                      size="mini"
+                      color="grey"
+                      style={{ marginLeft: '0.5em' }}
+                      title="Private (local to this browser)"
+                    >
+                      <Icon name="lock" />
+                      Private
+                    </Label>
+                  );
+                }
+
+                if (doc.contentEncrypted) {
+                  labels.push(
+                    <Label
+                      key="encrypted"
+                      size="mini"
+                      color="green"
+                      style={{ marginLeft: '0.25em' }}
+                      title="Encrypted with your key"
+                    >
+                      <Icon name="shield" />
+                      Encrypted
+                    </Label>
+                  );
+                }
+
+                const isRecent = recentDocId && recentDocId === doc.id;
+                const itemStyle = isRecent
+                  ? {
+                      background: '#f5f8ff',
+                      transform: 'scale(1.01)',
+                      transition: 'background 0.4s ease, transform 0.2s ease'
+                    }
+                  : {
+                      transition: 'background 0.4s ease, transform 0.2s ease'
+                    };
+
+                return (
+                  <List.Item key={doc.id} style={itemStyle}>
+                    <List.Content>
+                      <List.Header>
+                        <Link to={`/documents/${encodeURIComponent(doc.id)}`}>{doc.name || doc.id}</Link>
+                        {labels}
+                      </List.Header>
+                      <List.Description style={{ color: '#666' }}>
+                        {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}
+                        {doc.created ? ` — ${new Date(doc.created).toLocaleString()}` : ''}
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                );
+              })}
               {docs.length === 0 && (
                 <List.Item>
                   <List.Content>

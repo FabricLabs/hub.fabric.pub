@@ -11,6 +11,7 @@ const {
   Header,
   Icon,
   Label,
+  Loader,
   Segment
 } = require('semantic-ui-react');
 
@@ -22,6 +23,7 @@ function DocumentDetail (props) {
   const [doc, setDoc] = React.useState(null);
   const [decryptedContent, setDecryptedContent] = React.useState(null);
   const [unlocked, setUnlocked] = React.useState(false);
+  const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
@@ -63,16 +65,40 @@ function DocumentDetail (props) {
     downloadHref = `data:${mime};base64,${contentBase64}`;
   }
 
-  // Text preview
+  // Basic type helpers
+  const looksText = (mime && mime.startsWith('text/')) || /\.(md|txt|json|js|ts|html|css|log)$/i.test(name || '');
+  const looksImage = (mime && mime.startsWith('image/')) || /\.(png|jpe?g|gif|webp|svg)$/i.test(name || '');
+
+  // Text preview (only when it looks like text)
   let text = null;
-  if (contentBase64) {
-    const looksText = (mime && mime.startsWith('text/')) || /\.(md|txt|json|js|ts|html|css|log)$/i.test(name || '');
-    if (looksText) {
-      try {
-        text = atob(contentBase64);
-      } catch (e) {}
-    }
+  if (contentBase64 && looksText) {
+    try {
+      text = atob(contentBase64);
+    } catch (e) {}
   }
+
+  // Image preview (data URL)
+  const imageSrc = (contentBase64 && looksImage) ? `data:${mime};base64,${contentBase64}` : null;
+
+  // If the application is already unlocked and Bridge can decrypt, try once automatically so
+  // the user doesn't have to click "Unlock" again just to view a document.
+  React.useEffect(() => {
+    if (!doc) return;
+    if (!isEncrypted) return;
+    if (contentBase64) return; // already have cleartext
+    if (decryptedContent !== null) return;
+    if (autoTriedDecrypt) return;
+    if (typeof props.onGetDecryptedContent !== 'function') return;
+
+    setAutoTriedDecrypt(true);
+    try {
+      const raw = props.onGetDecryptedContent(id);
+      if (raw) {
+        setDecryptedContent(raw);
+        setUnlocked(true);
+      }
+    } catch (e) {}
+  }, [doc, id, isEncrypted, contentBase64, decryptedContent, autoTriedDecrypt, props.onGetDecryptedContent]);
 
   return (
     <fabric-document-detail class='fade-in'>
@@ -158,21 +184,6 @@ function DocumentDetail (props) {
           </Card.Content>
         </Card>
 
-        {isEncrypted && !contentBase64 && (
-          <Segment secondary style={{ marginTop: '1em' }}>
-            <Header as="h3">Contents</Header>
-            <p style={{ color: '#666' }}>Encrypted. Click Unlock above to decrypt and view.</p>
-          </Segment>
-        )}
-        {text != null && (
-          <Segment style={{ marginTop: '1em' }}>
-            <Header as="h3">Contents</Header>
-            <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75em', borderRadius: 6, maxHeight: 520, overflow: 'auto' }}>
-              {text}
-            </pre>
-          </Segment>
-        )}
-
         {!doc && (
           <Segment
             placeholder
@@ -188,6 +199,44 @@ function DocumentDetail (props) {
                 </Header.Subheader>
               </Header>
             </div>
+          </Segment>
+        )}
+
+        {doc && isEncrypted && !contentBase64 && (
+          <Segment secondary style={{ marginTop: '1em' }}>
+            <Header as="h3">Contents</Header>
+            <p style={{ color: '#666' }}>Encrypted. Click Unlock above to decrypt and view.</p>
+          </Segment>
+        )}
+
+        {doc && imageSrc && (
+          <Segment style={{ marginTop: '1em' }}>
+            <Header as="h3">Preview</Header>
+            <div style={{ textAlign: 'center' }}>
+              <img
+                src={imageSrc}
+                alt={name}
+                style={{ maxWidth: '100%', maxHeight: 520, borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.15)' }}
+              />
+            </div>
+          </Segment>
+        )}
+
+        {doc && text != null && (
+          <Segment style={{ marginTop: '1em' }}>
+            <Header as="h3">Contents</Header>
+            <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75em', borderRadius: 6, maxHeight: 520, overflow: 'auto' }}>
+              {text}
+            </pre>
+          </Segment>
+        )}
+
+        {doc && !imageSrc && text == null && contentBase64 && (
+          <Segment secondary style={{ marginTop: '1em' }}>
+            <Header as="h3">Contents</Header>
+            <p style={{ color: '#666' }}>
+              A preview is not available for this file type. Use the Download button above to view it with a native application.
+            </p>
           </Segment>
         )}
       </Segment>
