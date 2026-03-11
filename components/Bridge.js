@@ -313,8 +313,13 @@ class Bridge extends React.Component {
     if (!id || !this.globalState.documents) return null;
     const doc = this.globalState.documents[id];
     if (!doc) return null;
+    // For encrypted documents, only ever return plaintext when we have a live document key.
+    if (doc.contentEncrypted) {
+      const decrypted = this._decryptContent(doc.contentEncrypted);
+      return decrypted || null;
+    }
+    // For unencrypted documents, stored as plain contentBase64.
     if (doc.contentBase64) return doc.contentBase64;
-    if (doc.contentEncrypted) return this._decryptContent(doc.contentEncrypted);
     return null;
   }
 
@@ -362,6 +367,11 @@ class Bridge extends React.Component {
    */
   addLocalDocument (doc) {
     if (!doc || !doc.id || !doc.contentBase64) return;
+    // Require an encryption key for adding documents: keep local storage encrypted-only.
+    if (!this._getDocumentKey()) {
+      console.warn('[BRIDGE]', 'Rejecting addLocalDocument: no document encryption key available.');
+      return;
+    }
     const created = doc.created || new Date().toISOString();
     const encrypted = this._encryptContent(doc.contentBase64);
     this.globalState.documents = this.globalState.documents || {};
@@ -372,8 +382,6 @@ class Bridge extends React.Component {
     };
     if (encrypted != null) {
       toStore.contentEncrypted = encrypted;
-    } else {
-      toStore.contentBase64 = doc.contentBase64;
     }
     this.globalState.documents[doc.id] = toStore;
     this._persistDocuments();
