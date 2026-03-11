@@ -360,10 +360,18 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('SendPeerMessage', (...params) => {
-        const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
-        const body = params[1] || params[0];
+        const raw = params[0];
+        const idOrAddress = raw && (raw.address || raw.id || raw);
+        const body = params[1] || raw;
         const text = typeof body === 'string' ? body : (body && (body.text || body.content)) || '';
         if (!idOrAddress || !text) return { status: 'error', message: 'id/address and message text required' };
+
+        // Logical target used for ActivityStreams-style metadata (id or address as provided by caller)
+        const targetValue = (typeof idOrAddress === 'object' && idOrAddress)
+          ? (idOrAddress.id || idOrAddress.address || String(idOrAddress))
+          : String(idOrAddress);
+
+        // Resolved network address used for the actual wire connection
         const address = typeof this.agent._resolveToAddress === 'function'
           ? this.agent._resolveToAddress(idOrAddress)
           : idOrAddress;
@@ -373,7 +381,10 @@ class Hub extends Service {
           const chatPayload = {
             type: 'P2P_CHAT_MESSAGE',
             actor: { id: this.agent.identity.id },
-            object: { content: text, created: Date.now(), target: address }
+            object: { content: text, created: Date.now() },
+            // ActivityStreams-style: top-level target identifies the logical recipient (id or address),
+            // independent of how we resolve the network connection.
+            target: targetValue
           };
 
           if (clientId) chatPayload.object.clientId = clientId;

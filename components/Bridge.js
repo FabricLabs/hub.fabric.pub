@@ -4,6 +4,7 @@
 const React = require('react');
 const WebSocket = require('isomorphic-ws');
 const { applyPatch } = require('fast-json-patch');
+const Actor = require('@fabric/core/types/actor');
 
 // WebRTC via PeerJS
 let Peer = null;
@@ -1876,7 +1877,17 @@ class Bridge extends React.Component {
 
     // Ensure a created timestamp and a stable clientId for local tracking.
     const created = job.created || Date.now();
-    const clientId = job.clientId || `peerqueue-${created}-${Math.random().toString(36).slice(2, 10)}`;
+    // Use a Fabric Actor ID as the clientId, so queued messages have
+    // a stable, content-derived identifier.
+    const clientActor = new Actor({
+      content: {
+        type: 'P2P_CHAT_MESSAGE',
+        address: job.address,
+        text: job.text,
+        created
+      }
+    });
+    const clientId = job.clientId || clientActor.id;
     job.created = created;
     job.clientId = clientId;
 
@@ -1889,9 +1900,10 @@ class Bridge extends React.Component {
         object: {
           content: job.text,
           created,
-          target: job.address,
           clientId
         },
+        // Top-level target for ActivityStreams-style compatibility.
+        target: job.address,
         status: 'queued'
       };
 

@@ -75,8 +75,26 @@ function PeerDetail (props) {
         .filter((m) => m && typeof m === 'object' && m.type === 'P2P_CHAT_MESSAGE')
         .filter((m) => {
           const actorId = m.actor && m.actor.id;
-          const target = m.object && m.object.target;
-          return (actorId && peerId && actorId === peerId) || (target && target === id);
+          // Prefer top-level target (ActivityStreams-style), but support legacy
+          // object.target / object.address / object.id for backward compatibility.
+          const target = m.target || (m.object && (m.object.target || m.object.address || m.object.id));
+          const matchesActor = !!(actorId && peerId && actorId === peerId);
+
+          let matchesTarget = false;
+          if (target) {
+            // Direct match against route id or peer id
+            if (target === id || target === peerId) {
+              matchesTarget = true;
+            } else {
+              // Match against known peer address/id, when available
+              const p = currentDetail || storedPeer;
+              if (p && (p.address === target || p.id === target)) {
+                matchesTarget = true;
+              }
+            }
+          }
+
+          return matchesActor || matchesTarget;
         })
         .sort((a, b) => {
           const ta = (a.object && a.object.created) || 0;
