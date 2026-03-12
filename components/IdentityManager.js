@@ -192,10 +192,10 @@ function IdentityManager (props) {
       <div>
         {localIdentity ? (
           <>
-            <p><strong>Identity ID:</strong> <code>{localIdentity.id}</code></p>
-            <p><strong>XPUB:</strong> <code>{localIdentity.xpub}</code></p>
+            <p><strong>XPUB (public identifier):</strong> <code>{localIdentity.xpub}</code></p>
+            <p><strong>Bech32m ID:</strong> <code>{localIdentity.id}</code></p>
             <p style={{ color: '#666' }}>
-              <strong>Private key:</strong>{' '}
+              <strong>Private Key:</strong>{' '}
               {localIdentity.xprv
                 ? 'unlocked in memory'
                 : (isLocked ? 'locked (password protected)' : 'not stored in this browser')}
@@ -217,6 +217,37 @@ function IdentityManager (props) {
             >
               <Icon name="copy" />
               Copy ID
+            </Button>
+            <Button
+              size="small"
+              icon
+              labelPosition="left"
+              style={{ marginLeft: '0.5em' }}
+              onClick={() => {
+                try {
+                  if (!localIdentity || !localIdentity.xpub) return;
+                  const hasXprv = !!localIdentity.xprv;
+                  const backupPayload = {
+                    type: 'fabric-identity-backup',
+                    version: 1,
+                    id: localIdentity.id || undefined,
+                    xpub: localIdentity.xpub || undefined,
+                    xprv: hasXprv ? String(localIdentity.xprv) : undefined
+                  };
+                  const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'fabric-identity-backup.json';
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } catch (e) {}
+              }}
+            >
+              <Icon name="download" />
+              Download backup
             </Button>
             {localIdentity.xprv ? (
               <Button

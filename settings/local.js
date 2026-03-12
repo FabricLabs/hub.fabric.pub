@@ -7,6 +7,12 @@ module.exports = Object.assign({}, defaults, {
   created: '2017-11-11:00:00.000Z',
   debug: false,
   mode: process.env.NODE_ENV || 'production',
+  bitcoin: {
+    network: process.env.FABRIC_BITCOIN_NETWORK || 'regtest',
+    managed: process.env.FABRIC_BITCOIN_MANAGED ? process.env.FABRIC_BITCOIN_MANAGED !== 'false' : true,
+    rpcport: Number(process.env.FABRIC_BITCOIN_RPC_PORT || 20444),
+    startTimeoutMs: Number(process.env.FABRIC_BITCOIN_START_TIMEOUT_MS || 25000)
+  },
   http: {
     hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',
     interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || '0.0.0.0',
@@ -22,6 +28,7 @@ module.exports = Object.assign({}, defaults, {
   listen: true,
   path: './stores/hub',
   peering: true,
+  title: 'hub.fabric.pub',
   peers: [
     'hub.fabric.pub:7777',
     'sensemaker.io:7777'

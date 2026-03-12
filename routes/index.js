@@ -1,6 +1,10 @@
 'use strict';
 
 module.exports = {
+  bundles: {
+    view: require('./bundles/view_bundle'),
+    list: require('./bundles/list_bundles')
+  },
   contracts: {
     create: require('./contracts/create_contract'),
     view: require('./contracts/view_contract'),

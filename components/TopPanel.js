@@ -25,6 +25,7 @@ function TopPanel (props) {
   const onUnlockIdentity = props && typeof props.onUnlockIdentity === 'function' ? props.onUnlockIdentity : null;
   const hasLocalIdentity = !!(props && props.hasLocalIdentity);
   const hasLockedIdentity = !!(props && props.hasLockedIdentity);
+  const localIdentity = props && props.localIdentity ? props.localIdentity : null;
   const bitcoin = props && props.bitcoin;
 
   const formatIdentityValue = (value) => {
@@ -39,14 +40,19 @@ function TopPanel (props) {
   // Authenticated = have identity with private key (can sign/encrypt).
   // Locked = have identity but private key is locked (can unlock with password).
   // Never show "Locked" when we have the key in auth (e.g. right after first login).
-  const isAuthed = !!(auth && (auth.xprv || auth.private));
+  const hasPrivate = !!(
+    (auth && (auth.xprv || auth.private)) ||
+    (localIdentity && localIdentity.xprv)
+  );
+  const isAuthed = hasPrivate;
   const isLockedState = hasLocalIdentity && hasLockedIdentity && !isAuthed;
+  const identitySource = localIdentity || auth;
   const identityLabel = (() => {
-    if (!auth) return 'Login';
-    if (auth.username) return auth.username;
-    if (auth.id) return formatIdentityValue(auth.id);
-    if (auth.address) return formatIdentityValue(auth.address);
-    if (auth.xpub) return formatIdentityValue(auth.xpub);
+    if (!identitySource) return 'Login';
+    if (identitySource.username) return identitySource.username;
+    if (identitySource.xpub) return formatIdentityValue(identitySource.xpub);
+    if (identitySource.id) return formatIdentityValue(identitySource.id);
+    if (identitySource.address) return formatIdentityValue(identitySource.address);
     return 'Identity';
   })();
 
@@ -79,6 +85,10 @@ function TopPanel (props) {
           <Button as={Link} to="/" basic={!active('/')} primary={active('/')}>
             <Icon name="home" />
             Home
+          </Button>
+          <Button as={Link} to="/services/bitcoin" basic={!active('/services/bitcoin')} primary={active('/services/bitcoin')}>
+            <Icon name="bitcoin" color="orange" />
+            Bitcoin
           </Button>
           <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')}>
             <Icon name="sitemap" />

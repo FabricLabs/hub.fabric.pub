@@ -4,6 +4,7 @@
 const fetch = require('cross-fetch');
 const React = require('react');
 const { Link } = require('react-router-dom');
+const { Button, Icon, Label } = require('semantic-ui-react');
 const ChatInput = require('./ChatInput');
 
 class ActivityStreamElement extends React.Component {
@@ -19,7 +20,8 @@ class ActivityStreamElement extends React.Component {
     this.state = {
       ...this.settings,
       chatInput: '',
-      entries: []
+      entries: [],
+      chatWarning: null
     };
 
     return this;
@@ -29,8 +31,10 @@ class ActivityStreamElement extends React.Component {
     console.debug('[FABRIC:STREAM]', 'Stream mounted!');
     if (this.props.fetchResource) this.props.fetchResource('/activities');
     window.addEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
+    window.addEventListener('fabric:chatWarning', this._handleChatWarning);
     // Initial load from persisted/restored state (survives refresh)
-    const bridgeInstance = this.props.bridgeRef && this.props.bridgeRef.current;
+    const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
+    const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
     if (bridgeInstance && typeof bridgeInstance.getGlobalState === 'function') {
       const gs = bridgeInstance.getGlobalState();
       if (gs) this._handleGlobalStateUpdate({ detail: { globalState: gs } });
@@ -39,6 +43,8 @@ class ActivityStreamElement extends React.Component {
 
   componentWillUnmount () {
     window.removeEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
+    window.removeEventListener('fabric:chatWarning', this._handleChatWarning);
+    if (this._chatWarningTimer) clearTimeout(this._chatWarningTimer);
   }
 
   _handleGlobalStateUpdate = (event) => {
@@ -60,6 +66,23 @@ class ActivityStreamElement extends React.Component {
     } catch (e) {
       console.error('[FABRIC:STREAM]', 'Error processing global state update:', e);
     }
+  };
+
+  _handleChatWarning = (event) => {
+    const message = (
+      event &&
+      event.detail &&
+      typeof event.detail.message === 'string' &&
+      event.detail.message.trim()
+    ) || 'Unlock identity to send chat messages.';
+
+    this.setState({ chatWarning: message });
+
+    if (this._chatWarningTimer) clearTimeout(this._chatWarningTimer);
+    this._chatWarningTimer = setTimeout(() => {
+      this.setState({ chatWarning: null });
+      this._chatWarningTimer = null;
+    }, 6000);
   };
 
   async fetchResource (path) {
@@ -85,6 +108,39 @@ class ActivityStreamElement extends React.Component {
     const entries = Array.isArray(this.state.entries) && this.state.entries.length > 0
       ? this.state.entries
       : apiActivities;
+    const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
+    const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
+    const meshStatus = bridgeInstance && typeof bridgeInstance.webrtcMeshStatus !== 'undefined'
+      ? bridgeInstance.webrtcMeshStatus
+      : null;
+    const chatDebug = bridgeInstance && typeof bridgeInstance.webrtcChatDebugStatus !== 'undefined'
+      ? bridgeInstance.webrtcChatDebugStatus
+      : null;
+    const lastDeliveredTo = chatDebug && Number.isFinite(chatDebug.lastDeliveredTo)
+      ? chatDebug.lastDeliveredTo
+      : null;
+    const toShortId = (value) => {
+      if (typeof value !== 'string' || !value) return '-';
+      if (value.length <= 12) return value;
+      return `${value.slice(0, 8)}...${value.slice(-4)}`;
+    };
+    const connectedPeerIds = chatDebug && Array.isArray(chatDebug.connectedPeerIds)
+      ? chatDebug.connectedPeerIds
+      : [];
+    const recipientPeerIds = chatDebug && Array.isArray(chatDebug.lastRecipientPeerIds)
+      ? chatDebug.lastRecipientPeerIds
+      : [];
+    const connectedPeerLabel = connectedPeerIds.length
+      ? connectedPeerIds.map(toShortId).join(', ')
+      : '-';
+    const recipientPeerLabel = recipientPeerIds.length
+      ? recipientPeerIds.map(toShortId).join(', ')
+      : '-';
+    const canSubmitChat = (
+      bridgeInstance &&
+      typeof bridgeInstance.hasUnlockedIdentity === 'function'
+    ) ? bridgeInstance.hasUnlockedIdentity() : true;
+    const chatDisabledReason = canSubmitChat ? null : 'Unlock identity to send chat messages.';
     return (
       <fabric-activity-stream className='activity-stream'>
         {this.props.includeHeader && <h3>Activity Stream</h3>}
@@ -104,6 +160,13 @@ class ActivityStreamElement extends React.Component {
                   const content = (entry.object && (entry.object.content || entry.object.text)) || '';
                   const isPending = entry.status === 'pending';
                   const isQueued = entry.status === 'queued';
+                  const transport = entry.transport || null;
+                  const deliveredTo = entry.delivery && Number.isFinite(entry.delivery.deliveredTo)
+                    ? entry.delivery.deliveredTo
+                    : null;
+                  const fromPeerId = entry.delivery && entry.delivery.fromPeerId
+                    ? entry.delivery.fromPeerId
+                    : null;
                   const style = {
                     marginBottom: '0.5em',
                     opacity: (isPending || isQueued) ? 0.7 : 1,
@@ -124,6 +187,24 @@ class ActivityStreamElement extends React.Component {
                       {actorNode}
                       {isPending && ' (sending…)'}
                       {isQueued && ' (!)'}: {content}
+                      {transport === 'webrtc' && (
+                        <span style={{ marginLeft: '0.5em' }}>
+                          <Label size='tiny' basic color='teal' title='Delivered via WebRTC mesh'>
+                            <Icon name='exchange' />
+                            WebRTC
+                          </Label>
+                          {deliveredTo != null && (
+                            <Label size='tiny' basic color='blue' title='Peers this message was delivered to'>
+                              delivered: {deliveredTo}
+                            </Label>
+                          )}
+                          {fromPeerId && (
+                            <Label size='tiny' basic color='grey' title='Source mesh peer'>
+                              from: {fromPeerId}
+                            </Label>
+                          )}
+                        </span>
+                      )}
                     </div>
                   );
                 }
@@ -189,11 +270,44 @@ class ActivityStreamElement extends React.Component {
             </div>
           )}
           <div style={{ marginTop: '1em' }}>
+            {(meshStatus || chatDebug) && (
+              <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
+                WebRTC Debug: mesh connected {meshStatus && Number.isFinite(meshStatus.connected) ? meshStatus.connected : 0}
+                {' '}| self {toShortId(chatDebug && chatDebug.peerId)}
+                {' '}| peers [{connectedPeerLabel}]
+                {' '}| last deliveredTo {lastDeliveredTo != null ? lastDeliveredTo : '-'}
+                {' '}| recipients [{recipientPeerLabel}]
+              </div>
+            )}
+            {this.state.chatWarning && (
+              <div style={{ marginBottom: '0.5em' }}>
+                <Label basic color='orange'>
+                  <Icon name='lock' />
+                  {this.state.chatWarning}
+                </Label>
+                {typeof this.props.onRequireUnlock === 'function' && (
+                  <Button
+                    size='mini'
+                    basic
+                    color='orange'
+                    style={{ marginLeft: '0.5em' }}
+                    onClick={() => this.props.onRequireUnlock()}
+                  >
+                    Unlock
+                  </Button>
+                )}
+              </div>
+            )}
             {((typeof this.props.onSubmitChat === 'function') || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
               <ChatInput
                 value={this.state.chatInput}
                 onChange={(value) => this.setState({ chatInput: value })}
                 onSubmit={(text) => {
+                  if (!canSubmitChat) {
+                    if (typeof this.props.onRequireUnlock === 'function') this.props.onRequireUnlock();
+                    this._handleChatWarning({ detail: { message: chatDisabledReason } });
+                    return;
+                  }
                   const onSubmit = this.props.onSubmitChat || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function' && this.props.bridge.current.submitChatMessage.bind(this.props.bridge.current));
                   if (typeof onSubmit === 'function') {
                     onSubmit(text);
@@ -201,7 +315,8 @@ class ActivityStreamElement extends React.Component {
                   }
                 }}
                 placeholder="Type a message…"
-                title="Send chat message"
+                title={chatDisabledReason || 'Send chat message'}
+                disabled={!canSubmitChat}
               />
             )}
           </div>

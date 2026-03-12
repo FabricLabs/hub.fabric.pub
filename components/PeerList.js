@@ -16,10 +16,47 @@ const {
 } = require('semantic-ui-react');
 
 class PeersPage extends React.Component {
+  componentDidMount () {
+    if (typeof this.props.onRefreshPeers === 'function') {
+      this.props.onRefreshPeers();
+    }
+
+    // Keep peer status fresh while the page is open so the list does not
+    // oscillate between stale/empty snapshots.
+    this._refreshTimer = setInterval(() => {
+      if (typeof this.props.onRefreshPeers === 'function') {
+        this.props.onRefreshPeers();
+      }
+    }, 4000);
+  }
+
+  componentWillUnmount () {
+    if (this._refreshTimer) {
+      clearInterval(this._refreshTimer);
+      this._refreshTimer = null;
+    }
+  }
+
   render () {
-    const { auth, bridge, onAddPeer, onRefreshPeers, onDisconnectPeer, onSendPeerMessage, onSetPeerNickname, onDiscoverWebRTCPeers, onRepublishWebRTCOffer } = this.props;
+    const {
+      auth,
+      bridge,
+      bridgeRef,
+      onAddPeer,
+      onRefreshPeers,
+      onDisconnectPeer,
+      onSendPeerMessage,
+      onSetPeerNickname,
+      onDiscoverWebRTCPeers,
+      onRepublishWebRTCOffer,
+      onConnectWebRTCPeer,
+      onDisconnectWebRTCPeer,
+      onDisconnectAllWebRTCPeers,
+      onSendWebRTCTestPing
+    } = this.props;
     const isLoggedIn = !!(auth && auth.id && auth.xpub);
-    const current = bridge && bridge.current;
+    const activeBridgeRef = bridgeRef || bridge;
+    const current = activeBridgeRef && activeBridgeRef.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
     const isNetworkStatus = (obj) => !!(obj && typeof obj === 'object' && (obj.network || Array.isArray(obj.peers)));
@@ -29,8 +66,20 @@ class PeersPage extends React.Component {
     const state = networkStatus && networkStatus.state;
     const isOnline = !!networkStatus;
 
-    // WebRTC peers from the hub's PeerServer signaling
+    // WebRTC peers currently registered with the hub signaling RPC
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
+
+    // Defensive separation: keep Fabric network peers in the standard list even
+    // if signaling peers accidentally appear in `networkStatus.peers`.
+    const fabricPeers = peers.filter((peer) => {
+      if (!peer || typeof peer !== 'object') return false;
+      const id = String(peer.id || '');
+      const address = String(peer.address || '');
+      const hasWebRTCMetadata = !!(peer.metadata && Array.isArray(peer.metadata.capabilities));
+      if (id.startsWith('fabric-bridge-') || address.startsWith('fabric-bridge-')) return false;
+      if (hasWebRTCMetadata && peer.status === 'registered') return false;
+      return true;
+    });
 
     // Local browser WebRTC connections (browser-to-browser)
     const localWebrtcPeers = (current && typeof current.localWebrtcPeers !== 'undefined')
@@ -77,7 +126,10 @@ class PeersPage extends React.Component {
                   ) : null}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75em', flexWrap: 'wrap' }}>
                     <div>
-                      <strong>Peers:</strong> {peers.length}
+                      <Label size='tiny' basic color='green' style={{ marginRight: '0.5em' }}>
+                        Fabric Network
+                      </Label>
+                      <strong>Peers:</strong> {fabricPeers.length}
                     </div>
                     {isLoggedIn && (
                       <Button.Group size='small'>
@@ -103,9 +155,9 @@ class PeersPage extends React.Component {
                     )}
                   </div>
 
-                  {peers.length > 0 && (
+                  {fabricPeers.length > 0 && (
                     <List size='small' divided relaxed>
-                      {peers.map((peer, idx) => {
+                      {fabricPeers.map((peer, idx) => {
                         const id = peer && (peer.id || peer.address || peer.pubkey || `peer-${idx}`);
                         const address = peer && (peer.address || peer.host || peer.url);
                         const status = (peer && peer.status) || 'unknown';
@@ -149,6 +201,11 @@ class PeersPage extends React.Component {
                         );
                       })}
                     </List>
+                  )}
+                  {fabricPeers.length === 0 && (
+                    <p style={{ color: '#666', fontStyle: 'italic', marginTop: '0.75em' }}>
+                      No Fabric network peers in the standard peer list.
+                    </p>
                   )}
                 </Card.Description>
               </Card.Content>
@@ -202,53 +259,100 @@ class PeersPage extends React.Component {
                     </span>
                   </div>
                 ) : (
-                  <span>
-                    Peers connected via WebRTC signaling at <code>/services/peering</code>
-                  </span>
+                  <span>Peers connected via native WebRTC signaling.</span>
                 )}
               </Card.Meta>
               <Card.Description>
-                {meshStatus && (
-                  <div style={{ marginBottom: '1em', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                    {typeof onRepublishWebRTCOffer === 'function' && (
+                <div style={{ marginBottom: '1em', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+                  {typeof onRepublishWebRTCOffer === 'function' && (
+                    <Button
+                      size='small'
+                      basic
+                      onClick={onRepublishWebRTCOffer}
+                      title='Republish your peer offer to the signaling server'
+                    >
+                      <Icon name='refresh' />
+                      Republish Offer
+                    </Button>
+                  )}
+                  {meshStatus && meshStatus.slotsAvailable > 0 && typeof onDiscoverWebRTCPeers === 'function' && (
+                    <>
+                      <Button
+                        size='small'
+                        primary
+                        onClick={onDiscoverWebRTCPeers}
+                        title={`Discover and connect to WebRTC peers (${meshStatus.slotsAvailable} slots available)`}
+                      >
+                        <Icon name='search' />
+                        Discover Peers
+                      </Button>
+                      <span style={{ color: '#666', fontSize: '0.9em' }}>
+                        {meshStatus.slotsAvailable} slot{meshStatus.slotsAvailable !== 1 ? 's' : ''} available
+                      </span>
+                    </>
+                  )}
+                  {typeof onConnectWebRTCPeer === 'function' && (
+                    <Button
+                      size='small'
+                      basic
+                      onClick={() => {
+                        try {
+                          const input = window.prompt('Enter WebRTC peer ID to connect:');
+                          const value = (input || '').trim();
+                          if (!value) return;
+                          onConnectWebRTCPeer(value);
+                        } catch (e) {}
+                      }}
+                      title='Manually connect to a specific WebRTC peer by ID'
+                    >
+                      <Icon name='plug' />
+                      Connect to ID…
+                    </Button>
+                  )}
+                  {meshStatus && meshStatus.connected > 0 && typeof onSendWebRTCTestPing === 'function' && (
                       <Button
                         size='small'
                         basic
-                        onClick={onRepublishWebRTCOffer}
-                        title='Republish your peer offer to the signaling server'
+                        onClick={() => {
+                          try {
+                            onSendWebRTCTestPing();
+                          } catch (e) {}
+                        }}
+                        title='Broadcast a test ping message to all connected WebRTC peers'
                       >
-                        <Icon name='refresh' />
-                        Republish Offer
+                        <Icon name='signal' />
+                        Ping Mesh
                       </Button>
                     )}
-                    {meshStatus.ready && meshStatus.slotsAvailable > 0 && typeof onDiscoverWebRTCPeers === 'function' && (
-                      <>
-                        <Button
-                          size='small'
-                          primary
-                          onClick={onDiscoverWebRTCPeers}
-                          title={`Discover and connect to WebRTC peers (${meshStatus.slotsAvailable} slots available)`}
-                        >
-                          <Icon name='search' />
-                          Discover Peers
-                        </Button>
-                        <span style={{ color: '#666', fontSize: '0.9em' }}>
-                          {meshStatus.slotsAvailable} slot{meshStatus.slotsAvailable !== 1 ? 's' : ''} available
-                        </span>
-                      </>
+                  {localWebrtcPeers.length > 0 && typeof onDisconnectAllWebRTCPeers === 'function' && (
+                      <Button
+                        size='small'
+                        basic
+                        color='red'
+                        onClick={() => {
+                          try {
+                            onDisconnectAllWebRTCPeers();
+                          } catch (e) {}
+                        }}
+                        title='Disconnect all local WebRTC mesh peers'
+                      >
+                        <Icon name='unlink' />
+                        Disconnect All
+                      </Button>
                     )}
-                  </div>
-                )}
+                </div>
                 {webrtcPeers.length === 0 && localWebrtcPeers.length === 0 ? (
                   <p style={{ color: '#666', fontStyle: 'italic' }}>
-                    No WebRTC peers connected. Peers will appear here when browsers connect via PeerJS signaling.
+                    No WebRTC peers connected yet. Peers will appear here when browsers register with hub signaling and establish mesh channels.
                   </p>
                 ) : (
                   <>
                     {webrtcPeers.length > 0 && (
                       <>
                         <div style={{ marginBottom: '0.5em' }}>
-                          <strong>Hub Signaling Peers:</strong>
+                          <Label size='tiny' basic color='blue'>
+                            Hub Signaling Peers
+                          </Label>
                         </div>
                         <List size='small' divided relaxed>
                           {webrtcPeers.map((peer, idx) => {
@@ -257,7 +361,7 @@ class PeersPage extends React.Component {
                             const isConnected = status === 'connected';
                             const connectedAt = peer && peer.connectedAt;
                             return (
-                              <List.Item key={id}>
+                              <List.Item as={Link} to={`/peers/${encodeURIComponent(id)}`} key={id}>
                                 <List.Icon name='wifi' color={isConnected ? 'green' : 'grey'} verticalAlign='middle' />
                                 <List.Content>
                                   <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
@@ -286,7 +390,9 @@ class PeersPage extends React.Component {
                     {localWebrtcPeers.length > 0 && (
                       <>
                         <div style={{ marginTop: webrtcPeers.length > 0 ? '1em' : 0, marginBottom: '0.5em' }}>
-                          <strong>Local Browser Connections:</strong>
+                          <Label size='tiny' basic color='teal'>
+                            Local Browser Connections
+                          </Label>
                         </div>
                         <List size='small' divided relaxed>
                           {localWebrtcPeers.map((peer, idx) => {
@@ -296,7 +402,7 @@ class PeersPage extends React.Component {
                             const direction = peer && peer.direction;
                             const connectedAt = peer && peer.connectedAt;
                             return (
-                              <List.Item key={id}>
+                              <List.Item as={Link} to={`/peers/${encodeURIComponent(id)}`} key={id}>
                                 <List.Icon
                                   name={direction === 'inbound' ? 'arrow down' : 'arrow up'}
                                   color={isConnected ? 'teal' : 'grey'}
@@ -317,6 +423,24 @@ class PeersPage extends React.Component {
                                       <Label size='tiny' basic horizontal title={`${direction} connection`}>
                                         {direction === 'inbound' ? 'Inbound' : 'Outbound'}
                                       </Label>
+                                    )}
+                                    {typeof onDisconnectWebRTCPeer === 'function' && (
+                                      <Button
+                                        size='mini'
+                                        basic
+                                        color='red'
+                                        icon
+                                        title='Disconnect this WebRTC peer'
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          try {
+                                            onDisconnectWebRTCPeer(id);
+                                          } catch (e) {}
+                                        }}
+                                      >
+                                        <Icon name='unlink' />
+                                      </Button>
                                     )}
                                   </List.Header>
                                   {connectedAt && (

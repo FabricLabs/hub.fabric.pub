@@ -16,6 +16,10 @@ const FabricSPA = require('@fabric/http/types/spa');
 class SPA extends FabricSPA {
   _renderWith (html = '') {
     const hash = crypto.createHash('sha256').update(html).digest('hex');
+    const pageTitle = this.title ||
+      this.settings.title ||
+      (this.settings.state && this.settings.state.title) ||
+      'hub.fabric.pub';
 
     // TODO: move CSS to inline from webpack
     return `<!DOCTYPE html>
@@ -28,7 +32,7 @@ class SPA extends FabricSPA {
     <meta property="og:title" content="hub.fabric.pub · fabric edge node">
     <meta property="og:description" content="Fabric Edge node.">
     <meta property="og:image" content="https://fabric.pub/images/fabric-labs.png">
-    <title>${this.title || this.settings.title}</title>
+    <title>${pageTitle}</title>
     <!-- <link rel="manifest" href="/manifest.json"> -->
     <link rel="stylesheet" type="text/css" href="/semantic.min.css" />
     <!-- <link rel="stylesheet" type="text/css" href="/styles/screen.css" /> -->

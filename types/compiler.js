@@ -135,7 +135,13 @@ class Compiler extends HTTPCompiler {
     }, settings);
 
     this.component = this.settings.document || null;
-    this.site = new HTTPSite(this.settings.site);
+    const resolvedTitle = this.settings.title || (this.settings.state && this.settings.state.title) || 'hub.fabric.pub';
+    this.site = new HTTPSite(merge({}, this.settings.site, {
+      title: resolvedTitle,
+      state: {
+        title: resolvedTitle
+      }
+    }));
 
     this._state = {
       content: this.settings.state

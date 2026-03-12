@@ -6,16 +6,8 @@ const WebSocket = require('isomorphic-ws');
 const { applyPatch } = require('fast-json-patch');
 const Actor = require('@fabric/core/types/actor');
 
-// WebRTC via PeerJS
-let Peer = null;
-if (typeof window !== 'undefined') {
-  // Only import PeerJS on the client side
-  try {
-    Peer = require('peerjs').Peer;
-  } catch (e) {
-    console.warn('[BRIDGE]', 'PeerJS not available:', e.message);
-  }
-}
+// Native WebRTC (no PeerJS)
+// Uses RTCPeerConnection + existing hub WebSocket as signaling channel.
 
 // Semantic UI
 const {
@@ -42,7 +34,11 @@ class Bridge extends React.Component {
       tickrate: 250,
       signingKey: props.auth ? new Key(props.auth) : null,
       maxWebrtcPeers: 5, // Maximum number of WebRTC peer connections to maintain
-      webrtcPeerDiscoveryDelay: 2000 // Delay before discovering peers (ms)
+      webrtcPeerDiscoveryDelay: 2000, // Delay before discovering peers (ms)
+      webrtcHeartbeatIntervalMs: 30000, // Re-register peer presence on heartbeat
+      webrtcDiscoveryIntervalMs: 15000, // Periodically rediscover active peers
+      webrtcConnectTimeoutMs: 15000, // Abort stale outbound connect attempts
+      webrtcCandidateMaxAgeMs: 120000 // Ignore stale peer registrations when discovering candidates
     }, props);
 
     // Optional override via a single hub address string.
@@ -78,15 +74,29 @@ class Bridge extends React.Component {
     this._heartbeat = null;
     this._isConnected = false;  // Internal connection state
 
-    // WebRTC/PeerJS properties
-    this.peer = null;
-    this.webrtcConnection = null;
-    this._webrtcConnected = false;
+    // Chat routing controls
+    this.disableFabricP2P = false;
+    this.disableHubChat = false;
+    this.preferWebRTCChat = false;
+
+    // WebRTC properties (native RTCPeerConnection)
     this.peerId = null;
-    this.webrtcPeers = new Map(); // Track all WebRTC peer connections
-    this._webrtcReady = false; // True once PeerJS peer is open and ready
+    this.webrtcPeers = new Map(); // Track all WebRTC peer connections (metadata)
+    this._webrtcConnected = false;
+    this._webrtcReady = false;
     this._peerDiscoveryTimer = null; // Timer for peer discovery after startup
     this._connectingPeers = new Set(); // Track peers we're currently connecting to
+    this._pendingPeerCandidates = []; // Candidates received before WebRTC is ready
+    this._lastWebRTCPublishAt = 0;
+    this._lastWebRTCDiscoverAt = 0;
+    this._jsonRpcQueue = []; // JSON-RPC payloads to send once WebSocket is open
+    this._rtcPeers = new Map(); // peerId -> { pc, dc, status, initiator, metadata }
+    this._rtcPendingIce = new Map(); // peerId -> [RTCIceCandidateInit]
+    this._webrtcConnectTimers = new Map(); // peerId -> timeout handle
+    this._rtcSessionCounter = 0;
+    this._lastWebRTCChatDeliveryCount = null;
+    this._lastWebRTCChatSentAt = 0;
+    this._lastWebRTCRecipientPeerIds = [];
 
     // Track backing SHA ids that should be published once CreateDocument succeeds.
     this._pendingPublishBySha = new Set();
@@ -96,65 +106,29 @@ class Bridge extends React.Component {
       this.key = new Key(props.key);
     }
 
-    // Restore any queued peer messages from persistent storage
-    let hasStorage = false;
-    try {
-      // Accessing window.localStorage can throw under opaque origins (SSR build),
-      // so wrap in try/catch and treat failures as "no storage available".
-      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
-    } catch (e) {
-      hasStorage = false;
+    // Restore local browser-backed state.
+    const restoredPeerQueue = this._readJSONFromStorage('fabric:peerMessageQueue', []);
+    if (Array.isArray(restoredPeerQueue)) this.peerMessageQueue = restoredPeerQueue;
+
+    const restoredMessages = this._readJSONFromStorage('fabric:messages', null);
+    if (restoredMessages && typeof restoredMessages === 'object') {
+      this.globalState.messages = restoredMessages;
     }
 
-    if (hasStorage) {
-      try {
-        const raw = window.localStorage.getItem('fabric:peerMessageQueue');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            this.peerMessageQueue = parsed;
-          }
-        }
-      } catch (e) {
-        console.warn('[BRIDGE]', 'Could not restore peerMessageQueue from storage:', e);
-      }
+    // Restore documents (unified store: all docs with content; publish adds ref to hub index)
+    const docs = {};
+    const restoredDocs = this._readJSONFromStorage('fabric:documents', null);
+    if (restoredDocs && typeof restoredDocs === 'object') Object.assign(docs, restoredDocs);
 
-      // Restore chat messages so they persist across refresh
-      try {
-        const raw = window.localStorage.getItem('fabric:messages');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object') {
-            this.globalState.messages = parsed;
-          }
-        }
-      } catch (e) {
-        console.warn('[BRIDGE]', 'Could not restore messages from storage:', e);
-      }
+    // Migrate from legacy localDocuments into documents.
+    const legacyDocs = this._readJSONFromStorage('fabric:localDocuments', null);
+    if (legacyDocs && typeof legacyDocs === 'object') {
+      Object.assign(docs, legacyDocs);
+      this._removeStorageKey('fabric:localDocuments');
+    }
 
-      // Restore documents (unified store: all docs with content; publish adds ref to hub index)
-      try {
-        let docs = {};
-        const rawDocs = window.localStorage.getItem('fabric:documents');
-        if (rawDocs) {
-          const parsed = JSON.parse(rawDocs);
-          if (parsed && typeof parsed === 'object') docs = parsed;
-        }
-        // Migrate from legacy localDocuments into documents
-        const rawLocal = window.localStorage.getItem('fabric:localDocuments');
-        if (rawLocal) {
-          const parsed = JSON.parse(rawLocal);
-          if (parsed && typeof parsed === 'object') {
-            Object.assign(docs, parsed);
-            window.localStorage.removeItem('fabric:localDocuments');
-          }
-        }
-        if (Object.keys(docs).length > 0) {
-          this.globalState.documents = { ...(this.globalState.documents || {}), ...docs };
-        }
-      } catch (e) {
-        console.warn('[BRIDGE]', 'Could not restore documents from storage:', e);
-      }
+    if (Object.keys(docs).length > 0) {
+      this.globalState.documents = { ...(this.globalState.documents || {}), ...docs };
     }
 
     return this;
@@ -217,6 +191,383 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Lightweight debug telemetry for browser-level WebRTC chat sends.
+   * @returns {{lastDeliveredTo:number|null,lastSentAt:number}}
+   */
+  get webrtcChatDebugStatus () {
+    const connectedPeerIds = Array.from(this.webrtcPeers.values())
+      .filter((peer) => peer && peer.status === 'connected' && peer.id)
+      .map((peer) => peer.id);
+
+    return {
+      lastDeliveredTo: Number.isFinite(this._lastWebRTCChatDeliveryCount)
+        ? this._lastWebRTCChatDeliveryCount
+        : null,
+      lastSentAt: this._lastWebRTCChatSentAt || 0,
+      peerId: this.peerId || null,
+      connectedPeerIds,
+      lastRecipientPeerIds: Array.isArray(this._lastWebRTCRecipientPeerIds)
+        ? this._lastWebRTCRecipientPeerIds.slice()
+        : []
+    };
+  }
+
+  /**
+   * Enable or disable WebRTC-only chat mode.
+   * When enabled, chat messages are sent over the WebRTC mesh instead of the hub/Fabric P2P paths.
+   * @param {boolean} enabled
+   */
+  setWebRTCChatOnly (enabled) {
+    const flag = !!enabled;
+    this.preferWebRTCChat = flag;
+    this.disableFabricP2P = flag;
+    this.disableHubChat = flag;
+  }
+
+  /**
+   * Send a WebRTC signaling payload to another browser via the Hub RPC.
+   */
+  sendWebRTCSignal (toPeerId, signal) {
+    if (!this.peerId) return;
+
+    this._sendJSONRPC({
+      method: 'SendWebRTCSignal',
+      params: [{
+        fromPeerId: this.peerId,
+        toPeerId,
+        signal
+      }]
+    });
+  }
+
+  _newRTCSessionId (peerId) {
+    this._rtcSessionCounter += 1;
+    return `${this.peerId || 'bridge'}:${peerId}:${Date.now().toString(36)}:${this._rtcSessionCounter.toString(36)}`;
+  }
+
+  _nextRTCSignalRevision (entry) {
+    entry.localSignalRevision = (entry.localSignalRevision || 0) + 1;
+    return entry.localSignalRevision;
+  }
+
+  _withRTCSignalMeta (entry, signal, overrides = {}) {
+    const existing = (signal && signal._fabric && typeof signal._fabric === 'object') ? signal._fabric : {};
+    const revision = this._nextRTCSignalRevision(entry);
+    return {
+      ...signal,
+      _fabric: {
+        protocol: 'fabric-webrtc-v2',
+        sessionId: entry.localSessionId || null,
+        targetSessionId: entry.remoteSessionId || null,
+        revision,
+        ...existing,
+        ...overrides
+      }
+    };
+  }
+
+  _getRTCSignalMeta (signal) {
+    if (!signal || typeof signal !== 'object') return null;
+    const meta = signal._fabric;
+    if (!meta || typeof meta !== 'object') return null;
+    return {
+      protocol: typeof meta.protocol === 'string' ? meta.protocol : null,
+      sessionId: typeof meta.sessionId === 'string' ? meta.sessionId : null,
+      targetSessionId: typeof meta.targetSessionId === 'string' ? meta.targetSessionId : null,
+      revision: Number.isFinite(meta.revision) ? Number(meta.revision) : null
+    };
+  }
+
+  /**
+   * Create a native RTCPeerConnection wired to our signaling helpers.
+   */
+  _createRTCPeerConnection (peerId, entry) {
+    const config = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }
+      ]
+    };
+
+    const pc = new RTCPeerConnection(config);
+
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) {
+        const signal = this._withRTCSignalMeta(entry, {
+          type: 'ice-candidate',
+          candidate: ev.candidate.toJSON()
+        });
+        this.sendWebRTCSignal(peerId, signal);
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.debug('[BRIDGE]', 'RTCPeerConnection state for', peerId, pc.connectionState);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+        this.disconnectWebRTCPeer(peerId);
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.debug('[BRIDGE]', 'ICE state for', peerId, pc.iceConnectionState);
+    };
+
+    return pc;
+  }
+
+  _attachDataChannelHandlers (peerId, dc) {
+    dc.onopen = () => {
+      console.debug('[BRIDGE]', 'WebRTC data channel open to', peerId);
+      const entry = this._rtcPeers.get(peerId);
+      if (entry) entry.dc = dc;
+      const existing = this.webrtcPeers.get(peerId) || {};
+      this.webrtcPeers.set(peerId, Object.assign({}, existing, {
+        id: peerId,
+        status: 'connected',
+        direction: (entry && entry.initiator) ? 'outbound' : 'inbound',
+        connectedAt: existing.connectedAt || Date.now(),
+        lastSeen: Date.now(),
+        connection: dc
+      }));
+      this._connectingPeers.delete(peerId);
+      if (this._webrtcConnectTimers.has(peerId)) {
+        clearTimeout(this._webrtcConnectTimers.get(peerId));
+        this._webrtcConnectTimers.delete(peerId);
+      }
+      this._webrtcConnected = true;
+      this.setState({ webrtcConnected: true });
+    };
+
+    dc.onmessage = (ev) => {
+      console.debug('[BRIDGE]', 'WebRTC data from', peerId, ev.data);
+      this.handleWebRTCPeerMessage(peerId, ev.data);
+    };
+
+    dc.onclose = () => {
+      console.debug('[BRIDGE]', 'WebRTC data channel closed for', peerId);
+      this.disconnectWebRTCPeer(peerId);
+    };
+
+    dc.onerror = (err) => {
+      console.error('[BRIDGE]', 'WebRTC data channel error for', peerId, err);
+    };
+  }
+
+  /**
+   * Handle an incoming native WebRTC signaling message from another browser.
+   * @param {string} fromPeerId
+   * @param {Object} signal
+   */
+  handleIncomingWebRTCSignal (fromPeerId, signal) {
+    if (!signal || typeof signal !== 'object') return;
+
+    let entry = this._rtcPeers.get(fromPeerId);
+
+    if (!entry) {
+      entry = {
+        pc: null,
+        dc: null,
+        status: 'new',
+        initiator: false,
+        metadata: {},
+        makingOffer: false,
+        ignoreOffer: false,
+        localSessionId: this._newRTCSessionId(fromPeerId),
+        remoteSessionId: null,
+        localSignalRevision: 0,
+        remoteSignalRevision: 0,
+        // Deterministic role assignment avoids symmetric "offer glare".
+        // Lower peerId acts as polite peer and resolves collisions.
+        polite: this.peerId ? this.peerId < fromPeerId : true
+      };
+      const pc = this._createRTCPeerConnection(fromPeerId, entry);
+      entry.pc = pc;
+      this._rtcPeers.set(fromPeerId, entry);
+
+      pc.ondatachannel = (ev) => {
+        const dc = ev.channel;
+        this._attachDataChannelHandlers(fromPeerId, dc);
+        entry.dc = dc;
+      };
+    }
+
+    const { pc } = entry;
+    if (!entry.signalQueue) entry.signalQueue = Promise.resolve();
+
+    entry.signalQueue = entry.signalQueue.then(async () => {
+      const meta = this._getRTCSignalMeta(signal);
+      if (!meta || meta.protocol !== 'fabric-webrtc-v2' || !meta.sessionId) {
+        console.debug('[BRIDGE]', 'Dropping unversioned/stale WebRTC signal from', fromPeerId);
+        return;
+      }
+
+      if (meta.targetSessionId && meta.targetSessionId !== entry.localSessionId) {
+        // Expected when other peers continue signaling stale sessions.
+        return;
+      }
+
+      if (signal.type === 'offer' && signal.sdp) {
+        if (
+          entry.remoteSessionId &&
+          meta.sessionId === entry.remoteSessionId &&
+          Number.isFinite(meta.revision) &&
+          meta.revision <= entry.remoteSignalRevision
+        ) {
+          console.debug('[BRIDGE]', 'Dropping stale WebRTC offer revision from', fromPeerId);
+          return;
+        }
+
+        if (!entry.remoteSessionId || entry.remoteSessionId !== meta.sessionId) {
+          entry.remoteSessionId = meta.sessionId;
+          entry.remoteSignalRevision = 0;
+          this._rtcPendingIce.delete(fromPeerId);
+        }
+
+        if (Number.isFinite(meta.revision)) {
+          entry.remoteSignalRevision = Math.max(entry.remoteSignalRevision || 0, meta.revision);
+        }
+
+        const offerDescription = new RTCSessionDescription(signal.sdp);
+
+        if (pc.currentRemoteDescription && pc.currentRemoteDescription.sdp === offerDescription.sdp) {
+          console.debug('[BRIDGE]', 'Ignoring duplicate WebRTC offer from', fromPeerId);
+          return;
+        }
+
+        const offerCollision = entry.makingOffer || pc.signalingState !== 'stable';
+
+        entry.ignoreOffer = !entry.polite && offerCollision;
+        if (entry.ignoreOffer) {
+          console.debug('[BRIDGE]', 'Ignoring colliding offer from impolite side:', fromPeerId);
+          return;
+        }
+
+        if (offerCollision && pc.signalingState !== 'stable') {
+          await Promise.all([
+            pc.setLocalDescription({ type: 'rollback' }),
+            pc.setRemoteDescription(offerDescription)
+          ]);
+        } else {
+          await pc.setRemoteDescription(offerDescription);
+        }
+
+        if (pc.signalingState !== 'have-remote-offer') {
+          console.debug('[BRIDGE]', 'Skipping answer for', fromPeerId, 'in state', pc.signalingState);
+          return;
+        }
+
+        const answer = await pc.createAnswer();
+        if (pc.signalingState !== 'have-remote-offer') {
+          console.debug('[BRIDGE]', 'Answer became stale for', fromPeerId, 'in state', pc.signalingState);
+          return;
+        }
+        await pc.setLocalDescription(answer);
+
+        const answerSignal = this._withRTCSignalMeta(entry, {
+          type: 'answer',
+          sdp: pc.localDescription
+        }, {
+          targetSessionId: entry.remoteSessionId
+        });
+        this.sendWebRTCSignal(fromPeerId, answerSignal);
+
+        const queued = this._rtcPendingIce.get(fromPeerId);
+        if (queued && queued.length) {
+          for (const cand of queued) {
+            pc.addIceCandidate(new RTCIceCandidate(cand)).catch(err => {
+              console.error('[BRIDGE]', 'Error adding queued ICE candidate from', fromPeerId, err);
+            });
+          }
+          this._rtcPendingIce.delete(fromPeerId);
+        }
+      } else if (signal.type === 'answer' && signal.sdp) {
+        if (
+          entry.remoteSessionId &&
+          meta.sessionId !== entry.remoteSessionId
+        ) {
+          console.debug('[BRIDGE]', 'Dropping answer from stale remote session for', fromPeerId);
+          return;
+        }
+
+        if (!entry.remoteSessionId) {
+          entry.remoteSessionId = meta.sessionId;
+        }
+
+        if (
+          Number.isFinite(meta.revision) &&
+          meta.revision <= (entry.remoteSignalRevision || 0)
+        ) {
+          console.debug('[BRIDGE]', 'Dropping stale WebRTC answer revision from', fromPeerId);
+          return;
+        }
+        if (Number.isFinite(meta.revision)) {
+          entry.remoteSignalRevision = Math.max(entry.remoteSignalRevision || 0, meta.revision);
+        }
+
+        if (pc.signalingState !== 'have-local-offer') {
+          console.debug('[BRIDGE]', 'Ignoring unexpected WebRTC answer from', fromPeerId, 'in state', pc.signalingState);
+          return;
+        }
+
+        await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      } else if (signal.type === 'ice-candidate' && signal.candidate) {
+        if (entry.remoteSessionId && meta.sessionId !== entry.remoteSessionId) {
+          console.debug('[BRIDGE]', 'Dropping ICE from stale remote session for', fromPeerId);
+          return;
+        }
+        if (!entry.remoteSessionId) entry.remoteSessionId = meta.sessionId;
+
+        const candInit = signal.candidate;
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(candInit));
+        } else {
+          const queue = this._rtcPendingIce.get(fromPeerId) || [];
+          queue.push(candInit);
+          this._rtcPendingIce.set(fromPeerId, queue);
+        }
+      }
+    }).catch(err => {
+      const msg = err && err.message ? err.message : String(err);
+      if (msg.includes('Called in wrong state') || msg.includes('wrong signalingState')) {
+        console.debug('[BRIDGE]', 'Ignoring stale WebRTC signal from', fromPeerId, msg);
+        return;
+      }
+
+      if (signal.type === 'offer') {
+        console.error('[BRIDGE]', 'Error handling WebRTC offer from', fromPeerId, msg);
+        return;
+      }
+
+      if (signal.type === 'answer') {
+        console.error('[BRIDGE]', 'Error handling WebRTC answer from', fromPeerId, msg);
+        return;
+      }
+
+      console.error('[BRIDGE]', 'Error handling WebRTC signal from', fromPeerId, msg);
+    });
+  }
+
+  /**
+   * Route server-relayed WebRTC signaling payloads.
+   * Returns true when a payload is accepted for local processing.
+   * @param {Object} result
+   * @returns {boolean}
+   */
+  _handleWebRTCSignalResult (result) {
+    if (!result || typeof result !== 'object') return false;
+    if (result.type !== 'WebRTCSignal') return false;
+    if (!result.signal || !result.fromPeerId) return false;
+
+    // Hub relays signaling to all browser clients. Only the intended recipient
+    // should process the payload.
+    if (result.toPeerId && this.peerId && result.toPeerId !== this.peerId) {
+      return false;
+    }
+
+    this.handleIncomingWebRTCSignal(result.fromPeerId, result.signal);
+    return true;
+  }
+
+  /**
    * Return the hub node's pubkey for display (e.g. in footer).
    * Reads from networkStatus.network or top-level status fields.
    * @returns {string} pubkey, id, or address from network status, or empty string
@@ -226,12 +577,13 @@ class Bridge extends React.Component {
     if (!ns || typeof ns !== 'object') return '';
     const network = ns.network;
     if (network && typeof network === 'object') {
-      const v = network.pubkey || network.id || network.address;
+      // Prefer extended public key as the primary node identifier.
+      const v = network.xpub || network.pubkey || network.id || network.address;
       if (v) return String(v);
     }
     // Fall back to top-level fields commonly exposed by GetNetworkStatus,
     // including xpub for the node's long-lived identity.
-    return ns.pubkey || ns.id || ns.address || ns.xpub || '';
+    return ns.xpub || ns.pubkey || ns.id || ns.address || '';
   }
 
   // Global state management methods
@@ -274,20 +626,52 @@ class Bridge extends React.Component {
     }
   }
 
+  _hasLocalStorage () {
+    try {
+      // Accessing window.localStorage can throw under opaque origins (SSR/build contexts).
+      return (typeof window !== 'undefined' && !!window.localStorage);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  _readJSONFromStorage (key, fallback = null) {
+    if (!this._hasLocalStorage()) return fallback;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (e) {
+      console.warn('[BRIDGE]', `Could not read ${key} from storage:`, e);
+      return fallback;
+    }
+  }
+
+  _writeJSONToStorage (key, value) {
+    if (!this._hasLocalStorage()) return false;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (e) {
+      console.warn('[BRIDGE]', `Could not persist ${key}:`, e);
+      return false;
+    }
+  }
+
+  _removeStorageKey (key) {
+    if (!this._hasLocalStorage()) return false;
+    try {
+      window.localStorage.removeItem(key);
+      return true;
+    } catch (e) {
+      console.warn('[BRIDGE]', `Could not remove ${key} from storage:`, e);
+      return false;
+    }
+  }
+
   _persistDocuments () {
-    let hasStorage = false;
-    try {
-      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
-    } catch (e) {
-      hasStorage = false;
-    }
-    if (!hasStorage) return;
-    try {
-      const docs = this.globalState.documents || {};
-      window.localStorage.setItem('fabric:documents', JSON.stringify(docs));
-    } catch (e) {
-      console.warn('[BRIDGE]', 'Could not persist documents:', e);
-    }
+    const docs = this.globalState.documents || {};
+    this._writeJSONToStorage('fabric:documents', docs);
   }
 
   /** @returns {import('@fabric/core/types/key')|null} Key with private for document encrypt/decrypt */
@@ -341,13 +725,55 @@ class Bridge extends React.Component {
    * @returns {string|null}
    */
   _getIdentityId () {
-    // Prefer the logical identity id from auth (what IdentityManager shows),
-    // falling back to the underlying key id only when necessary.
+    // Prefer an extended public key (xpub) as the stable public identifier,
+    // falling back to shorter ids only when necessary.
     const auth = this.props && this.props.auth;
-    if (auth && auth.id) return auth.id;
+    if (auth) {
+      if (auth.xpub) return auth.xpub;
+      if (auth.id) return auth.id;
+    }
 
     const key = this._getIdentityKey();
-    return (key && key.id) ? key.id : null;
+    if (!key) return null;
+    if (key.xpub) return key.xpub;
+    return key.id || null;
+  }
+
+  /**
+   * True when a private signing identity is available in-memory.
+   * @returns {boolean}
+   */
+  _hasUnlockedIdentity () {
+    const auth = this.props && this.props.auth;
+    if (auth && auth.xprv) return true;
+    const key = this._getIdentityKey();
+    if (key && key.xprv) return true;
+    return false;
+  }
+
+  /**
+   * Whether chat-capable identity material is currently available.
+   * @returns {boolean}
+   */
+  hasUnlockedIdentity () {
+    return this._hasUnlockedIdentity();
+  }
+
+  _notifyIdentityUnlockRequired (message = 'Unlock identity to send chat messages.') {
+    try {
+      window.dispatchEvent(new CustomEvent('fabric:chatWarning', {
+        detail: {
+          reason: 'identity-locked',
+          message
+        }
+      }));
+    } catch (e) {}
+
+    if (this.props && typeof this.props.onRequireUnlock === 'function') {
+      try {
+        this.props.onRequireUnlock();
+      } catch (e) {}
+    }
   }
 
   /**
@@ -411,28 +837,17 @@ class Bridge extends React.Component {
   }
 
   _persistMessages () {
-    let hasStorage = false;
-    try {
-      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
-    } catch (e) {
-      hasStorage = false;
-    }
-    if (!hasStorage) return;
-    try {
-      const messages = this.globalState.messages || {};
-      const keys = Object.keys(messages);
-      // Cap at 500 messages to avoid localStorage bloat
-      const toStore = keys.length > 500
-        ? Object.fromEntries(keys.sort((a, b) => {
-            const ta = (messages[a] && messages[a].object && messages[a].object.created) || 0;
-            const tb = (messages[b] && messages[b].object && messages[b].object.created) || 0;
-            return ta - tb;
-          }).slice(-500).map((k) => [k, messages[k]]))
-        : messages;
-      window.localStorage.setItem('fabric:messages', JSON.stringify(toStore));
-    } catch (e) {
-      console.warn('[BRIDGE]', 'Could not persist messages:', e);
-    }
+    const messages = this.globalState.messages || {};
+    const keys = Object.keys(messages);
+    // Cap at 500 messages to avoid localStorage bloat
+    const toStore = keys.length > 500
+      ? Object.fromEntries(keys.sort((a, b) => {
+          const ta = (messages[a] && messages[a].object && messages[a].object.created) || 0;
+          const tb = (messages[b] && messages[b].object && messages[b].object.created) || 0;
+          return ta - tb;
+        }).slice(-500).map((k) => [k, messages[k]]))
+      : messages;
+    this._writeJSONToStorage('fabric:messages', toStore);
   }
 
   /**
@@ -613,7 +1028,7 @@ class Bridge extends React.Component {
       return false;
     }
 
-    // Fully restart to ensure WebRTC (PeerJS) uses the new host/port.
+    // Fully restart so WebSocket + WebRTC signaling use the new host/port.
     try { this.stop(); } catch (e) {}
     try { this.start(); } catch (e) {}
     return true;
@@ -676,6 +1091,17 @@ class Bridge extends React.Component {
           break;
         }
       }
+
+      // Flush any queued JSON-RPC payloads that were enqueued before the
+      // WebSocket finished opening (for example, early WebRTC registration).
+      if (Array.isArray(this._jsonRpcQueue) && this._jsonRpcQueue.length > 0) {
+        console.debug('[BRIDGE]', 'Flushing queued JSON-RPC payloads:', this._jsonRpcQueue.length);
+        const queue = this._jsonRpcQueue.slice();
+        this._jsonRpcQueue = [];
+        for (const payload of queue) {
+          this._sendJSONRPCNow(payload);
+        }
+      }
     };
 
     this.ws.onmessage = this.onSocketMessage.bind(this);
@@ -720,209 +1146,29 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Initialize WebRTC connection using PeerJS
+   * Initialize WebRTC identity (native WebRTC).
+   * Generates a stable peerId for this browser session and marks WebRTC ready.
    */
   initializeWebRTC () {
-    if (!Peer) {
-      console.warn('[BRIDGE]', 'PeerJS not available, skipping WebRTC initialization');
-      return;
-    }
+    if (this.peerId) return;
 
-    try {
-      // Generate a unique peer ID based on the current session
-      const sessionId = this.key ? this.key.id.slice(-8) : Math.random().toString(36).substr(2, 8);
-      this.peerId = `fabric-bridge-${sessionId}`;
+    const sessionId = this.key ? this.key.id.slice(-8) : Math.random().toString(36).substr(2, 8);
+    this.peerId = `fabric-bridge-${sessionId}`;
+    this._webrtcReady = true;
 
-      console.debug('[BRIDGE]', 'Initializing WebRTC peer with ID:', this.peerId);
+    console.debug('[BRIDGE]', 'Initialized native WebRTC with peerId:', this.peerId);
 
-      // Create PeerJS instance
-      this.peer = new Peer(this.peerId, {
-        host: this.settings.host,
-        port: this.settings.port,
-        path: '/services/peering',
-        secure: this.settings.secure,
-        debug: this.settings.debug ? 2 : 0
-      });
+    // Publish our presence to the Hub so other peers can discover us.
+    this.publishWebRTCOffer();
 
-      // Set up peer event handlers
-      this.peer.on('open', (id) => {
-        console.debug('[BRIDGE]', 'WebRTC peer opened with ID:', id);
-        this.peerId = id;
-        this._webrtcReady = true;
-
-        // Publish our presence to the Bridge (our peer ID is now registered with the signaling server)
-        this.publishWebRTCOffer();
-
-        // Schedule peer discovery after startup procedures complete
-        if (this._peerDiscoveryTimer) clearTimeout(this._peerDiscoveryTimer);
-        this._peerDiscoveryTimer = setTimeout(() => {
-          this.discoverAndConnectToPeers();
-        }, this.settings.webrtcPeerDiscoveryDelay);
-      });
-
-      this.peer.on('connection', (conn) => {
-        console.debug('[BRIDGE]', 'Incoming WebRTC connection:', conn.peer);
-        this.handleIncomingWebRTCConnection(conn);
-      });
-
-      this.peer.on('error', (error) => {
-        console.error('[BRIDGE]', 'WebRTC peer error:', error);
-        this.setState(prevState => ({
-          error: prevState.error || error,
-          webrtcConnected: false
-        }));
-        this._webrtcConnected = false;
-      });
-
-      this.peer.on('close', () => {
-        console.debug('[BRIDGE]', 'WebRTC peer closed');
-        this.setState({ webrtcConnected: false });
-        this._webrtcConnected = false;
-      });
-
-    } catch (error) {
-      console.error('[BRIDGE]', 'Failed to initialize WebRTC:', error);
-    }
+    // Schedule initial peer discovery.
+    if (this._peerDiscoveryTimer) clearTimeout(this._peerDiscoveryTimer);
+    this._peerDiscoveryTimer = setTimeout(() => {
+      this.discoverAndConnectToPeers();
+    }, this.settings.webrtcPeerDiscoveryDelay);
   }
 
-  /**
-   * Connect to the server's WebRTC instance
-   */
-  connectToServerWebRTC () {
-    if (!this.peer) {
-      console.warn('[BRIDGE]', 'Cannot connect WebRTC: peer not initialized');
-      return;
-    }
-
-    try {
-      // Attempt to connect to the server's WebRTC instance
-      // The server peer ID should follow a predictable pattern
-      const serverPeerId = `fabric-server-${this.settings.host}`;
-
-      console.debug('[BRIDGE]', 'Attempting WebRTC connection to server:', serverPeerId);
-
-      this.webrtcConnection = this.peer.connect(serverPeerId, {
-        label: this.peerId,
-        reliable: true,
-        metadata: {
-          type: 'bridge-connection',
-          timestamp: Date.now()
-        }
-      });
-
-      this.setupWebRTCConnectionHandlers(this.webrtcConnection);
-
-    } catch (error) {
-      console.error('[BRIDGE]', 'Failed to connect WebRTC to server:', error);
-    }
-  }
-
-  /**
-   * Set up event handlers for a WebRTC connection
-   */
-  setupWebRTCConnectionHandlers (connection) {
-    connection.on('open', () => {
-      console.debug('[BRIDGE]', 'WebRTC connection opened to:', connection.peer);
-      this._webrtcConnected = true;
-      this.setState({ webrtcConnected: true }, () => {
-        // Call onStateUpdate prop if provided for backward compatibility
-        if (this.props.onStateUpdate && typeof this.props.onStateUpdate === 'function') {
-          this.props.onStateUpdate(this.state);
-        }
-      });
-
-      // Process any queued messages
-      while (this.webrtcMessageQueue.length > 0) {
-        const message = this.webrtcMessageQueue.shift();
-        try {
-          connection.send(message);
-        } catch (error) {
-          console.error('[BRIDGE]', 'Error sending queued WebRTC message:', error);
-          this.webrtcMessageQueue.unshift(message);
-          break;
-        }
-      }
-    });
-
-    connection.on('data', (data) => {
-      console.debug('[BRIDGE]', 'WebRTC data received:', data);
-      this.handleWebRTCMessage(data);
-    });
-
-    connection.on('error', (error) => {
-      console.error('[BRIDGE]', 'WebRTC connection error:', error);
-      this._webrtcConnected = false;
-      this.setState({ webrtcConnected: false }, () => {
-        // Call onStateUpdate prop if provided for backward compatibility
-        if (this.props.onStateUpdate && typeof this.props.onStateUpdate === 'function') {
-          this.props.onStateUpdate(this.state);
-        }
-      });
-    });
-
-    connection.on('close', () => {
-      console.debug('[BRIDGE]', 'WebRTC connection closed');
-      this._webrtcConnected = false;
-      this.setState({ webrtcConnected: false }, () => {
-        // Call onStateUpdate prop if provided for backward compatibility
-        if (this.props.onStateUpdate && typeof this.props.onStateUpdate === 'function') {
-          this.props.onStateUpdate(this.state);
-        }
-      });
-    });
-  }
-
-  /**
-   * Handle incoming WebRTC connections
-   */
-  handleIncomingWebRTCConnection (connection) {
-    const peerId = connection.peer;
-    console.debug('[BRIDGE]', 'Setting up incoming WebRTC connection from:', peerId);
-
-    // Track this peer connection
-    this.webrtcPeers.set(peerId, {
-      id: peerId,
-      connection: connection,
-      connectedAt: Date.now(),
-      status: 'connecting',
-      direction: 'inbound'
-    });
-
-    // Set up handlers with peer tracking
-    connection.on('open', () => {
-      console.debug('[BRIDGE]', 'Incoming WebRTC connection opened:', peerId);
-      const peerInfo = this.webrtcPeers.get(peerId);
-      if (peerInfo) {
-        peerInfo.status = 'connected';
-        this.webrtcPeers.set(peerId, peerInfo);
-      }
-      this.forceUpdate();
-    });
-
-    connection.on('close', () => {
-      console.debug('[BRIDGE]', 'Incoming WebRTC connection closed:', peerId);
-      this.webrtcPeers.delete(peerId);
-      this.forceUpdate();
-    });
-
-    connection.on('error', (error) => {
-      console.error('[BRIDGE]', 'Incoming WebRTC connection error:', peerId, error);
-      const peerInfo = this.webrtcPeers.get(peerId);
-      if (peerInfo) {
-        peerInfo.status = 'error';
-        peerInfo.error = error.message || 'Unknown error';
-        this.webrtcPeers.set(peerId, peerInfo);
-      }
-    });
-
-    connection.on('data', (data) => {
-      console.debug('[BRIDGE]', 'WebRTC data received from:', peerId, data);
-      this.handleWebRTCMessage(data);
-    });
-
-    // Store the connection for potential use
-    this.webrtcConnection = connection;
-  }
+  // PeerJS-specific WebRTC helpers removed; native WebRTC helpers are defined below.
 
   /**
    * Handle messages received via WebRTC
@@ -984,6 +1230,7 @@ class Bridge extends React.Component {
     };
 
     this._sendJSONRPC(payload);
+    this._lastWebRTCPublishAt = Date.now();
   }
 
   /**
@@ -991,8 +1238,10 @@ class Bridge extends React.Component {
    * Respects the maxWebrtcPeers setting.
    */
   discoverAndConnectToPeers () {
-    if (!this._webrtcReady || !this.peer) {
-      console.warn('[BRIDGE]', 'Cannot discover peers: WebRTC not ready');
+    // Discovery only needs our logical peerId registered with the hub; it
+    // does not require that a specific WebRTC connection is already open.
+    if (!this.peerId) {
+      console.warn('[BRIDGE]', 'Cannot discover peers: no WebRTC peerId');
       return;
     }
 
@@ -1014,6 +1263,7 @@ class Bridge extends React.Component {
 
     // Store callback for when we receive the response
     this._pendingPeerDiscovery = true;
+    this._lastWebRTCDiscoverAt = Date.now();
     this._sendJSONRPC(payload);
   }
 
@@ -1022,12 +1272,21 @@ class Bridge extends React.Component {
    * @param {Array} candidates - Array of peer candidate objects
    */
   handlePeerCandidates (candidates) {
+    // If WebRTC identity isn't ready yet, stash candidates and process them once
+    // initialization completes.
+    if (!this.peerId || !this._webrtcReady) {
+      console.debug('[BRIDGE]', 'Deferring WebRTC peer candidates until WebRTC is ready');
+      if (!Array.isArray(this._pendingPeerCandidates)) this._pendingPeerCandidates = [];
+      this._pendingPeerCandidates.push(...candidates);
+      return;
+    }
+
     if (!Array.isArray(candidates)) {
       console.warn('[BRIDGE]', 'Invalid peer candidates:', candidates);
       return;
     }
 
-    const currentConnections = this.webrtcPeers.size + this._connectingPeers.size;
+    const currentConnections = this.getWebRTCPeerCount() + this._connectingPeers.size;
     const maxPeers = this.settings.maxWebrtcPeers || 5;
     const slotsAvailable = Math.max(0, maxPeers - currentConnections);
 
@@ -1036,17 +1295,40 @@ class Bridge extends React.Component {
       return;
     }
 
-    // Filter out ourselves and already connected/connecting peers
+    const now = Date.now();
+    const maxCandidateAgeMs = Number(this.settings.webrtcCandidateMaxAgeMs || 120000);
+    let staleCandidateCount = 0;
+
+    // Filter out ourselves, stale registrations, and already connected/connecting peers.
     const eligiblePeers = candidates.filter(candidate => {
       const peerId = candidate.id || candidate.peerId;
       if (!peerId) return false;
       if (peerId === this.peerId) return false;
       if (this.webrtcPeers.has(peerId)) return false;
       if (this._connectingPeers.has(peerId)) return false;
+      const seenAt = Number(candidate.lastSeen || candidate.registeredAt || candidate.connectedAt || 0);
+      if (maxCandidateAgeMs > 0 && Number.isFinite(seenAt) && seenAt > 0) {
+        if ((now - seenAt) > maxCandidateAgeMs) {
+          staleCandidateCount++;
+          return false;
+        }
+      }
       return true;
     });
 
-    // Connect to peers up to available slots
+    if (staleCandidateCount > 0) {
+      console.debug('[BRIDGE]', 'Ignoring stale WebRTC candidates:', staleCandidateCount);
+    }
+
+    // Prefer freshest candidates first so stale hub registrations do not
+    // consume all available connection slots.
+    eligiblePeers.sort((a, b) => {
+      const bSeen = Number(b.lastSeen || b.registeredAt || b.connectedAt || 0);
+      const aSeen = Number(a.lastSeen || a.registeredAt || a.connectedAt || 0);
+      return bSeen - aSeen;
+    });
+
+    // Connect to peers up to available slots.
     const peersToConnect = eligiblePeers.slice(0, slotsAvailable);
 
     console.debug('[BRIDGE]', `Connecting to ${peersToConnect.length} WebRTC peers (${currentConnections}/${maxPeers} current)`);
@@ -1059,12 +1341,12 @@ class Bridge extends React.Component {
 
   /**
    * Initiate a WebRTC connection to a specific peer.
-   * @param {string} peerId - The PeerJS ID of the peer to connect to
+   * @param {string} peerId - The remote browser peer ID to connect to
    * @param {Object} metadata - Optional metadata about the peer
    */
   connectToWebRTCPeer (peerId, metadata = {}) {
-    if (!this.peer || !this._webrtcReady) {
-      console.warn('[BRIDGE]', 'Cannot connect to peer: WebRTC not ready');
+    if (!this.peerId || !this._webrtcReady) {
+      console.debug('[BRIDGE]', 'Cannot connect to peer yet: WebRTC identity not ready');
       return;
     }
 
@@ -1073,78 +1355,69 @@ class Bridge extends React.Component {
       return;
     }
 
-    console.debug('[BRIDGE]', 'Initiating WebRTC connection to peer:', peerId);
+    console.debug('[BRIDGE]', 'Initiating native WebRTC connection to peer:', peerId);
 
-    // Mark as connecting
     this._connectingPeers.add(peerId);
 
     try {
-      const connection = this.peer.connect(peerId, {
-        label: this.peerId,
-        reliable: true,
-        metadata: {
-          type: 'peer-mesh',
-          initiator: this.peerId,
-          timestamp: Date.now()
-        }
-      });
-
-      // Track this peer connection
-      const peerInfo = {
+      const entry = {
+        pc: null,
+        dc: null,
+        status: 'connecting',
+        initiator: true,
+        metadata,
+        makingOffer: false,
+        ignoreOffer: false,
+        localSessionId: this._newRTCSessionId(peerId),
+        remoteSessionId: null,
+        localSignalRevision: 0,
+        remoteSignalRevision: 0,
+        polite: this.peerId ? this.peerId < peerId : true
+      };
+      const pc = this._createRTCPeerConnection(peerId, entry);
+      const dc = pc.createDataChannel('fabric-peer', { ordered: true });
+      this._attachDataChannelHandlers(peerId, dc);
+      entry.pc = pc;
+      entry.dc = dc;
+      this._rtcPeers.set(peerId, entry);
+      this.webrtcPeers.set(peerId, {
         id: peerId,
-        connection: connection,
-        connectedAt: null,
         status: 'connecting',
         direction: 'outbound',
-        metadata: metadata
-      };
+        connectedAt: null,
+        lastSeen: Date.now(),
+        connection: dc,
+        metadata
+      });
 
-      // Set up connection event handlers
-      connection.on('open', () => {
-        console.debug('[BRIDGE]', 'Outbound WebRTC connection opened to:', peerId);
-        this._connectingPeers.delete(peerId);
-        peerInfo.status = 'connected';
-        peerInfo.connectedAt = Date.now();
-        this.webrtcPeers.set(peerId, peerInfo);
-        this.forceUpdate();
-
-        // Notify the server of the successful connection
-        this._sendJSONRPC({
-          method: 'WebRTCPeerConnected',
-          params: [{ peerId: peerId, direction: 'outbound' }]
+      entry.makingOffer = true;
+      pc.createOffer().then(offer => pc.setLocalDescription(offer)).then(() => {
+        entry.makingOffer = false;
+        if (pc.signalingState === 'closed') return;
+        const offerSignal = this._withRTCSignalMeta(entry, {
+          type: 'offer',
+          sdp: pc.localDescription
+        }, {
+          targetSessionId: null
         });
+        this.sendWebRTCSignal(peerId, offerSignal);
+      }).catch(err => {
+        entry.makingOffer = false;
+        console.error('[BRIDGE]', 'Error creating WebRTC offer to', peerId, err);
+        this.disconnectWebRTCPeer(peerId);
       });
 
-      connection.on('data', (data) => {
-        console.debug('[BRIDGE]', 'WebRTC data from peer:', peerId, data);
-        this.handleWebRTCPeerMessage(peerId, data);
-      });
-
-      connection.on('error', (error) => {
-        console.error('[BRIDGE]', 'WebRTC connection error to peer:', peerId, error);
-        this._connectingPeers.delete(peerId);
-        peerInfo.status = 'error';
-        peerInfo.error = error.message || 'Connection failed';
-        this.webrtcPeers.set(peerId, peerInfo);
-        this.forceUpdate();
-      });
-
-      connection.on('close', () => {
-        console.debug('[BRIDGE]', 'WebRTC connection closed to peer:', peerId);
-        this._connectingPeers.delete(peerId);
-        this.webrtcPeers.delete(peerId);
-        this.forceUpdate();
-
-        // Notify the server of the disconnection
-        this._sendJSONRPC({
-          method: 'WebRTCPeerDisconnected',
-          params: [{ peerId: peerId }]
-        });
-      });
-
+      const connectTimeoutMs = Number(this.settings.webrtcConnectTimeoutMs || 15000);
+      const timer = setTimeout(() => {
+        const info = this.webrtcPeers.get(peerId);
+        if (info && info.status === 'connected') return;
+        console.debug('[BRIDGE]', 'Timing out stale WebRTC connect attempt:', peerId);
+        this.disconnectWebRTCPeer(peerId);
+      }, connectTimeoutMs);
+      this._webrtcConnectTimers.set(peerId, timer);
     } catch (error) {
-      console.error('[BRIDGE]', 'Failed to connect to WebRTC peer:', peerId, error);
-      this._connectingPeers.delete(peerId);
+      console.error('[BRIDGE]', 'Failed to initiate native WebRTC connection to peer:', peerId, error);
+      this.disconnectWebRTCPeer(peerId);
     }
   }
 
@@ -1157,19 +1430,33 @@ class Bridge extends React.Component {
     try {
       console.debug('[BRIDGE]', 'Processing message from WebRTC peer:', peerId);
 
+      let payload = data;
+      // RTCDataChannel text frames arrive as strings; normalize to object when possible.
+      if (typeof payload === 'string') {
+        const trimmed = payload.trim();
+        if (trimmed) {
+          try {
+            payload = JSON.parse(trimmed);
+          } catch (parseError) {
+            // Keep raw payload for app-level listeners; typed handlers require objects.
+            payload = data;
+          }
+        }
+      }
+
       // Emit event for application-level handling
       const event = new CustomEvent('webrtcPeerMessage', {
-        detail: { peerId, data }
+        detail: { peerId, data: payload }
       });
       window.dispatchEvent(event);
 
       // Handle specific message types
-      if (data && typeof data === 'object') {
-        switch (data.type) {
+      if (payload && typeof payload === 'object') {
+        switch (payload.type) {
           case 'ping':
             this.sendToWebRTCPeer(peerId, { type: 'pong', timestamp: Date.now() });
             break;
-          case 'pong':
+          case 'pong': {
             // Update last seen for the peer
             const peerInfo = this.webrtcPeers.get(peerId);
             if (peerInfo) {
@@ -1177,15 +1464,67 @@ class Bridge extends React.Component {
               this.webrtcPeers.set(peerId, peerInfo);
             }
             break;
-          case 'chat':
-            // Relay chat messages to the global state
-            if (data.content) {
-              this.handleWebRTCMessage(data);
+          }
+          case 'webrtc-chat': {
+            const text = (payload.text || payload.content || '').trim();
+            if (!text) break;
+            const created = payload.created || Date.now();
+            const actorId = payload.actorId || peerId;
+            const incomingClientId = payload.clientId || null;
+
+            // Create a local chat representation for the UI
+            try {
+              const clientId = incomingClientId || (() => {
+                const clientActor = new Actor({
+                  content: {
+                    type: 'P2P_CHAT_MESSAGE',
+                    address: peerId,
+                    text,
+                    created
+                  }
+                });
+                return clientActor.id;
+              })();
+
+              if (clientId && this.globalState && this.globalState.messages && this.globalState.messages[clientId]) {
+                break;
+              }
+
+              const chat = {
+                type: 'P2P_CHAT_MESSAGE',
+                actor: { id: actorId },
+                object: {
+                  content: text,
+                  created,
+                  clientId
+                },
+                target: peerId,
+                status: 'received',
+                transport: 'webrtc',
+                delivery: {
+                  via: 'mesh',
+                  fromPeerId: peerId
+                }
+              };
+
+              this.globalState.messages = this.globalState.messages || {};
+              this.globalState.messages[clientId] = chat;
+
+              window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                detail: {
+                  operation: { op: 'add', path: `/messages/${clientId}`, value: chat },
+                  globalState: this.globalState
+                }
+              }));
+              this._persistMessages();
+            } catch (e) {
+              console.warn('[BRIDGE]', 'Could not create local WebRTC chat message:', e);
             }
             break;
+          }
           default:
             // Pass through to the general WebRTC message handler
-            this.handleWebRTCMessage(data);
+            this.handleWebRTCMessage(payload);
         }
       }
     } catch (error) {
@@ -1207,7 +1546,10 @@ class Bridge extends React.Component {
     }
 
     try {
-      peerInfo.connection.send(data);
+      const outbound = (data && typeof data === 'object')
+        ? JSON.stringify(data)
+        : data;
+      peerInfo.connection.send(outbound);
       return true;
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending to WebRTC peer:', peerId, error);
@@ -1221,13 +1563,115 @@ class Bridge extends React.Component {
    * @returns {number} Number of peers the message was sent to
    */
   broadcastToWebRTCPeers (data) {
-    let sent = 0;
+    const recipients = this.broadcastToWebRTCPeersWithRecipients(data);
+    return recipients.length;
+  }
+
+  /**
+   * Broadcast a message to all connected WebRTC peers and return recipient IDs.
+   * @param {*} data - The data to broadcast
+   * @returns {string[]} Peer IDs that accepted the send
+   */
+  broadcastToWebRTCPeersWithRecipients (data) {
+    const recipients = [];
     for (const [peerId, peerInfo] of this.webrtcPeers) {
       if (peerInfo.status === 'connected' && this.sendToWebRTCPeer(peerId, data)) {
-        sent++;
+        recipients.push(peerId);
       }
     }
-    return sent;
+    return recipients;
+  }
+
+  /**
+   * Disconnect from a specific WebRTC peer by ID.
+   * @param {string} peerId - The peer ID to disconnect
+   */
+  disconnectWebRTCPeer (peerId) {
+    if (!peerId) return;
+
+    if (this._webrtcConnectTimers && this._webrtcConnectTimers.has(peerId)) {
+      clearTimeout(this._webrtcConnectTimers.get(peerId));
+      this._webrtcConnectTimers.delete(peerId);
+    }
+
+    const peerInfo = this.webrtcPeers.get(peerId);
+    const rtcEntry = this._rtcPeers.get(peerId);
+
+    if (peerInfo && peerInfo.connection) {
+      try {
+        peerInfo.connection.close();
+      } catch (error) {
+        console.warn('[BRIDGE]', 'Error closing WebRTC connection for peer:', peerId, error);
+      }
+    }
+
+    if (rtcEntry && rtcEntry.dc && rtcEntry.dc !== (peerInfo && peerInfo.connection)) {
+      try {
+        rtcEntry.dc.close();
+      } catch (error) {
+        console.warn('[BRIDGE]', 'Error closing WebRTC data channel for peer:', peerId, error);
+      }
+    }
+
+    if (rtcEntry && rtcEntry.pc) {
+      try {
+        rtcEntry.pc.close();
+      } catch (error) {
+        console.warn('[BRIDGE]', 'Error closing RTCPeerConnection for peer:', peerId, error);
+      }
+    }
+
+    this.webrtcPeers.delete(peerId);
+    this._rtcPeers.delete(peerId);
+    this._rtcPendingIce.delete(peerId);
+    if (this._connectingPeers && this._connectingPeers.has(peerId)) {
+      this._connectingPeers.delete(peerId);
+    }
+
+    this._webrtcConnected = this.getWebRTCPeerCount() > 0;
+    this.setState({ webrtcConnected: this._webrtcConnected });
+
+    // No JSON-RPC notification here; normal close handlers will emit if needed.
+    try {
+      this.forceUpdate();
+    } catch (e) {}
+  }
+
+  /**
+   * Disconnect from all tracked WebRTC peers.
+   */
+  disconnectAllWebRTCPeers () {
+    try {
+      for (const [peerId, peerInfo] of this.webrtcPeers) {
+        if (peerInfo && peerInfo.connection) {
+          try {
+            peerInfo.connection.close();
+          } catch (error) {
+            console.warn('[BRIDGE]', 'Error closing WebRTC connection for peer:', peerId, error);
+          }
+        }
+      }
+    } catch (e) {}
+
+    this.webrtcPeers.clear();
+    this._rtcPeers.clear();
+    this._rtcPendingIce.clear();
+    if (this._connectingPeers && this._connectingPeers.size) {
+      this._connectingPeers.clear();
+    }
+    if (this._webrtcConnectTimers && this._webrtcConnectTimers.size) {
+      for (const timer of this._webrtcConnectTimers.values()) {
+        clearTimeout(timer);
+      }
+      this._webrtcConnectTimers.clear();
+    }
+
+    this._webrtcConnected = false;
+    this.setState({ webrtcConnected: false });
+
+    try {
+      this.forceUpdate();
+    } catch (e) {}
   }
 
   /**
@@ -1243,21 +1687,32 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Send a JSON-RPC message via WebSocket.
+   * Low-level helper to encode and send a JSON-RPC payload on an open WebSocket.
+   * Caller MUST ensure the socket is open.
    * @param {Object} payload - The JSON-RPC payload
    */
-  _sendJSONRPC (payload) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[BRIDGE]', 'Cannot send JSON-RPC: WebSocket not connected');
-      return;
-    }
-
+  _sendJSONRPCNow (payload) {
     try {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.ws.send(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending JSON-RPC:', error);
     }
+  }
+
+  /**
+   * Send a JSON-RPC message via WebSocket.
+   * If the WebSocket is not yet connected, queue the payload to be sent on open.
+   * @param {Object} payload - The JSON-RPC payload
+   */
+  _sendJSONRPC (payload) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.debug('[BRIDGE]', 'Queueing JSON-RPC (WebSocket not connected yet)');
+      this._jsonRpcQueue.push(payload);
+      return;
+    }
+
+    this._sendJSONRPCNow(payload);
   }
 
   addJob (type, data) {
@@ -1366,24 +1821,19 @@ class Bridge extends React.Component {
     this.webrtcPeers.clear();
     this._connectingPeers.clear();
 
-    // Clean up WebRTC
-    if (this.webrtcConnection) {
+    // Clean up native RTCPeerConnection instances.
+    for (const [peerId, entry] of this._rtcPeers.entries()) {
       try {
-        this.webrtcConnection.close();
-      } catch (e) {
-        console.warn('[BRIDGE]', 'Error closing WebRTC connection:', e);
-      }
-      this.webrtcConnection = null;
-    }
-
-    if (this.peer) {
+        if (entry && entry.dc && typeof entry.dc.close === 'function') entry.dc.close();
+      } catch (e) {}
       try {
-        this.peer.destroy();
+        if (entry && entry.pc && typeof entry.pc.close === 'function') entry.pc.close();
       } catch (e) {
-        console.warn('[BRIDGE]', 'Error destroying WebRTC peer:', e);
+        console.warn('[BRIDGE]', 'Error closing RTCPeerConnection:', peerId, e);
       }
-      this.peer = null;
     }
+    this._rtcPeers.clear();
+    this._rtcPendingIce.clear();
 
     this._webrtcConnected = false;
     this._webrtcReady = false;
@@ -1391,6 +1841,30 @@ class Bridge extends React.Component {
   }
 
   tick () {
+    const now = Date.now();
+    const heartbeatMs = Number(this.settings.webrtcHeartbeatIntervalMs || 30000);
+    const discoveryMs = Number(this.settings.webrtcDiscoveryIntervalMs || 15000);
+
+    if (
+      this.peerId &&
+      this._webrtcReady &&
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      (!this._lastWebRTCPublishAt || ((now - this._lastWebRTCPublishAt) >= heartbeatMs))
+    ) {
+      this.publishWebRTCOffer();
+    }
+
+    if (
+      this.peerId &&
+      this._webrtcReady &&
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      (!this._lastWebRTCDiscoverAt || ((now - this._lastWebRTCDiscoverAt) >= discoveryMs))
+    ) {
+      this.discoverAndConnectToPeers();
+    }
+
     this.takeJob();
   }
 
@@ -1540,13 +2014,14 @@ class Bridge extends React.Component {
    * Reconnect WebRTC if connection is lost
    */
   reconnectWebRTC () {
-    if (this.peer && !this._webrtcConnected) {
-      console.debug('[BRIDGE]', 'Attempting to reconnect WebRTC...');
-      this.connectToServerWebRTC();
-    } else if (!this.peer) {
-      console.debug('[BRIDGE]', 'Reinitializing WebRTC peer...');
+    if (!this.peerId || !this._webrtcReady) {
+      console.debug('[BRIDGE]', 'Reinitializing WebRTC identity...');
       this.initializeWebRTC();
+      return;
     }
+
+    console.debug('[BRIDGE]', 'Rediscovering WebRTC peers...');
+    this.discoverAndConnectToPeers();
   }
 
   async onSocketMessage (msg) {
@@ -1589,6 +2064,9 @@ class Bridge extends React.Component {
         default:
           console.debug('[BRIDGE]', 'Unhandled message type:', message.type);
           break;
+        case 'Pong':
+          // Keepalive response from hub; no action needed beyond acknowledging receipt.
+          break;
         case 'JSONCall':
           console.debug('[BRIDGE]', 'Received JSONCall:', message.body);
 
@@ -1599,13 +2077,23 @@ class Bridge extends React.Component {
               const result = Array.isArray(jsonCall.params) && jsonCall.params.length > 0
                 ? jsonCall.params[jsonCall.params.length - 1]
                 : (jsonCall.result || null);
-              if (result && typeof result === 'object' && (result.peers || result.network)) {
+
+              // Treat only full network status results as networkStatus.
+              if (result && typeof result === 'object' && result.network && !result.type) {
                 this.setState({ networkStatus: result }, () => {
                   // When network status changes (especially peer connectivity),
                   // try to flush any queued peer messages.
                   this._flushPeerMessageQueue();
                 });
               }
+
+              // WebRTC peer discovery response (does not touch networkStatus)
+              if (result && typeof result === 'object' && result.type === 'ListWebRTCPeersResult' && Array.isArray(result.peers)) {
+                console.debug('[BRIDGE]', 'Received WebRTC peer candidates:', result.peers.length);
+                this.handlePeerCandidates(result.peers);
+              }
+              // Native WebRTC signaling messages
+              this._handleWebRTCSignalResult(result);
               // Handle non-network results used by routed pages / detail views
               if (result && typeof result === 'object' && result.type === 'GetPeerResult' && result.peer && result.peer.address) {
                 const addr = result.peer.address;
@@ -1733,11 +2221,6 @@ class Bridge extends React.Component {
                     }
                   }));
                 }
-              }
-              // WebRTC peer discovery response
-              if (result && typeof result === 'object' && result.type === 'ListWebRTCPeersResult' && Array.isArray(result.peers)) {
-                console.debug('[BRIDGE]', 'Received WebRTC peer candidates:', result.peers.length);
-                this.handlePeerCandidates(result.peers);
               }
               if (typeof this.props.responseCapture === 'function') {
                 this.props.responseCapture({
@@ -1991,13 +2474,14 @@ class Bridge extends React.Component {
    */
   submitChatMessage (text) {
     const trimmed = typeof text === 'string' ? text.trim() : '';
-    if (!trimmed) return;
+    if (!trimmed) return false;
 
-     const identityId = this._getIdentityId();
-     if (!identityId) {
-       console.warn('[BRIDGE]', 'submitChatMessage called without an unlocked identity; message will not be sent.');
-       return;
-     }
+    if (!this._hasUnlockedIdentity()) {
+      console.warn('[BRIDGE]', 'submitChatMessage called without an unlocked identity; message will not be sent.');
+      this._notifyIdentityUnlockRequired('Unlock identity to send chat messages.');
+      return false;
+    }
+    const identityId = this._getIdentityId();
 
     const clientId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const created = Date.now();
@@ -2006,6 +2490,7 @@ class Bridge extends React.Component {
       type: 'P2P_CHAT_MESSAGE',
       actor: { id: actorId },
       object: { content: trimmed, created, clientId },
+      // Unified flow: optimistic entry remains pending until canonical hub echo.
       status: 'pending'
     };
 
@@ -2019,8 +2504,9 @@ class Bridge extends React.Component {
     }));
     this._persistMessages();
 
-    this.chatSubmissionQueue.push({ text: trimmed, clientId, actorId });
+    this.chatSubmissionQueue.push({ text: trimmed, clientId, actorId, created });
     this._flushChatSubmissionQueue();
+    return true;
   }
 
   _flushChatSubmissionQueue () {
@@ -2030,6 +2516,7 @@ class Bridge extends React.Component {
       if (!item) continue;
       this.sendSubmitChatMessageRequest({
         text: item.text,
+        created: item.created,
         clientId: item.clientId,
         actor: item.actorId ? { id: item.actorId } : undefined
       });
@@ -2043,10 +2530,68 @@ class Bridge extends React.Component {
   sendSubmitChatMessageRequest (body) {
     const text = typeof body === 'string' ? body : (body && body.text) || '';
     if (!text) return;
+    if (!this._hasUnlockedIdentity()) {
+      console.warn('[BRIDGE]', 'sendSubmitChatMessageRequest called without an unlocked identity; message will not be sent.');
+      this._notifyIdentityUnlockRequired('Unlock identity to send chat messages.');
+      return;
+    }
+    const created = body && body.created ? body.created : Date.now();
+    const clientId = body && body.clientId;
+    const actorId = this._getIdentityId() || null;
+
+    // In WebRTC mode, also fan out over the mesh, but keep the hub RPC as
+    // the canonical network propagation path.
+    if (this.preferWebRTCChat) {
+      const payload = {
+        type: 'webrtc-chat',
+        text,
+        created,
+        actorId,
+        clientId
+      };
+      const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
+      const deliveredTo = recipients.length;
+      this._lastWebRTCChatDeliveryCount = deliveredTo;
+      this._lastWebRTCChatSentAt = Date.now();
+      this._lastWebRTCRecipientPeerIds = recipients;
+
+      // Mark the locally-pending message with explicit WebRTC delivery details.
+      if (clientId && this.globalState && this.globalState.messages && this.globalState.messages[clientId]) {
+        try {
+          const msg = this.globalState.messages[clientId];
+          msg.transport = 'webrtc';
+          msg.delivery = Object.assign({}, msg.delivery || {}, {
+            via: 'mesh',
+            deliveredTo
+          });
+          this.globalState.messages[clientId] = msg;
+          window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+            detail: {
+              operation: { op: 'replace', path: `/messages/${clientId}`, value: msg },
+              globalState: this.globalState
+            }
+          }));
+          this._persistMessages();
+        } catch (e) {}
+      }
+      console.debug('[BRIDGE]', 'WebRTC chat broadcast delivery count:', deliveredTo);
+    }
     try {
+      const rpcBody = typeof body === 'object'
+        ? Object.assign({}, body, {
+            created,
+            clientId,
+            actor: (body.actor || (actorId ? { id: actorId } : undefined))
+          })
+        : {
+            text,
+            created,
+            clientId,
+            actor: actorId ? { id: actorId } : undefined
+          };
       const payload = {
         method: 'SubmitChatMessage',
-        params: [typeof body === 'object' ? body : { text }]
+        params: [rpcBody]
       };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
@@ -2118,19 +2663,7 @@ class Bridge extends React.Component {
     // Add to in-memory queue and persist.
     this.peerMessageQueue = this.peerMessageQueue || [];
     this.peerMessageQueue.push(job);
-    let hasStorage = false;
-    try {
-      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
-    } catch (e) {
-      hasStorage = false;
-    }
-    if (hasStorage) {
-      try {
-        window.localStorage.setItem('fabric:peerMessageQueue', JSON.stringify(this.peerMessageQueue));
-      } catch (e) {
-        console.warn('[BRIDGE]', 'Could not persist peerMessageQueue:', e);
-      }
-    }
+    this._writeJSONToStorage('fabric:peerMessageQueue', this.peerMessageQueue);
   }
 
   /**
@@ -2173,22 +2706,10 @@ class Bridge extends React.Component {
     }
 
     this.peerMessageQueue = remaining;
-    let hasStorage = false;
-    try {
-      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
-    } catch (e) {
-      hasStorage = false;
-    }
-    if (hasStorage) {
-      try {
-        if (this.peerMessageQueue.length) {
-          window.localStorage.setItem('fabric:peerMessageQueue', JSON.stringify(this.peerMessageQueue));
-        } else {
-          window.localStorage.removeItem('fabric:peerMessageQueue');
-        }
-      } catch (e) {
-        console.warn('[BRIDGE]', 'Could not persist updated peerMessageQueue:', e);
-      }
+    if (this.peerMessageQueue.length) {
+      this._writeJSONToStorage('fabric:peerMessageQueue', this.peerMessageQueue);
+    } else {
+      this._removeStorageKey('fabric:peerMessageQueue');
     }
   }
 
@@ -2201,7 +2722,95 @@ class Bridge extends React.Component {
     const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
     const resolvedText = typeof body === 'string' ? body : (body && body.text) || '';
     if (!resolved || !resolvedText) return;
+    if (!this._hasUnlockedIdentity()) {
+      console.warn('[BRIDGE]', 'sendPeerMessageRequest called without an unlocked identity; message will not be sent.');
+      this._notifyIdentityUnlockRequired('Unlock identity to send peer messages.');
+      return;
+    }
     const created = Date.now();
+    // When WebRTC-only chat is enabled, send peer messages over the mesh
+    // instead of via the Fabric P2P SendPeerMessage RPC.
+    if (this.preferWebRTCChat) {
+      const actorId = this._getIdentityId() || null;
+      // Create a local "sent" chat message for this peer.
+      try {
+        const clientActor = new Actor({
+          content: {
+            type: 'P2P_CHAT_MESSAGE',
+            address: resolved,
+            text: resolvedText,
+            created
+          }
+        });
+        const clientId = clientActor.id;
+        const chat = {
+          type: 'P2P_CHAT_MESSAGE',
+          actor: { id: actorId || resolved },
+          object: {
+            content: resolvedText,
+            created,
+            clientId
+          },
+          target: resolved,
+          status: 'pending',
+          transport: 'webrtc',
+          delivery: {
+            via: 'mesh',
+            deliveredTo: 0
+          }
+        };
+
+        this.globalState.messages = this.globalState.messages || {};
+        this.globalState.messages[clientId] = chat;
+
+        window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+          detail: {
+            operation: { op: 'add', path: `/messages/${clientId}`, value: chat },
+            globalState: this.globalState
+          }
+        }));
+        this._persistMessages();
+      } catch (e) {}
+
+      const payload = {
+        type: 'webrtc-chat',
+        text: resolvedText,
+        created,
+        actorId,
+        target: resolved
+      };
+      // For now, broadcast to all WebRTC peers; peers can choose how to display.
+      const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
+      const deliveredTo = recipients.length;
+      this._lastWebRTCRecipientPeerIds = recipients;
+      this._lastWebRTCChatDeliveryCount = deliveredTo;
+      this._lastWebRTCChatSentAt = Date.now();
+      try {
+        const messages = this.globalState && this.globalState.messages;
+        if (messages) {
+          const candidate = Object.values(messages).find((m) => {
+            const obj = m && m.object;
+            return obj && obj.content === resolvedText && obj.created === created;
+          });
+          if (candidate) {
+            candidate.status = deliveredTo > 0 ? 'sent' : 'pending';
+            candidate.delivery = Object.assign({}, candidate.delivery || {}, {
+              via: 'mesh',
+              deliveredTo
+            });
+            window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+              detail: {
+                operation: { op: 'replace', path: `/messages/${candidate.object.clientId}`, value: candidate },
+                globalState: this.globalState
+              }
+            }));
+            this._persistMessages();
+          }
+        }
+      } catch (e) {}
+      console.debug('[BRIDGE]', 'WebRTC peer chat delivery count:', deliveredTo);
+      return;
+    }
     this._enqueuePeerMessage({ address: resolved, text: resolvedText, created });
     this._flushPeerMessageQueue();
   }

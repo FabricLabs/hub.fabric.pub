@@ -22,9 +22,10 @@ const HubInterface = require('../components/HubInterface');
 // Program Body
 async function main (input = {}) {
   const site = new HubInterface(input);
+  const buildWebpackConfig = Object.assign({}, webpackConfig, { watch: false });
   const compiler = new Compiler({
     document: site,
-    webpack: webpackConfig,
+    webpack: buildWebpackConfig,
     ...input
   });
 

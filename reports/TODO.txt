@@ -1,17 +1,12 @@
 ./types/spa.js: // TODO: move CSS to inline from webpack
 ./types/queue.js: // TODO: reverse this logic to reject if !this.redis
-./types/compiler.js: // TODO: load from:
 ./components/HeaderBar.js: // TODO: use i18n (e.g., call i18n.t('pitch.cta.text') etc.)
-./components/HubUI.js: <fabric-container id="react-application">{/* TODO: render string here */}</fabric-container>
-./components/Bridge.js: // TODO: re-evaluate multiple connections
-./components/Bridge.js: // TODO: faster!  converting ArrayBuffer to buffer etc. is slow (~4x)
-./components/Bridge.js: // TODO: refactor @fabric/core/types/message to support arbitrary message types
-./components/ConversationsList.js: {/* TODO: double check that this works as intended */}
-./components/InformationSidebar.js: // TODO: implement message->data API
-./components/InformationSidebar.js: // TODO: Standardize `SEARCH` as a verb on all Resources, to return a list of document metadata and links to referenced documents
+./components/ActivityStream.js: // TODO: use Bridge to send `GET_DOCUMENT` request
+./components/ActivityStream.js: // TODO: load other sources (local, etc.)
+./components/Splash.js: // TODO: use i18n (e.g., call i18n.t('pitch.cta.text') etc.)
+./components/IdentityManager.jsx: // TODO: implement bech32m encoded id here
+./components/IdentityManager.jsx: // TODO: Fall back to local key signing
 ./components/FrontPage.js: // TODO: use i18n (e.g., call i18n.t('pitch.cta.text') etc.)
-./components/ContractHome.js: // TODO: implement this.applicationString
-./components/DocumentHome.js: // TODO: change to `searchDocuments`
 ./components/Changelog.js: {/* TODO: populate from GitHub releases */}
 ./components/Dashboard.js: // TODO: review and determine what to do with this function
 ./scripts/browser.js: // TODO: restore fabric-chat-bar
@@ -21,20 +16,14 @@
 ./scripts/browser.js: // TODO: migrate this to `functions/mapStateToProps.js`?
 ./scripts/browser.js: // TODO: render to `fabric-application-target`?
 ./actions/bridgeActions.js: // TODO: get bridge instance
-./actions/accountActions.js: // TODO: pagination
-./actions/uploadActions.js: // TODO: pagination
-./actions/uploadActions.js: body: JSON.stringify({ query }) // TODO: filter search to user's files (at API level)
-./routes/sessions/create_session.js: // TODO: sign token
-./routes/sessions/create_session.js: // TODO: validate token after signing
-./routes/accounts/create_account.js: // TODO: store account
 ./services/hub.js: // TODO: extract defaults to `settings/default.json`
+./services/hub.js: // TODO: define all resource routes at the Resource level
 ./services/hub.js: // TODO: check for vulnerabilities, easy setup
 ./services/hub.js: // TODO: use Fabric Resources; routes and components will be defined there
 ./services/hub.js: // TODO: upstream
 ./services/hub.js: // TODO: upstream to @fabric/http (deprecate, should already exist there)
 ./services/hub.js: // TODO: retrieve contract ID, add to local state
-./services/hub.js: // TODO: use response signing (`X-Fabric-HTTP-Signature`, etc.)
-./services/hub.js: const headers = parts[0]; // TODO: check headers
-./services/hub.js: const signature = parts[2]; // TODO: check signature
+./services/hub.js: // TODO: move this upstream to @fabric/http and use Jayson server.
+./services/hub.js: // TODO: remove /rpc route
 ./services/fabric.js: // TODO: validate documents
 ./services/fabric.js: // TODO: decide inner Fabric state vs. standard document content

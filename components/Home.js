@@ -19,7 +19,18 @@ const ActivityStream = require('./ActivityStream');
 
 class Home extends React.Component {
   render () {
-    const { bridge, bridgeRef } = this.props;
+    const {
+      bridge,
+      bridgeRef,
+      onDiscoverWebRTCPeers,
+      onRepublishWebRTCOffer,
+      onConnectWebRTCPeer,
+      onDisconnectAllWebRTCPeers,
+      onSendWebRTCTestPing,
+      onToggleWebRTCChatOnly,
+      webrtcChatOnly,
+      onRequireUnlock
+    } = this.props;
     // Prefer the live Bridge ref; fall back to legacy `bridge` prop.
     const ref = bridgeRef || bridge;
     const current = ref && ref.current;
@@ -31,6 +42,9 @@ class Home extends React.Component {
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
     const state = networkStatus && networkStatus.state;
+    const meshStatus = current && typeof current.webrtcMeshStatus !== 'undefined'
+      ? current.webrtcMeshStatus
+      : null;
     const isOnline = !!networkStatus;
     const publishedMap = networkStatus && networkStatus.publishedDocuments && typeof networkStatus.publishedDocuments === 'object'
       ? networkStatus.publishedDocuments
@@ -82,6 +96,111 @@ class Home extends React.Component {
                       <span style={{ color: '#777' }}>·</span>{' '}
                       <strong>Documents:</strong> {published.length}
                     </div>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: '0.5em',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5em',
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    {typeof onRepublishWebRTCOffer === 'function' && (
+                      <Button
+                        size='small'
+                        primary
+                        onClick={() => {
+                          try {
+                            onRepublishWebRTCOffer();
+                          } catch (e) {}
+                        }}
+                        title='Publish or republish your WebRTC offer to the signaling server'
+                      >
+                        <Icon name='broadcast tower' />
+                        Publish Offer
+                      </Button>
+                    )}
+                    {typeof onDiscoverWebRTCPeers === 'function' && (
+                      <Button
+                        size='small'
+                        basic
+                        onClick={() => {
+                          try {
+                            onDiscoverWebRTCPeers();
+                          } catch (e) {}
+                        }}
+                        title='Discover WebRTC mesh peers now'
+                      >
+                        <Icon name='search' />
+                        Discover Peers
+                      </Button>
+                    )}
+                    {typeof onConnectWebRTCPeer === 'function' && (
+                      <Button
+                        size='small'
+                        basic
+                        onClick={() => {
+                          try {
+                            const input = window.prompt('Enter WebRTC peer ID to connect:');
+                            const value = (input || '').trim();
+                            if (!value) return;
+                            onConnectWebRTCPeer(value);
+                          } catch (e) {}
+                        }}
+                        title='Manually connect to a specific WebRTC peer by ID'
+                      >
+                        <Icon name='plug' />
+                        Connect to ID…
+                      </Button>
+                    )}
+                    {meshStatus && meshStatus.connected > 0 && typeof onSendWebRTCTestPing === 'function' && (
+                      <Button
+                        size='small'
+                        basic
+                        onClick={() => {
+                          try {
+                            onSendWebRTCTestPing();
+                          } catch (e) {}
+                        }}
+                        title='Broadcast a test ping message to all connected WebRTC peers'
+                      >
+                        <Icon name='signal' />
+                        Ping Mesh
+                      </Button>
+                    )}
+                    {meshStatus && meshStatus.connected > 0 && typeof onDisconnectAllWebRTCPeers === 'function' && (
+                      <Button
+                        size='small'
+                        basic
+                        color='red'
+                        onClick={() => {
+                          try {
+                            onDisconnectAllWebRTCPeers();
+                          } catch (e) {}
+                        }}
+                        title='Disconnect all local WebRTC mesh peers'
+                      >
+                        <Icon name='unlink' />
+                        Disconnect All
+                      </Button>
+                    )}
+                    {typeof onToggleWebRTCChatOnly === 'function' && (
+                      <Button
+                        size='small'
+                        toggle
+                        active={!!webrtcChatOnly}
+                        onClick={() => {
+                          try {
+                            onToggleWebRTCChatOnly(!webrtcChatOnly);
+                          } catch (e) {}
+                        }}
+                        title='Route chat messages over WebRTC only (disable hub + P2P chat)'
+                      >
+                        <Icon name='comments' />
+                        WebRTC chat only
+                      </Button>
+                    )}
                   </div>
                 </Card.Description>
               </>
@@ -147,7 +266,11 @@ class Home extends React.Component {
         </Segment>
         <Segment>
           <Header as='h2'>Activity</Header>
-          <ActivityStream bridge={ref} bridgeRef={ref} />
+          <ActivityStream
+            bridge={ref}
+            bridgeRef={ref}
+            onRequireUnlock={onRequireUnlock}
+          />
         </Segment>
       </fabric-hub-home>
     );

@@ -27,6 +27,9 @@
     "sync": "npm run sync:specs",
     "sync:specs": "scripts/import-specs.sh",
     "test": "mocha tests",
+    "test:bridge": "mocha tests/bridge.webrtc.signal.test.js",
+    "test:hub-webrtc": "mocha tests/hub.webrtc.rpc.test.js",
+    "test:webrtc": "npm run test:bridge && npm run test:hub-webrtc",
     "todo": "npm run report:todo && cat reports/TODO.txt"
   },
   "repository": {
@@ -85,6 +88,7 @@
     "css-loader": "=6.10.0",
     "style-loader": "=3.3.4",
     "vm-browserify": "=1.1.2",
+    "webpack-bundle-analyzer": "^4.10.2",
     "webpack-cli": "=5.1.4",
     "webpack-dev-server": "=5.2.2"
   },

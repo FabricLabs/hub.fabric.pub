@@ -174,7 +174,8 @@ class HubInterface extends React.Component {
       uiHubAddressError: null,
       uiIdentityOpen: false,
       uiLocalIdentity: initialLocalIdentity,
-      uiHasLockedIdentity: initialHasLockedIdentity
+      uiHasLockedIdentity: initialHasLockedIdentity,
+      webrtcChatOnly: false
     };
 
     this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
@@ -317,6 +318,7 @@ class HubInterface extends React.Component {
               auth={effectiveAuth}
               debug={this.state.debug}
               hubAddress={this.state.uiHubAddress}
+              onRequireUnlock={() => this.setState({ uiIdentityOpen: true })}
               onStateUpdate={this.handleBridgeStateUpdate}
               responseCapture={this.responseCapture}
             />
@@ -329,6 +331,7 @@ class HubInterface extends React.Component {
                 <TopPanel
                   hubAddress={this.state.uiHubAddress}
                   auth={effectiveAuth}
+                  localIdentity={local}
                   hasLocalIdentity={!!hasLocal}
                   hasLockedIdentity={effectiveHasLockedIdentity}
                   bitcoin={bitcoin}
@@ -493,6 +496,70 @@ class HubInterface extends React.Component {
                         contracts={this.props.contracts}
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
+                        onDiscoverWebRTCPeers={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.discoverAndConnectToPeers === 'function') {
+                            bridgeInstance.discoverAndConnectToPeers();
+                          }
+                        }}
+                        onRepublishWebRTCOffer={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.publishWebRTCOffer === 'function') {
+                            bridgeInstance.publishWebRTCOffer();
+                          }
+                        }}
+                        onConnectWebRTCPeer={(peerId) => {
+                          const id = (peerId || '').trim();
+                          if (!id || !this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.connectToWebRTCPeer === 'function') {
+                            bridgeInstance.connectToWebRTCPeer(id);
+                          }
+                        }}
+                        onDisconnectAllWebRTCPeers={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.disconnectAllWebRTCPeers === 'function') {
+                            bridgeInstance.disconnectAllWebRTCPeers();
+                          }
+                        }}
+                        onSendWebRTCTestPing={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.broadcastToWebRTCPeers === 'function') {
+                            bridgeInstance.broadcastToWebRTCPeers({
+                              type: 'ping',
+                              timestamp: Date.now()
+                            });
+                          }
+                        }}
+                        onToggleWebRTCChatOnly={(enabled) => {
+                          const flag = !!enabled;
+                          this.setState({ webrtcChatOnly: flag });
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.setWebRTCChatOnly === 'function') {
+                            bridgeInstance.setWebRTCChatOnly(flag);
+                          }
+                        }}
+                        onRequireUnlock={() => {
+                          this.setState({ uiIdentityOpen: true });
+                        }}
+                        webrtcChatOnly={this.state.webrtcChatOnly}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin"
+                    element={(
+                      <BitcoinHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
                         {...this.props}
                       />
                     )}
@@ -503,6 +570,7 @@ class HubInterface extends React.Component {
                       <PeerList
                         auth={effectiveAuth}
                         bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
                         onAddPeer={(peer) => {
                           if (!peer || !this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
@@ -511,8 +579,13 @@ class HubInterface extends React.Component {
                           }
                         }}
                         onRefreshPeers={() => {
-                          if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.sendListPeersRequest === 'function') {
-                            this.bridgeRef.current.sendListPeersRequest();
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendListPeersRequest === 'function') {
+                            bridgeInstance.sendListPeersRequest();
+                          }
+                          if (typeof bridgeInstance.sendNetworkStatusRequest === 'function') {
+                            bridgeInstance.sendNetworkStatusRequest();
                           }
                         }}
                         onDisconnectPeer={(address) => {
@@ -550,6 +623,39 @@ class HubInterface extends React.Component {
                             bridgeInstance.publishWebRTCOffer();
                           }
                         }}
+                        onConnectWebRTCPeer={(peerId) => {
+                          const id = (peerId || '').trim();
+                          if (!id || !this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.connectToWebRTCPeer === 'function') {
+                            bridgeInstance.connectToWebRTCPeer(id);
+                          }
+                        }}
+                        onDisconnectWebRTCPeer={(peerId) => {
+                          const id = (peerId || '').trim();
+                          if (!id || !this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.disconnectWebRTCPeer === 'function') {
+                            bridgeInstance.disconnectWebRTCPeer(id);
+                          }
+                        }}
+                        onDisconnectAllWebRTCPeers={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.disconnectAllWebRTCPeers === 'function') {
+                            bridgeInstance.disconnectAllWebRTCPeers();
+                          }
+                        }}
+                        onSendWebRTCTestPing={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.broadcastToWebRTCPeers === 'function') {
+                            bridgeInstance.broadcastToWebRTCPeers({
+                              type: 'ping',
+                              timestamp: Date.now()
+                            });
+                          }
+                        }}
                         {...this.props}
                       />
                     )}
@@ -569,8 +675,13 @@ class HubInterface extends React.Component {
                           }
                         }}
                         onRefreshPeers={() => {
-                          if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.sendListPeersRequest === 'function') {
-                            this.bridgeRef.current.sendListPeersRequest();
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendListPeersRequest === 'function') {
+                            bridgeInstance.sendListPeersRequest();
+                          }
+                          if (typeof bridgeInstance.sendNetworkStatusRequest === 'function') {
+                            bridgeInstance.sendNetworkStatusRequest();
                           }
                         }}
                         onDisconnectPeer={(address) => {

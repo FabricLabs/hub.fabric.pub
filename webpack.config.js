@@ -3,6 +3,7 @@
 const path = require('path');
 const webpack = require('webpack');
 const TerserPlugin = require('terser-webpack-plugin');
+const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 
 module.exports = {
   mode: 'development',
@@ -68,6 +69,8 @@ module.exports = {
     // (like elliptic via browserify-sign) can resolve @noble/curves regardless
     // of subpath form used in requires.
     alias: {
+      // Use the browser UMD bundle of PeerJS to avoid ESM + msgpack bundling issues
+      peerjs: path.resolve(__dirname, 'node_modules/peerjs/dist/peerjs.min.js'),
       // Force @noble/hashes to use browser crypto (avoids node:crypto UnhandledSchemeError)
       '@noble/hashes/crypto': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
       // Redirect cryptoNode.js when package exports resolve to it (e.g. from nested @noble/hashes in elliptic)
@@ -112,6 +115,26 @@ module.exports = {
         watch: true
       }
     ],
+    // Proxy backend services when running via webpack-dev-server
+    // so WebRTC signaling (/services/peering) and other HTTP APIs
+    // hit the real hub server instead of the dev server.
+    proxy: {
+      '/services/peering': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        ws: true
+      },
+      '/services': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        ws: true
+      },
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        ws: true
+      }
+    },
     // Watch source directories for changes to rebuild
     watchFiles: [
       'components/**/*.js',
@@ -150,7 +173,11 @@ module.exports = {
     new webpack.NormalModuleReplacementPlugin(
       /[\\/]@noble[\\/]curves[\\/]secp256k1(\.js)?$/,
       path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js')
-    )
+    ),
+    new BundleAnalyzerPlugin({
+      analyzerMode: process.env.ANALYZE ? 'server' : 'disabled',
+      openAnalyzer: true
+    })
   ],
   watch: true
 };
