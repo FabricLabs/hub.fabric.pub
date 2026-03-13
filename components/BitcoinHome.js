@@ -19,12 +19,14 @@ const {
 
 const {
   clearBalanceCache,
+  createLightningChannel,
   createLightningInvoice,
   createPayjoinDeposit,
   decodeLightningInvoice,
   fetchAddressBalance,
   fetchBitcoinStatus,
   fetchExplorerData,
+  fetchLightningChannels,
   fetchLightningStatus,
   fetchPayjoinCapabilities,
   fetchPayjoinSession,
@@ -84,6 +86,13 @@ class BitcoinHome extends React.Component {
       payjoinCapabilities: { available: false },
       bitcoinStatus: { available: false, status: 'STARTING' },
       lightningStatus: { available: false, status: 'UNAVAILABLE' },
+      lightningChannels: [],
+      channelCreatePeerId: '',
+      channelCreateRemote: '',
+      channelCreateAmountSats: '100000',
+      channelCreatePushMsat: '',
+      channelCreateResult: null,
+      channelCreateLoading: false,
       paymentResult: null,
       lightningResult: null,
       faucetAddress: '',
@@ -176,6 +185,7 @@ class BitcoinHome extends React.Component {
     const explorerTask = fetchExplorerData(upstream).catch(() => ({ blocks: [], transactions: [] }));
     const bitcoinStatusTask = fetchBitcoinStatus(upstream).catch(() => ({ available: false, status: 'UNAVAILABLE' }));
     const lightningStatusTask = fetchLightningStatus(upstream).catch(() => ({ available: false, status: 'UNAVAILABLE' }));
+    const lightningChannelsTask = fetchLightningChannels(upstream).catch(() => ({ channels: [], outputs: [] }));
     const utxoTask = fetchUTXOs(upstream, wallet).catch(() => []);
     const payjoinCapabilitiesTask = fetchPayjoinCapabilities(upstream).catch(() => ({ available: false }));
     const payjoinSessionTask = this.state.payjoinSessionId
@@ -183,11 +193,12 @@ class BitcoinHome extends React.Component {
       : Promise.resolve(null);
 
     try {
-      const [summary, explorer, bitcoinStatus, lightningStatus, utxos, payjoinCapabilities, payjoinSession] = await Promise.all([
+      const [summary, explorer, bitcoinStatus, lightningStatus, lightningChannels, utxos, payjoinCapabilities, payjoinSession] = await Promise.all([
         summaryTask,
         explorerTask,
         bitcoinStatusTask,
         lightningStatusTask,
+        lightningChannelsTask,
         utxoTask,
         payjoinCapabilitiesTask,
         payjoinSessionTask
@@ -226,6 +237,7 @@ class BitcoinHome extends React.Component {
         lightningStatus: lightningStatus && typeof lightningStatus === 'object'
           ? lightningStatus
           : { available: false, status: 'UNAVAILABLE' },
+        lightningChannels: lightningChannels && Array.isArray(lightningChannels.channels) ? lightningChannels.channels : [],
         utxos: Array.isArray(utxos) ? utxos : [],
         payjoinCapabilities: payjoinCapabilities && typeof payjoinCapabilities === 'object'
           ? payjoinCapabilities
@@ -382,10 +394,47 @@ class BitcoinHome extends React.Component {
     }
   }
 
+  async handleCreateChannel () {
+    const peerId = String(this.state.channelCreatePeerId || '').trim();
+    const amountSats = Number(this.state.channelCreateAmountSats || 0);
+    if (!peerId) {
+      this.setState({ channelCreateResult: { error: 'Peer ID is required.' } });
+      return;
+    }
+    if (!Number.isFinite(amountSats) || amountSats < 10000) {
+      this.setState({ channelCreateResult: { error: 'Amount must be at least 10000 sats.' } });
+      return;
+    }
+    this.setState({ channelCreateLoading: true, channelCreateResult: null });
+    try {
+      const result = await createLightningChannel(this.state.upstream, {
+        peerId,
+        remote: this.state.channelCreateRemote.trim() || undefined,
+        amountSats,
+        pushMsat: this.state.channelCreatePushMsat ? Number(this.state.channelCreatePushMsat) : undefined
+      });
+      this.setState({
+        channelCreateResult: result,
+        channelCreateLoading: false,
+        channelCreatePeerId: '',
+        channelCreateRemote: '',
+        channelCreatePushMsat: ''
+      });
+      await this.refresh();
+    } catch (error) {
+      this.setState({
+        channelCreateResult: { error: error && error.message ? error.message : String(error) },
+        channelCreateLoading: false
+      });
+    }
+  }
+
   async handleGenerateBlock () {
     try {
       // Block generation always uses the Hub's wallet; no address is sent so coinbase goes to the Hub.
-      const result = await generateBlock(this.state.upstream, { count: 1 });
+      // Admin token required for block generation.
+      const settings = { ...this.state.upstream, apiToken: this.props.adminToken || this.state.upstream.apiToken };
+      const result = await generateBlock(settings, { count: 1 });
       this.setState({ paymentResult: { generatedBlock: result } });
       if (this.state.wallet && this.state.wallet.walletId) {
         clearBalanceCache(this.state.wallet.walletId);
@@ -447,7 +496,9 @@ class BitcoinHome extends React.Component {
     const hasUpstream = !!(this.state.upstream.explorerBaseUrl || this.state.upstream.paymentsBaseUrl || this.state.upstream.lightningBaseUrl);
     const bitcoinReady = !!(this.state.bitcoinStatus && this.state.bitcoinStatus.available);
     const bitcoinNetwork = String((this.state.bitcoinStatus && this.state.bitcoinStatus.network) || '').toLowerCase();
+    const hasAdminToken = !!(this.props.adminToken);
     const canGenerateBlocks = bitcoinReady && bitcoinNetwork === 'regtest';
+    const canShowGenerateBlock = canGenerateBlocks && hasAdminToken;
     const lightningAvailable = !!(this.state.lightningStatus && this.state.lightningStatus.available);
     const addressPlaceholder = this.getAddressPlaceholder(bitcoinNetwork);
 
@@ -467,10 +518,12 @@ class BitcoinHome extends React.Component {
                 <Icon name='refresh' />
                 Refresh
               </Button>
-              <Button basic onClick={() => this.handleGenerateBlock()} title='Generate one regtest block' disabled={!canGenerateBlocks}>
-                <Icon name='cube' />
-                Generate Block
-              </Button>
+              {canShowGenerateBlock && (
+                <Button basic onClick={() => this.handleGenerateBlock()} title='Generate one regtest block'>
+                  <Icon name='cube' />
+                  Generate Block
+                </Button>
+              )}
               <Button as={Link} to="/services/bitcoin/payments" basic title='Open wallet payments manager'>
                 <Icon name='credit card outline' />
                 Payments
@@ -508,7 +561,7 @@ class BitcoinHome extends React.Component {
             <div><strong>Beacon core balance:</strong> {this.satsToBTC(this.state.bitcoinStatus.beacon.balanceSats || 0)} BTC (epoch {this.state.bitcoinStatus.beacon.clock || 0})</div>
           )}
           <div><strong>Lightning:</strong> {this.state.lightningStatus && this.state.lightningStatus.status === 'NOT_CONFIGURED'
-            ? 'optional (not configured)'
+            ? 'runs with regtest'
             : (this.state.lightningStatus && this.state.lightningStatus.status === 'STUB')
               ? 'stub (UI testing)'
               : (this.state.lightningStatus && this.state.lightningStatus.status ? this.state.lightningStatus.status : 'unknown')}</div>
@@ -807,14 +860,137 @@ class BitcoinHome extends React.Component {
         </Segment>
 
         <Segment>
-          <Header as='h3'>Lightning Debug & Testing (Layer 2)</Header>
+          <Header as='h3'>Lightning Node (Layer 2)</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge:</strong> create invoice, decode, and pay go through the Hub or external Lightning API.</p>
-          {!lightningAvailable && (
-            <Message info>
-              <Message.Header>Lightning optional</Message.Header>
-              <p>{(this.state.lightningStatus && this.state.lightningStatus.message) || 'Lightning is not configured on this Hub. Use Settings to add an external Lightning API URL if needed.'}</p>
+          {lightningAvailable && this.state.lightningStatus && this.state.lightningStatus.status === 'RUNNING' && (
+            <Message positive style={{ marginBottom: '1em' }}>
+              <Message.Header>
+                <Icon name='bolt' />
+                Lightning node running
+                {this.state.lightningStatus.node && this.state.lightningStatus.node.alias
+                  ? ` — ${this.state.lightningStatus.node.alias}`
+                  : ''}
+              </Message.Header>
+              <p>
+                {this.state.lightningChannels.length} channel(s).
+                {this.state.lightningStatus.node && this.state.lightningStatus.node.id
+                  ? ` Node ID: ${this.state.lightningStatus.node.id.slice(0, 20)}...`
+                  : ''}
+              </p>
             </Message>
           )}
+          {!lightningAvailable && (
+            <Message info>
+              <Message.Header>Lightning</Message.Header>
+              <p>{(this.state.lightningStatus && this.state.lightningStatus.message) || 'Lightning runs automatically with regtest. Use regtest for local development.'}</p>
+            </Message>
+          )}
+
+          {lightningAvailable && (
+            <>
+              <Header as='h4' style={{ marginTop: '1em' }}>Channels ({this.state.lightningChannels.length})</Header>
+              {this.state.lightningChannels.length === 0 ? (
+                <p style={{ color: '#666' }}>No channels yet. Create one below to connect to another Lightning node.</p>
+              ) : (
+                <Table celled compact size='small'>
+                  <Table.Header>
+                    <Table.Row>
+                      <Table.HeaderCell>Peer</Table.HeaderCell>
+                      <Table.HeaderCell>State</Table.HeaderCell>
+                      <Table.HeaderCell>Capacity</Table.HeaderCell>
+                      <Table.HeaderCell>Our balance</Table.HeaderCell>
+                      <Table.HeaderCell>Short channel ID</Table.HeaderCell>
+                    </Table.Row>
+                  </Table.Header>
+                  <Table.Body>
+                    {this.state.lightningChannels.map((ch, idx) => (
+                      <Table.Row key={ch.channel_id || ch.funding_txid || idx}>
+                        <Table.Cell>
+                          <code style={{ fontSize: '0.85em' }}>{this.trimHash(ch.peer_id || ch.funding_txid || '')}</code>
+                        </Table.Cell>
+                        <Table.Cell>{ch.state || '—'}</Table.Cell>
+                        <Table.Cell>
+                          {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
+                        </Table.Cell>
+                        <Table.Cell>
+                          {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
+                        </Table.Cell>
+                        <Table.Cell>
+                          <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
+                        </Table.Cell>
+                      </Table.Row>
+                    ))}
+                  </Table.Body>
+                </Table>
+              )}
+
+              <Header as='h4' style={{ marginTop: '1.5em' }}>Create channel</Header>
+              <p style={{ color: '#666', marginBottom: '0.5em' }}>Connect to a peer and open a channel. Provide peer ID and remote (id@ip:port) if not already connected.</p>
+              <Form>
+                <Form.Group widths='equal'>
+                  <Form.Field>
+                    <label>Peer ID (node pubkey)</label>
+                    <Input
+                      placeholder='03abc123...'
+                      value={this.state.channelCreatePeerId}
+                      onChange={(e) => this.setState({ channelCreatePeerId: e.target.value })}
+                    />
+                  </Form.Field>
+                  <Form.Field>
+                    <label>Remote (id@ip:port)</label>
+                    <Input
+                      placeholder='03abc123...@127.0.0.1:9735'
+                      value={this.state.channelCreateRemote}
+                      onChange={(e) => this.setState({ channelCreateRemote: e.target.value })}
+                    />
+                  </Form.Field>
+                </Form.Group>
+                <Form.Group widths='equal'>
+                  <Form.Field>
+                    <label>Amount (sats, min 10000)</label>
+                    <Input
+                      type='number'
+                      min='10000'
+                      placeholder='100000'
+                      value={this.state.channelCreateAmountSats}
+                      onChange={(e) => this.setState({ channelCreateAmountSats: e.target.value })}
+                    />
+                  </Form.Field>
+                  <Form.Field>
+                    <label>Push to peer (msat, optional)</label>
+                    <Input
+                      type='number'
+                      min='0'
+                      placeholder='0'
+                      value={this.state.channelCreatePushMsat}
+                      onChange={(e) => this.setState({ channelCreatePushMsat: e.target.value })}
+                    />
+                  </Form.Field>
+                </Form.Group>
+                <Button
+                  primary
+                  loading={this.state.channelCreateLoading}
+                  disabled={!lightningAvailable || this.state.channelCreateLoading}
+                  onClick={() => this.handleCreateChannel()}
+                >
+                  <Icon name='plug' />
+                  Create channel
+                </Button>
+              </Form>
+              {this.state.channelCreateResult && (
+                <Message
+                  style={{ marginTop: '1em' }}
+                  negative={!!this.state.channelCreateResult.error}
+                  positive={!this.state.channelCreateResult.error}
+                >
+                  <Message.Header>{this.state.channelCreateResult.error ? 'Channel creation failed' : 'Channel created'}</Message.Header>
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.channelCreateResult, null, 2)}</pre>
+                </Message>
+              )}
+            </>
+          )}
+
+          <Header as='h4' style={{ marginTop: '1.5em' }}>Invoices & payments</Header>
           <Form>
             <Form.Group widths='equal'>
               <Form.Field>

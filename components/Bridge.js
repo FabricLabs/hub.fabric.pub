@@ -17,6 +17,7 @@ const {
 // Fabric Types
 const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
+const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER } = require('@fabric/core/constants');
 
 /**
  * Manages a WebSocket connection to a remote server.
@@ -37,6 +38,8 @@ class Bridge extends React.Component {
       webrtcPeerDiscoveryDelay: 2000, // Delay before discovering peers (ms)
       webrtcHeartbeatIntervalMs: 30000, // Re-register peer presence on heartbeat
       webrtcDiscoveryIntervalMs: 15000, // Periodically rediscover active peers
+      webrtcGossipIntervalMs: 25000, // Gossip peer list to WebRTC neighbors for cross-cluster discovery
+      webrtcPeeringOfferIntervalMs: 30000, // Publish peering offer when below max peers
       webrtcConnectTimeoutMs: 15000, // Abort stale outbound connect attempts
       webrtcCandidateMaxAgeMs: 120000 // Ignore stale peer registrations when discovering candidates
     }, props);
@@ -91,6 +94,8 @@ class Bridge extends React.Component {
     this._pendingPeerCandidates = []; // Candidates received before WebRTC is ready
     this._lastWebRTCPublishAt = 0;
     this._lastWebRTCDiscoverAt = 0;
+    this._lastWebRTCGossipAt = 0;
+    this._lastPeeringOfferAt = 0;
     this._jsonRpcQueue = []; // JSON-RPC payloads to send once WebSocket is open
     this._rtcPeers = new Map(); // peerId -> { pc, dc, status, initiator, metadata }
     this._rtcPendingIce = new Map(); // peerId -> [RTCIceCandidateInit]
@@ -342,6 +347,8 @@ class Bridge extends React.Component {
       }
       this._webrtcConnected = true;
       this.setState({ webrtcConnected: true });
+      // Gossip our peer list to the new peer so cross-cluster discovery can begin
+      setTimeout(() => this._sendWebRTCPeerGossip(peerId), 500);
     };
 
     dc.onmessage = (ev) => {
@@ -1507,6 +1514,39 @@ class Bridge extends React.Component {
           case 'ping':
             this.sendToWebRTCPeer(peerId, { type: 'pong', timestamp: Date.now() });
             break;
+          case 'P2P_PEER_GOSSIP':
+          case 'webrtc-peer-gossip': {
+            const peers = Array.isArray(payload.object && payload.object.peers)
+              ? payload.object.peers
+              : (Array.isArray(payload.peers) ? payload.peers : []);
+            if (peers.length > 0) {
+              const candidates = peers.map((p) => ({
+                id: p.id || p.peerId,
+                peerId: p.id || p.peerId,
+                lastSeen: p.lastSeen || p.registeredAt || Date.now(),
+                registeredAt: p.registeredAt || p.lastSeen || Date.now(),
+                source: 'gossip'
+              })).filter((c) => c.id && c.id !== this.peerId);
+              if (candidates.length > 0) {
+                console.debug('[BRIDGE]', 'Received', P2P_PEER_GOSSIP, 'from', peerId, ':', candidates.length, 'peers');
+                this.handlePeerCandidates(candidates);
+              }
+            }
+            break;
+          }
+          case 'P2P_PEERING_OFFER': {
+            const obj = payload.object || payload;
+            const slots = Number(obj.slots || obj.needed || 1);
+            const transport = obj.transport || 'webrtc';
+            if (transport === 'webrtc' && slots > 0 && this.peerId) {
+              const offererId = (payload.actor && payload.actor.id) || peerId;
+              if (offererId !== this.peerId && !this.webrtcPeers.has(offererId) && !this._connectingPeers.has(offererId)) {
+                console.debug('[BRIDGE]', 'Received', P2P_PEERING_OFFER, 'from', peerId, '- attempting connect');
+                this.handlePeerCandidates([{ id: offererId, peerId: offererId, lastSeen: Date.now(), source: 'peeringOffer' }]);
+              }
+            }
+            break;
+          }
           case 'pong': {
             // Update last seen for the peer
             const peerInfo = this.webrtcPeers.get(peerId);
@@ -1695,6 +1735,79 @@ class Bridge extends React.Component {
       }
     }
     return recipients;
+  }
+
+  /**
+   * Build the peer list for gossip (self + connected peers).
+   * Used so clusters connected to different bridge instances can discover one another.
+   */
+  _buildWebRTCPeerGossipPayload () {
+    const now = Date.now();
+    const peers = [];
+    if (this.peerId) {
+      peers.push({ id: this.peerId, lastSeen: now, registeredAt: now });
+    }
+    for (const [id, info] of this.webrtcPeers) {
+      if (info && info.status === 'connected' && id && id !== this.peerId) {
+        peers.push({
+          id,
+          lastSeen: info.lastSeen || info.connectedAt || now,
+          registeredAt: info.registeredAt || info.connectedAt || now
+        });
+      }
+    }
+    return {
+      type: P2P_PEER_GOSSIP,
+      actor: { id: this.peerId },
+      object: { peers, timestamp: now },
+      timestamp: now
+    };
+  }
+
+  /**
+   * Build a peering offer payload (peer needs more connections).
+   * Gossiped until fulfilled.
+   */
+  _buildPeeringOfferPayload (slots = 1) {
+    return {
+      type: P2P_PEERING_OFFER,
+      actor: { id: this.peerId },
+      object: { slots, transport: 'webrtc', timestamp: Date.now() },
+      timestamp: Date.now()
+    };
+  }
+
+  /**
+   * Send our known peer list to a specific WebRTC peer (gossip for cross-cluster discovery).
+   */
+  _sendWebRTCPeerGossip (toPeerId) {
+    if (!toPeerId || !this.peerId) return false;
+    const payload = this._buildWebRTCPeerGossipPayload();
+    return this.sendToWebRTCPeer(toPeerId, payload);
+  }
+
+  /**
+   * Broadcast our peer list to all connected WebRTC peers.
+   * Enables clusters on different Hubs to discover each other when at least one cross-cluster link exists.
+   */
+  _broadcastWebRTCPeerGossip () {
+    const count = this.broadcastToWebRTCPeersWithRecipients(this._buildWebRTCPeerGossipPayload()).length;
+    if (count > 0) {
+      this._lastWebRTCGossipAt = Date.now();
+      console.debug('[BRIDGE]', 'Gossiped peer list to', count, 'WebRTC peers');
+    }
+  }
+
+  /**
+   * Broadcast a peering offer to all connected WebRTC peers.
+   * Gossiped until fulfilled; recipients may connect if they have capacity.
+   */
+  _broadcastPeeringOffer (slots = 1) {
+    const count = this.broadcastToWebRTCPeersWithRecipients(this._buildPeeringOfferPayload(slots)).length;
+    if (count > 0) {
+      this._lastPeeringOfferAt = Date.now();
+      console.debug('[BRIDGE]', 'Broadcast', P2P_PEERING_OFFER, '(', slots, 'slots) to', count, 'peers');
+    }
   }
 
   /**
@@ -1978,6 +2091,29 @@ class Bridge extends React.Component {
       (!this._lastWebRTCDiscoverAt || ((now - this._lastWebRTCDiscoverAt) >= discoveryMs))
     ) {
       this.discoverAndConnectToPeers();
+    }
+
+    const gossipMs = Number(this.settings.webrtcGossipIntervalMs || 25000);
+    const connectedCount = this.getWebRTCPeerCount();
+    if (
+      this.peerId &&
+      connectedCount > 0 &&
+      (!this._lastWebRTCGossipAt || ((now - this._lastWebRTCGossipAt) >= gossipMs))
+    ) {
+      this._broadcastWebRTCPeerGossip();
+    }
+
+    const offerMs = Number(this.settings.webrtcPeeringOfferIntervalMs || 30000);
+    const maxPeers = Number(this.settings.maxWebrtcPeers || 5);
+    const slotsNeeded = maxPeers - connectedCount - this._connectingPeers.size;
+    if (
+      this.peerId &&
+      this._webrtcReady &&
+      slotsNeeded > 0 &&
+      connectedCount > 0 &&
+      (!this._lastPeeringOfferAt || ((now - this._lastPeeringOfferAt) >= offerMs))
+    ) {
+      this._broadcastPeeringOffer(Math.max(1, slotsNeeded));
     }
 
     this.takeJob();
@@ -2437,6 +2573,34 @@ class Bridge extends React.Component {
               break;
             }
 
+            // P2P_PEER_GOSSIP from Fabric P2P (broadcast by Hub)
+            if (parsed && parsed.type === P2P_PEER_GOSSIP && Array.isArray(parsed.object && parsed.object.peers)) {
+              const peers = parsed.object.peers;
+              const candidates = peers.map((p) => ({
+                id: p.id || p.peerId,
+                peerId: p.id || p.peerId,
+                lastSeen: p.lastSeen || p.registeredAt || Date.now(),
+                registeredAt: p.registeredAt || p.lastSeen || Date.now(),
+                source: 'gossip'
+              })).filter((c) => c.id && c.id !== this.peerId);
+              if (candidates.length > 0) this.handlePeerCandidates(candidates);
+              break;
+            }
+
+            // P2P_PEERING_OFFER from Fabric P2P (broadcast by Hub)
+            if (parsed && parsed.type === P2P_PEERING_OFFER && parsed.object) {
+              const obj = parsed.object;
+              const slots = Number(obj.slots || obj.needed || 1);
+              const transport = obj.transport || 'webrtc';
+              if (transport === 'webrtc' && slots > 0 && this.peerId) {
+                const offererId = parsed.actor && parsed.actor.id;
+                if (offererId && offererId !== this.peerId && !this.webrtcPeers.has(offererId) && !this._connectingPeers.has(offererId)) {
+                  this.handlePeerCandidates([{ id: offererId, peerId: offererId, lastSeen: Date.now(), source: 'peeringOffer' }]);
+                }
+              }
+              break;
+            }
+
             // Inventory responses from peers for documents, stored under globalState.peers[peerId].inventory.documents.
             if (parsed && parsed.type === 'INVENTORY_RESPONSE' && parsed.object && parsed.object.kind === 'documents') {
               const peerId = parsed.actor && parsed.actor.id;
@@ -2477,6 +2641,32 @@ class Bridge extends React.Component {
             if (originalType === 'fabric-message') {
               const buf = Buffer.from(original, 'base64');
               this.onSocketMessage({ data: buf });
+              break;
+            }
+            if (originalType === P2P_PEER_GOSSIP) {
+              const parsed = typeof original === 'string' ? JSON.parse(original) : original;
+              const peers = Array.isArray(parsed && parsed.object && parsed.object.peers) ? parsed.object.peers : [];
+              const candidates = peers.map((p) => ({
+                id: p.id || p.peerId,
+                peerId: p.id || p.peerId,
+                lastSeen: p.lastSeen || p.registeredAt || Date.now(),
+                registeredAt: p.registeredAt || p.lastSeen || Date.now(),
+                source: 'gossip'
+              })).filter((c) => c.id && c.id !== this.peerId);
+              if (candidates.length > 0) this.handlePeerCandidates(candidates);
+              break;
+            }
+            if (originalType === P2P_PEERING_OFFER) {
+              const parsed = typeof original === 'string' ? JSON.parse(original) : original;
+              const obj = (parsed && parsed.object) || {};
+              const transport = obj.transport || 'webrtc';
+              const slots = Number(obj.slots || obj.needed || 1);
+              if (transport === 'webrtc' && slots > 0 && this.peerId) {
+                const offererId = parsed && parsed.actor && parsed.actor.id;
+                if (offererId && offererId !== this.peerId && !this.webrtcPeers.has(offererId) && !this._connectingPeers.has(offererId)) {
+                  this.handlePeerCandidates([{ id: offererId, peerId: offererId, lastSeen: Date.now(), source: 'peeringOffer' }]);
+                }
+              }
               break;
             }
             let chat = null;

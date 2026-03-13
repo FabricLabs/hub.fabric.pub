@@ -133,6 +133,10 @@ module.exports = {
         target: 'http://localhost:8080',
         changeOrigin: true,
         ws: true
+      },
+      '/settings': {
+        target: 'http://localhost:8080',
+        changeOrigin: true
       }
     },
     // Watch source directories for changes to rebuild

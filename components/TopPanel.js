@@ -146,11 +146,12 @@ function TopPanel (props) {
         )}
         {isAuthed && (clientBalance != null || (bitcoin && typeof bitcoin.balance === 'number')) && (
           <Label
+            as={Link}
+            to="/services/bitcoin/payments"
             size="small"
             basic
-            title={clientBalance && clientBalance.fromCache ? 'Balance (cached) — click to refresh' : 'Bitcoin balance — click to refresh'}
-            style={{ cursor: onRefreshBalance ? 'pointer' : 'default' }}
-            onClick={() => onRefreshBalance && onRefreshBalance()}
+            title="Bitcoin balance — click to open payments"
+            style={{ cursor: 'pointer' }}
           >
             <Icon name="bitcoin" color="orange" />
             {clientBalance != null && Number.isFinite(clientBalance.balanceSats)
@@ -158,7 +159,6 @@ function TopPanel (props) {
                   ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
                   : `${clientBalance.balanceSats} sats`)
               : (bitcoin && typeof bitcoin.balance === 'number' ? String(bitcoin.balance) : '—')}
-            {onRefreshBalance && <Icon name="refresh" size="mini" style={{ marginLeft: '0.25em', opacity: 0.7 }} />}
           </Label>
         )}
         {isAuthed ? (

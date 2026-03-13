@@ -1,7 +1,24 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 // Settings
-const settings = require('../settings/local');
+let settings = require('../settings/local');
+
+// Merge setup settings from stores/hub/settings.json (written during first-time setup)
+const setupPath = path.resolve(process.cwd(), 'stores/hub/settings.json');
+try {
+  if (fs.existsSync(setupPath)) {
+    const raw = fs.readFileSync(setupPath, 'utf8');
+    const setup = JSON.parse(raw);
+    if (setup.BITCOIN_NETWORK) {
+      settings = { ...settings, bitcoin: { ...settings.bitcoin, network: setup.BITCOIN_NETWORK } };
+    }
+  }
+} catch (e) {
+  // Ignore; use defaults from local.js
+}
 
 // Services
 const Hub = require('../services/hub');

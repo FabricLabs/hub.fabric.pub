@@ -22,11 +22,13 @@ const Actor = require('@fabric/core/types/actor');
 const Entity = require('@fabric/core/types/entity');
 const Tree = require('@fabric/core/types/tree');
 const Bitcoin = require('@fabric/core/services/bitcoin');
+const Lightning = require('@fabric/core/services/lightning');
 const Beacon = require('../contracts/beacon');
 const PayjoinService = require('../services/payjoin');
 
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
+const { P2P_PEERING_OFFER, P2P_PEER_GOSSIP, MAX_PEERS } = require('@fabric/core/constants');
 
 // Hard limits and validation patterns
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
@@ -35,9 +37,11 @@ const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
 const P2P_FILE_CHUNK_BYTES = 1024 * 1024; // exact 1 MiB binary chunks
 const P2P_FILE_CHUNK_TTL_MS = 10 * 60 * 1000; // expire incomplete inbound transfers after 10 minutes
+const FABRIC_PEERING_OFFER_INTERVAL_MS = Number(process.env.FABRIC_PEERING_OFFER_INTERVAL_MS || 30000);
 
 // Hub Services
 const Fabric = require('../services/fabric');
+const SetupService = require('../services/setup');
 // const Queue = require('../types/queue');
 
 // Routes (Request Handlers)
@@ -206,6 +210,7 @@ class Hub extends Service {
     // Fabric
     this.fabric = new Fabric(this.settings.fabric);
     this.bitcoin = null;
+    this.lightning = null;
     this.payjoin = null;
     this.beacon = null;
     this._bitcoinStatusCache = { value: null, updatedAt: 0 };
@@ -319,6 +324,7 @@ class Hub extends Service {
 
     // Storage and Network
     this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
+    this.setup = new SetupService({ fs: this.fs, key: this._rootKey });
 
     // HTTP Server
     this.http = new HTTPServer({
@@ -1019,6 +1025,20 @@ class Hub extends Service {
     });
   }
 
+  /** Always return JSON (no Accept negotiation). Use for API-only routes like /settings. */
+  _jsonOnly (req, res, onJSON) {
+    return (async () => {
+      try {
+        await onJSON();
+      } catch (error) {
+        res.status(500).json({
+          status: 'error',
+          message: error && error.message ? error.message : String(error)
+        });
+      }
+    })();
+  }
+
   async _collectBitcoinStatus (options = {}) {
     const force = !!options.force;
     const now = Date.now();
@@ -1162,6 +1182,74 @@ class Hub extends Service {
     });
   }
 
+  _handleSettingsListRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const settings = this.setup.listSettings();
+      const setupStatus = this.setup.getSetupStatus();
+      return res.status(200).json({ success: true, settings, ...setupStatus });
+    });
+  }
+
+  _handleSettingsBootstrapRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const status = this.setup.getSetupStatus();
+      if (status.configured) {
+        return res.status(403).json({ error: 'Already configured', message: 'Hub is already configured.' });
+      }
+      const body = req.body || {};
+      const initialConfig = {
+        NODE_NAME: body.NODE_NAME || body.nodeName || 'Hub',
+        NODE_PERSONALITY: body.NODE_PERSONALITY || body.nodePersonality || JSON.stringify(['helpful']),
+        NODE_TEMPERATURE: body.NODE_TEMPERATURE ?? body.nodeTemperature ?? 0,
+        NODE_GOALS: body.NODE_GOALS || body.nodeGoals || JSON.stringify([]),
+        BITCOIN_NETWORK: body.BITCOIN_NETWORK || body.bitcoinNetwork || 'regtest'
+      };
+      const result = await this.setup.createAdminToken(initialConfig);
+      return res.status(200).json(result);
+    });
+  }
+
+  _handleSettingsGetRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const name = req.params && req.params.name;
+      if (!name) return res.status(400).json({ error: 'Setting name is required' });
+      const value = this.setup.getSetting(name);
+      if (value === undefined) return res.status(404).json({ error: 'Setting not found', setting: name });
+      return res.status(200).json({ success: true, setting: name, value });
+    });
+  }
+
+  _handleSettingsPutRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const token = SetupService.extractBearerToken(req);
+      if (!this.setup.verifyAdminToken(token)) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'Admin token required' });
+      }
+      const name = req.params && req.params.name;
+      if (!name) return res.status(400).json({ error: 'Setting name is required' });
+      const body = req.body || {};
+      const value = body.value !== undefined ? body.value : body;
+      if (value === undefined || value === null) return res.status(400).json({ error: 'Setting value is required' });
+      await this.setup.setSetting(name, value);
+      return res.status(200).json({ success: true, setting: name, value });
+    });
+  }
+
+  _handleSettingsRefreshRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const token = SetupService.extractBearerToken(req) || (req.body && req.body.token);
+      if (!token) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'Current token required for refresh.' });
+      }
+      try {
+        const result = await this.setup.refreshAdminToken(token);
+        return res.status(200).json(result);
+      } catch (err) {
+        return res.status(401).json({ error: 'Unauthorized', message: err && err.message ? err.message : 'Invalid or expired token.' });
+      }
+    });
+  }
+
   _handleBitcoinBlocksListRequest (req, res) {
     return this._jsonOrShell(req, res, async () => {
       const status = await this._collectBitcoinStatus({ force: true });
@@ -1175,6 +1263,10 @@ class Hub extends Service {
   }
 
   _handleBitcoinGenerateBlockRequest (req, res) {
+    const token = SetupService.extractBearerToken(req);
+    if (!this.setup.verifyAdminToken(token)) {
+      return res.status(401).json({ status: 'error', message: 'Admin token required for block generation.' });
+    }
     const bitcoin = this._getBitcoinService();
     if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
     if (bitcoin.network !== 'regtest') {
@@ -1909,6 +2001,10 @@ class Hub extends Service {
         return transactions.filter(Boolean);
       }
       case 'generateblock': {
+        const rpcToken = params.adminToken || params.token;
+        if (!this.setup.verifyAdminToken(rpcToken)) {
+          return { status: 'error', message: 'Admin token required for block generation.' };
+        }
         if (bitcoin.network !== 'regtest') {
           return { status: 'error', message: 'Block generation is only available on regtest.' };
         }
@@ -2086,11 +2182,30 @@ class Hub extends Service {
           message: 'Lightning stub enabled for UI testing. Invoices and payments are simulated.'
         });
       }
+      if (this.lightning) {
+        try {
+          const info = await this.lightning._makeRPCRequest('getinfo', []);
+          return res.status(200).json({
+            available: true,
+            status: 'RUNNING',
+            service: 'lightning',
+            node: { id: info.id, alias: info.alias, color: info.color },
+            message: 'Lightning node is running.'
+          });
+        } catch (err) {
+          return res.status(200).json({
+            available: false,
+            status: 'ERROR',
+            service: 'lightning',
+            message: err && err.message ? err.message : 'Lightning node error.'
+          });
+        }
+      }
       return res.status(200).json({
         available: false,
         status: 'NOT_CONFIGURED',
         service: 'lightning',
-        message: 'Lightning is optional and not configured on this Hub. Use Settings to add an external Lightning API URL if needed.'
+        message: 'Lightning runs automatically with regtest. Use regtest for local development.'
       });
     });
   }
@@ -2102,12 +2217,36 @@ class Hub extends Service {
       if (stub) {
         return res.status(200).json({ invoices: [], payments: [], decodes: [] });
       }
+      if (this.lightning) {
+        try {
+          if (pathName.includes('/channels')) {
+            const funds = await this.lightning._makeRPCRequest('listfunds', []);
+            return res.status(200).json({ channels: funds.channels || [], outputs: funds.outputs || [] });
+          }
+          if (pathName.includes('/invoices')) {
+            const list = await this.lightning._makeRPCRequest('listinvoices', []);
+            return res.status(200).json({ invoices: list.invoices || [] });
+          }
+          if (pathName.includes('/payments')) {
+            const list = await this.lightning._makeRPCRequest('listpays', []);
+            return res.status(200).json({ payments: list.pays || [] });
+          }
+          return res.status(200).json({ invoices: [], payments: [], decodes: [], channels: [] });
+        } catch (err) {
+          return res.status(503).json({
+            available: false,
+            status: 'ERROR',
+            service: 'lightning',
+            message: err && err.message ? err.message : 'Lightning request failed.'
+          });
+        }
+      }
       return res.status(503).json({
         available: false,
         status: 'UNAVAILABLE',
         service: 'lightning',
         path: pathName,
-        message: 'Lightning service is not configured on this Hub node.'
+        message: 'Lightning runs automatically with regtest. Use regtest for local development.'
       });
     });
   }
@@ -2115,8 +2254,9 @@ class Hub extends Service {
   _handleLightningMutationRequest (req, res) {
     const pathName = (req && req.path ? req.path : '').toLowerCase();
     const stub = this.settings.lightning && this.settings.lightning.stub === true;
+    const body = req && req.body ? req.body : {};
+
     if (stub) {
-      const body = req && req.body ? req.body : {};
       if (pathName.endsWith('/invoices') || pathName.includes('/invoice')) {
         const amountSats = Number(body.amountSats || 0);
         const memo = String(body.memo || '').trim() || 'stub invoice';
@@ -2146,12 +2286,77 @@ class Hub extends Service {
         });
       }
     }
+
+    if (this.lightning) {
+      return this._jsonOrShell(req, res, async () => {
+        try {
+          if (pathName.endsWith('/invoices') || pathName.includes('/invoice')) {
+            const amountSats = Number(body.amountSats || 0);
+            const memo = String(body.memo || '').trim() || 'Hub invoice';
+            const msat = Math.max(1000, amountSats * 1000);
+            const inv = await this.lightning.createInvoice(String(msat), memo, memo);
+            return res.status(200).json({
+              invoice: inv.bolt11,
+              paymentHash: inv.paymentHash,
+              amountSats,
+              memo
+            });
+          }
+          if (pathName.endsWith('/decodes') || pathName.includes('/decode')) {
+            const invoice = String(body.invoice || '').trim();
+            if (!invoice) return res.status(400).json({ error: 'invoice required' });
+            const decoded = await this.lightning._makeRPCRequest('decodepay', [invoice]);
+            return res.status(200).json({
+              decoded: {
+                paymentHash: decoded.payment_hash,
+                numSatoshis: decoded.amount_msat ? Math.floor(Number(decoded.amount_msat) / 1000) : 0,
+                description: decoded.description || ''
+              }
+            });
+          }
+          if (pathName.endsWith('/payments') || pathName.includes('/pay')) {
+            const invoice = String(body.invoice || '').trim();
+            if (!invoice) return res.status(400).json({ error: 'invoice required' });
+            const pay = await this.lightning._makeRPCRequest('pay', [invoice]);
+            return res.status(200).json({
+              payment: { preimage: pay.payment_preimage, paymentHash: pay.payment_hash }
+            });
+          }
+          if (pathName.endsWith('/channels') || pathName.includes('/channel')) {
+            const peerId = String(body.peerId || body.peer_id || '').trim();
+            const remote = String(body.remote || '').trim();
+            const amountSats = Number(body.amountSats || body.amount_sats || 0);
+            const pushMsat = body.pushMsat != null ? Number(body.pushMsat) : (body.push_msat != null ? Number(body.push_msat) : null);
+            if (!peerId) return res.status(400).json({ error: 'peerId required' });
+            if (amountSats < 10000) return res.status(400).json({ error: 'amountSats must be at least 10000' });
+            if (remote) {
+              try {
+                await this.lightning.connectTo(remote);
+              } catch (connectErr) {
+                const msg = connectErr && connectErr.message ? connectErr.message : String(connectErr);
+                if (!msg.includes('already connected')) {
+                  return res.status(400).json({ error: 'Failed to connect to peer', detail: msg });
+                }
+              }
+            }
+            const result = await this.lightning.createChannel(peerId, String(amountSats), pushMsat);
+            return res.status(200).json({ channel: result });
+          }
+        } catch (err) {
+          return res.status(500).json({
+            error: err && err.message ? err.message : 'Lightning request failed'
+          });
+        }
+        return res.status(400).json({ error: 'Unknown Lightning mutation path' });
+      });
+    }
+
     return res.status(503).json({
       available: false,
       status: 'UNAVAILABLE',
       service: 'lightning',
       path: pathName,
-      message: 'Lightning service is not configured on this Hub node.'
+      message: 'Lightning runs automatically with regtest.'
     });
   }
 
@@ -2249,6 +2454,53 @@ class Hub extends Service {
     return result;
   }
 
+  async _startLightningServiceIfEnabled () {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || (bitcoin.settings && bitcoin.settings.network) !== 'regtest') {
+      console.log('[HUB:LIGHTNING] Skipping Lightning: requires regtest Bitcoin.');
+      return;
+    }
+
+    try {
+      const btcSettings = bitcoin.settings || {};
+      const btcDatadir = path.resolve(process.cwd(), btcSettings.datadir || './stores/bitcoin-regtest');
+      const rpcport = Number(btcSettings.rpcport || 20444);
+      const username = btcSettings.username || '';
+      const password = btcSettings.password || '';
+
+      if (!username || !password) {
+        console.warn('[HUB:LIGHTNING] Bitcoin RPC credentials not available; Lightning not started.');
+        return;
+      }
+
+      this.lightning = new Lightning({
+        managed: true,
+        network: 'regtest',
+        datadir: path.resolve(process.cwd(), './stores/lightning/hub'),
+        hostname: '127.0.0.1',
+        port: 9735,
+        debug: !!this.settings.debug,
+        bitcoin: {
+          host: btcSettings.host || '127.0.0.1',
+          rpcport,
+          rpcuser: username,
+          rpcpassword: password,
+          datadir: btcDatadir
+        },
+        disablePlugins: ['cln-grpc']
+      });
+
+      this.lightning.on('debug', (...args) => console.log('[LIGHTNING]', '[DEBUG]', ...args));
+      this.lightning.on('error', (err) => console.error('[LIGHTNING]', '[ERROR]', err && err.message ? err.message : err));
+
+      await this.lightning.start();
+      console.log('[HUB:LIGHTNING] Lightning node started.');
+    } catch (err) {
+      console.warn('[HUB:LIGHTNING] Failed to start Lightning:', err && err.message ? err.message : err);
+      this.lightning = null;
+    }
+  }
+
   /**
    * Start the instance.
    * @returns {Hub} Instance of the {@link Hub}.
@@ -2301,6 +2553,7 @@ class Hub extends Service {
         if (result && result.started) {
           console.log('[HUB] Bitcoin service ready.');
           await this.startBeacon();
+          await this._startLightningServiceIfEnabled();
         } else {
           const msg = result && result.timedOut
             ? `Bitcoin did not become ready within ${this.settings.bitcoin.startTimeoutMs || 15000}ms.`
@@ -2413,13 +2666,22 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/bitcoin/payjoin/sessions/:sessionId', this._handlePayjoinSessionViewRequest.bind(this));
       this.http._addRoute('POST', '/services/bitcoin/payjoin/sessions/:sessionId/proposal', this._handlePayjoinProposalSubmitRequest.bind(this));
       this.http._addRoute('GET', '/services/lightning', this._handleLightningStatusRequest.bind(this));
+      this.http._addRoute('GET', '/services/lightning/channels', this._handleLightningCollectionRequest.bind(this));
       this.http._addRoute('GET', '/services/lightning/invoices', this._handleLightningCollectionRequest.bind(this));
       this.http._addRoute('GET', '/services/lightning/payments', this._handleLightningCollectionRequest.bind(this));
       this.http._addRoute('GET', '/services/lightning/decodes', this._handleLightningCollectionRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning', this._handleLightningMutationRequest.bind(this));
+      this.http._addRoute('POST', '/services/lightning/channels', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/invoices', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/payments', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/decodes', this._handleLightningMutationRequest.bind(this));
+
+      // Settings API: GET /settings (list + setup status), POST /settings (bootstrap when not configured)
+      this.http._addRoute('GET', '/settings', this._handleSettingsListRequest.bind(this));
+      this.http._addRoute('POST', '/settings', this._handleSettingsBootstrapRequest.bind(this));
+      this.http._addRoute('POST', '/settings/refresh', this._handleSettingsRefreshRequest.bind(this));
+      this.http._addRoute('GET', '/settings/:name', this._handleSettingsGetRequest.bind(this));
+      this.http._addRoute('PUT', '/settings/:name', this._handleSettingsPutRequest.bind(this));
 
       // Configure routes
       this._addAllRoutes();
@@ -3396,10 +3658,12 @@ class Hub extends Service {
       const buildNetworkStatus = () => {
         const merkle = this._refreshMerkleState('network-status');
         const fabricMessages = this._getFabricMessages();
+        const setupStatus = this.setup.getSetupStatus();
         return {
           clock: this.http.clock,
           contract: this.contract.id,
           documents: this._state.documents,
+          setup: setupStatus,
           publishedDocuments: (this._state.content && this._state.content.collections && this._state.content.collections.documents) ? this._state.content.collections.documents : {},
           documentChains: this._getDocumentChains(),
           fabricMessages,
@@ -3421,6 +3685,10 @@ class Hub extends Service {
       this.http._registerMethod('GetNetworkStatus', (...params) => {
         const status = buildNetworkStatus();
         return status;
+      });
+
+      this.http._registerMethod('GetSetupStatus', (...params) => {
+        return this.setup.getSetupStatus();
       });
 
       this.http._registerMethod('GetMerkleState', (...params) => {
@@ -3448,6 +3716,31 @@ class Hub extends Service {
         return status;
       });
 
+      // When Hub needs more Fabric P2P connections, publish peering offer (gossiped until fulfilled).
+      // Called from pushNetworkStatus and from periodic timer.
+      const maybeBroadcastFabricPeeringOffer = () => {
+        try {
+          const connCount = Object.keys(this.agent.connections || {}).length;
+          const maxPeers = (this.agent.settings.constraints && this.agent.settings.constraints.peers && this.agent.settings.constraints.peers.max) || MAX_PEERS;
+          if (connCount >= maxPeers || connCount === 0) return;
+          const now = Date.now();
+          const last = this._lastFabricPeeringOfferAt || 0;
+          if (now - last < FABRIC_PEERING_OFFER_INTERVAL_MS) return;
+          this._lastFabricPeeringOfferAt = now;
+          const host = (this.settings.http && this.settings.http.hostname) || 'localhost';
+          const port = this.agent.port || this.settings.port || 7777;
+          const payload = {
+            type: P2P_PEERING_OFFER,
+            actor: { id: this.agent.identity.id },
+            object: { slots: maxPeers - connCount, transport: 'fabric', host, port }
+          };
+          const p2pMsg = Message.fromVector([P2P_PEERING_OFFER, JSON.stringify(payload)]).signWithKey(this.agent.key);
+          this.agent.relayFrom('_hub', p2pMsg);
+        } catch (err) {
+          console.error('[HUB] maybeBroadcastFabricPeeringOffer error:', err);
+        }
+      };
+
       // Push network status to all WebSocket clients when peer connections change
       const pushNetworkStatus = () => {
         try {
@@ -3460,6 +3753,7 @@ class Hub extends Service {
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(msg);
           }
+          maybeBroadcastFabricPeeringOffer();
         } catch (err) {
           console.error('[HUB] pushNetworkStatus error:', err);
         }
@@ -3473,6 +3767,9 @@ class Hub extends Service {
       // Push network status when WebRTC peers connect/disconnect
       this.http.on('webrtc:connection', pushNetworkStatus);
       this.http.on('webrtc:disconnect', pushNetworkStatus);
+
+      // Periodic Fabric peering offer (when below max peers, even if connections don't change)
+      this._fabricPeeringOfferIntervalId = setInterval(maybeBroadcastFabricPeeringOffer, FABRIC_PEERING_OFFER_INTERVAL_MS);
 
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
       // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
@@ -3682,7 +3979,7 @@ class Hub extends Service {
 
       // Relay messages received via WebRTC data channel to WebSocket clients (and Fabric P2P).
       // Wraps in P2P_RELAY envelope to preserve original message + signature for onion routing.
-      const RELAYABLE_ORIGINAL_TYPES = ['P2P_CHAT_MESSAGE', 'fabric-message'];
+      const RELAYABLE_ORIGINAL_TYPES = ['P2P_CHAT_MESSAGE', P2P_PEER_GOSSIP, P2P_PEERING_OFFER, 'fabric-message'];
       this.http._registerMethod('RelayFromWebRTC', (...params) => {
         const body = params[0] || params;
         const fromPeerId = body && body.fromPeerId ? String(body.fromPeerId) : null;
@@ -3850,6 +4147,25 @@ class Hub extends Service {
           console.error('[HUB] Failed to broadcast chat message:', err);
         }
       });
+
+      // Broadcast P2P_PEER_GOSSIP and P2P_PEERING_OFFER from Fabric P2P to WebSocket clients.
+      // Enables cross-cluster discovery for WebRTC and Fabric peers.
+      const broadcastPeeringMessage = (ev) => {
+        try {
+          const message = ev && ev.message;
+          if (!message || typeof message !== 'object') return;
+          const payload = JSON.stringify(message);
+          const msg = Message.fromVector(['GenericMessage', payload]);
+          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (typeof this.http.broadcast === 'function') {
+            this.http.broadcast(msg);
+          }
+        } catch (err) {
+          console.error('[HUB] Failed to broadcast peering message:', err);
+        }
+      };
+      this.agent.on('peeringGossip', broadcastPeeringMessage);
+      this.agent.on('peeringOffer', broadcastPeeringMessage);
 
       // Handle files received from peers via P2P_FILE_SEND. Store and broadcast to clients.
       this.agent.on('file', async ({ message, origin }) => {
@@ -4036,8 +4352,13 @@ class Hub extends Service {
     const stopWork = async () => {
       this._state.status = 'STOPPING';
 
-      // Detach network-status listeners before stopping subsystems so this
-      // instance can be safely re-used in long-lived processes or tests.
+      // Detach network-status listeners and peering offer timer before stopping subsystems.
+      if (this._fabricPeeringOfferIntervalId) {
+        try {
+          clearInterval(this._fabricPeeringOfferIntervalId);
+          this._fabricPeeringOfferIntervalId = null;
+        } catch (e) {}
+      }
       if (this._pushNetworkStatus) {
         try {
           this.agent.removeListener('connections:open', this._pushNetworkStatus);
@@ -4078,6 +4399,15 @@ class Hub extends Service {
         } catch (err) {
           console.warn('[HUB] Failed to stop Beacon cleanly:', err && err.message ? err.message : err);
         }
+      }
+
+      if (this.lightning && typeof this.lightning.stop === 'function') {
+        try {
+          await this.lightning.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Lightning cleanly:', err && err.message ? err.message : err);
+        }
+        this.lightning = null;
       }
 
       if (this.bitcoin && typeof this.bitcoin.stop === 'function') {

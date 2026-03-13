@@ -24,6 +24,7 @@ const Identity = require('@fabric/core/types/identity');
 // Components
 const Bridge = require('./Bridge');
 const BitcoinHome = require('./BitcoinHome');
+const Onboarding = require('./Onboarding');
 const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
 const BitcoinTransactionView = require('./BitcoinTransactionView');
@@ -101,6 +102,16 @@ class HubInterface extends React.Component {
       } catch (e) {}
     }
 
+    let initialAdminToken = null;
+    let initialAdminTokenExpiresAt = null;
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        initialAdminToken = window.localStorage.getItem('fabric.hub.adminToken') || null;
+        const raw = window.localStorage.getItem('fabric.hub.adminTokenExpiresAt');
+        if (raw) initialAdminTokenExpiresAt = Number(raw) || null;
+      }
+    } catch (e) {}
+
     let initialLocalIdentity = null;
     let initialHasLockedIdentity = false;
     try {
@@ -175,6 +186,10 @@ class HubInterface extends React.Component {
       debug: false,
       isAuthenticated: false,
       isLoading: true,
+      needsSetup: false,
+      setupChecked: false,
+      adminToken: initialAdminToken,
+      adminTokenExpiresAt: initialAdminTokenExpiresAt,
       modalLogOut: false,
       loggedOut: false,
       uiSettingsOpen: false,
@@ -212,6 +227,73 @@ class HubInterface extends React.Component {
     return this;
   }
 
+  async _checkSetupStatus () {
+    try {
+      const base = typeof window !== 'undefined' && window.location
+        ? `${window.location.protocol}//${window.location.host}`
+        : 'http://localhost:8080';
+      const res = await fetch(`${base}/settings`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (res.ok) {
+        const text = await res.text();
+        if (text.trim().startsWith('<')) {
+          this.setState({ setupChecked: true });
+          return;
+        }
+        const data = JSON.parse(text);
+        this.setState({
+          needsSetup: !!data.needsSetup,
+          setupChecked: true
+        });
+      } else {
+        this.setState({ setupChecked: true });
+      }
+    } catch (e) {
+      this.setState({ setupChecked: true });
+    }
+  }
+
+  async _refreshAdminTokenIfNeeded () {
+    const token = this.state.adminToken || (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    if (!token) return;
+    const expiresAt = this.state.adminTokenExpiresAt || (typeof window !== 'undefined' && window.localStorage && (() => {
+      const raw = window.localStorage.getItem('fabric.hub.adminTokenExpiresAt');
+      return raw ? Number(raw) : null;
+    })());
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    if (expiresAt && Date.now() < expiresAt - thirtyDaysMs) return; // No refresh needed
+    try {
+      const base = typeof window !== 'undefined' && window.location
+        ? `${window.location.protocol}//${window.location.host}`
+        : 'http://localhost:8080';
+      const res = await fetch(`${base}/settings/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ token })
+      });
+      if (!res.ok) return;
+      const text = await res.text();
+      if (text.trim().startsWith('<')) return;
+      const result = JSON.parse(text);
+      if (result && result.token) {
+        this.setState({ adminToken: result.token, adminTokenExpiresAt: result.expiresAt });
+        if (typeof window !== 'undefined' && window.localStorage) {
+          try {
+            window.localStorage.setItem('fabric.hub.adminToken', result.token);
+            if (result.expiresAt != null) {
+              window.localStorage.setItem('fabric.hub.adminTokenExpiresAt', String(result.expiresAt));
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  }
+
   requestLogin () {
     // Prefer host-provided handler (browser extension or outer app).
     if (typeof this.props.onLogin === 'function') {
@@ -240,6 +322,8 @@ class HubInterface extends React.Component {
 
   componentDidMount () {
     console.debug('[HUB]', 'Component mounted!');
+    this._checkSetupStatus();
+    this._refreshAdminTokenIfNeeded();
     this._refreshClientBalance();
     this._onGlobalStateUpdate = (e) => {
       const d = e && e.detail;
@@ -253,6 +337,7 @@ class HubInterface extends React.Component {
     if (typeof window !== 'undefined') {
       window.addEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
+      this._adminTokenRefreshInterval = setInterval(() => this._refreshAdminTokenIfNeeded(), 24 * 60 * 60 * 1000);
     }
   }
 
@@ -261,6 +346,7 @@ class HubInterface extends React.Component {
     if (typeof window !== 'undefined') {
       if (this._onGlobalStateUpdate) window.removeEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       if (this._onClientBalanceUpdate) window.removeEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
+      if (this._adminTokenRefreshInterval) clearInterval(this._adminTokenRefreshInterval);
     }
   }
 
@@ -360,6 +446,10 @@ class HubInterface extends React.Component {
         // Prevents overwriting `networkStatus` with `{ status: "success" }` from AddPeer/RemovePeer.
         const isNetworkStatus = status && typeof status === 'object' && (status.network || Array.isArray(status.peers));
 
+        if (isNetworkStatus && status.setup && status.setup.needsSetup) {
+          this.setState({ needsSetup: true });
+        }
+
         if (isNetworkStatus && this.props.bridgeNetworkStatusUpdate) {
           this.props.bridgeNetworkStatusUpdate(status);
         }
@@ -423,6 +513,27 @@ class HubInterface extends React.Component {
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <Loader active inline="centered" size='huge' />
               </div>
+            ) : this.state.needsSetup ? (
+              <Onboarding
+                nodeName="Hub"
+                onConfigurationComplete={(result) => {
+                  if (result && result.token) {
+                    this.setState({
+                      adminToken: result.token,
+                      adminTokenExpiresAt: result.expiresAt,
+                      needsSetup: false
+                    });
+                    if (typeof window !== 'undefined' && window.localStorage) {
+                      try {
+                        window.localStorage.setItem('fabric.hub.adminToken', result.token);
+                        if (result.expiresAt != null) {
+                          window.localStorage.setItem('fabric.hub.adminTokenExpiresAt', String(result.expiresAt));
+                        }
+                      } catch (e) {}
+                    }
+                  }
+                }}
+              />
             ) : (
               <BrowserRouter style={{ marginTop: 0 }}>
                 <TopPanel
@@ -856,6 +967,7 @@ class HubInterface extends React.Component {
                         identity={local || effectiveAuth}
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
+                        adminToken={this.state.adminToken}
                         {...this.props}
                       />
                     )}
