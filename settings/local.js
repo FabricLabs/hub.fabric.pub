@@ -11,7 +11,16 @@ module.exports = Object.assign({}, defaults, {
     network: process.env.FABRIC_BITCOIN_NETWORK || 'regtest',
     managed: process.env.FABRIC_BITCOIN_MANAGED ? process.env.FABRIC_BITCOIN_MANAGED !== 'false' : true,
     rpcport: Number(process.env.FABRIC_BITCOIN_RPC_PORT || 20444),
-    startTimeoutMs: Number(process.env.FABRIC_BITCOIN_START_TIMEOUT_MS || 25000)
+    startTimeoutMs: Number(process.env.FABRIC_BITCOIN_START_TIMEOUT_MS || 60000)
+  },
+  payjoin: {
+    enable: process.env.FABRIC_PAYJOIN_ENABLE ? process.env.FABRIC_PAYJOIN_ENABLE !== 'false' : true,
+    endpointBasePath: process.env.FABRIC_PAYJOIN_BASE_PATH || '/services/bitcoin/payjoin',
+    defaultSessionTTLSeconds: Number(process.env.FABRIC_PAYJOIN_SESSION_TTL_SECONDS || 1800),
+    maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256)
+  },
+  lightning: {
+    stub: process.env.FABRIC_LIGHTNING_STUB === 'true' || process.env.FABRIC_LIGHTNING_STUB === '1'
   },
   http: {
     hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',

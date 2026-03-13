@@ -3,7 +3,9 @@
 const assert = require('assert');
 const http = require('http');
 const url = require('url');
+const merge = require('lodash.merge');
 const Hub = require('../services/hub');
+const settings = require('../settings/local');
 
 describe('@fabric/hub', function () {
   describe('HTTP Endpoints', function () {
@@ -14,17 +16,22 @@ describe('@fabric/hub', function () {
     before(async function () {
       this.timeout(30000);
 
-      // Create a new hub instance for testing
-      hub = new Hub({
+      // Use project settings with test overrides: distinct ports to avoid EADDRINUSE,
+      // Bitcoin disabled so we don't need bitcoind or regtest lock for HTTP-only tests.
+      hub = new Hub(merge({}, settings, {
+        port: 7778,
+        bitcoin: {
+          enable: false,
+          network: 'regtest'
+        },
         http: {
           hostname: 'localhost',
           listen: true,
-          port: 8082 // Use a different test port
+          port: 8082
         },
         debug: false
-      });
+      }));
 
-      // Start the hub
       await hub.start();
 
       // Get the HTTP server instance and base URL
@@ -36,8 +43,12 @@ describe('@fabric/hub', function () {
     });
 
     after(async function () {
+      this.timeout(10000);
       if (hub) {
-        await hub.stop();
+        await Promise.race([
+          hub.stop(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('hub.stop() timeout')), 8000))
+        ]).catch(() => {});
       }
     });
 

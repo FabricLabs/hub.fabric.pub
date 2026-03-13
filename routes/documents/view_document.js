@@ -1,10 +1,7 @@
 'use strict';
 
 module.exports = async function (req, res, next) {
-  const requested = req.params.id;
-  const resolvedId = (this && typeof this.resolveNamedDocumentId === 'function')
-    ? this.resolveNamedDocumentId(requested)
-    : requested;
+  const resolvedId = req.params.id;
 
   res.format({
     'application/json': () => {

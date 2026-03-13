@@ -99,7 +99,13 @@ describe('Hub WebRTC RPC methods', function () {
   });
 
   after(async function () {
-    if (harness && harness.hub) await harness.hub.stop();
+    this.timeout(8000);
+    if (harness && harness.hub) {
+      await Promise.race([
+        harness.hub.stop(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('hub.stop() timeout')), 7000))
+      ]).catch(() => {});
+    }
   });
 
   beforeEach(function () {
@@ -110,7 +116,6 @@ describe('Hub WebRTC RPC methods', function () {
     harness.hub._state.documents = {};
     harness.hub._state.content.collections = harness.hub._state.content.collections || {};
     harness.hub._state.content.collections.documents = {};
-    harness.hub._state.content.collections.bundles = {};
     harness.hub._state.content.collections.messages = {};
     harness.hub._state.content.collections.contracts = {};
     harness.hub._state.content.counts = harness.hub._state.content.counts || {};
@@ -189,39 +194,32 @@ describe('Hub WebRTC RPC methods', function () {
     assert.ok(listed.peers.length <= 16, 'peer candidate list should be bounded');
   });
 
-  it('resolves latest document by name and bundles/<name> path', async function () {
+  it('requires document id for GetDocument', async function () {
     const { methods, hub, fsStore } = harness;
 
     hub._state.documents = hub._state.documents || {};
     hub._state.content.collections = hub._state.content.collections || {};
     hub._state.content.collections.documents = hub._state.content.collections.documents || {};
 
-    const oldId = 'old-browser-id';
-    const latestId = 'latest-browser-id';
-    hub._state.documents[oldId] = { id: oldId, name: 'browser.min.js', created: '2026-01-01T00:00:00.000Z' };
-    hub._state.documents[latestId] = { id: latestId, name: 'browser.min.js', created: '2026-01-02T00:00:00.000Z' };
-    hub._state.content.collections.documents[oldId] = { id: oldId, name: 'browser.min.js' };
-    hub._state.content.collections.documents[latestId] = { id: latestId, name: 'browser.min.js' };
-    fsStore.set(`documents/${latestId}.json`, JSON.stringify({
-      id: latestId,
+    const docId = 'doc-id-only';
+    hub._state.documents[docId] = { id: docId, name: 'browser.min.js', created: '2026-01-02T00:00:00.000Z' };
+    hub._state.content.collections.documents[docId] = { id: docId, name: 'browser.min.js' };
+    fsStore.set(`documents/${docId}.json`, JSON.stringify({
+      id: docId,
       name: 'browser.min.js',
       contentBase64: Buffer.from('latest').toString('base64')
     }));
 
-    const listed = await methods.ListDocuments();
-    const browserEntries = listed.documents.filter((doc) => doc && doc.name === 'browser.min.js');
-    assert.strictEqual(browserEntries.length, 2, 'ListDocuments should include historical versions');
+    const byId = await methods.GetDocument(docId);
+    assert.strictEqual(byId.type, 'GetDocumentResult');
+    assert.strictEqual(byId.document.id, docId);
 
     const byName = await methods.GetDocument('browser.min.js');
-    assert.strictEqual(byName.type, 'GetDocumentResult');
-    assert.strictEqual(byName.document.id, latestId, 'GetDocument should resolve named latest id');
-
-    const byBundlePath = await methods.GetDocument('bundles/browser.min.js');
-    assert.strictEqual(byBundlePath.type, 'GetDocumentResult');
-    assert.strictEqual(byBundlePath.document.id, latestId, 'GetDocument should resolve bundles/<name> aliases');
+    assert.strictEqual(byName.status, 'error');
+    assert.ok(/not found/i.test(byName.message));
   });
 
-  it('publishes bundle metadata into bundles resource collection', async function () {
+  it('publishes document metadata only into documents collection', async function () {
     const { methods, hub } = harness;
 
     const first = await methods.CreateDocument({
@@ -241,36 +239,9 @@ describe('Hub WebRTC RPC methods', function () {
 
     const published = await methods.PublishDocument(second.document.id);
     assert.strictEqual(published.type, 'PublishDocumentResult');
-
-    const bundles = hub._state.content.collections.bundles || {};
-    const bundleEntry = bundles[second.document.id];
-    assert.ok(bundleEntry, 'published bundle should be indexed in bundles resource');
-    assert.strictEqual(bundleEntry.path, 'bundles/browser.min.js');
-    assert.strictEqual(bundleEntry.document, second.document.id);
-
-    const byName = await methods.GetDocument('browser.min.js');
-    assert.strictEqual(byName.type, 'GetDocumentResult');
-    assert.strictEqual(byName.document.id, second.document.id);
-  });
-
-  it('resolves named documents from document metadata even without explicit bundle pointer', async function () {
-    const { methods, hub, fsStore } = harness;
-    const docId = 'meta-named-id';
-    hub._state.documents[docId] = {
-      id: docId,
-      name: 'notes.txt',
-      created: '2026-01-02T00:00:00.000Z'
-    };
-
-    fsStore.set(`documents/${docId}.json`, JSON.stringify({
-      id: docId,
-      name: 'notes.txt',
-      contentBase64: Buffer.from('hello').toString('base64')
-    }));
-
-    const byName = await methods.GetDocument('notes.txt');
-    assert.strictEqual(byName.type, 'GetDocumentResult');
-    assert.strictEqual(byName.document.id, docId);
+    const publishedDocs = hub._state.content.collections.documents || {};
+    assert.ok(publishedDocs[second.document.id], 'published document should be indexed in documents resource');
+    assert.strictEqual(publishedDocs[second.document.id].document, second.document.id);
   });
 
   it('creates document revisions through Chain-backed EditDocument flow', async function () {
@@ -300,15 +271,15 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(edited.document.lineage, created.document.id, 'lineage should remain stable');
     assert.ok(chainUpdates.length > beforeEditChain, 'edit should add major update to chain');
 
-    const revisions = await methods.ListDocumentRevisions('notes.txt');
+    const revisions = await methods.ListDocumentRevisions(created.document.id);
     assert.strictEqual(revisions.type, 'ListDocumentRevisionsResult');
     assert.strictEqual(revisions.revisions.length, 2, 'lineage should include both revisions');
     assert.strictEqual(revisions.revisions[0].revision, 1);
     assert.strictEqual(revisions.revisions[1].revision, 2);
 
-    const latest = await methods.GetDocument('notes.txt');
+    const latest = await methods.GetDocument(edited.document.id);
     assert.strictEqual(latest.type, 'GetDocumentResult');
-    assert.strictEqual(latest.document.id, edited.document.id, 'name should resolve to latest revision');
+    assert.strictEqual(latest.document.id, edited.document.id, 'revision id should fetch latest document');
   });
 
   it('exposes Merkle roots in network status and merkle RPC', async function () {

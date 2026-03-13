@@ -61,7 +61,8 @@ class Bridge extends React.Component {
     this.globalState = {
       conversations: {},
       messages: {},
-      documents: {}
+      documents: {},
+      distributeProposals: {}
     };
 
     this.attempts = 1;
@@ -69,6 +70,7 @@ class Bridge extends React.Component {
     this.webrtcMessageQueue = [];
     this.peerMessageQueue = [];
     this.chatSubmissionQueue = [];
+    this.pendingHubChatQueue = []; // Chat messages sent while hub was offline; flush to bridge when reconnected
     this.queue = [];
     this.ws = null;
     this._heartbeat = null;
@@ -129,6 +131,11 @@ class Bridge extends React.Component {
 
     if (Object.keys(docs).length > 0) {
       this.globalState.documents = { ...(this.globalState.documents || {}), ...docs };
+    }
+
+    const restoredProposals = this._readJSONFromStorage('fabric:distributeProposals', null);
+    if (restoredProposals && typeof restoredProposals === 'object') {
+      this.globalState.distributeProposals = restoredProposals;
     }
 
     return this;
@@ -672,6 +679,50 @@ class Bridge extends React.Component {
   _persistDocuments () {
     const docs = this.globalState.documents || {};
     this._writeJSONToStorage('fabric:documents', docs);
+  }
+
+  /**
+   * Parse chat content as a Distribute Proposal. Returns proposal object or null.
+   * Proposals are sent as P2P_CHAT_MESSAGE with JSON content: { type: 'DistributeProposal', documentId, amountSats, config, ... }
+   */
+  _parseDistributeProposal (content, chatEnvelope) {
+    if (!content || typeof content !== 'string') return null;
+    try {
+      const parsed = JSON.parse(content);
+      if (!parsed || parsed.type !== 'DistributeProposal') return null;
+      const documentId = parsed.documentId || parsed.document?.id || parsed.document?.sha256;
+      const amountSats = Number(parsed.amountSats || 0);
+      if (!documentId || !Number.isFinite(amountSats) || amountSats <= 0) return null;
+      const senderAddress = (chatEnvelope && chatEnvelope.actor && chatEnvelope.actor.id) || null;
+      const created = (chatEnvelope && chatEnvelope.object && chatEnvelope.object.created) || (chatEnvelope && chatEnvelope.created) || Date.now();
+      return {
+        id: `proposal:${created}:${senderAddress || 'unknown'}`,
+        documentId,
+        amountSats,
+        config: parsed.config || {},
+        document: parsed.document || null,
+        documentName: parsed.documentName || (parsed.document && parsed.document.name) || documentId,
+        senderAddress,
+        receivedAt: created,
+        status: 'pending'
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  _storeDistributeProposal (proposal) {
+    if (!proposal || !proposal.id) return;
+    this.globalState.distributeProposals = this.globalState.distributeProposals || {};
+    this.globalState.distributeProposals[proposal.id] = proposal;
+    this._writeJSONToStorage('fabric:distributeProposals', this.globalState.distributeProposals);
+    window.dispatchEvent(new CustomEvent('distributeProposalReceived', { detail: { proposal } }));
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/distributeProposals/${proposal.id}`, value: proposal },
+        globalState: this.globalState
+      }
+    }));
   }
 
   /** @returns {import('@fabric/core/types/key')|null} Key with private for document encrypt/decrypt */
@@ -1465,12 +1516,63 @@ class Bridge extends React.Component {
             }
             break;
           }
-          case 'webrtc-chat': {
-            const text = (payload.text || payload.content || '').trim();
-            if (!text) break;
-            const created = payload.created || Date.now();
-            const actorId = payload.actorId || peerId;
-            const incomingClientId = payload.clientId || null;
+          case 'fabric-message': {
+            // Signed Fabric Message (base64); relay with original preserved for onion routing.
+            const base64 = payload.data;
+            if (base64 && this._isConnected && this.ws && this.ws.readyState === 1) {
+              const envelope = {
+                original: base64,
+                originalType: 'fabric-message',
+                hops: [{ from: peerId, at: Date.now() }]
+              };
+              this._sendJSONRPC({
+                method: 'RelayFromWebRTC',
+                params: [{ fromPeerId: peerId, envelope }]
+              });
+            }
+            this.handleWebRTCMessage(payload);
+            break;
+          }
+          case 'P2P_DISTRIBUTE_PROPOSAL': {
+            const obj = payload.object || payload;
+            let proposal = null;
+            if (obj.documentId && Number.isFinite(Number(obj.amountSats))) {
+              const senderAddress = (payload.actor && payload.actor.id) || null;
+              const created = (obj.created || payload.created) || Date.now();
+              proposal = {
+                id: `proposal:${created}:${senderAddress || 'unknown'}`,
+                documentId: obj.documentId,
+                amountSats: Number(obj.amountSats),
+                config: obj.config || {},
+                document: obj.document || null,
+                documentName: obj.documentName || (obj.document && obj.document.name) || obj.documentId,
+                senderAddress,
+                receivedAt: created,
+                status: 'pending'
+              };
+            } else {
+              proposal = this._parseDistributeProposal(
+                typeof obj.content === 'string' ? obj.content : JSON.stringify(obj),
+                payload
+              );
+            }
+            if (proposal) {
+              this._storeDistributeProposal(proposal);
+            }
+            break;
+          }
+          case 'P2P_CHAT_MESSAGE': {
+            const text = (payload.object && payload.object.content) || payload.text || payload.content || '';
+            const trimmed = typeof text === 'string' ? text.trim() : '';
+            const proposal = this._parseDistributeProposal(trimmed, payload);
+            if (proposal) {
+              this._storeDistributeProposal(proposal);
+              break;
+            }
+            if (!trimmed) break;
+            const created = (payload.object && payload.object.created) || payload.created || Date.now();
+            const actorId = (payload.actor && payload.actor.id) || payload.actorId || peerId;
+            const incomingClientId = (payload.object && payload.object.clientId) || payload.clientId || null;
 
             // Create a local chat representation for the UI
             try {
@@ -1494,7 +1596,7 @@ class Bridge extends React.Component {
                 type: 'P2P_CHAT_MESSAGE',
                 actor: { id: actorId },
                 object: {
-                  content: text,
+                  content: trimmed,
                   created,
                   clientId
                 },
@@ -1517,6 +1619,19 @@ class Bridge extends React.Component {
                 }
               }));
               this._persistMessages();
+
+              // Relay to WebSocket bridge: wrap in P2P_RELAY envelope to preserve original + signature for onion routing.
+              if (this._isConnected && this.ws && this.ws.readyState === 1) {
+                const envelope = {
+                  original: JSON.stringify(chat),
+                  originalType: 'P2P_CHAT_MESSAGE',
+                  hops: [{ from: peerId, at: Date.now() }]
+                };
+                this._sendJSONRPC({
+                  method: 'RelayFromWebRTC',
+                  params: [{ fromPeerId: peerId, envelope }]
+                });
+              }
             } catch (e) {
               console.warn('[BRIDGE]', 'Could not create local WebRTC chat message:', e);
             }
@@ -1869,6 +1984,53 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Signs arbitrary text with the component's signing key (BIP340 Schnorr).
+   * @param {string} text - The text to sign
+   * @returns {{ signature: string, publicKey: string }|null} - Signature hex and public key hex, or null if not configured
+   */
+  signArbitraryText (text) {
+    if (!this.settings.signingKey || !this.settings.signingKey.private) {
+      console.warn('[BRIDGE]', 'No signing key with private key configured');
+      return null;
+    }
+    try {
+      const textStr = String(text);
+      const sig = this.settings.signingKey.sign(textStr);
+      let pubHex = '';
+      try {
+        pubHex = this.settings.signingKey.pubkey || this.settings.signingKey.xpub || '';
+      } catch (e) {}
+      return {
+        signature: Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig),
+        publicKey: pubHex
+      };
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error signing text:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Verifies a Schnorr signature for arbitrary text.
+   * @param {string} text - The original message
+   * @param {string} signatureHex - The signature (64-byte hex)
+   * @param {string} publicKeyHex - The compressed public key (33-byte hex)
+   * @returns {boolean|null} - True if valid, false if invalid, null on error
+   */
+  verifyArbitraryText (text, signatureHex, publicKeyHex) {
+    if (!text || !signatureHex || !publicKeyHex) return null;
+    try {
+      const key = new Key({ public: publicKeyHex.trim() });
+      const sig = Buffer.from(signatureHex.trim(), 'hex');
+      if (sig.length !== 64) return false;
+      return key.verifySchnorr(text, sig);
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error verifying text:', error);
+      return null;
+    }
+  }
+
+  /**
    * Signs a message with the component's signing key
    * @param {Buffer} message - The message to sign
    * @returns {Object} - The signed message object
@@ -2152,6 +2314,29 @@ class Bridge extends React.Component {
                   }
                 }));
               }
+              if (result && typeof result === 'object' && result.type === 'CreateDistributeInvoiceResult' && result.documentId) {
+                window.dispatchEvent(new CustomEvent('distributeInvoiceReady', {
+                  detail: {
+                    documentId: result.documentId,
+                    address: result.address,
+                    amountSats: result.amountSats,
+                    config: result.config,
+                    network: result.network
+                  }
+                }));
+              }
+              if (result && typeof result === 'object' && result.type === 'AcceptDistributeProposalResult' && result.documentId) {
+                window.dispatchEvent(new CustomEvent('distributeInvoiceReady', {
+                  detail: {
+                    documentId: result.documentId,
+                    address: result.address,
+                    amountSats: result.amountSats,
+                    config: result.config,
+                    network: result.network,
+                    fromProposal: true
+                  }
+                }));
+              }
               if (result && typeof result === 'object' && result.type === 'PublishDocumentResult' && result.document && result.document.id) {
                 const backendId = result.document.id; // sha-based id from hub
                 const sha = result.document.sha256 || backendId;
@@ -2283,9 +2468,61 @@ class Bridge extends React.Component {
             content: message.body
           });
           break;
+        case 'P2P_RELAY':
+          try {
+            const envelope = JSON.parse(message.body);
+            const original = envelope && envelope.original;
+            const originalType = envelope && envelope.originalType;
+            if (!original || !originalType) break;
+            if (originalType === 'fabric-message') {
+              const buf = Buffer.from(original, 'base64');
+              this.onSocketMessage({ data: buf });
+              break;
+            }
+            let chat = null;
+            if (originalType === 'P2P_CHAT_MESSAGE') {
+              chat = typeof original === 'string' ? JSON.parse(original) : original;
+            }
+            if (!chat || chat.type !== 'P2P_CHAT_MESSAGE') break;
+            const content = (chat.object && chat.object.content) || '';
+            const proposal = this._parseDistributeProposal(content, chat);
+            if (proposal) {
+              this._storeDistributeProposal(proposal);
+              break;
+            }
+            const created = (chat.object && chat.object.created) || chat.created || Date.now();
+            const id = `chat:${created}:${(chat.actor && chat.actor.id) || 'unknown'}`;
+            this.globalState.messages = this.globalState.messages || {};
+            const clientId = chat.object && chat.object.clientId;
+            if (clientId && this.globalState.messages[clientId]) {
+              delete this.globalState.messages[clientId];
+            }
+            this.globalState.messages[id] = Object.assign({}, chat, {
+              transport: 'relay',
+              delivery: { via: 'bridge', hops: envelope.hops || [] }
+            });
+            window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+              detail: {
+                operation: { op: 'add', path: `/messages/${id}`, value: this.globalState.messages[id] },
+                globalState: this.globalState
+              }
+            }));
+            this._persistMessages();
+          } catch (e) {
+            console.error('[BRIDGE]', 'Could not parse P2P_RELAY envelope:', e);
+          }
+          break;
         case 'ChatMessage':
           try {
             const chat = JSON.parse(message.body);
+            const content = (chat && chat.object && chat.object.content) || '';
+            // Check for Distribute Proposal (structured JSON in chat content)
+            const proposal = this._parseDistributeProposal(content, chat);
+            if (proposal) {
+              this._storeDistributeProposal(proposal);
+              break;
+            }
+
             const created = (chat && chat.object && chat.object.created) || (chat && chat.created) || Date.now();
             const id = `chat:${created}:${(chat && chat.actor && chat.actor.id) || 'unknown'}`;
             this.globalState.messages = this.globalState.messages || {};
@@ -2325,9 +2562,14 @@ class Bridge extends React.Component {
           }
           break;
         case 'JSONPatch':
-          // Handle JSONPatch messages (canonical path)
+          // Handle JSONPatch messages (canonical path). Body may be message.body or message.data (Fabric Message.fromRaw sets data; body getter uses raw.data).
           try {
-            const patchData = JSON.parse(message.body);
+            const bodyRaw = message.body != null ? message.body : (message.data != null && typeof message.data === 'string' ? message.data : (message.data != null && (Buffer.isBuffer(message.data) || (typeof Uint8Array !== 'undefined' && message.data instanceof Uint8Array)) ? Buffer.from(message.data).toString('utf8') : null));
+            if (bodyRaw == null) {
+              console.error('[BRIDGE]', 'JSONPatch message has no body/data');
+              break;
+            }
+            const patchData = JSON.parse(bodyRaw);
 
             // Update global state
             this.updateGlobalState(patchData);
@@ -2379,6 +2621,7 @@ class Bridge extends React.Component {
     this.sendNetworkStatusRequest();
     this._resubscribeAll();
     this._flushChatSubmissionQueue();
+    this._flushPendingHubChatQueue();
     this._flushPeerMessageQueue();
 
     const message = Message.fromVector(['Ping', now.toString()]);
@@ -2504,15 +2747,60 @@ class Bridge extends React.Component {
     }));
     this._persistMessages();
 
+    // In WebRTC-only mode, do not depend on WebSocket queue state.
+    // Send immediately over mesh (and skip hub RPC in sendSubmitChatMessageRequest).
+    if (this.preferWebRTCChat) {
+      this.sendSubmitChatMessageRequest({
+        text: trimmed,
+        created,
+        clientId,
+        actor: actorId ? { id: actorId } : undefined
+      });
+      return true;
+    }
+
     this.chatSubmissionQueue.push({ text: trimmed, clientId, actorId, created });
     this._flushChatSubmissionQueue();
     return true;
   }
 
   _flushChatSubmissionQueue () {
-    if (!this._isConnected || !this.ws || this.ws.readyState !== 1) return;
+    const hubConnected = this._isConnected && this.ws && this.ws.readyState === 1;
     while (this.chatSubmissionQueue.length > 0) {
       const item = this.chatSubmissionQueue.shift();
+      if (!item) continue;
+      if (hubConnected) {
+        this.sendSubmitChatMessageRequest({
+          text: item.text,
+          created: item.created,
+          clientId: item.clientId,
+          actor: item.actorId ? { id: item.actorId } : undefined
+        });
+      } else {
+        // Hub down: deliver to WebRTC-connected peers now, and queue for bridge when it reconnects
+        this._broadcastChatToWebRTCPeersOnly({
+          text: item.text,
+          created: item.created,
+          clientId: item.clientId,
+          actor: item.actorId ? { id: item.actorId } : undefined
+        });
+        this.pendingHubChatQueue.push({
+          text: item.text,
+          created: item.created,
+          clientId: item.clientId,
+          actorId: item.actorId
+        });
+      }
+    }
+  }
+
+  /**
+   * When the Hub reconnects, send any chat messages that were queued while it was offline.
+   */
+  _flushPendingHubChatQueue () {
+    if (!this._isConnected || !this.ws || this.ws.readyState !== 1) return;
+    while (this.pendingHubChatQueue.length > 0) {
+      const item = this.pendingHubChatQueue.shift();
       if (!item) continue;
       this.sendSubmitChatMessageRequest({
         text: item.text,
@@ -2520,6 +2808,46 @@ class Bridge extends React.Component {
         clientId: item.clientId,
         actor: item.actorId ? { id: item.actorId } : undefined
       });
+    }
+  }
+
+  /**
+   * Broadcast a chat message to connected WebRTC peers only (no Hub).
+   * Used when the Hub is disconnected so messages still reach other browser peers.
+   */
+  _broadcastChatToWebRTCPeersOnly (body) {
+    const text = typeof body === 'string' ? body : (body && body.text) || '';
+    if (!text) return;
+    const created = body && body.created ? body.created : Date.now();
+    const clientId = body && body.clientId;
+    const actorId = this._getIdentityId() || (body && body.actor && body.actor.id) || null;
+    const payload = {
+      type: 'P2P_CHAT_MESSAGE',
+      actor: actorId ? { id: actorId } : { id: null },
+      object: { content: text, created, clientId }
+    };
+    const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
+    const deliveredTo = recipients.length;
+    this._lastWebRTCChatDeliveryCount = deliveredTo;
+    this._lastWebRTCChatSentAt = Date.now();
+    this._lastWebRTCRecipientPeerIds = recipients;
+    if (deliveredTo > 0) {
+      console.debug('[BRIDGE]', 'Chat delivered to WebRTC peers (hub offline):', deliveredTo, recipients);
+    }
+    if (clientId && this.globalState && this.globalState.messages && this.globalState.messages[clientId]) {
+      try {
+        const msg = this.globalState.messages[clientId];
+        msg.transport = msg.transport || 'webrtc';
+        msg.delivery = Object.assign({}, msg.delivery || {}, { via: 'mesh', deliveredTo });
+        this.globalState.messages[clientId] = msg;
+        window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+          detail: {
+            operation: { op: 'replace', path: `/messages/${clientId}`, value: msg },
+            globalState: this.globalState
+          }
+        }));
+        this._persistMessages();
+      } catch (e) {}
     }
   }
 
@@ -2543,11 +2871,9 @@ class Bridge extends React.Component {
     // the canonical network propagation path.
     if (this.preferWebRTCChat) {
       const payload = {
-        type: 'webrtc-chat',
-        text,
-        created,
-        actorId,
-        clientId
+        type: 'P2P_CHAT_MESSAGE',
+        actor: actorId ? { id: actorId } : { id: null },
+        object: { content: text, created, clientId }
       };
       const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
       const deliveredTo = recipients.length;
@@ -2576,6 +2902,8 @@ class Bridge extends React.Component {
       }
       console.debug('[BRIDGE]', 'WebRTC chat broadcast delivery count:', deliveredTo);
     }
+
+    // Always also submit via hub so the message is on the canonical broadcast path.
     try {
       const rpcBody = typeof body === 'object'
         ? Object.assign({}, body, {
@@ -2732,6 +3060,7 @@ class Bridge extends React.Component {
     // instead of via the Fabric P2P SendPeerMessage RPC.
     if (this.preferWebRTCChat) {
       const actorId = this._getIdentityId() || null;
+      let clientId = null;
       // Create a local "sent" chat message for this peer.
       try {
         const clientActor = new Actor({
@@ -2742,7 +3071,7 @@ class Bridge extends React.Component {
             created
           }
         });
-        const clientId = clientActor.id;
+        clientId = clientActor.id;
         const chat = {
           type: 'P2P_CHAT_MESSAGE',
           actor: { id: actorId || resolved },
@@ -2773,11 +3102,9 @@ class Bridge extends React.Component {
       } catch (e) {}
 
       const payload = {
-        type: 'webrtc-chat',
-        text: resolvedText,
-        created,
-        actorId,
-        target: resolved
+        type: 'P2P_CHAT_MESSAGE',
+        actor: actorId ? { id: actorId } : { id: null },
+        object: { content: resolvedText, created, clientId: clientId || null }
       };
       // For now, broadcast to all WebRTC peers; peers can choose how to display.
       const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
@@ -2888,6 +3215,10 @@ class Bridge extends React.Component {
     }
   }
 
+  /**
+   * Publish a document. When doc needs CreateDocument first, queues publish for after.
+   * @param {string} id - Document id
+   */
   sendPublishDocumentRequest (id) {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
     if (!logical) return;
@@ -2919,7 +3250,6 @@ class Bridge extends React.Component {
       return;
     }
 
-    // Fallback: publish by whatever id we have (Actor id or sha).
     let resolved = logical;
     if (doc && doc.sha256) {
       resolved = doc.sha256;
@@ -2935,12 +3265,75 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Request a long-term storage contract for a document, paid in Bitcoin.
-   * This is a thin JSON-RPC wrapper; contract negotiation and settlement
-   * are handled by the hub/Bitcoin services.
+   * Request a pay-to-distribute invoice (step 1 of distribute flow).
+   * When result arrives, Bridge dispatches 'distributeInvoiceReady' event.
+   * @param {string} id - Document id
+   * @param {Object} config - { amountSats, durationYears?, challengeCadence?, responseDeadline? }
+   */
+  sendCreateDistributeInvoiceRequest (id, config = {}) {
+    const logical = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!logical) return;
+    const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+    let backendId = logical;
+    if (doc && doc.sha256) backendId = doc.sha256;
+    try {
+      const payload = { method: 'CreateDistributeInvoice', params: [{ documentId: backendId, ...config }] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending CreateDistributeInvoice request:', error);
+    }
+  }
+
+  /**
+   * Send a distribute proposal to a peer (offer to pay them to host a file).
+   * @param {string} peerAddress - Peer id or address
+   * @param {Object} proposal - { documentId, amountSats, config?, document?, documentName? }
+   */
+  sendSendDistributeProposalRequest (peerAddress, proposal) {
+    if (!peerAddress || !proposal || !proposal.documentId || !Number.isFinite(Number(proposal.amountSats))) return;
+    try {
+      const payload = { method: 'SendDistributeProposal', params: [peerAddress, proposal] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending SendDistributeProposal request:', error);
+    }
+  }
+
+  /**
+   * Accept a distribute proposal (host flow): create invoice and send to proposer.
+   * @param {Object} proposal - { id, documentId, amountSats, config, senderAddress }
+   */
+  sendAcceptDistributeProposalRequest (proposal) {
+    if (!proposal || !proposal.documentId || !proposal.senderAddress) return;
+    const doc = this.globalState && this.globalState.documents && this.globalState.documents[proposal.documentId];
+    let backendId = proposal.documentId;
+    if (doc && doc.sha256) backendId = doc.sha256;
+    try {
+      const payload = {
+        method: 'AcceptDistributeProposal',
+        params: [{
+          proposalId: proposal.id,
+          documentId: backendId,
+          amountSats: proposal.amountSats,
+          config: proposal.config,
+          senderAddress: proposal.senderAddress
+        }]
+      };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending AcceptDistributeProposal request:', error);
+    }
+  }
+
+  /**
+   * Request a long-term storage contract for a document, paid in Bitcoin (L1).
+   * When txid is provided, completes the pay-to-distribute flow (step 2).
    *
    * @param {string} id - Document id (Actor ID).
-   * @param {Object} config - Distribution configuration (amount, duration, cadence, deadline).
+   * @param {Object} config - Distribution configuration (amount, duration, cadence, deadline, txid?).
    */
   sendDistributeDocumentRequest (id, config = {}) {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
@@ -2962,6 +3355,7 @@ class Bridge extends React.Component {
         responseDeadline: config.responseDeadline,
         actorId
       };
+      if (config.txid) payloadConfig.txid = String(config.txid).trim();
       const payload = { method: 'CreateStorageContract', params: [payloadConfig] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());

@@ -6,14 +6,46 @@ const settings = require('../settings/local');
 // Services
 const Hub = require('../services/hub');
 
+// Process Management
+let activeHub = null;
+let exiting = false;
+
+async function exitWithHubStop (reason = 'unknown', exitCode = 0) {
+  if (exiting) return;
+  exiting = true;
+  console.log('[FABRIC:HUB]', `Received ${reason}, shutting down...`);
+
+  try {
+    if (activeHub && typeof activeHub.stop === 'function') {
+      await activeHub.stop();
+    }
+  } catch (err) {
+    console.error('[FABRIC:HUB]', 'Error during shutdown:', err && err.stack ? err.stack : err);
+    exitCode = 1;
+  } finally {
+    // Ensure managed bitcoind is killed so it does not dangle (e.g. if stop() timed out or threw)
+    if (activeHub && activeHub._bitcoindPid) {
+      try {
+        process.kill(activeHub._bitcoindPid, 'SIGKILL');
+        console.log('[FABRIC:HUB]', 'Killed managed bitcoind PID:', activeHub._bitcoindPid);
+      } catch (e) {
+        if (e.code !== 'ESRCH') console.warn('[FABRIC:HUB]', 'Could not kill managed bitcoind:', e.message || e);
+      }
+      activeHub._bitcoindPid = null;
+    }
+    process.exit(exitCode);
+  }
+}
+
 // Main process
 async function main (input = {}) {
   console.log('[FABRIC:HUB]', 'Hub settings:', input);
   const hub = new Hub(input);
+  activeHub = hub;
 
   hub.on('error', (...error) => {
-    console.error('[FABRIC:HUB]', `Error: ${error}`, ...error);
-    process.exit(1);
+    console.error('[FABRIC:HUB]', 'Error:', ...error);
+    void exitWithHubStop('hub:error', 1);
   });
 
   hub.on('ready', function (node) {
@@ -45,7 +77,7 @@ async function main (input = {}) {
     await hub.start();
   } catch (err) {
     console.error('[FABRIC:HUB]', 'Failed to start hub:', err);
-    process.exit(1);
+    await exitWithHubStop('startup failure', 1);
   }
 
   return {
@@ -56,17 +88,20 @@ async function main (input = {}) {
 // Start & handle errors
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FABRIC:HUB] Unhandled Rejection:', reason && reason.stack ? reason.stack : reason);
-  process.exit(1);
+  void exitWithHubStop('unhandledRejection', 1);
 });
 
 process.on('uncaughtException', (err) => {
   console.error('[FABRIC:HUB] Uncaught Exception:', err && err.stack ? err.stack : err);
-  process.exit(1);
+  void exitWithHubStop('uncaughtException', 1);
 });
 
-main(settings).catch((exception) => {
-  console.error('[FABRIC:HUB]', 'Main process threw Exception:', exception && exception.stack ? exception.stack : exception);
-  process.exit(1);
+process.once('SIGINT', () => {
+  void exitWithHubStop('SIGINT', 0);
+});
+
+process.once('SIGTERM', () => {
+  void exitWithHubStop('SIGTERM', 0);
 });
 
 process.on('exit', (code) => {
@@ -75,4 +110,9 @@ process.on('exit', (code) => {
   } else {
     console.error('[FABRIC:HUB]', `Process exited with code ${code}.`);
   }
+});
+
+main(settings).catch((exception) => {
+  console.error('[FABRIC:HUB]', 'Main process threw Exception:', exception && exception.stack ? exception.stack : exception);
+  void exitWithHubStop('main exception', 1);
 });

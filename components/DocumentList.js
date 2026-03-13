@@ -22,6 +22,7 @@ const { sha256: sha256Hash } = require('@noble/hashes/sha256');
 
 // Fabric Types
 const Actor = require('@fabric/core/types/actor');
+const DistributeProposalsList = require('./DistributeProposalsList');
 
 function base64FromArrayBuffer (buffer) {
   const bytes = new Uint8Array(buffer);
@@ -232,6 +233,8 @@ function DocumentsPage (props) {
         </Header>
 
         <Divider />
+
+        <DistributeProposalsList bridgeRef={props.bridgeRef} />
 
         {hasEncryptionKey && (
           <Segment loading={busy}>

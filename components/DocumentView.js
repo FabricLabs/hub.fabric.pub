@@ -4,6 +4,7 @@
 const React = require('react');
 const { Link, useParams, useLocation, useNavigate } = require('react-router-dom');
 
+// Semantic UI
 const {
   Button,
   Card,
@@ -42,10 +43,35 @@ function DocumentDetail (props) {
   const [distributeDeadline, setDistributeDeadline] = React.useState('10s');
   const [distributeError, setDistributeError] = React.useState(null);
 
+  const [distributeInvoice, setDistributeInvoice] = React.useState(null);
+  const [distributeTxid, setDistributeTxid] = React.useState('');
+
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Listen for pay-to-distribute invoice; show payment step when it matches this document
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.documentId) return;
+      const docId = detail.documentId;
+      const sha = doc && doc.sha256;
+      const match = docId === id || docId === sha;
+      if (match) {
+        setDistributeInvoice({
+          address: detail.address,
+          amountSats: detail.amountSats,
+          config: detail.config,
+          network: detail.network
+        });
+        setDistributeTxid('');
+      }
+    };
+    window.addEventListener('distributeInvoiceReady', handler);
+    return () => window.removeEventListener('distributeInvoiceReady', handler);
+  }, [id, doc]);
 
   React.useEffect(() => {
     const handler = (event) => {
@@ -383,99 +409,135 @@ function DocumentDetail (props) {
             if (distributeBusy) return;
             setDistributeOpen(false);
             setDistributeError(null);
+            setDistributeInvoice(null);
+            setDistributeTxid('');
           }}
         >
-          <Header icon="cloud upload" content="Distribute document" />
+          <Header icon="cloud upload" content="Pay to distribute" />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              Pay Bitcoin to have other nodes store this document under a long-term contract.
+              Pay Bitcoin (L1) to have other nodes store this document under a long-term contract.
               By default, storage is requested for 4 years with periodic random challenges.
             </p>
-            <Form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!id || distributeBusy) return;
-                const amount = parseInt(distributeAmountSats, 10);
-                if (!Number.isFinite(amount) || amount <= 0) {
-                  setDistributeError('Enter a positive amount in sats.');
-                  return;
-                }
-                setDistributeError(null);
-                setDistributeBusy(true);
-                const config = {
-                  documentId: id,
-                  amountSats: amount,
-                  durationYears: distributeDurationYears,
-                  challengeCadence: distributeCadence,
-                  responseDeadline: distributeDeadline
-                };
-                if (typeof props.onDistributeDocument === 'function') {
-                  Promise.resolve(props.onDistributeDocument(id, config))
-                    .then(() => {
-                      setDistributeBusy(false);
-                      setDistributeOpen(false);
-                    })
-                    .catch((err) => {
-                      setDistributeBusy(false);
-                      setDistributeError(
-                        (err && err.message) ? err.message : 'Distribution request failed.'
-                      );
-                    });
-                } else {
-                  setDistributeError('Distribution is not available on this hub.');
-                  setDistributeBusy(false);
-                }
-              }}
-            >
-              <Form.Field>
-                <label>Amount (sats)</label>
-                <Input
-                  type="number"
-                  min="1"
-                  placeholder="e.g. 100000"
-                  value={distributeAmountSats}
-                  onChange={(e) => setDistributeAmountSats(e.target.value)}
-                />
-              </Form.Field>
-              <Form.Field>
-                <label>Duration</label>
-                <Input
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={distributeDurationYears}
-                  onChange={(e) => {
-                    const v = parseInt(e.target.value, 10);
-                    if (Number.isFinite(v)) setDistributeDurationYears(v);
-                  }}
-                  label={{ basic: true, content: 'years' }}
-                  labelPosition="right"
-                />
-              </Form.Field>
-              <Form.Field>
-                <label>Challenge frequency</label>
-                <Dropdown
-                  selection
-                  options={cadenceOptions}
-                  value={distributeCadence}
-                  onChange={(_, data) => setDistributeCadence(data.value)}
-                />
-              </Form.Field>
-              <Form.Field>
-                <label>Response deadline</label>
-                <Dropdown
-                  selection
-                  options={deadlineOptions}
-                  value={distributeDeadline}
-                  onChange={(_, data) => setDistributeDeadline(data.value)}
-                />
-              </Form.Field>
-              {distributeError && (
-                <p style={{ marginTop: '0.75em', color: '#b00' }}>
-                  {distributeError}
+            {!distributeInvoice ? (
+              <Form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!id || distributeBusy) return;
+                  const amount = parseInt(distributeAmountSats, 10);
+                  if (!Number.isFinite(amount) || amount <= 0) {
+                    setDistributeError('Enter a positive amount in sats.');
+                    return;
+                  }
+                  setDistributeError(null);
+                  setDistributeBusy(true);
+                  const config = {
+                    amountSats: amount,
+                    durationYears: distributeDurationYears,
+                    challengeCadence: distributeCadence,
+                    responseDeadline: distributeDeadline
+                  };
+                  if (typeof props.onRequestDistributeInvoice === 'function') {
+                    props.onRequestDistributeInvoice(id, config);
+                    setDistributeBusy(false);
+                  } else {
+                    setDistributeError('Distribute is not available on this hub.');
+                    setDistributeBusy(false);
+                  }
+                }}
+              >
+                <Form.Field>
+                  <label>Amount (sats)</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    placeholder="e.g. 100000"
+                    value={distributeAmountSats}
+                    onChange={(e) => setDistributeAmountSats(e.target.value)}
+                  />
+                </Form.Field>
+                <Form.Field>
+                  <label>Duration</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={distributeDurationYears}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      if (Number.isFinite(v)) setDistributeDurationYears(v);
+                    }}
+                    label={{ basic: true, content: 'years' }}
+                    labelPosition="right"
+                  />
+                </Form.Field>
+                <Form.Field>
+                  <label>Challenge frequency</label>
+                  <Dropdown
+                    selection
+                    options={cadenceOptions}
+                    value={distributeCadence}
+                    onChange={(_, data) => setDistributeCadence(data.value)}
+                  />
+                </Form.Field>
+                <Form.Field>
+                  <label>Response deadline</label>
+                  <Dropdown
+                    selection
+                    options={deadlineOptions}
+                    value={distributeDeadline}
+                    onChange={(_, data) => setDistributeDeadline(data.value)}
+                  />
+                </Form.Field>
+                {distributeError && (
+                  <p style={{ marginTop: '0.75em', color: '#b00' }}>
+                    {distributeError}
+                  </p>
+                )}
+              </Form>
+            ) : (
+              <>
+                <Form.Field>
+                  <label>Address</label>
+                  <Input
+                    fluid
+                    readOnly
+                    value={distributeInvoice.address}
+                    onFocus={(e) => e.target.select()}
+                    action={{
+                      icon: 'copy',
+                      title: 'Copy',
+                      onClick: () => {
+                        try {
+                          if (distributeInvoice.address && navigator && navigator.clipboard) {
+                            navigator.clipboard.writeText(distributeInvoice.address);
+                          }
+                        } catch (err) {}
+                      }
+                    }}
+                  />
+                </Form.Field>
+                <Form.Field>
+                  <label>Amount</label>
+                  <Input readOnly value={`${distributeInvoice.amountSats} sats`} />
+                </Form.Field>
+                <Form.Field>
+                  <label>Transaction ID (after paying)</label>
+                  <Input
+                    placeholder="txid from your wallet"
+                    value={distributeTxid}
+                    onChange={(e) => setDistributeTxid(e.target.value)}
+                  />
+                </Form.Field>
+                <p style={{ fontSize: '0.85em', color: '#888' }}>
+                  <Button as={Link} to="/services/bitcoin/payments" size="small" basic>
+                    <Icon name="bitcoin" />
+                    Send payment
+                  </Button>
+                  {' '}or pay from an external wallet. Paste the txid above when done.
                 </p>
-              )}
-            </Form>
+              </>
+            )}
           </Modal.Content>
           <Modal.Actions>
             <Button
@@ -484,27 +546,63 @@ function DocumentDetail (props) {
                 if (distributeBusy) return;
                 setDistributeOpen(false);
                 setDistributeError(null);
+                setDistributeInvoice(null);
+                setDistributeTxid('');
               }}
             >
-              Cancel
+              {distributeInvoice ? 'Back' : 'Cancel'}
             </Button>
-            <Button
-              primary
-              loading={distributeBusy}
-              disabled={distributeBusy}
-              onClick={() => {
-                // Submit the form programmatically
-                const node = document && document.activeElement;
-                if (node && node.form) {
-                  node.form.requestSubmit();
-                } else {
-                  const form = document.querySelector('form');
-                  if (form) form.requestSubmit();
-                }
-              }}
-            >
-              Start distribution
-            </Button>
+            {!distributeInvoice ? (
+              <Button
+                primary
+                loading={distributeBusy}
+                disabled={distributeBusy}
+                onClick={() => {
+                  const node = document && document.activeElement;
+                  if (node && node.form) {
+                    node.form.requestSubmit();
+                  } else {
+                    const form = document.querySelector('form');
+                    if (form) form.requestSubmit();
+                  }
+                }}
+              >
+                Request invoice
+              </Button>
+            ) : (
+              <Button
+                primary
+                loading={distributeBusy}
+                disabled={!distributeTxid.trim() || distributeBusy}
+                onClick={() => {
+                  const tx = distributeTxid.trim();
+                  if (!tx || !id || typeof props.onDistributeDocument !== 'function') return;
+                  setDistributeBusy(true);
+                  const config = {
+                    amountSats: distributeInvoice.amountSats,
+                    durationYears: distributeInvoice.config?.durationYears || distributeDurationYears,
+                    challengeCadence: distributeInvoice.config?.challengeCadence || distributeCadence,
+                    responseDeadline: distributeInvoice.config?.responseDeadline || distributeDeadline,
+                    txid: tx
+                  };
+                  Promise.resolve(props.onDistributeDocument(id, config))
+                    .then(() => {
+                      setDistributeBusy(false);
+                      setDistributeOpen(false);
+                      setDistributeInvoice(null);
+                      setDistributeTxid('');
+                    })
+                    .catch((err) => {
+                      setDistributeBusy(false);
+                      setDistributeError(
+                        (err && err.message) ? err.message : 'Distribution request failed.'
+                      );
+                    });
+                }}
+              >
+                Confirm & Distribute
+              </Button>
+            )}
           </Modal.Actions>
         </Modal>
 

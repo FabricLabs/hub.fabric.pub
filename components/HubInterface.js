@@ -24,6 +24,9 @@ const Identity = require('@fabric/core/types/identity');
 // Components
 const Bridge = require('./Bridge');
 const BitcoinHome = require('./BitcoinHome');
+const BitcoinBlockView = require('./BitcoinBlockView');
+const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
+const BitcoinTransactionView = require('./BitcoinTransactionView');
 const BottomPanel = require('./BottomPanel');
 const ContractList = require('./ContractList');
 const ContractView = require('./ContractView');
@@ -34,6 +37,11 @@ const IdentityManager = require('./IdentityManager');
 const PeerList = require('./PeerList');
 const PeerView = require('./PeerView');
 const TopPanel = require('./TopPanel');
+const {
+  getWalletContextFromIdentity,
+  fetchWalletSummaryWithCache,
+  loadUpstreamSettings
+} = require('../functions/bitcoinClient');
 
 // Semantic UI
 const {
@@ -44,6 +52,7 @@ const {
   Icon,
   Input,
   Loader,
+  Message,
   Segment
 } = require('semantic-ui-react');
 
@@ -173,6 +182,15 @@ class HubInterface extends React.Component {
       uiHubAddressDraft: initialHubAddress,
       uiHubAddressError: null,
       uiIdentityOpen: false,
+      uiSignMessageOpen: false,
+      uiSignMessageText: '',
+      uiSignMessageResult: null,
+      uiVerifyMessageText: '',
+      uiVerifySignature: '',
+      uiVerifyPublicKey: '',
+      uiVerifyResult: null,
+      uiDestroyIdentityConfirmOpen: false,
+      clientBalance: null,
       uiLocalIdentity: initialLocalIdentity,
       uiHasLockedIdentity: initialHasLockedIdentity,
       webrtcChatOnly: false
@@ -222,10 +240,89 @@ class HubInterface extends React.Component {
 
   componentDidMount () {
     console.debug('[HUB]', 'Component mounted!');
+    this._refreshClientBalance();
+    this._onGlobalStateUpdate = (e) => {
+      const d = e && e.detail;
+      if (d && d.operation && d.operation.path === '/bitcoin' && this.state.uiLocalIdentity && this.state.uiLocalIdentity.xpub) {
+        this._refreshClientBalance();
+      }
+    };
+    this._onClientBalanceUpdate = () => {
+      if (this.state.uiLocalIdentity && this.state.uiLocalIdentity.xpub) this._refreshClientBalance();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('globalStateUpdate', this._onGlobalStateUpdate);
+      window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
+    }
   }
 
   componentWillUnmount () {
     console.debug('[HUB]', 'Cleaning up...');
+    if (typeof window !== 'undefined') {
+      if (this._onGlobalStateUpdate) window.removeEventListener('globalStateUpdate', this._onGlobalStateUpdate);
+      if (this._onClientBalanceUpdate) window.removeEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
+    }
+  }
+
+  componentDidUpdate (prevProps, prevState) {
+    const prevXpub = (prevState.uiLocalIdentity || prevProps.auth || {}).xpub;
+    const nextXpub = (this.state.uiLocalIdentity || this.props.auth || {}).xpub;
+    if (prevXpub !== nextXpub) this._refreshClientBalance();
+  }
+
+  async _refreshClientBalance (forceRefresh = false) {
+    const identity = this.state.uiLocalIdentity || this.props.auth || null;
+    const wallet = getWalletContextFromIdentity(identity || {});
+    if (!wallet.walletId || !wallet.xpub) {
+      this.setState({ clientBalance: null });
+      return;
+    }
+    const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
+    const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus);
+    const bitcoin = networkStatus && networkStatus.state && networkStatus.state.services && networkStatus.state.services.bitcoin;
+    const network = (bitcoin && bitcoin.network) ? String(bitcoin.network).toLowerCase() : 'regtest';
+    try {
+      const upstream = loadUpstreamSettings();
+      const summary = await fetchWalletSummaryWithCache(upstream, wallet, { bypassCache: forceRefresh, network });
+      const balanceSats = Number(summary.balanceSats ?? summary.balance ?? 0);
+      if (Number.isFinite(balanceSats)) {
+        this.setState({
+          clientBalance: {
+            balanceSats,
+            confirmedSats: Number(summary.confirmedSats ?? balanceSats),
+            unconfirmedSats: Number(summary.unconfirmedSats ?? 0),
+            fromCache: !!summary._fromCache
+          }
+        });
+      } else {
+        this.setState({ clientBalance: null });
+      }
+    } catch (e) {
+      this.setState((prev) => ({ clientBalance: prev.clientBalance }));
+    }
+  }
+
+  _handleLockIdentity () {
+    const local = this.state.uiLocalIdentity;
+    if (!local || !local.xprv) return;
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem('fabric.identity.unlocked');
+      }
+      if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearDecryptedDocuments === 'function') {
+        try { this.bridgeRef.current.clearDecryptedDocuments(); } catch (e) {}
+      }
+      this.setState({
+        uiLocalIdentity: {
+          id: local.id,
+          xpub: local.xpub,
+          passwordProtected: !!local.passwordProtected
+        },
+        uiHasLockedIdentity: true
+      });
+    } catch (e) {
+      console.error('[HUB]', 'Error locking identity:', e);
+    }
   }
 
   handleBridgeStateUpdate (newState) {
@@ -335,11 +432,17 @@ class HubInterface extends React.Component {
                   hasLocalIdentity={!!hasLocal}
                   hasLockedIdentity={effectiveHasLockedIdentity}
                   bitcoin={bitcoin}
+                  clientBalance={this.state.clientBalance}
+                  onRefreshBalance={() => this._refreshClientBalance(true)}
                   onUnlockIdentity={() => {
                     this.setState({ uiIdentityOpen: true });
                   }}
+                  onLockIdentity={() => this._handleLockIdentity()}
                   onLogin={this.requestLogin}
                   onManageIdentity={this.openIdentityManager}
+                  onProfile={this.openIdentityManager}
+                  onSignMessage={() => this.setState({ uiSignMessageOpen: true })}
+                  onDestroyIdentity={() => this.setState({ uiDestroyIdentityConfirmOpen: true })}
                   onOpenSettings={() => {
                     this.setState({
                       uiSettingsOpen: true,
@@ -486,6 +589,199 @@ class HubInterface extends React.Component {
                   </Modal.Actions>
                 </Modal>
 
+                <Modal
+                  size="small"
+                  open={!!this.state.uiSignMessageOpen}
+                  onClose={() => this.setState({
+                    uiSignMessageOpen: false,
+                    uiSignMessageText: '',
+                    uiSignMessageResult: null,
+                    uiVerifyMessageText: '',
+                    uiVerifySignature: '',
+                    uiVerifyPublicKey: '',
+                    uiVerifyResult: null
+                  })}
+                >
+                  <Header icon>
+                    <Icon name="pencil" />
+                    Sign & verify message
+                  </Header>
+                  <Modal.Content>
+                    <Form>
+                      <Form.Field>
+                        <label>Message to sign</label>
+                        <Input
+                          placeholder="Enter message to sign"
+                          value={this.state.uiSignMessageText || ''}
+                          onChange={(e) => this.setState({ uiSignMessageText: e.target.value, uiSignMessageResult: null })}
+                        />
+                      </Form.Field>
+                      {this.state.uiSignMessageResult && (
+                        <Message className="fade-in">
+                          <Form.Field>
+                            <label>Public key (hex)</label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                              <span>{this.state.uiSignMessageResult.publicKey}</span>
+                              <Icon
+                                name="copy"
+                                link
+                                onClick={() => { try { navigator.clipboard.writeText(this.state.uiSignMessageResult.publicKey); } catch (e) {} }}
+                                style={{ cursor: 'pointer' }}
+                              />
+                            </div>
+                          </Form.Field>
+                          <Form.Field>
+                            <label>Signature</label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                              <span>{this.state.uiSignMessageResult.signature}</span>
+                              <Icon
+                                name="copy"
+                                link
+                                onClick={() => { try { navigator.clipboard.writeText(this.state.uiSignMessageResult.signature); } catch (e) {} }}
+                                style={{ cursor: 'pointer' }}
+                              />
+                            </div>
+                          </Form.Field>
+                        </Message>
+                      )}
+
+                      <Header as="h4" dividing style={{ marginTop: '1.5em' }}>
+                        Verify signature
+                      </Header>
+                      <Form.Field>
+                        <label>Message</label>
+                        <Input
+                          placeholder="Message that was signed"
+                          value={this.state.uiVerifyMessageText || ''}
+                          onChange={(e) => this.setState({ uiVerifyMessageText: e.target.value, uiVerifyResult: null })}
+                        />
+                      </Form.Field>
+                      <Form.Field>
+                        <label>Public key (hex)</label>
+                        <Input
+                          placeholder="Compressed public key (66 hex chars)"
+                          value={this.state.uiVerifyPublicKey || ''}
+                          onChange={(e) => this.setState({ uiVerifyPublicKey: e.target.value, uiVerifyResult: null })}
+                        />
+                      </Form.Field>
+                      <Form.Field>
+                        <label>Signature (hex)</label>
+                        <Input
+                          placeholder="Signature (128 hex chars)"
+                          value={this.state.uiVerifySignature || ''}
+                          onChange={(e) => this.setState({ uiVerifySignature: e.target.value, uiVerifyResult: null })}
+                        />
+                      </Form.Field>
+                      {this.state.uiVerifyResult === true && (
+                        <Message success className="fade-in">
+                          <Icon name="check" color="green" size="large" />
+                          Signature is valid
+                        </Message>
+                      )}
+                      {this.state.uiVerifyResult === false && (
+                        <Message negative className="fade-in">
+                          <Icon name="close" color="red" size="large" />
+                          Signature is invalid
+                        </Message>
+                      )}
+                    </Form>
+                  </Modal.Content>
+                  <Modal.Actions>
+                    <Button basic onClick={() => this.setState({
+                      uiSignMessageOpen: false,
+                      uiSignMessageText: '',
+                      uiSignMessageResult: null,
+                      uiVerifyMessageText: '',
+                      uiVerifySignature: '',
+                      uiVerifyPublicKey: '',
+                      uiVerifyResult: null
+                    })}>
+                      Close
+                    </Button>
+                    <Button
+                      primary
+                      onClick={() => {
+                        const text = (this.state.uiSignMessageText || '').trim();
+                        if (!text) return;
+                        const bridge = this.bridgeRef && this.bridgeRef.current;
+                        const result = bridge && typeof bridge.signArbitraryText === 'function' ? bridge.signArbitraryText(text) : null;
+                        this.setState({
+                          uiSignMessageResult: result,
+                          uiVerifyMessageText: result ? text : this.state.uiVerifyMessageText,
+                          uiVerifyPublicKey: result ? result.publicKey : this.state.uiVerifyPublicKey,
+                          uiVerifySignature: result ? result.signature : this.state.uiVerifySignature,
+                          uiVerifyResult: null
+                        });
+                      }}
+                      disabled={!((this.state.uiSignMessageText || '').trim())}
+                    >
+                      <Icon name="pencil" />
+                      Sign
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        const msg = (this.state.uiVerifyMessageText || '').trim();
+                        const sig = (this.state.uiVerifySignature || '').trim();
+                        const pub = (this.state.uiVerifyPublicKey || '').trim();
+                        if (!msg || !sig || !pub) return;
+                        const bridge = this.bridgeRef && this.bridgeRef.current;
+                        const result = bridge && typeof bridge.verifyArbitraryText === 'function'
+                          ? bridge.verifyArbitraryText(msg, sig, pub)
+                          : null;
+                        this.setState({ uiVerifyResult: result });
+                      }}
+                      disabled={!((this.state.uiVerifyMessageText || '').trim()) || !((this.state.uiVerifySignature || '').trim()) || !((this.state.uiVerifyPublicKey || '').trim())}
+                    >
+                      <Icon name="check" />
+                      Verify
+                    </Button>
+                  </Modal.Actions>
+                </Modal>
+
+                <Modal
+                  size="tiny"
+                  open={!!this.state.uiDestroyIdentityConfirmOpen}
+                  onClose={() => this.setState({ uiDestroyIdentityConfirmOpen: false })}
+                >
+                  <Header icon>
+                    <Icon name="trash" color="red" />
+                    Destroy identity
+                  </Header>
+                  <Modal.Content>
+                    <p>This will remove your local identity and all documents from this browser. This cannot be undone. Make sure you have backed up your seed phrase.</p>
+                  </Modal.Content>
+                  <Modal.Actions>
+                    <Button basic onClick={() => this.setState({ uiDestroyIdentityConfirmOpen: false })}>
+                      Cancel
+                    </Button>
+                    <Button
+                      negative
+                      onClick={() => {
+                        if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
+                          try { this.bridgeRef.current.clearAllDocuments(); } catch (e) {}
+                        }
+                        try {
+                          if (typeof window !== 'undefined') {
+                            if (window.localStorage) window.localStorage.removeItem('fabric.identity.local');
+                            if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
+                            if (window.localStorage) window.localStorage.removeItem('fabric:documents');
+                          }
+                        } catch (e) {}
+                        this.setState({
+                          uiLocalIdentity: null,
+                          uiHasLockedIdentity: false,
+                          uiIdentityOpen: false,
+                          uiDestroyIdentityConfirmOpen: false,
+                          uiSignMessageOpen: false
+                        });
+                      }}
+                    >
+                      <Icon name="trash" />
+                      Destroy
+                    </Button>
+                  </Modal.Actions>
+                </Modal>
+
                 <Routes>
                   <Route
                     path="/"
@@ -556,6 +852,43 @@ class HubInterface extends React.Component {
                     path="/services/bitcoin"
                     element={(
                       <BitcoinHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/blocks/:blockhash"
+                    element={(
+                      <BitcoinBlockView
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/payments"
+                    element={(
+                      <BitcoinPaymentsHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bitcoin={bitcoin}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/transactions/:txhash"
+                    element={(
+                      <BitcoinTransactionView
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
                         bridge={this.props.bridge}
@@ -789,8 +1122,15 @@ class HubInterface extends React.Component {
                             bridgeInstance.sendPublishDocumentRequest(id);
                           }
                         }}
-                        onDistributeDocument={(id, config) => {
+                        onRequestDistributeInvoice={(id, config) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendCreateDistributeInvoiceRequest === 'function') {
+                            bridgeInstance.sendCreateDistributeInvoiceRequest(id, config);
+                          }
+                        }}
+                        onDistributeDocument={(id, config) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return null;
                           const bridgeInstance = this.bridgeRef.current;
                           if (typeof bridgeInstance.sendDistributeDocumentRequest === 'function') {
                             return bridgeInstance.sendDistributeDocumentRequest(id, config);
