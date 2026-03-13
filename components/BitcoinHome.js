@@ -1120,6 +1120,13 @@ class BitcoinHome extends React.Component {
                       <strong>Bad file descriptor</strong> often indicates a CLN resource issue. Try: restart the Lightning node; check <code>ulimit -n</code> (file descriptor limit); verify the remote is listening with <code>nc -zv host 9735</code>.
                     </p>
                   )}
+                  {this.state.channelCreateResult.error && /Unsupported feature|feature 44|WIRE_WARNING|peer_disconnected/i.test(
+                    [this.state.channelCreateResult.error, this.state.channelCreateResult.detail].filter(Boolean).join(' ')
+                  ) && (
+                    <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
+                      <strong>Unsupported feature 44</strong> means the remote node does not support BOLT 9 channel_type. Upgrade the remote Lightning node (LND, CLN, or Eclair) to a version from 2021 or later.
+                    </p>
+                  )}
                   {this.state.channelCreateResult.hint && (
                     <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
                       {this.state.channelCreateResult.hint}

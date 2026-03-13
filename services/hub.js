@@ -2416,16 +2416,28 @@ class Hub extends Service {
                     }
                     if (lastConnectErr) {
                       const detail = lastConnectErr && lastConnectErr.message ? lastConnectErr.message : String(lastConnectErr);
+                      let hint = 'Disconnected idle peers and retried. Restart the Lightning node or check ulimit -n if this persists.';
+                      if (/Unsupported feature|feature 44|WIRE_WARNING|peer_disconnected/i.test(detail)) {
+                        hint = 'The remote node does not support BOLT 9 feature 44 (channel_type). Upgrade the remote Lightning node (e.g. LND, CLN, Eclair) to a version that supports it (2021+).';
+                      }
                       return res.status(400).json({
                         error: 'Failed to connect to peer',
                         detail,
                         status,
-                        hint: 'Disconnected idle peers and retried. Restart the Lightning node or check ulimit -n if this persists.'
+                        hint
                       });
                     }
                     break;
                   }
-                  return res.status(400).json({ error: 'Failed to connect to peer', detail: msg });
+                  let hint;
+                  if (/Unsupported feature|feature 44|WIRE_WARNING|peer_disconnected/i.test(msg)) {
+                    hint = 'The remote node does not support BOLT 9 feature 44 (channel_type). Upgrade the remote Lightning node to a version that supports it (2021+).';
+                  }
+                  return res.status(400).json({
+                    error: 'Failed to connect to peer',
+                    detail: msg,
+                    ...(hint ? { hint } : {})
+                  });
                 }
               }
             }
@@ -2433,8 +2445,14 @@ class Hub extends Service {
             return res.status(200).json({ channel: result });
           }
         } catch (err) {
+          const msg = err && err.message ? err.message : String(err);
+          let hint;
+          if (/Unsupported feature|feature 44|WIRE_WARNING|peer_disconnected/i.test(msg)) {
+            hint = 'The remote node does not support BOLT 9 feature 44 (channel_type). Upgrade the remote Lightning node to a version that supports it (2021+).';
+          }
           return res.status(500).json({
-            error: err && err.message ? err.message : 'Lightning request failed'
+            error: msg,
+            ...(hint ? { hint } : {})
           });
         }
         return res.status(400).json({ error: 'Unknown Lightning mutation path' });
