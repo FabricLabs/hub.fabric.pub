@@ -2184,13 +2184,27 @@ class Hub extends Service {
       }
       if (this.lightning) {
         try {
-          const info = await this.lightning._makeRPCRequest('getinfo', []);
+          const [info, funds] = await Promise.all([
+            this.lightning._makeRPCRequest('getinfo', []),
+            this.lightning._makeRPCRequest('listfunds', []).catch(() => ({ outputs: [], channels: [] }))
+          ]);
           const addresses = Array.isArray(info.address) ? info.address : [];
           const bindings = Array.isArray(info.binding) ? info.binding : [];
           const addr = addresses.find((a) => a && (a.type === 'ipv4' || a.type === 'ipv6')) || addresses[0];
           const bind = bindings.find((b) => b && (b.type === 'ipv4' || b.type === 'ipv6')) || bindings[0];
           const hostPort = (addr && addr.address && addr.port ? `${addr.address}:${addr.port}` : null) ||
             (bind && bind.address && bind.port ? `${bind.address}:${bind.port}` : null);
+          let depositAddress = null;
+          let balanceSats = 0;
+          try {
+            const newaddr = await this.lightning._makeRPCRequest('newaddr', ['p2tr']);
+            depositAddress = newaddr.p2tr || newaddr.bech32 || null;
+          } catch (_) {}
+          const outputs = Array.isArray(funds.outputs) ? funds.outputs : [];
+          for (const o of outputs) {
+            const amt = o.amount_msat != null ? Math.floor(Number(o.amount_msat) / 1000) : (o.amount_sat != null ? Number(o.amount_sat) : 0);
+            if (o.status === 'confirmed') balanceSats += amt;
+          }
           return res.status(200).json({
             available: true,
             status: 'RUNNING',
@@ -2201,7 +2215,9 @@ class Hub extends Service {
               color: info.color,
               address: hostPort,
               addresses,
-              binding: bind ? `${bind.address}:${bind.port}` : null
+              binding: bind ? `${bind.address}:${bind.port}` : null,
+              depositAddress,
+              balanceSats
             },
             message: 'Lightning node is running.'
           });
@@ -2340,19 +2356,80 @@ class Hub extends Service {
             const remote = String(body.remote || '').trim();
             const amountSats = Number(body.amountSats || body.amount_sats || 0);
             const pushMsat = body.pushMsat != null ? Number(body.pushMsat) : (body.push_msat != null ? Number(body.push_msat) : null);
-            if (!peerId) return res.status(400).json({ error: 'peerId required' });
+            let connectString = remote;
+            if (connectString && peerId && !connectString.includes('@')) {
+              connectString = `${peerId}@${connectString}`;
+            }
+            const resolvedPeerId = connectString && connectString.includes('@')
+              ? connectString.split('@')[0].trim()
+              : peerId;
+            if (!resolvedPeerId) return res.status(400).json({ error: 'peerId or remote (id@ip:port) required' });
             if (amountSats < 10000) return res.status(400).json({ error: 'amountSats must be at least 10000' });
-            if (remote) {
-              try {
-                await this.lightning.connectTo(remote);
-              } catch (connectErr) {
-                const msg = connectErr && connectErr.message ? connectErr.message : String(connectErr);
-                if (!msg.includes('already connected')) {
+            if (connectString) {
+              const maxConnectAttempts = 3;
+              let lastConnectErr = null;
+              for (let attempt = 1; attempt <= maxConnectAttempts; attempt++) {
+                try {
+                  await this.lightning.connectTo(connectString);
+                  lastConnectErr = null;
+                  break;
+                } catch (err) {
+                  lastConnectErr = err;
+                  const msg = err && err.message ? err.message : String(err);
+                  if (msg.includes('already connected')) {
+                    lastConnectErr = null;
+                    break;
+                  }
+                  if (msg.includes('Bad file descriptor') && attempt < maxConnectAttempts) {
+                    await new Promise(r => setTimeout(r, 1500 * attempt));
+                    continue;
+                  }
+                  if (msg.includes('Bad file descriptor') && attempt === maxConnectAttempts) {
+                    let status = {};
+                    try {
+                      const [info, peersResp] = await Promise.all([
+                        this.lightning._makeRPCRequest('getinfo', []).catch(() => ({})),
+                        this.lightning._makeRPCRequest('listpeers', []).catch(() => ({ peers: [] }))
+                      ]);
+                      const peers = peersResp.peers || [];
+                      const idlePeers = peers.filter(p => p.connected && p.num_channels === 0 && p.id !== resolvedPeerId);
+                      let idleDisconnected = 0;
+                      for (const p of idlePeers) {
+                        try {
+                          await this.lightning._makeRPCRequest('disconnect', [p.id]);
+                          idleDisconnected++;
+                        } catch (_) {}
+                      }
+                      status = { getinfo: info, peerCount: peers.length, idleDisconnected };
+                      if (idlePeers.length > 0) {
+                        await new Promise(r => setTimeout(r, 2000));
+                        try {
+                          await this.lightning.connectTo(connectString);
+                          lastConnectErr = null;
+                          break;
+                        } catch (retryErr) {
+                          lastConnectErr = retryErr;
+                        }
+                      }
+                    } catch (diagErr) {
+                      status.diagnosticError = diagErr && diagErr.message ? diagErr.message : String(diagErr);
+                    }
+                    if (lastConnectErr) {
+                      const detail = lastConnectErr && lastConnectErr.message ? lastConnectErr.message : String(lastConnectErr);
+                      return res.status(400).json({
+                        error: 'Failed to connect to peer',
+                        detail,
+                        status,
+                        hint: 'Disconnected idle peers and retried. Restart the Lightning node or check ulimit -n if this persists.'
+                      });
+                    }
+                    break;
+                  }
                   return res.status(400).json({ error: 'Failed to connect to peer', detail: msg });
                 }
               }
             }
-            const result = await this.lightning.createChannel(peerId, String(amountSats), pushMsat);
+            const result = await this.lightning.createChannel(resolvedPeerId, String(amountSats), pushMsat);
             return res.status(200).json({ channel: result });
           }
         } catch (err) {
@@ -2490,7 +2567,7 @@ class Hub extends Service {
         managed: true,
         network: 'regtest',
         datadir: path.resolve(process.cwd(), './stores/lightning/hub'),
-        hostname: '127.0.0.1',
+        hostname: '0.0.0.0',
         port: 9735,
         debug: !!this.settings.debug,
         bitcoin: {

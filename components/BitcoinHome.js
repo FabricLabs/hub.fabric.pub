@@ -87,7 +87,6 @@ class BitcoinHome extends React.Component {
       bitcoinStatus: { available: false, status: 'STARTING' },
       lightningStatus: { available: false, status: 'UNAVAILABLE' },
       lightningChannels: [],
-      channelCreatePeerId: '',
       channelCreateRemote: '',
       channelCreateAmountSats: '100000',
       channelCreatePushMsat: '',
@@ -395,10 +394,14 @@ class BitcoinHome extends React.Component {
   }
 
   async handleCreateChannel () {
-    const peerId = String(this.state.channelCreatePeerId || '').trim();
+    const remote = String(this.state.channelCreateRemote || '').trim();
     const amountSats = Number(this.state.channelCreateAmountSats || 0);
-    if (!peerId) {
-      this.setState({ channelCreateResult: { error: 'Peer ID is required.' } });
+    if (!remote) {
+      this.setState({ channelCreateResult: { error: 'Remote (id@ip:port) is required.' } });
+      return;
+    }
+    if (!remote.includes('@')) {
+      this.setState({ channelCreateResult: { error: 'Remote must be id@ip:port (e.g. 03abc...@192.168.50.5:9735).' } });
       return;
     }
     if (!Number.isFinite(amountSats) || amountSats < 10000) {
@@ -408,19 +411,17 @@ class BitcoinHome extends React.Component {
     this.setState({ channelCreateLoading: true, channelCreateResult: null });
     try {
       const result = await createLightningChannel(this.state.upstream, {
-        peerId,
-        remote: this.state.channelCreateRemote.trim() || undefined,
+        remote,
         amountSats,
         pushMsat: this.state.channelCreatePushMsat ? Number(this.state.channelCreatePushMsat) : undefined
       });
+      const hasError = result && (result.error || result.detail);
       this.setState({
         channelCreateResult: result,
         channelCreateLoading: false,
-        channelCreatePeerId: '',
-        channelCreateRemote: '',
-        channelCreatePushMsat: ''
+        ...(hasError ? {} : { channelCreateRemote: '', channelCreatePushMsat: '' })
       });
-      await this.refresh();
+      if (!hasError) await this.refresh();
     } catch (error) {
       this.setState({
         channelCreateResult: { error: error && error.message ? error.message : String(error) },
@@ -530,9 +531,7 @@ class BitcoinHome extends React.Component {
               </Button>
             </div>
           </div>
-          <p style={{ marginTop: '0.5em', color: '#666' }}>
-            Simple payment flow first. Advanced UTXO controls are tucked behind additional interaction.
-          </p>
+          <p style={{ marginTop: '0.5em', color: '#666' }}>Bitcoin is a new form of money designed for the Internet.</p>
         </Segment>
 
         {!hasUpstream && (
@@ -735,7 +734,7 @@ class BitcoinHome extends React.Component {
           )}
         </Segment>
 
-        <Segment>
+        <Segment data-faucet-segment>
           <Header as='h3'>Faucet</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
             <strong>Bridge:</strong> draws from Beacon/Hub wallet (regtest only). Max 1,000,000 sats per request.
@@ -943,6 +942,71 @@ class BitcoinHome extends React.Component {
             </Message>
           )}
 
+          {lightningAvailable && this.state.lightningStatus && this.state.lightningStatus.status === 'RUNNING' && (
+            <Segment style={{ padding: '0.75em', marginBottom: '1em', background: 'rgba(0,0,0,0.02)' }}>
+              <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Fund Lightning node</Header>
+              <p style={{ color: '#666', marginBottom: '0.5em', fontSize: '0.95em' }}>
+                Send on-chain Bitcoin to this address to fund the Lightning node. You need funds before creating channels. Use the Faucet below (regtest) or Send Payment.
+              </p>
+              {this.state.lightningStatus.node && this.state.lightningStatus.node.depositAddress && (
+                <div style={{ marginBottom: '0.5em' }}>
+                  <strong>Deposit address:</strong>{' '}
+                  <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.depositAddress}</code>
+                  <Button
+                    size='mini'
+                    basic
+                    icon
+                    style={{ marginLeft: '0.25em' }}
+                    onClick={() => {
+                      const addr = this.state.lightningStatus.node.depositAddress;
+                      try {
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                          navigator.clipboard.writeText(addr);
+                        } else {
+                          const ta = document.createElement('textarea');
+                          ta.value = addr;
+                          ta.style.position = 'fixed';
+                          ta.style.opacity = '0';
+                          document.body.appendChild(ta);
+                          ta.select();
+                          document.execCommand('copy');
+                          document.body.removeChild(ta);
+                        }
+                      } catch (e) {}
+                    }}
+                    title='Copy deposit address'
+                  >
+                    <Icon name='copy' />
+                  </Button>
+                  <Button
+                    size='mini'
+                    basic
+                    icon
+                    style={{ marginLeft: '0.25em' }}
+                    onClick={() => {
+                      this.setState({ faucetAddress: this.state.lightningStatus.node.depositAddress });
+                      const faucetSegment = document.querySelector('[data-faucet-segment]');
+                      if (faucetSegment) faucetSegment.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    title='Use this address in the Faucet below'
+                  >
+                    <Icon name='tint' />
+                    Use in Faucet
+                  </Button>
+                </div>
+              )}
+              {this.state.lightningStatus.node && this.state.lightningStatus.node.balanceSats != null && (
+                <div style={{ marginBottom: '0.5em' }}>
+                  <strong>On-chain balance:</strong>{' '}
+                  {Number(this.state.lightningStatus.node.balanceSats).toLocaleString()} sats
+                  {this.state.lightningStatus.node.balanceSats < 10000 && (
+                    <span style={{ marginLeft: '0.5em', color: '#b00' }}>(need at least 10,000 sats for channels)</span>
+                  )}
+                </div>
+              )}
+            </Segment>
+          )}
+
           {lightningAvailable && (
             <>
               <Header as='h4' style={{ marginTop: '1em' }}>Channels ({this.state.lightningChannels.length})</Header>
@@ -983,22 +1047,14 @@ class BitcoinHome extends React.Component {
 
               <Header as='h4' style={{ marginTop: '1.5em' }}>Create channel</Header>
               <p style={{ color: '#666', marginBottom: '0.5em' }}>
-                Connect to a peer and open a channel. <strong>Remote (id@ip:port) is required</strong> for the first connection — copy it from the other node&apos;s Share section above.
+                Connect to a peer and open a channel. Paste the <strong>connect string (id@ip:port)</strong> from the other node&apos;s Share section above.
               </p>
               <Form>
                 <Form.Group widths='equal'>
                   <Form.Field>
-                    <label>Peer ID (node pubkey)</label>
-                    <Input
-                      placeholder='03abc123...'
-                      value={this.state.channelCreatePeerId}
-                      onChange={(e) => this.setState({ channelCreatePeerId: e.target.value })}
-                    />
-                  </Form.Field>
-                  <Form.Field>
                     <label>Remote (id@ip:port)</label>
                     <Input
-                      placeholder='03abc123...@127.0.0.1:9735'
+                      placeholder='03abc123...@192.168.50.5:9735'
                       value={this.state.channelCreateRemote}
                       onChange={(e) => this.setState({ channelCreateRemote: e.target.value })}
                     />
@@ -1043,7 +1099,38 @@ class BitcoinHome extends React.Component {
                   positive={!this.state.channelCreateResult.error}
                 >
                   <Message.Header>{this.state.channelCreateResult.error ? 'Channel creation failed' : 'Channel created'}</Message.Header>
-                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.channelCreateResult, null, 2)}</pre>
+                  {this.state.channelCreateResult.error && (
+                    <p style={{ marginBottom: '0.5em' }}>
+                      {this.state.channelCreateResult.error}
+                      {this.state.channelCreateResult.detail && ` — ${this.state.channelCreateResult.detail}`}
+                    </p>
+                  )}
+                  {this.state.channelCreateResult.error && /connect|peer|connection/i.test(this.state.channelCreateResult.error) && (
+                    <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
+                      Ensure the <strong>Remote (id@ip:port)</strong> field is filled with the other node&apos;s connect string from their Share section. The other node must be running and reachable (use the host&apos;s IP, not 127.0.0.1, when connecting across machines).
+                    </p>
+                  )}
+                  {this.state.channelCreateResult.error && /wrong key|handshake/i.test(this.state.channelCreateResult.error) && (
+                    <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
+                      <strong>Wrong key / handshake failed</strong> means the node ID doesn&apos;t match the node at that address. Use the <strong>other</strong> node&apos;s connect string — not your own. If you&apos;re on the same machine, ensure you&apos;re not connecting this Hub to itself.
+                    </p>
+                  )}
+                  {this.state.channelCreateResult.error && /bad file descriptor/i.test(this.state.channelCreateResult.error) && (
+                    <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
+                      <strong>Bad file descriptor</strong> often indicates a CLN resource issue. Try: restart the Lightning node; check <code>ulimit -n</code> (file descriptor limit); verify the remote is listening with <code>nc -zv host 9735</code>.
+                    </p>
+                  )}
+                  {this.state.channelCreateResult.hint && (
+                    <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
+                      {this.state.channelCreateResult.hint}
+                    </p>
+                  )}
+                  {this.state.channelCreateResult.status && (
+                    <p style={{ fontSize: '0.85em', color: '#555', marginTop: '0.5em' }}>
+                      <strong>Status:</strong> {this.state.channelCreateResult.status.peerCount != null ? `${this.state.channelCreateResult.status.peerCount} peers` : '—'} {this.state.channelCreateResult.status.idleDisconnected != null ? `(${this.state.channelCreateResult.status.idleDisconnected} idle disconnected)` : ''}
+                    </p>
+                  )}
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '0.5em' }}>{JSON.stringify(this.state.channelCreateResult, null, 2)}</pre>
                 </Message>
               )}
             </>
