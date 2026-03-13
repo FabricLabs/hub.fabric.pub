@@ -42,6 +42,9 @@ class Home extends React.Component {
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
     const state = networkStatus && networkStatus.state;
+    const peerId = networkStatus && networkStatus.contract ? String(networkStatus.contract) : null;
+    const hostPort = network && network.address ? String(network.address) : null;
+    const shareableString = [peerId, hostPort].filter(Boolean).join('\n');
     const meshStatus = current && typeof current.webrtcMeshStatus !== 'undefined'
       ? current.webrtcMeshStatus
       : null;
@@ -74,11 +77,51 @@ class Home extends React.Component {
                   </span>
                 </Card.Meta>
                 <Card.Description>
-                  {network && network.address ? (
-                    <div style={{ marginBottom: '1em' }}>
-                      <strong>Address:</strong> {network.address}
+                  {(peerId || hostPort) && (
+                    <div style={{ marginBottom: '1em', padding: '0.75em', background: 'rgba(0,0,0,0.03)', borderRadius: '4px' }}>
+                      <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Share with other peers</Header>
+                      {peerId && (
+                        <div style={{ marginBottom: '0.5em' }}>
+                          <strong>Peer ID:</strong>{' '}
+                          <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{peerId}</code>
+                        </div>
+                      )}
+                      {hostPort && (
+                        <div style={{ marginBottom: '0.5em' }}>
+                          <strong>Address:</strong>{' '}
+                          <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{hostPort}</code>
+                        </div>
+                      )}
+                      {shareableString && (
+                        <Button
+                          size='small'
+                          basic
+                          icon
+                          labelPosition='left'
+                          onClick={() => {
+                            try {
+                              if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(shareableString);
+                              } else {
+                                const ta = document.createElement('textarea');
+                                ta.value = shareableString;
+                                ta.style.position = 'fixed';
+                                ta.style.opacity = '0';
+                                document.body.appendChild(ta);
+                                ta.select();
+                                document.execCommand('copy');
+                                document.body.removeChild(ta);
+                              }
+                            } catch (e) {}
+                          }}
+                          title='Copy peer ID and address'
+                        >
+                          <Icon name='copy' />
+                          Copy to clipboard
+                        </Button>
+                      )}
                     </div>
-                  ) : null}
+                  )}
                   <div
                     style={{
                       marginBottom: '0.75em',

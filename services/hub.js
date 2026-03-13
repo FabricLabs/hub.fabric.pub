@@ -2185,11 +2185,24 @@ class Hub extends Service {
       if (this.lightning) {
         try {
           const info = await this.lightning._makeRPCRequest('getinfo', []);
+          const addresses = Array.isArray(info.address) ? info.address : [];
+          const bindings = Array.isArray(info.binding) ? info.binding : [];
+          const addr = addresses.find((a) => a && (a.type === 'ipv4' || a.type === 'ipv6')) || addresses[0];
+          const bind = bindings.find((b) => b && (b.type === 'ipv4' || b.type === 'ipv6')) || bindings[0];
+          const hostPort = (addr && addr.address && addr.port ? `${addr.address}:${addr.port}` : null) ||
+            (bind && bind.address && bind.port ? `${bind.address}:${bind.port}` : null);
           return res.status(200).json({
             available: true,
             status: 'RUNNING',
             service: 'lightning',
-            node: { id: info.id, alias: info.alias, color: info.color },
+            node: {
+              id: info.id,
+              alias: info.alias,
+              color: info.color,
+              address: hostPort,
+              addresses,
+              binding: bind ? `${bind.address}:${bind.port}` : null
+            },
             message: 'Lightning node is running.'
           });
         } catch (err) {

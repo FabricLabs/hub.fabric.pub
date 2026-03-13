@@ -863,21 +863,78 @@ class BitcoinHome extends React.Component {
           <Header as='h3'>Lightning Node (Layer 2)</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge:</strong> create invoice, decode, and pay go through the Hub or external Lightning API.</p>
           {lightningAvailable && this.state.lightningStatus && this.state.lightningStatus.status === 'RUNNING' && (
-            <Message positive style={{ marginBottom: '1em' }}>
-              <Message.Header>
-                <Icon name='bolt' />
-                Lightning node running
-                {this.state.lightningStatus.node && this.state.lightningStatus.node.alias
-                  ? ` — ${this.state.lightningStatus.node.alias}`
-                  : ''}
-              </Message.Header>
-              <p>
-                {this.state.lightningChannels.length} channel(s).
-                {this.state.lightningStatus.node && this.state.lightningStatus.node.id
-                  ? ` Node ID: ${this.state.lightningStatus.node.id.slice(0, 20)}...`
-                  : ''}
-              </p>
-            </Message>
+            <>
+              <Message positive style={{ marginBottom: '1em' }}>
+                <Message.Header>
+                  <Icon name='bolt' />
+                  Lightning node running
+                  {this.state.lightningStatus.node && this.state.lightningStatus.node.alias
+                    ? ` — ${this.state.lightningStatus.node.alias}`
+                    : ''}
+                </Message.Header>
+                <p>
+                  {this.state.lightningChannels.length} channel(s).
+                </p>
+              </Message>
+              {this.state.lightningStatus.node && (this.state.lightningStatus.node.id || this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
+                <Segment style={{ padding: '0.75em', marginBottom: '1em', background: 'rgba(0,0,0,0.03)' }}>
+                  <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Share with other peers</Header>
+                  {this.state.lightningStatus.node.id && (
+                    <div style={{ marginBottom: '0.5em' }}>
+                      <strong>Peer ID:</strong>{' '}
+                      <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.id}</code>
+                    </div>
+                  )}
+                  {(this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
+                    <div style={{ marginBottom: '0.5em' }}>
+                      <strong>IP:PORT:</strong>{' '}
+                      <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding}</code>
+                    </div>
+                  )}
+                  {this.state.lightningStatus.node.id && (this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
+                    <div style={{ marginBottom: '0.5em' }}>
+                      <strong>Connect string (for Create channel):</strong>{' '}
+                      <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.id}@{this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding}</code>
+                    </div>
+                  )}
+                  {(this.state.lightningStatus.node.id || this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
+                    <Button
+                      size='small'
+                      basic
+                      icon
+                      labelPosition='left'
+                      onClick={() => {
+                        const node = this.state.lightningStatus.node;
+                        const hostPort = node.address || node.binding;
+                        const parts = [];
+                        if (node.id) parts.push(node.id);
+                        if (hostPort) parts.push(hostPort);
+                        if (node.id && hostPort) parts.push(`${node.id}@${hostPort}`);
+                        const text = parts.join('\n');
+                        try {
+                          if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(text);
+                          } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = text;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                          }
+                        } catch (e) {}
+                      }}
+                      title='Copy Lightning peer ID and address'
+                    >
+                      <Icon name='copy' />
+                      Copy to clipboard
+                    </Button>
+                  )}
+                </Segment>
+              )}
+            </>
           )}
           {!lightningAvailable && (
             <Message info>
@@ -925,7 +982,9 @@ class BitcoinHome extends React.Component {
               )}
 
               <Header as='h4' style={{ marginTop: '1.5em' }}>Create channel</Header>
-              <p style={{ color: '#666', marginBottom: '0.5em' }}>Connect to a peer and open a channel. Provide peer ID and remote (id@ip:port) if not already connected.</p>
+              <p style={{ color: '#666', marginBottom: '0.5em' }}>
+                Connect to a peer and open a channel. <strong>Remote (id@ip:port) is required</strong> for the first connection — copy it from the other node&apos;s Share section above.
+              </p>
               <Form>
                 <Form.Group widths='equal'>
                   <Form.Field>
