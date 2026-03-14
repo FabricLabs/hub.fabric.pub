@@ -12,8 +12,44 @@ try {
   if (fs.existsSync(setupPath)) {
     const raw = fs.readFileSync(setupPath, 'utf8');
     const setup = JSON.parse(raw);
+    const parseVal = (v) => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === 'string') {
+        if (v === 'true') return true;
+        if (v === 'false') return false;
+        const n = Number(v);
+        if (!isNaN(n) && String(n) === v) return n;
+        return v;
+      }
+      return v;
+    };
     if (setup.BITCOIN_NETWORK) {
-      settings = { ...settings, bitcoin: { ...settings.bitcoin, network: setup.BITCOIN_NETWORK } };
+      settings = { ...settings, bitcoin: { ...settings.bitcoin, network: parseVal(setup.BITCOIN_NETWORK) || setup.BITCOIN_NETWORK } };
+    }
+    if (setup.BITCOIN_MANAGED !== undefined) {
+      const managed = parseVal(setup.BITCOIN_MANAGED);
+      settings = { ...settings, bitcoin: { ...settings.bitcoin, managed: managed !== false } };
+      if (managed === false) {
+        settings = {
+          ...settings,
+          bitcoin: {
+            ...settings.bitcoin,
+            host: parseVal(setup.BITCOIN_HOST) || '127.0.0.1',
+            rpcport: Number(parseVal(setup.BITCOIN_RPC_PORT) || 8332),
+            username: parseVal(setup.BITCOIN_USERNAME) || '',
+            password: parseVal(setup.BITCOIN_PASSWORD) || ''
+          }
+        };
+      }
+    }
+    if (setup.LIGHTNING_MANAGED !== undefined || setup.LIGHTNING_SOCKET) {
+      settings = { ...settings, lightning: settings.lightning || {} };
+      if (setup.LIGHTNING_MANAGED !== undefined) {
+        settings.lightning.managed = parseVal(setup.LIGHTNING_MANAGED) !== false;
+      }
+      if (parseVal(setup.LIGHTNING_MANAGED) === false && setup.LIGHTNING_SOCKET) {
+        settings.lightning.socketPath = parseVal(setup.LIGHTNING_SOCKET) || setup.LIGHTNING_SOCKET;
+      }
     }
   }
 } catch (e) {

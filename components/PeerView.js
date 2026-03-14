@@ -401,7 +401,11 @@ function PeerDetail (props) {
               <List divided relaxed size="small">
                 {peerChats.map((chat, index) => {
                   const created = (chat.object && chat.object.created) || Date.now();
-                  const actor = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
+                  const bridgeInstance = props.bridgeRef?.current || props.bridge?.current;
+                  const rawActor = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
+                  const actor = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && chat.actor?.id)
+                    ? bridgeInstance.getPeerDisplayName(chat.actor.id)
+                    : rawActor;
                   const content = (chat.object && (chat.object.content || chat.object.text)) || '';
                   const isPending = chat.status === 'pending';
                   const isQueued = chat.status === 'queued';

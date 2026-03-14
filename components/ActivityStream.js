@@ -150,7 +150,10 @@ class ActivityStreamElement extends React.Component {
               {entries.map((entry, index) => {
                 const isChat = entry.type === 'P2P_CHAT_MESSAGE';
                 const created = (entry.object && entry.object.created) || entry.created || null;
-                const actorId = (entry.actor && (entry.actor.username || entry.actor.id)) || (isChat ? 'unknown' : 'system');
+                const rawActorId = (entry.actor && (entry.actor.username || entry.actor.id)) || (isChat ? 'unknown' : 'system');
+                const actorId = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && entry.actor?.id)
+                  ? bridgeInstance.getPeerDisplayName(entry.actor.id)
+                  : rawActorId;
                 const target = entry.target;
                 const targetLabel = typeof target === 'string'
                   ? target

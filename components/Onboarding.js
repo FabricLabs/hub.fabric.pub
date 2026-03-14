@@ -16,7 +16,8 @@ const {
   Input,
   Message,
   Segment,
-  Select
+  Select,
+  Checkbox
 } = require('semantic-ui-react');
 
 const BITCOIN_NETWORKS = [
@@ -33,6 +34,13 @@ class Onboarding extends React.Component {
       open: true,
       nodeName: props.nodeName || 'Hub',
       bitcoinNetwork: props.bitcoinNetwork || 'regtest',
+      bitcoinManaged: props.bitcoinManaged !== false,
+      bitcoinHost: props.bitcoinHost || '127.0.0.1',
+      bitcoinRpcPort: props.bitcoinRpcPort || '8332',
+      bitcoinUsername: props.bitcoinUsername || '',
+      bitcoinPassword: props.bitcoinPassword || '',
+      lightningManaged: props.lightningManaged === true,
+      lightningSocket: props.lightningSocket || '',
       saving: false,
       error: null
     };
@@ -63,7 +71,18 @@ class Onboarding extends React.Component {
           NODE_PERSONALITY: JSON.stringify(['helpful']),
           NODE_TEMPERATURE: 0,
           NODE_GOALS: JSON.stringify([]),
-          BITCOIN_NETWORK: this.state.bitcoinNetwork
+          BITCOIN_NETWORK: this.state.bitcoinNetwork,
+          BITCOIN_MANAGED: this.state.bitcoinManaged,
+          ...(this.state.bitcoinManaged ? {} : {
+            BITCOIN_HOST: this.state.bitcoinHost,
+            BITCOIN_RPC_PORT: this.state.bitcoinRpcPort,
+            BITCOIN_USERNAME: this.state.bitcoinUsername,
+            BITCOIN_PASSWORD: this.state.bitcoinPassword
+          }),
+          LIGHTNING_MANAGED: this.state.lightningManaged,
+          ...(this.state.lightningManaged ? {} : {
+            LIGHTNING_SOCKET: this.state.lightningSocket
+          })
         })
       });
 
@@ -89,9 +108,13 @@ class Onboarding extends React.Component {
       }
       this.setState({ open: false, saving: false });
     } catch (err) {
+      let message = err && err.message ? err.message : 'Setup failed';
+      if (message.includes('fetch') || message.includes('Failed to fetch') || message.includes('NetworkError')) {
+        message = 'Cannot reach the Hub. Ensure the server is running (npm start) and try again.';
+      }
       this.setState({
         saving: false,
-        error: err && err.message ? err.message : 'Setup failed'
+        error: message
       });
     }
   };
@@ -116,8 +139,9 @@ class Onboarding extends React.Component {
               <Message.Header>Welcome to Hub</Message.Header>
               <p>
                 Configure your node to get started. This creates an admin token
-                and sets initial parameters. The admin token authenticates
-                privileged operations.
+                (stored in your browser only) and sets initial parameters. The
+                admin token authenticates privileged operations like block
+                generation on regtest.
               </p>
             </Message>
             <Form>
@@ -137,9 +161,79 @@ class Onboarding extends React.Component {
                   onChange={(e, { value }) => this.setState({ bitcoinNetwork: value })}
                 />
               </Form.Field>
-              {this.state.bitcoinNetwork === 'regtest' && (
+              <Form.Field>
+                <Checkbox
+                  label="Launch managed Bitcoin node (bitcoind)"
+                  checked={this.state.bitcoinManaged}
+                  onChange={(e, { checked }) => this.setState({ bitcoinManaged: !!checked })}
+                />
+              </Form.Field>
+              {!this.state.bitcoinManaged && (
+                <Segment basic style={{ marginLeft: '1.5em', paddingTop: 0 }}>
+                  <Form.Field>
+                    <label>Bitcoin RPC host</label>
+                    <Input
+                      placeholder="127.0.0.1"
+                      value={this.state.bitcoinHost}
+                      onChange={(e) => this.setState({ bitcoinHost: e.target.value })}
+                    />
+                  </Form.Field>
+                  <Form.Field>
+                    <label>Bitcoin RPC port</label>
+                    <Input
+                      placeholder="8332"
+                      type="number"
+                      value={this.state.bitcoinRpcPort}
+                      onChange={(e) => this.setState({ bitcoinRpcPort: e.target.value })}
+                    />
+                  </Form.Field>
+                  <Form.Field>
+                    <label>Bitcoin RPC username</label>
+                    <Input
+                      placeholder="rpcuser"
+                      value={this.state.bitcoinUsername}
+                      onChange={(e) => this.setState({ bitcoinUsername: e.target.value })}
+                    />
+                  </Form.Field>
+                  <Form.Field>
+                    <label>Bitcoin RPC password</label>
+                    <Input
+                      type="password"
+                      placeholder="rpcpassword"
+                      value={this.state.bitcoinPassword}
+                      onChange={(e) => this.setState({ bitcoinPassword: e.target.value })}
+                    />
+                  </Form.Field>
+                </Segment>
+              )}
+              <Form.Field>
+                <Checkbox
+                  label="Launch managed Lightning node (lightningd)"
+                  checked={this.state.lightningManaged}
+                  onChange={(e, { checked }) => this.setState({ lightningManaged: !!checked })}
+                />
+                <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+                  Optional. Requires managed Bitcoin. Run with FABRIC_CLEAN_ALICE=1 if you see socket errors after a prior run.
+                </small>
+              </Form.Field>
+              {!this.state.lightningManaged && (
+                <Segment basic style={{ marginLeft: '1.5em', paddingTop: 0 }}>
+                  <Form.Field>
+                    <label>Lightning RPC socket path</label>
+                    <Input
+                      placeholder="/path/to/lightningd.sock"
+                      value={this.state.lightningSocket}
+                      onChange={(e) => this.setState({ lightningSocket: e.target.value })}
+                    />
+                    <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+                      Full path to lightningd RPC socket (e.g. ~/.lightning/regtest/lightningd.sock)
+                    </small>
+                  </Form.Field>
+                </Segment>
+              )}
+              {this.state.bitcoinNetwork === 'regtest' && this.state.bitcoinManaged && (
                 <Message info size='small'>
-                  Regtest runs managed bitcoind and Lightning (lightningd) automatically.
+                  Regtest runs managed bitcoind automatically. Lightning (lightningd) is optional and requires bitcoind.
                 </Message>
               )}
             </Form>

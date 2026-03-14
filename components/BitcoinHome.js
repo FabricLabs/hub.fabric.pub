@@ -87,6 +87,7 @@ class BitcoinHome extends React.Component {
       bitcoinStatus: { available: false, status: 'STARTING' },
       lightningStatus: { available: false, status: 'UNAVAILABLE' },
       lightningChannels: [],
+      lightningOutputs: [],
       channelCreateRemote: '',
       channelCreateAmountSats: '100000',
       channelCreatePushMsat: '',
@@ -159,6 +160,22 @@ class BitcoinHome extends React.Component {
   satsToBTC (value) {
     const sats = Number(value || 0);
     return (sats / 100000000).toFixed(8);
+  }
+
+  /** Compute Lightning balance from listfunds outputs (client-side fallback when status returns 0). */
+  getLightningBalanceFromOutputs (outputs = []) {
+    let confirmed = 0;
+    let unconfirmed = 0;
+    let immature = 0;
+    for (const o of outputs) {
+      const amt = o.amount_msat != null ? Math.floor(Number(o.amount_msat) / 1000) : (o.amount_sat != null ? Number(o.amount_sat) : 0);
+      const status = String(o.status || '').toLowerCase();
+      if (status === 'confirmed') confirmed += amt;
+      else if (status === 'unconfirmed') unconfirmed += amt;
+      else if (status === 'immature') immature += amt;
+      else if (status !== 'spent') unconfirmed += amt;
+    }
+    return { confirmed, unconfirmed, immature };
   }
 
   trimHash (value = '', left = 8, right = 8) {
@@ -237,6 +254,7 @@ class BitcoinHome extends React.Component {
           ? lightningStatus
           : { available: false, status: 'UNAVAILABLE' },
         lightningChannels: lightningChannels && Array.isArray(lightningChannels.channels) ? lightningChannels.channels : [],
+        lightningOutputs: lightningChannels && Array.isArray(lightningChannels.outputs) ? lightningChannels.outputs : [],
         utxos: Array.isArray(utxos) ? utxos : [],
         payjoinCapabilities: payjoinCapabilities && typeof payjoinCapabilities === 'object'
           ? payjoinCapabilities
@@ -995,15 +1013,48 @@ class BitcoinHome extends React.Component {
                   </Button>
                 </div>
               )}
-              {this.state.lightningStatus.node && this.state.lightningStatus.node.balanceSats != null && (
+              {this.state.lightningStatus.node && (() => {
+                const node = this.state.lightningStatus.node;
+                const fromStatus = {
+                  confirmed: Number(node.balanceSats ?? 0),
+                  unconfirmed: Number(node.balanceUnconfirmedSats ?? 0),
+                  immature: Number(node.balanceImmatureSats ?? 0)
+                };
+                const fromOutputs = this.getLightningBalanceFromOutputs(this.state.lightningOutputs);
+                const statusTotal = fromStatus.confirmed + fromStatus.unconfirmed + fromStatus.immature;
+                const outputsTotal = fromOutputs.confirmed + fromOutputs.unconfirmed + fromOutputs.immature;
+                const bal = outputsTotal > statusTotal ? fromOutputs : fromStatus;
+                const total = bal.confirmed + bal.unconfirmed + bal.immature;
+                return (
                 <div style={{ marginBottom: '0.5em' }}>
                   <strong>On-chain balance:</strong>{' '}
-                  {Number(this.state.lightningStatus.node.balanceSats).toLocaleString()} sats
-                  {this.state.lightningStatus.node.balanceSats < 10000 && (
+                  {bal.confirmed.toLocaleString()} sats confirmed
+                  {bal.unconfirmed > 0 && (
+                    <span style={{ marginLeft: '0.5em' }}>
+                      + {bal.unconfirmed.toLocaleString()} unconfirmed
+                    </span>
+                  )}
+                  {bal.immature > 0 && (
+                    <span style={{ marginLeft: '0.5em' }}>
+                      + {bal.immature.toLocaleString()} immature
+                    </span>
+                  )}
+                  {total > 0 && (bal.unconfirmed > 0 || bal.immature > 0) && (
+                    <span style={{ marginLeft: '0.5em', fontWeight: 600 }}>
+                      = {total.toLocaleString()} sats total
+                    </span>
+                  )}
+                  {total < 10000 && (
                     <span style={{ marginLeft: '0.5em', color: '#b00' }}>(need at least 10,000 sats for channels)</span>
                   )}
+                  {(this.state.bitcoinStatus && this.state.bitcoinStatus.network === 'regtest') && (
+                    <p style={{ fontSize: '0.85em', color: '#666', marginTop: '0.25em', marginBottom: 0 }}>
+                      On regtest: generate blocks after sending to confirm. Click refresh to update.
+                    </p>
+                  )}
                 </div>
-              )}
+                );
+              })()}
             </Segment>
           )}
 

@@ -17,7 +17,14 @@ const GLOBAL_SETTINGS = [
   'NODE_TEMPERATURE',
   'NODE_GOALS',
   'IS_CONFIGURED',
-  'BITCOIN_NETWORK'
+  'BITCOIN_NETWORK',
+  'BITCOIN_MANAGED',
+  'BITCOIN_HOST',
+  'BITCOIN_RPC_PORT',
+  'BITCOIN_USERNAME',
+  'BITCOIN_PASSWORD',
+  'LIGHTNING_MANAGED',
+  'LIGHTNING_SOCKET'
 ];
 
 /**
@@ -152,7 +159,7 @@ class SetupService {
     // Apply initial config (no token storage)
     const settings = this._loadSettings();
     for (const [key, val] of Object.entries(initialConfig)) {
-      if (key !== 'IS_CONFIGURED' && (GLOBAL_SETTINGS.includes(key) || key.startsWith('NODE_') || key.startsWith('BITCOIN_'))) {
+      if (key !== 'IS_CONFIGURED' && (GLOBAL_SETTINGS.includes(key) || key.startsWith('NODE_') || key.startsWith('BITCOIN_') || key.startsWith('LIGHTNING_'))) {
         settings[key] = typeof val === 'string' ? val : JSON.stringify(val);
       }
     }

@@ -132,9 +132,9 @@ class Hub extends Service {
       },
       beacon: {
         enable: true,
-        // Mining cadence for regtest upkeep.
-        interval: Number(process.env.FABRIC_BEACON_INTERVAL_MS || 60000),
-        regtestOnly: true
+        // Regtest: 1 block per 10 min. Non-regtest: 1 event per block (block-listener mode).
+        interval: Number(process.env.FABRIC_BEACON_INTERVAL_MS || 600000),
+        regtestOnly: false
       },
       lightning: {
         // Stub mode: return available + fake create/decode/pay for UI testing.
@@ -175,10 +175,10 @@ class Hub extends Service {
       distributeFeeSats: DEFAULT_DISTRIBUTE_FEE_SATS,
     }, settings);
 
-    // Regtest runs in one autonomous mode: managed local bitcoind.
+    // Regtest runs in one autonomous mode: managed local bitcoind, unless setup chose external.
     const inputBitcoin = settings && settings.bitcoin ? settings.bitcoin : {};
     const rpcportProvided = Object.prototype.hasOwnProperty.call(inputBitcoin, 'rpcport');
-    if (this.settings.bitcoin && this.settings.bitcoin.network === 'regtest') {
+    if (this.settings.bitcoin && this.settings.bitcoin.network === 'regtest' && this.settings.bitcoin.managed !== false) {
       this.settings.bitcoin.managed = true;
       if (!rpcportProvided) this.settings.bitcoin.rpcport = 20444;
     }
@@ -212,6 +212,7 @@ class Hub extends Service {
     this.bitcoin = null;
     this.lightning = null;
     this.payjoin = null;
+    this._lightningRpcQueue = Promise.resolve();
     this.beacon = null;
     this._bitcoinStatusCache = { value: null, updatedAt: 0 };
     this._bitcoinCacheTTL = 15000;
@@ -286,7 +287,8 @@ class Hub extends Service {
     this.beacon = new Beacon({
       name: 'HUB:BEACON',
       debug: !!this.settings.debug,
-      interval: Number(this.settings.beacon && this.settings.beacon.interval ? this.settings.beacon.interval : 60000),
+      interval: Number(this.settings.beacon && this.settings.beacon.interval ? this.settings.beacon.interval : 600000),
+      regtest: true,
       key: {
         xprv: this._rootKey.xprv,
         xpub: this._rootKey.xpub
@@ -840,12 +842,14 @@ class Hub extends Service {
         messages: chain && chain.counts ? Number(chain.counts.messages || 0) : 0
       };
     }
+    const beaconRoot = (this.beacon && typeof this.beacon.merkleRoot === 'string') ? this.beacon.merkleRoot : null;
     return {
       documents: this._computeMerkleRootForMap(this._state.documents || {}, 'Document'),
       publishedDocuments: this._computeMerkleRootForMap(collections.documents || {}, 'PublishedDocument'),
       contracts: this._computeMerkleRootForMap(collections.contracts || {}, 'Contract'),
       documentChains: this._computeMerkleRootForMap(normalizedChains, 'DocumentChain'),
-      fabricMessages: messageRoot
+      fabricMessages: messageRoot,
+      beacon: beaconRoot
     };
   }
 
@@ -1202,7 +1206,18 @@ class Hub extends Service {
         NODE_PERSONALITY: body.NODE_PERSONALITY || body.nodePersonality || JSON.stringify(['helpful']),
         NODE_TEMPERATURE: body.NODE_TEMPERATURE ?? body.nodeTemperature ?? 0,
         NODE_GOALS: body.NODE_GOALS || body.nodeGoals || JSON.stringify([]),
-        BITCOIN_NETWORK: body.BITCOIN_NETWORK || body.bitcoinNetwork || 'regtest'
+        BITCOIN_NETWORK: body.BITCOIN_NETWORK || body.bitcoinNetwork || 'regtest',
+        BITCOIN_MANAGED: body.BITCOIN_MANAGED !== false && body.bitcoinManaged !== false,
+        ...(body.BITCOIN_MANAGED === false || body.bitcoinManaged === false ? {
+          BITCOIN_HOST: body.BITCOIN_HOST || body.bitcoinHost || '127.0.0.1',
+          BITCOIN_RPC_PORT: body.BITCOIN_RPC_PORT || body.bitcoinRpcPort || '8332',
+          BITCOIN_USERNAME: body.BITCOIN_USERNAME || body.bitcoinUsername || '',
+          BITCOIN_PASSWORD: body.BITCOIN_PASSWORD || body.bitcoinPassword || ''
+        } : {}),
+        LIGHTNING_MANAGED: body.LIGHTNING_MANAGED !== false && body.lightningManaged !== false,
+        ...(body.LIGHTNING_MANAGED === false || body.lightningManaged === false ? {
+          LIGHTNING_SOCKET: body.LIGHTNING_SOCKET || body.lightningSocket || ''
+        } : {})
       };
       const result = await this.setup.createAdminToken(initialConfig);
       return res.status(200).json(result);
@@ -2171,6 +2186,12 @@ class Hub extends Service {
       });
   }
 
+  _serializedLightningRpc (fn) {
+    const p = this._lightningRpcQueue.then(() => fn());
+    this._lightningRpcQueue = p.catch(() => {});
+    return p;
+  }
+
   _handleLightningStatusRequest (req, res) {
     return this._jsonOrShell(req, res, async () => {
       const stub = this.settings.lightning && this.settings.lightning.stub === true;
@@ -2184,10 +2205,11 @@ class Hub extends Service {
       }
       if (this.lightning) {
         try {
-          const [info, funds] = await Promise.all([
-            this.lightning._makeRPCRequest('getinfo', []),
-            this.lightning._makeRPCRequest('listfunds', []).catch(() => ({ outputs: [], channels: [] }))
-          ]);
+          // Serialize RPC to avoid CLN connection contention (concurrent listfunds can timeout)
+          const info = await this._serializedLightningRpc(() => this.lightning._makeRPCRequest('getinfo', []));
+          const funds = await this._serializedLightningRpc(() =>
+            this.lightning._makeRPCRequest('listfunds', [], 60000)
+          ).catch(() => ({ outputs: [], channels: [] }));
           const addresses = Array.isArray(info.address) ? info.address : [];
           const bindings = Array.isArray(info.binding) ? info.binding : [];
           const addr = addresses.find((a) => a && (a.type === 'ipv4' || a.type === 'ipv6')) || addresses[0];
@@ -2197,13 +2219,27 @@ class Hub extends Service {
           let depositAddress = null;
           let balanceSats = 0;
           try {
-            const newaddr = await this.lightning._makeRPCRequest('newaddr', ['p2tr']);
+            const newaddr = await this._serializedLightningRpc(() => this.lightning._makeRPCRequest('newaddr', ['p2tr']));
             depositAddress = newaddr.p2tr || newaddr.bech32 || null;
           } catch (_) {}
           const outputs = Array.isArray(funds.outputs) ? funds.outputs : [];
+          let balanceUnconfirmedSats = 0;
+          let balanceImmatureSats = 0;
           for (const o of outputs) {
             const amt = o.amount_msat != null ? Math.floor(Number(o.amount_msat) / 1000) : (o.amount_sat != null ? Number(o.amount_sat) : 0);
-            if (o.status === 'confirmed') balanceSats += amt;
+            const status = String(o.status || '').toLowerCase();
+            if (status === 'confirmed') balanceSats += amt;
+            else if (status === 'unconfirmed') balanceUnconfirmedSats += amt;
+            else if (status === 'immature') balanceImmatureSats += amt;
+          }
+          // Fallback: if outputs exist but all sums are 0, sum non-spent (handles unexpected status values)
+          if (outputs.length > 0 && balanceSats === 0 && balanceUnconfirmedSats === 0 && balanceImmatureSats === 0) {
+            for (const o of outputs) {
+              if (String(o.status || '').toLowerCase() !== 'spent') {
+                const amt = o.amount_msat != null ? Math.floor(Number(o.amount_msat) / 1000) : (o.amount_sat != null ? Number(o.amount_sat) : 0);
+                balanceUnconfirmedSats += amt;
+              }
+            }
           }
           return res.status(200).json({
             available: true,
@@ -2217,7 +2253,9 @@ class Hub extends Service {
               addresses,
               binding: bind ? `${bind.address}:${bind.port}` : null,
               depositAddress,
-              balanceSats
+              balanceSats,
+              balanceUnconfirmedSats: balanceUnconfirmedSats > 0 ? balanceUnconfirmedSats : undefined,
+              balanceImmatureSats: balanceImmatureSats > 0 ? balanceImmatureSats : undefined
             },
             message: 'Lightning node is running.'
           });
@@ -2249,7 +2287,9 @@ class Hub extends Service {
       if (this.lightning) {
         try {
           if (pathName.includes('/channels')) {
-            const funds = await this.lightning._makeRPCRequest('listfunds', []);
+            const funds = await this._serializedLightningRpc(() =>
+              this.lightning._makeRPCRequest('listfunds', [], 60000)
+            ).catch(() => ({ outputs: [], channels: [] }));
             return res.status(200).json({ channels: funds.channels || [], outputs: funds.outputs || [] });
           }
           if (pathName.includes('/invoices')) {
@@ -2441,7 +2481,26 @@ class Hub extends Service {
                 }
               }
             }
-            const result = await this.lightning.createChannel(resolvedPeerId, String(amountSats), pushMsat);
+            const bitcoin = this._getBitcoinService();
+            const isRegtest = bitcoin && (bitcoin.settings && bitcoin.settings.network) === 'regtest';
+            const channelOptions = isRegtest ? { minconf: 0, feerate: '253perkw' } : {};
+            // Fetch listfunds and pass explicit utxos to fundchannel; bypasses "0 available UTXOs" when
+            // CLN's internal UTXO selection fails (e.g. bitcoind view mismatch on regtest).
+            try {
+              const funds = await this._serializedLightningRpc(() =>
+                this.lightning._makeRPCRequest('listfunds', [], 60000)
+              ).catch(() => ({ outputs: [], channels: [] }));
+              const outputs = Array.isArray(funds.outputs) ? funds.outputs : [];
+              const spendable = outputs.filter(
+                (o) => String(o.status || '').toLowerCase() !== 'spent' && !o.reserved
+              );
+              if (spendable.length > 0) {
+                channelOptions.utxos = spendable.map((o) => `${o.txid}:${o.output}`);
+              }
+            } catch (_) {}
+            const result = await this._serializedLightningRpc(() =>
+              this.lightning.createChannel(resolvedPeerId, String(amountSats), pushMsat, channelOptions)
+            );
             return res.status(200).json({ channel: result });
           }
         } catch (err) {
@@ -2478,7 +2537,7 @@ class Hub extends Service {
       return this;
     }
 
-    if (beaconConfig.regtestOnly !== false && bitcoin.network !== 'regtest') {
+    if (beaconConfig.regtestOnly === true && bitcoin.network !== 'regtest') {
       console.log(`[HUB:BEACON] Skipping beacon start for non-regtest network: ${bitcoin.network}`);
       return this;
     }
@@ -2491,12 +2550,19 @@ class Hub extends Service {
       }
     }
 
+    const isRegtest = bitcoin.network === 'regtest';
+    const interval = isRegtest ? Number(beaconConfig.interval || 600000) : 0;
+
     if (!this.beacon) {
       this.beacon = new Beacon({
         name: 'HUB:BEACON',
         debug: !!this.settings.debug,
-        interval: Number(beaconConfig.interval || 60000)
+        interval,
+        regtest: isRegtest
       });
+    } else {
+      this.beacon.settings.interval = interval;
+      this.beacon.settings.regtest = isRegtest;
     }
 
     this.beacon.bitcoin = bitcoin;
@@ -2506,9 +2572,12 @@ class Hub extends Service {
       try {
         this._state.content.services = this._state.content.services || {};
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
+        const storedInterval = this.beacon.settings.regtest !== false
+          ? Number(beaconConfig.interval || 600000)
+          : 0;
         this._state.content.services.bitcoin.beacon = {
           status: 'RUNNING',
-          interval: Number(beaconConfig.interval || 60000),
+          interval: storedInterval,
           clock: Number(epoch && epoch.clock ? epoch.clock : 0),
           lastBlockHash: epoch && epoch.blockHash ? epoch.blockHash : null,
           height: epoch && Number.isFinite(epoch.height) ? epoch.height : null,
@@ -2525,8 +2594,17 @@ class Hub extends Service {
       console.error('[HUB:BEACON] Error:', err && err.message ? err.message : err);
     });
 
+    this.beacon.on('reorg', () => {
+      try {
+        this._refreshMerkleState('beacon-reorg');
+      } catch (e) {
+        console.warn('[HUB:BEACON] Failed to refresh merkle after reorg:', e && e.message ? e.message : e);
+      }
+    });
+
     await this.beacon.start();
-    console.log(`[HUB:BEACON] Started with ${this.beacon.settings.interval}ms interval on ${bitcoin.network}.`);
+    const modeDesc = isRegtest ? `${this.beacon.settings.interval}ms interval` : '1 event per block';
+    console.log(`[HUB:BEACON] Started (${modeDesc}) on ${bitcoin.network}.`);
     return this;
   }
 
@@ -2569,40 +2647,58 @@ class Hub extends Service {
       return;
     }
 
+    const lightningManaged = this.settings.lightning && this.settings.lightning.managed !== false;
+
     try {
-      const btcSettings = bitcoin.settings || {};
-      const btcDatadir = path.resolve(process.cwd(), btcSettings.datadir || './stores/bitcoin-regtest');
-      const rpcport = Number(btcSettings.rpcport || 20444);
-      const username = btcSettings.username || '';
-      const password = btcSettings.password || '';
+      if (lightningManaged) {
+        const btcSettings = bitcoin.settings || {};
+        const btcDatadir = path.resolve(process.cwd(), btcSettings.datadir || './stores/bitcoin-regtest');
+        const rpcport = Number(btcSettings.rpcport || 20444);
+        const username = btcSettings.username || '';
+        const password = btcSettings.password || '';
 
-      if (!username || !password) {
-        console.warn('[HUB:LIGHTNING] Bitcoin RPC credentials not available; Lightning not started.');
-        return;
+        if (!username || !password) {
+          console.warn('[HUB:LIGHTNING] Bitcoin RPC credentials not available; Lightning not started.');
+          return;
+        }
+
+        this.lightning = new Lightning({
+          managed: true,
+          network: 'regtest',
+          datadir: path.resolve(process.cwd(), './stores/lightning/hub'),
+          hostname: '0.0.0.0',
+          port: 9735,
+          debug: !!this.settings.debug,
+          bitcoin: {
+            host: btcSettings.host || '127.0.0.1',
+            rpcport,
+            rpcuser: username,
+            rpcpassword: password,
+            datadir: btcDatadir
+          },
+          disablePlugins: ['cln-grpc']
+        });
+      } else {
+        const socketPath = this.settings.lightning && this.settings.lightning.socketPath;
+        if (!socketPath || typeof socketPath !== 'string' || !socketPath.trim()) {
+          console.warn('[HUB:LIGHTNING] External Lightning socket path not configured; Lightning not started.');
+          return;
+        }
+        const fullPath = path.resolve(socketPath.trim());
+        this.lightning = new Lightning({
+          managed: false,
+          network: 'regtest',
+          datadir: path.dirname(fullPath),
+          socket: path.basename(fullPath),
+          debug: !!this.settings.debug
+        });
       }
-
-      this.lightning = new Lightning({
-        managed: true,
-        network: 'regtest',
-        datadir: path.resolve(process.cwd(), './stores/lightning/hub'),
-        hostname: '0.0.0.0',
-        port: 9735,
-        debug: !!this.settings.debug,
-        bitcoin: {
-          host: btcSettings.host || '127.0.0.1',
-          rpcport,
-          rpcuser: username,
-          rpcpassword: password,
-          datadir: btcDatadir
-        },
-        disablePlugins: ['cln-grpc']
-      });
 
       this.lightning.on('debug', (...args) => console.log('[LIGHTNING]', '[DEBUG]', ...args));
       this.lightning.on('error', (err) => console.error('[LIGHTNING]', '[ERROR]', err && err.message ? err.message : err));
 
       await this.lightning.start();
-      console.log('[HUB:LIGHTNING] Lightning node started.');
+      console.log('[HUB:LIGHTNING] Lightning node started.', lightningManaged ? '(managed)' : '(external)');
     } catch (err) {
       console.warn('[HUB:LIGHTNING] Failed to start Lightning:', err && err.message ? err.message : err);
       this.lightning = null;

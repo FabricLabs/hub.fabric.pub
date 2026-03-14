@@ -513,6 +513,11 @@ class HubInterface extends React.Component {
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <Loader active inline="centered" size='huge' />
               </div>
+            ) : !this.state.setupChecked ? (
+              <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '1em' }}>
+                <Loader active inline="centered" size='large' />
+                <p style={{ color: '#666', margin: 0 }}>Connecting to Hub…</p>
+              </div>
             ) : this.state.needsSetup ? (
               <Onboarding
                 nodeName="Hub"

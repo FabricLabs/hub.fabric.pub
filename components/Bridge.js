@@ -582,6 +582,21 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Return the display name for a peer (nickname if set, else actorId).
+   * Used in chat to show user-friendly names.
+   * @param {string} actorId - Peer id or address from chat.actor.id
+   * @returns {string} Nickname if set, otherwise actorId
+   */
+  getPeerDisplayName (actorId) {
+    if (!actorId || typeof actorId !== 'string') return actorId || 'unknown';
+    const ns = this.state?.networkStatus || this.state?.lastNetworkStatus;
+    const peers = Array.isArray(ns?.peers) ? ns.peers : [];
+    const peer = peers.find((p) => p && (p.id === actorId || p.address === actorId));
+    const nickname = peer && peer.nickname && String(peer.nickname).trim();
+    return nickname || actorId;
+  }
+
+  /**
    * Return the hub node's pubkey for display (e.g. in footer).
    * Reads from networkStatus.network or top-level status fields.
    * @returns {string} pubkey, id, or address from network status, or empty string
@@ -2366,8 +2381,6 @@ class Bridge extends React.Component {
           // Keepalive response from hub; no action needed beyond acknowledging receipt.
           break;
         case 'JSONCall':
-          console.debug('[BRIDGE]', 'Received JSONCall:', message.body);
-
           // Parse JSONCall and handle JSONCallResult responses
           try {
             const jsonCall = JSON.parse(message.body);
