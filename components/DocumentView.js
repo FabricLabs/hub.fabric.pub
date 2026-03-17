@@ -19,6 +19,7 @@ const {
   Form,
   Dropdown
 } = require('semantic-ui-react');
+const Invoice = require('./Invoice');
 
 function DocumentDetail (props) {
   const params = useParams();
@@ -38,6 +39,7 @@ function DocumentDetail (props) {
   const [distributeOpen, setDistributeOpen] = React.useState(false);
   const [distributeBusy, setDistributeBusy] = React.useState(false);
   const [distributeAmountSats, setDistributeAmountSats] = React.useState('');
+  const [distributeDesiredCopies, setDistributeDesiredCopies] = React.useState(1);
   const [distributeDurationYears, setDistributeDurationYears] = React.useState(4);
   const [distributeCadence, setDistributeCadence] = React.useState('daily');
   const [distributeDeadline, setDistributeDeadline] = React.useState('10s');
@@ -45,6 +47,15 @@ function DocumentDetail (props) {
 
   const [distributeInvoice, setDistributeInvoice] = React.useState(null);
   const [distributeTxid, setDistributeTxid] = React.useState('');
+  const [distributeSuccessContractId, setDistributeSuccessContractId] = React.useState(null);
+
+  const [publishPriceSats, setPublishPriceSats] = React.useState('');
+  const [purchaseOpen, setPurchaseOpen] = React.useState(false);
+  const [purchaseInvoice, setPurchaseInvoice] = React.useState(null);
+  const [purchaseTxid, setPurchaseTxid] = React.useState('');
+  const [purchaseBusy, setPurchaseBusy] = React.useState(false);
+  const [purchaseError, setPurchaseError] = React.useState(null);
+  const [purchasedContent, setPurchasedContent] = React.useState(null);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
@@ -72,6 +83,55 @@ function DocumentDetail (props) {
     window.addEventListener('distributeInvoiceReady', handler);
     return () => window.removeEventListener('distributeInvoiceReady', handler);
   }, [id, doc]);
+
+  // When payment is bonded (contract created), show success in the distribute modal
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.contractId || !detail.documentId) return;
+      const docId = detail.documentId;
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (match && distributeOpen) {
+        setDistributeSuccessContractId(detail.contractId);
+        setDistributeBusy(false);
+      }
+    };
+    window.addEventListener('storageContractBonded', handler);
+    return () => window.removeEventListener('storageContractBonded', handler);
+  }, [id, doc, distributeOpen]);
+
+  // Timeout fallback if storageContractBonded never arrives
+  React.useEffect(() => {
+    if (!distributeBusy || distributeSuccessContractId) return;
+    const timeout = setTimeout(() => {
+      setDistributeBusy(false);
+      setDistributeError('Contract creation is taking longer than expected. Check the contract list or try again.');
+    }, 15000);
+    return () => clearTimeout(timeout);
+  }, [distributeBusy, distributeSuccessContractId]);
+
+  // Listen for HTLC purchase invoice
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.documentId) return;
+      const docId = detail.documentId;
+      const sha = doc && doc.sha256;
+      const match = docId === id || docId === sha;
+      if (match && purchaseOpen) {
+        setPurchaseInvoice({
+          address: detail.address,
+          amountSats: detail.amountSats,
+          contentHash: detail.contentHash,
+          network: detail.network
+        });
+        setPurchaseTxid('');
+        setPurchaseError(null);
+      }
+    };
+    window.addEventListener('purchaseInvoiceReady', handler);
+    return () => window.removeEventListener('purchaseInvoiceReady', handler);
+  }, [id, doc, purchaseOpen]);
 
   React.useEffect(() => {
     const handler = (event) => {
@@ -143,6 +203,8 @@ function DocumentDetail (props) {
   const created = doc && doc.created ? new Date(doc.created).toLocaleString() : '';
   const publishedAt = doc && doc.published ? new Date(doc.published).toLocaleString() : '';
   const storageContractId = doc && doc.storageContractId;
+  const docPurchasePriceSats = doc && doc.purchasePriceSats;
+  const canPurchase = !!(doc && doc.published && docPurchasePriceSats && docPurchasePriceSats > 0);
 
   // Never expose decrypted content when we don't currently have a document key,
   // even if contentBase64 is still present on the doc from a prior unlock.
@@ -304,7 +366,8 @@ function DocumentDetail (props) {
                   if (doc && doc.published) return;
                   if (!id || typeof props.onPublishDocument !== 'function') return;
                   setIsPublishing(true);
-                  props.onPublishDocument(id);
+                  const price = parseInt(publishPriceSats, 10);
+                  props.onPublishDocument(id, price > 0 ? { purchasePriceSats: price } : undefined);
                 }}
                 disabled={!doc || isPublishing || !!(doc && doc.published)}
                 title={doc && doc.published ? 'Document is published' : 'Publish this document ID to the hub global store'}
@@ -315,6 +378,39 @@ function DocumentDetail (props) {
                 />
                 {isPublishing ? 'Publishing…' : (doc && doc.published ? 'Published' : 'Publish')}
               </Button>
+              {!doc?.published && (
+                <Input
+                  type="number"
+                  min="0"
+                  placeholder="Price (sats)"
+                  value={publishPriceSats}
+                  onChange={(e) => setPublishPriceSats(e.target.value)}
+                  style={{ width: 110 }}
+                  title="Optional: set purchase price when publishing (HTLC)"
+                />
+              )}
+              {canPurchase && (
+                <Button
+                  size="small"
+                  color="orange"
+                  icon
+                  labelPosition="left"
+                  onClick={() => {
+                    setPurchaseOpen(true);
+                    setPurchaseInvoice(null);
+                    setPurchaseTxid('');
+                    setPurchaseError(null);
+                    setPurchasedContent(null);
+                    if (typeof props.onRequestPurchaseInvoice === 'function') {
+                      props.onRequestPurchaseInvoice(id);
+                    }
+                  }}
+                  title="Purchase this document (HTLC: pay to unlock with sha256(sha256(content)))"
+                >
+                  <Icon name="bitcoin" />
+                  Purchase ({docPurchasePriceSats} sats)
+                </Button>
+              )}
               <Button
                 size="small"
                 basic={!storageContractId}
@@ -411,6 +507,7 @@ function DocumentDetail (props) {
             setDistributeError(null);
             setDistributeInvoice(null);
             setDistributeTxid('');
+            setDistributeSuccessContractId(null);
           }}
         >
           <Header icon="cloud upload" content="Pay to distribute" />
@@ -419,7 +516,52 @@ function DocumentDetail (props) {
               Pay Bitcoin (L1) to have other nodes store this document under a long-term contract.
               By default, storage is requested for 4 years with periodic random challenges.
             </p>
-            {!distributeInvoice ? (
+            {/* Step indicator: 1 Request invoice, 2 Pay, 3 Confirm / Success */}
+            <div style={{ display: 'flex', gap: '0.5em', marginBottom: '1em', flexWrap: 'wrap' }}>
+              <Label
+                color={!distributeInvoice && !distributeSuccessContractId ? 'blue' : 'grey'}
+                size="small"
+              >
+                1. Request invoice
+              </Label>
+              <Label
+                color={distributeInvoice && !distributeSuccessContractId ? 'blue' : 'grey'}
+                size="small"
+              >
+                2. Pay
+              </Label>
+              <Label
+                color={distributeSuccessContractId ? 'green' : 'grey'}
+                size="small"
+              >
+                3. {distributeSuccessContractId ? 'Done' : 'Confirm'}
+              </Label>
+            </div>
+            {distributeSuccessContractId ? (
+              <Segment color="green" style={{ textAlign: 'center' }}>
+                <Icon name="check circle" size="big" color="green" />
+                <Header as="h4" style={{ marginTop: '0.5em' }}>
+                  Storage contract created
+                </Header>
+                <p style={{ color: '#666', marginBottom: '1em' }}>
+                  Your payment has been bonded. The document is now distributed.
+                </p>
+                <Button
+                  primary
+                  as={Link}
+                  to={`/contracts/${encodeURIComponent(distributeSuccessContractId)}`}
+                  onClick={() => {
+                    setDistributeOpen(false);
+                    setDistributeSuccessContractId(null);
+                    setDistributeInvoice(null);
+                    setDistributeTxid('');
+                  }}
+                >
+                  <Icon name="file alternate" />
+                  View contract
+                </Button>
+              </Segment>
+            ) : !distributeInvoice ? (
               <Form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -433,6 +575,7 @@ function DocumentDetail (props) {
                   setDistributeBusy(true);
                   const config = {
                     amountSats: amount,
+                    desiredCopies: Math.max(1, parseInt(distributeDesiredCopies, 10) || 1),
                     durationYears: distributeDurationYears,
                     challengeCadence: distributeCadence,
                     responseDeadline: distributeDeadline
@@ -454,6 +597,20 @@ function DocumentDetail (props) {
                     placeholder="e.g. 100000"
                     value={distributeAmountSats}
                     onChange={(e) => setDistributeAmountSats(e.target.value)}
+                  />
+                </Form.Field>
+                <Form.Field>
+                  <label># of desired copies</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={distributeDesiredCopies}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      if (Number.isFinite(v) && v >= 1) setDistributeDesiredCopies(v);
+                    }}
+                    title="How many copies you want stored across the network"
                   />
                 </Form.Field>
                 <Form.Field>
@@ -497,45 +654,42 @@ function DocumentDetail (props) {
               </Form>
             ) : (
               <>
-                <Form.Field>
-                  <label>Address</label>
-                  <Input
-                    fluid
-                    readOnly
-                    value={distributeInvoice.address}
-                    onFocus={(e) => e.target.select()}
-                    action={{
-                      icon: 'copy',
-                      title: 'Copy',
-                      onClick: () => {
-                        try {
-                          if (distributeInvoice.address && navigator && navigator.clipboard) {
-                            navigator.clipboard.writeText(distributeInvoice.address);
-                          }
-                        } catch (err) {}
-                      }
-                    }}
-                  />
-                </Form.Field>
-                <Form.Field>
-                  <label>Amount</label>
-                  <Input readOnly value={`${distributeInvoice.amountSats} sats`} />
-                </Form.Field>
-                <Form.Field>
-                  <label>Transaction ID (after paying)</label>
+                <Invoice
+                  address={distributeInvoice.address}
+                  amountSats={distributeInvoice.amountSats}
+                  network={distributeInvoice.network}
+                  label="Storage contract payment"
+                  identity={props.identity || {}}
+                  compact
+                  onPaid={(txid) => {
+                    setDistributeTxid(txid);
+                    if (txid && id && typeof props.onDistributeDocument === 'function') {
+                      setDistributeBusy(true);
+                      const config = {
+                        amountSats: distributeInvoice.amountSats,
+                        durationYears: distributeInvoice.config?.durationYears || distributeDurationYears,
+                        challengeCadence: distributeInvoice.config?.challengeCadence || distributeCadence,
+                        responseDeadline: distributeInvoice.config?.responseDeadline || distributeDeadline,
+                        txid
+                      };
+                      Promise.resolve(props.onDistributeDocument(id, config))
+                        .catch((err) => {
+                          setDistributeBusy(false);
+                          setDistributeError(
+                            (err && err.message) ? err.message : 'Distribution request failed.'
+                          );
+                        });
+                    }
+                  }}
+                />
+                <Form.Field style={{ marginTop: '1em' }}>
+                  <label>Or paste txid (if you paid from an external wallet)</label>
                   <Input
                     placeholder="txid from your wallet"
                     value={distributeTxid}
                     onChange={(e) => setDistributeTxid(e.target.value)}
                   />
                 </Form.Field>
-                <p style={{ fontSize: '0.85em', color: '#888' }}>
-                  <Button as={Link} to="/services/bitcoin/payments" size="small" basic>
-                    <Icon name="bitcoin" />
-                    Send payment
-                  </Button>
-                  {' '}or pay from an external wallet. Paste the txid above when done.
-                </p>
               </>
             )}
           </Modal.Content>
@@ -548,11 +702,27 @@ function DocumentDetail (props) {
                 setDistributeError(null);
                 setDistributeInvoice(null);
                 setDistributeTxid('');
+                setDistributeSuccessContractId(null);
               }}
             >
-              {distributeInvoice ? 'Back' : 'Cancel'}
+              {distributeSuccessContractId ? 'Close' : distributeInvoice ? 'Back' : 'Cancel'}
             </Button>
-            {!distributeInvoice ? (
+            {distributeSuccessContractId ? (
+              <Button
+                primary
+                as={Link}
+                to={`/contracts/${encodeURIComponent(distributeSuccessContractId)}`}
+                onClick={() => {
+                  setDistributeOpen(false);
+                  setDistributeSuccessContractId(null);
+                  setDistributeInvoice(null);
+                  setDistributeTxid('');
+                }}
+              >
+                <Icon name="file alternate" />
+                View contract
+              </Button>
+            ) : !distributeInvoice ? (
               <Button
                 primary
                 loading={distributeBusy}
@@ -586,21 +756,118 @@ function DocumentDetail (props) {
                     txid: tx
                   };
                   Promise.resolve(props.onDistributeDocument(id, config))
-                    .then(() => {
-                      setDistributeBusy(false);
-                      setDistributeOpen(false);
-                      setDistributeInvoice(null);
-                      setDistributeTxid('');
-                    })
                     .catch((err) => {
                       setDistributeBusy(false);
                       setDistributeError(
                         (err && err.message) ? err.message : 'Distribution request failed.'
                       );
                     });
+                  // Success: storageContractBonded will fire and set distributeSuccessContractId
                 }}
               >
                 Confirm & Distribute
+              </Button>
+            )}
+          </Modal.Actions>
+        </Modal>
+
+        <Modal
+          size="small"
+          open={purchaseOpen}
+          onClose={() => {
+            if (purchaseBusy) return;
+            setPurchaseOpen(false);
+            setPurchaseInvoice(null);
+            setPurchaseTxid('');
+            setPurchaseError(null);
+            setPurchasedContent(null);
+          }}
+        >
+          <Header icon="bitcoin" content="Purchase document (HTLC)" />
+          <Modal.Content>
+            <p style={{ color: '#666' }}>
+              Pay Bitcoin to unlock this document. The content is locked with sha256(sha256(content)); payment verification unlocks delivery.
+            </p>
+            {purchasedContent ? (
+              <Segment color="green">
+                <Icon name="check circle" size="big" color="green" />
+                <Header as="h4" style={{ marginTop: '0.5em' }}>Document unlocked</Header>
+                <p style={{ color: '#666', marginBottom: '1em' }}>Content hash verified. You can now view or download.</p>
+                <Button
+                  primary
+                  as="a"
+                  href={`data:${purchasedContent.mime || 'application/octet-stream'};base64,${purchasedContent.contentBase64}`}
+                  download={purchasedContent.name || 'document'}
+                >
+                  <Icon name="download" />
+                  Download
+                </Button>
+              </Segment>
+            ) : !purchaseInvoice ? (
+              <p style={{ color: '#888' }}>Requesting invoice…</p>
+            ) : (
+              <>
+                <Invoice
+                  address={purchaseInvoice.address}
+                  amountSats={purchaseInvoice.amountSats}
+                  network={purchaseInvoice.network}
+                  label="Document purchase (HTLC)"
+                  identity={props.identity || {}}
+                  compact
+                  onPaid={(txid) => {
+                    setPurchaseTxid(txid);
+                    if (txid && id && typeof props.onClaimPurchase === 'function') {
+                      setPurchaseBusy(true);
+                      setPurchaseError(null);
+                      Promise.resolve(props.onClaimPurchase(id, txid))
+                        .then((res) => {
+                          if (res && res.document) {
+                            setPurchasedContent(res.document);
+                          } else {
+                            setPurchaseError((res && res.error) || 'Claim failed');
+                          }
+                        })
+                        .catch((err) => setPurchaseError(err && err.message ? err.message : String(err)))
+                        .finally(() => setPurchaseBusy(false));
+                    }
+                  }}
+                />
+                <Form.Field style={{ marginTop: '1em' }}>
+                  <label>Or paste txid (if you paid from an external wallet)</label>
+                  <Input
+                    placeholder="txid from your wallet"
+                    value={purchaseTxid}
+                    onChange={(e) => setPurchaseTxid(e.target.value)}
+                  />
+                </Form.Field>
+                {purchaseError && <Message negative style={{ marginTop: '1em' }}>{purchaseError}</Message>}
+              </>
+            )}
+          </Modal.Content>
+          <Modal.Actions>
+            <Button basic onClick={() => { if (!purchaseBusy) setPurchaseOpen(false); setPurchaseInvoice(null); setPurchaseTxid(''); setPurchaseError(null); setPurchasedContent(null); }}>
+              {purchasedContent ? 'Close' : 'Cancel'}
+            </Button>
+            {!purchasedContent && purchaseInvoice && (
+              <Button
+                primary
+                loading={purchaseBusy}
+                disabled={!purchaseTxid.trim() || purchaseBusy}
+                onClick={() => {
+                  const tx = purchaseTxid.trim();
+                  if (!tx || !id || typeof props.onClaimPurchase !== 'function') return;
+                  setPurchaseBusy(true);
+                  setPurchaseError(null);
+                  Promise.resolve(props.onClaimPurchase(id, tx))
+                    .then((res) => {
+                      if (res && res.document) setPurchasedContent(res.document);
+                      else setPurchaseError((res && res.error) || 'Claim failed');
+                    })
+                    .catch((err) => setPurchaseError(err && err.message ? err.message : String(err)))
+                    .finally(() => setPurchaseBusy(false));
+                }}
+              >
+                Claim & Unlock
               </Button>
             )}
           </Modal.Actions>

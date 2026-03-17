@@ -547,6 +547,10 @@ class BitcoinHome extends React.Component {
                 <Icon name='credit card outline' />
                 Payments
               </Button>
+              <Button as={Link} to="/services/bitcoin/invoices" basic title='Create and manage invoices'>
+                <Icon name='file alternate outline' />
+                Invoices
+              </Button>
             </div>
           </div>
           <p style={{ marginTop: '0.5em', color: '#666' }}>Bitcoin is a new form of money designed for the Internet.</p>

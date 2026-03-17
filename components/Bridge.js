@@ -74,6 +74,7 @@ class Bridge extends React.Component {
     this.peerMessageQueue = [];
     this.chatSubmissionQueue = [];
     this.pendingHubChatQueue = []; // Chat messages sent while hub was offline; flush to bridge when reconnected
+    this._pendingClaimCallbacks = new Map(); // documentId -> { resolve, reject }
     this.queue = [];
     this.ws = null;
     this._heartbeat = null;
@@ -2463,6 +2464,29 @@ class Bridge extends React.Component {
                   }
                 }));
               }
+              if (result && typeof result === 'object' && (result.type === 'ClaimPurchaseResult' || (result.status === 'error' && result.documentId))) {
+                const docId = result.documentId;
+                const pending = this._pendingClaimCallbacks && docId && this._pendingClaimCallbacks.get(docId);
+                if (pending) {
+                  this._pendingClaimCallbacks.delete(docId);
+                  if (result.document) {
+                    pending.resolve({ document: result.document });
+                  } else {
+                    pending.resolve({ error: (result && result.message) || 'Claim failed' });
+                  }
+                }
+              }
+              if (result && typeof result === 'object' && result.type === 'CreatePurchaseInvoiceResult' && result.documentId) {
+                window.dispatchEvent(new CustomEvent('purchaseInvoiceReady', {
+                  detail: {
+                    documentId: result.documentId,
+                    address: result.address,
+                    amountSats: result.amountSats,
+                    contentHash: result.contentHash,
+                    network: result.network
+                  }
+                }));
+              }
               if (result && typeof result === 'object' && result.type === 'CreateDistributeInvoiceResult' && result.documentId) {
                 window.dispatchEvent(new CustomEvent('distributeInvoiceReady', {
                   detail: {
@@ -2553,6 +2577,11 @@ class Bridge extends React.Component {
                       operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
                       globalState: this.globalState
                     }
+                  }));
+
+                  // Notify that payment is bonded; proposals can update to show the contract.
+                  window.dispatchEvent(new CustomEvent('storageContractBonded', {
+                    detail: { documentId: backendDocId, contractId, targetId }
                   }));
                 }
               }
@@ -3421,8 +3450,9 @@ class Bridge extends React.Component {
   /**
    * Publish a document. When doc needs CreateDocument first, queues publish for after.
    * @param {string} id - Document id
+   * @param {Object} [opts] - Optional { purchasePriceSats } for HTLC purchase price
    */
-  sendPublishDocumentRequest (id) {
+  sendPublishDocumentRequest (id, opts = {}) {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
     if (!logical) return;
 
@@ -3459,12 +3489,58 @@ class Bridge extends React.Component {
     }
 
     try {
-      const payload = { method: 'PublishDocument', params: [resolved] };
+      const params = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats))
+        ? [{ id: resolved, purchasePriceSats: Number(opts.purchasePriceSats) }]
+        : [resolved];
+      const payload = { method: 'PublishDocument', params };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending PublishDocument request:', error);
     }
+  }
+
+  /**
+   * Request an HTLC purchase invoice for a published document.
+   * When result arrives, Bridge dispatches 'purchaseInvoiceReady' event.
+   * @param {string} id - Document id
+   */
+  sendCreatePurchaseInvoiceRequest (id) {
+    const logical = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!logical) return;
+    const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+    const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
+    try {
+      const payload = { method: 'CreatePurchaseInvoice', params: [{ documentId: backendId }] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending CreatePurchaseInvoice request:', error);
+    }
+  }
+
+  /**
+   * Claim an HTLC purchase after payment. Returns document with content on success.
+   * @param {string} id - Document id
+   * @param {string} txid - Payment transaction id
+   * @returns {Promise<{document?: Object, error?: string}>}
+   */
+  async sendClaimPurchaseRequest (id, txid) {
+    const logical = typeof id === 'object' && id && id.id ? id.id : id;
+    if (!logical || !txid) return { error: 'documentId and txid required' };
+    const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+    const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
+    return new Promise((resolve) => {
+      this._pendingClaimCallbacks.set(backendId, { resolve });
+      try {
+        const payload = { method: 'ClaimPurchase', params: [{ documentId: backendId, txid }] };
+        const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+        this.sendSignedMessage(message.toBuffer());
+      } catch (error) {
+        this._pendingClaimCallbacks.delete(backendId);
+        resolve({ error: error && error.message ? error.message : String(error) });
+      }
+    });
   }
 
   /**

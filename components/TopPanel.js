@@ -111,10 +111,6 @@ function TopPanel (props) {
             <Icon name="home" />
             Home
           </Button>
-          <Button as={Link} to="/services/bitcoin" basic={!active('/services/bitcoin')} primary={active('/services/bitcoin')}>
-            <Icon name="bitcoin" color="orange" />
-            Bitcoin
-          </Button>
           <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')}>
             <Icon name="sitemap" />
             Peers
@@ -124,6 +120,24 @@ function TopPanel (props) {
             Documents
           </Button>
         </Button.Group>
+        <Dropdown
+          item
+          trigger={
+            <Button size="small" basic title="More services">
+              <Icon name="ellipsis horizontal" />
+              More
+            </Button>
+          }
+          pointing="top left"
+        >
+          <Dropdown.Menu>
+            <Dropdown.Item as={Link} to="/" icon="comments" text="Activity" />
+            <Dropdown.Item as={Link} to="/services/bitcoin" icon="bitcoin" text="Bitcoin" />
+            <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card" text="Payments" />
+            <Dropdown.Item as={Link} to="/services/bitcoin/invoices" icon="file alternate" text="Invoices" />
+            <Dropdown.Item as={Link} to="/contracts" icon="file contract" text="Contracts" />
+          </Dropdown.Menu>
+        </Dropdown>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>

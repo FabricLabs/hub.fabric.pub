@@ -18,8 +18,10 @@ describe('@fabric/hub', function () {
 
       // Use project settings with test overrides: distinct ports to avoid EADDRINUSE,
       // Bitcoin disabled so we don't need bitcoind or regtest lock for HTTP-only tests.
+      // Isolated store path so test documents (e.g. document lifecycle) don't pollute stores/hub.
       hub = new Hub(merge({}, settings, {
         port: 7778,
+        fs: { path: 'stores/hub-test' },
         bitcoin: {
           enable: false,
           network: 'regtest'

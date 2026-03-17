@@ -85,10 +85,10 @@ async function main (input = {}) {
     </Provider>
   );
 
-  // Updates (1s)
+  // Updates (1s) — use textContent for defense in depth (avoids innerHTML XSS)
   setInterval(() => {
     document.querySelectorAll('abbr.relative-time').forEach((el) => {
-      el.innerHTML = toRelativeTime(el.getAttribute('title'));
+      el.textContent = toRelativeTime(el.getAttribute('title'));
     });
   }, 1000); // 1 second
 

@@ -80,13 +80,36 @@ function ContractView () {
                   {contract.document && (
                     <Table.Row>
                       <Table.Cell>Document</Table.Cell>
-                      <Table.Cell><code>{contract.document}</code></Table.Cell>
+                      <Table.Cell>
+                        <code>{contract.document}</code>
+                        <Button size="mini" as={Link} to={`/documents/${encodeURIComponent(contract.document)}`} style={{ marginLeft: '0.5em' }}>
+                          <Icon name="file alternate" />
+                          View
+                        </Button>
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
+                  {contract.txid && (
+                    <Table.Row>
+                      <Table.Cell>Payment tx</Table.Cell>
+                      <Table.Cell>
+                        <Button size="small" as={Link} to={`/services/bitcoin/transactions/${encodeURIComponent(contract.txid)}`}>
+                          <Icon name="bitcoin" />
+                          {String(contract.txid).slice(0, 16)}…
+                        </Button>
+                      </Table.Cell>
                     </Table.Row>
                   )}
                   {contract.amountSats != null && (
                     <Table.Row>
                       <Table.Cell>Amount</Table.Cell>
                       <Table.Cell>{contract.amountSats} sats</Table.Cell>
+                    </Table.Row>
+                  )}
+                  {contract.desiredCopies != null && contract.desiredCopies > 1 && (
+                    <Table.Row>
+                      <Table.Cell>Desired copies</Table.Cell>
+                      <Table.Cell>{contract.desiredCopies}</Table.Cell>
                     </Table.Row>
                   )}
                   {contract.durationYears != null && (

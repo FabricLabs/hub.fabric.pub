@@ -2,6 +2,7 @@
 
 // Dependencies
 const React = require('react');
+const { Link } = require('react-router-dom');
 
 // Semantic UI
 const {
@@ -21,6 +22,7 @@ function DistributeProposalsList (props) {
   const [acceptingId, setAcceptingId] = React.useState(null);
   const [txidByProposal, setTxidByProposal] = React.useState({});
   const [invoiceByProposal, setInvoiceByProposal] = React.useState({});
+  const [contractByProposal, setContractByProposal] = React.useState({});
   const pendingAcceptRef = React.useRef({});
 
   React.useEffect(() => {
@@ -38,6 +40,33 @@ function DistributeProposalsList (props) {
       setProposalsState(bridgeInstance.globalState.distributeProposals);
     }
   }, [bridgeRef]);
+
+  // When payment is bonded, update proposals to show the contract.
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.contractId || !detail.documentId) return;
+      const docId = detail.documentId;
+      const contractId = detail.contractId;
+      setProposalsState((prev) => {
+        const next = { ...prev };
+        let updated = false;
+        for (const [pid, p] of Object.entries(next)) {
+          if (!p) continue;
+          const matches = p.documentId === docId ||
+            (p.document && (p.document.sha256 === docId || p.document.id === docId));
+          if (matches) {
+            next[pid] = { ...p, status: 'bonded' };
+            setContractByProposal((c) => ({ ...c, [pid]: contractId }));
+            updated = true;
+          }
+        }
+        return updated ? next : prev;
+      });
+    };
+    window.addEventListener('storageContractBonded', handler);
+    return () => window.removeEventListener('storageContractBonded', handler);
+  }, []);
 
   // Listen for distributeInvoiceReady when we accept a proposal (host flow)
   React.useEffect(() => {
@@ -71,7 +100,10 @@ function DistributeProposalsList (props) {
   }, [proposalsState]);
 
   const pendingProposals = Object.values(proposalsState || {}).filter(
-    (p) => p && p.status === 'pending'
+    (p) => p && (p.status === 'pending' || p.status === 'accepted')
+  );
+  const bondedProposals = Object.values(proposalsState || {}).filter(
+    (p) => p && p.status === 'bonded'
   );
 
   const handleAccept = (proposal) => {
@@ -130,14 +162,19 @@ function DistributeProposalsList (props) {
     }));
   };
 
-  if (pendingProposals.length === 0) return null;
+  const hasProposals = pendingProposals.length > 0 || bondedProposals.length > 0;
 
   return (
-    <Segment>
+    <Segment basic={!!props.embedded} style={props.embedded ? { padding: 0 } : undefined}>
       <Header as="h3">
         <Icon name="handshake" />
         Hosting proposals
-        <Label size="small" color="orange">{pendingProposals.length}</Label>
+        {pendingProposals.length > 0 && (
+          <Label size="small" color="orange">{pendingProposals.length} pending</Label>
+        )}
+        {bondedProposals.length > 0 && (
+          <Label size="small" color="green">{bondedProposals.length} bonded</Label>
+        )}
       </Header>
       <p style={{ color: '#666', marginBottom: '1em' }}>
         Peers want to pay you to host their files. Accept to create a payment invoice and begin receiving payments.
@@ -209,6 +246,57 @@ function DistributeProposalsList (props) {
           );
         })}
       </List>
+
+      {bondedProposals.length > 0 && (
+        <>
+          <Header as="h4" style={{ marginTop: '1.5em' }}>
+            <Icon name="check circle" color="green" />
+            Bonded (payment confirmed)
+          </Header>
+          <p style={{ color: '#666', marginBottom: '0.75em', fontSize: '0.9em' }}>
+            These offers have been paid. Storage contracts are active.
+          </p>
+          <List divided relaxed>
+            {bondedProposals.map((proposal) => {
+              const contractId = contractByProposal[proposal.id];
+              return (
+                <List.Item key={proposal.id}>
+                  <List.Content>
+                    <List.Header>
+                      {proposal.documentName || proposal.documentId}
+                      <Label size="mini" color="green" style={{ marginLeft: '0.5em' }}>
+                        <Icon name="check" />
+                        Bonded
+                      </Label>
+                    </List.Header>
+                    <List.Description>
+                      From {proposal.senderAddress ? `${String(proposal.senderAddress).slice(0, 12)}…` : 'unknown'}
+                      {proposal.amountSats ? ` — ${proposal.amountSats} sats` : ''}
+                    </List.Description>
+                    {contractId && (
+                      <div style={{ marginTop: '0.5em' }}>
+                        <Button
+                          size="small"
+                          as={Link}
+                          to={`/contracts/${encodeURIComponent(contractId)}`}
+                          primary
+                        >
+                          <Icon name="file alternate" />
+                          View contract
+                        </Button>
+                      </div>
+                    )}
+                  </List.Content>
+                </List.Item>
+              );
+            })}
+          </List>
+        </>
+      )}
+
+      {!hasProposals && (
+        <p style={{ color: '#888', fontStyle: 'italic', marginTop: '0.5em' }}>No offers yet.</p>
+      )}
     </Segment>
   );
 }

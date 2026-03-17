@@ -39,8 +39,10 @@ class Onboarding extends React.Component {
       bitcoinRpcPort: props.bitcoinRpcPort || '8332',
       bitcoinUsername: props.bitcoinUsername || '',
       bitcoinPassword: props.bitcoinPassword || '',
-      lightningManaged: props.lightningManaged === true,
+      lightningManaged: props.lightningManaged !== false,
       lightningSocket: props.lightningSocket || '',
+      diskAllocationMb: props.diskAllocationMb || '1024',
+      costPerByteSats: (props.costPerByteSats != null && String(props.costPerByteSats).trim() !== '') ? String(props.costPerByteSats) : '0.01',
       saving: false,
       error: null
     };
@@ -73,6 +75,10 @@ class Onboarding extends React.Component {
           NODE_GOALS: JSON.stringify([]),
           BITCOIN_NETWORK: this.state.bitcoinNetwork,
           BITCOIN_MANAGED: this.state.bitcoinManaged,
+          DISK_ALLOCATION_MB: Math.max(1, parseInt(this.state.diskAllocationMb, 10) || 1024),
+          COST_PER_BYTE_SATS: this.state.costPerByteSats.trim()
+            ? Math.max(0, parseFloat(this.state.costPerByteSats) || 0)
+            : 0.01,
           ...(this.state.bitcoinManaged ? {} : {
             BITCOIN_HOST: this.state.bitcoinHost,
             BITCOIN_RPC_PORT: this.state.bitcoinRpcPort,
@@ -206,6 +212,33 @@ class Onboarding extends React.Component {
                   </Form.Field>
                 </Segment>
               )}
+              <Form.Field>
+                <label>Disk space allocation (MB)</label>
+                <Input
+                  type="number"
+                  min="1"
+                  placeholder="1024"
+                  value={this.state.diskAllocationMb}
+                  onChange={(e) => this.setState({ diskAllocationMb: e.target.value })}
+                />
+                <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+                  Maximum storage for documents (used for HTLC purchase limits).
+                </small>
+              </Form.Field>
+              <Form.Field>
+                <label>Cost per byte (sats)</label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.000001"
+                  placeholder="0.01"
+                  value={this.state.costPerByteSats}
+                  onChange={(e) => this.setState({ costPerByteSats: e.target.value })}
+                />
+                <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+                  Per-byte floor for document serving (HTLC purchase price). 0.01 ≈ 10k sats/MB. ~0.000001 sat/byte ≈ 1 sat/MB; typical cloud egress ~$0.05/GB. Leave empty for no floor.
+                </small>
+              </Form.Field>
               <Form.Field>
                 <Checkbox
                   label="Launch managed Lightning node (lightningd)"

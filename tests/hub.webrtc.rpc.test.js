@@ -11,7 +11,9 @@ describe('Hub WebRTC RPC methods', function () {
       debug: false,
       persistent: false,
       fs: { path: './stores/hub-test' },
-      http: { hostname: 'localhost', interface: '127.0.0.1', port: 0 }
+      http: { hostname: 'localhost', interface: '127.0.0.1', port: 0 },
+      bitcoin: { enable: false },
+      payjoin: { enable: false }
     });
 
     const methods = {};
@@ -282,7 +284,24 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(latest.document.id, edited.document.id, 'revision id should fetch latest document');
   });
 
-  it('exposes Merkle roots in network status and merkle RPC', async function () {
+  it('exposes chain with tree, genesis, and messages array', async function () {
+    const { methods, hub } = harness;
+    const created = await methods.CreateDocument({
+      name: 'chain-structure.txt',
+      mime: 'text/plain',
+      contentBase64: Buffer.from('chain-test').toString('base64')
+    });
+    await methods.PublishDocument(created.document.id);
+
+    const status = methods.GetNetworkStatus();
+    assert.ok(status.chain, 'chain should exist');
+    assert.ok(status.chain.tree, 'chain should have tree');
+    assert.ok(status.chain.genesis, 'chain should have genesis');
+    assert.ok(Array.isArray(status.chain.messages), 'chain.messages should be array of IDs');
+    assert.ok(status.chain.roots, 'chain should have roots');
+  });
+
+  it('exposes chain (roots, tree) in network status and GetMerkleState RPC', async function () {
     const { methods, published, chainUpdates } = harness;
     assert.ok(methods.GetNetworkStatus, 'GetNetworkStatus should be registered');
     assert.ok(methods.GetMerkleState, 'GetMerkleState should be registered');
@@ -296,15 +315,17 @@ describe('Hub WebRTC RPC methods', function () {
     await methods.PublishDocument(created.document.id);
 
     const status = methods.GetNetworkStatus();
-    assert.ok(status.merkle, 'network status should include merkle');
-    assert.ok(status.merkle.roots, 'merkle payload should include roots');
-    assert.ok(typeof status.merkle.roots.documents === 'string' || status.merkle.roots.documents === null);
-    assert.ok(typeof status.merkle.roots.fabricMessages === 'string' || status.merkle.roots.fabricMessages === null);
+    assert.ok(status.chain, 'network status should include chain');
+    assert.ok(status.chain.roots, 'chain payload should include roots');
+    assert.ok(status.chain.tree, 'chain should include tree');
+    assert.ok(typeof status.chain.roots.documents === 'string' || status.chain.roots.documents === null);
+    assert.ok(typeof status.chain.roots.fabricMessages === 'string' || status.chain.roots.fabricMessages === null);
 
-    const merkle = methods.GetMerkleState();
-    assert.strictEqual(merkle.type, 'GetMerkleStateResult');
-    assert.ok(merkle.current && merkle.current.roots, 'GetMerkleState should include current roots');
-    assert.ok(merkle.history && typeof merkle.history === 'object', 'GetMerkleState should include history map');
+    const chainResult = methods.GetMerkleState();
+    assert.strictEqual(chainResult.type, 'GetMerkleStateResult');
+    assert.ok(chainResult.current && chainResult.current.roots, 'GetMerkleState should include current roots');
+    assert.ok(chainResult.current && chainResult.current.tree, 'GetMerkleState should include tree');
+    assert.ok(chainResult.history && typeof chainResult.history === 'object', 'GetMerkleState should include history map');
 
     const messageList = methods.ListFabricMessages();
     assert.strictEqual(messageList.type, 'ListFabricMessagesResult');

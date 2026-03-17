@@ -143,27 +143,22 @@ class Hub extends Service {
       state: {
         status: 'INITIALIZED',
         agents: {},
-        documentChains: {},
         collections: {
           documents: {},
-          people: {},
           contracts: {},
           messages: {},
-          merkle: {}
+          chain: {}
         },
         counts: {
           documents: 0,
-          people: 0,
           messages: 0
         },
         services: {
-          bitcoin: {
-            balance: 0
-          },
+          bitcoin: {},
           payjoin: {
             available: false,
             sessions: 0
-          },
+          }
         }
       },
       crawlDelay: 2500,
@@ -218,6 +213,8 @@ class Hub extends Service {
     this._bitcoinCacheTTL = 15000;
     // Pending pay-to-distribute requests: documentId -> { address, amountSats, config, createdAt }
     this._distributeRequests = {};
+    // Pending HTLC purchase requests: documentId -> { address, amountSats, contentHash, createdAt }
+    this._purchaseRequests = {};
 
     // Best-effort Bitcoin service initialization. The Hub keeps running even
     // when bitcoind is offline, but exposes status/errors via the upstream API.
@@ -335,6 +332,13 @@ class Hub extends Service {
       hostname: this.settings.http.hostname,
       interface: this.settings.http.interface,
       port: this.settings.http.port,
+      middlewares: {
+        securityHeaders: (req, res, next) => {
+          res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          next();
+        }
+      },
       // TODO: use Fabric Resources; routes and components will be defined there
       resources: {
         Contract: {
@@ -400,6 +404,18 @@ class Hub extends Service {
     this.buffers = {};
 
     return this;
+  }
+
+  /**
+   * Validate document/file buffer size. Returns error object or null if valid.
+   * @param {Buffer|Uint8Array} buf
+   * @returns {{ status: 'error', message: string }|null}
+   */
+  _validateDocumentSize (buf) {
+    if (!buf || buf.length > MAX_DOCUMENT_BYTES) {
+      return { status: 'error', message: `document too large (max ${MAX_DOCUMENT_BYTES} bytes)` };
+    }
+    return null;
   }
 
   /**
@@ -509,6 +525,10 @@ class Hub extends Service {
   _getCollectionMap (name) {
     this._state.content = this._state.content || {};
     this._state.content.collections = this._state.content.collections || {};
+    if (name === 'messages') {
+      this._ensureResourceCollections();
+      return this._state.content.collections.messages;
+    }
     const current = this._state.content.collections[name];
     if (!current || typeof current !== 'object' || Array.isArray(current)) {
       this._state.content.collections[name] = {};
@@ -526,7 +546,7 @@ class Hub extends Service {
   _ensureResourceCollections () {
     this._state.content = this._state.content || {};
     this._state.content.collections = this._state.content.collections || {};
-    const required = new Set(['documents', 'contracts', 'messages']);
+    const required = new Set(['documents', 'contracts']);
 
     try {
       const resources = this.http && this.http.settings && this.http.settings.resources
@@ -543,8 +563,18 @@ class Hub extends Service {
       this._getCollectionMap(name);
     }
 
+    // Chain holds tree, genesis, roots (per Fabric). Messages stored at top level in collections.
+    this._state.content.chain = this._state.content.chain || {};
+    if (!this._state.content.collections.messages || typeof this._state.content.collections.messages !== 'object') {
+      this._state.content.collections.messages = this._state.content.collections.messages || {};
+    }
+
     // Backward-compatible alias while moving to collections-first storage.
     this._state.content.contracts = this._state.content.collections.contracts;
+
+    // Remove people (not needed per Fabric).
+    if (this._state.content.collections.people !== undefined) delete this._state.content.collections.people;
+    if (this._state.content.counts && this._state.content.counts.people !== undefined) delete this._state.content.counts.people;
   }
 
   _normalizeDocumentId (idRef) {
@@ -565,7 +595,8 @@ class Hub extends Service {
     const map = this._getCollectionMap('messages');
     const existing = Object.values(map).find((entry) => entry && entry.type === 'GENESIS_MESSAGE');
     if (existing) {
-      this._state.content.genesisMessage = existing.id;
+      this._state.content.chain = this._state.content.chain || {};
+      this._state.content.chain.genesis = existing.id;
       this._buildMessageTreeFromLog();
       return existing;
     }
@@ -576,7 +607,8 @@ class Hub extends Service {
         service: '@fabric/hub',
         created: new Date().toISOString()
       });
-      this._state.content.genesisMessage = created.id;
+      this._state.content.chain = this._state.content.chain || {};
+      this._state.content.chain.genesis = created.id;
       return created;
     }
 
@@ -590,155 +622,10 @@ class Hub extends Service {
     };
     const id = new Actor({ content: base }).id;
     map[id] = Object.assign({ id }, base);
-    this._state.content.genesisMessage = id;
+    this._state.content.chain = this._state.content.chain || {};
+    this._state.content.chain.genesis = id;
     this._buildMessageTreeFromLog();
     return map[id];
-  }
-
-  _getDocumentChains () {
-    this._state.content = this._state.content || {};
-    if (!this._state.content.documentChains || typeof this._state.content.documentChains !== 'object') {
-      this._state.content.documentChains = {};
-    }
-    return this._state.content.documentChains;
-  }
-
-  _buildDocumentPublishPayload (meta = {}) {
-    return {
-      id: meta.id,
-      lineage: meta.lineage || meta.id,
-      name: meta.name,
-      mime: meta.mime,
-      size: meta.size,
-      sha256: meta.sha256 || meta.id,
-      created: meta.created || new Date().toISOString(),
-      parent: meta.parent || null,
-      revision: Number(meta.revision || 1),
-      published: meta.published || null
-    };
-  }
-
-  _buildDocumentChainMerkle (chain) {
-    const entries = Object.values((chain && chain.messages) || {})
-      .filter((item) => item && typeof item === 'object')
-      .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
-    const leaves = entries.map((entry) => JSON.stringify({
-      seq: entry.seq,
-      type: entry.type,
-      payload: entry.payload
-    }));
-    const tree = new Tree({ leaves });
-    const root = tree && tree.root ? tree.root : null;
-    chain.merkle = {
-      leaves: leaves.length,
-      root: Buffer.isBuffer(root) ? root.toString('hex') : (root ? String(root) : null)
-    };
-    chain.tip = entries.length ? entries[entries.length - 1].id : null;
-    return chain.merkle.root;
-  }
-
-  async _appendDocumentChainMessage (lineageInput, type, payload = {}, options = {}) {
-    const lineage = String(lineageInput || payload.lineage || payload.id || '');
-    if (!lineage) return null;
-
-    const chains = this._getDocumentChains();
-    let chain = chains[lineage];
-    if (!chain || typeof chain !== 'object') {
-      chain = {
-        id: lineage,
-        lineage,
-        created: new Date().toISOString(),
-        counts: { messages: 0 },
-        messages: {},
-        merkle: { leaves: 0, root: null },
-        tip: null
-      };
-      chains[lineage] = chain;
-    }
-
-    chain.counts = chain.counts || { messages: 0 };
-    chain.messages = chain.messages || {};
-
-    // Enforce DOCUMENT_PUBLISH as the first entry in each document chain.
-    if (Number(chain.counts.messages || 0) === 0 && String(type) !== 'DOCUMENT_PUBLISH') {
-      const publishPayload = options.publishPayload || this._buildDocumentPublishPayload(payload);
-      await this._appendDocumentChainMessage(lineage, 'DOCUMENT_PUBLISH', publishPayload, {});
-    }
-
-    // Never add more than one DOCUMENT_PUBLISH event per lineage.
-    if (String(type) === 'DOCUMENT_PUBLISH') {
-      const existingPublish = Object.values(chain.messages).find((entry) => entry && entry.type === 'DOCUMENT_PUBLISH');
-      if (existingPublish) {
-        return existingPublish;
-      }
-    }
-
-    const now = new Date().toISOString();
-    const nextSeq = Number(chain.counts.messages || 0) + 1;
-    const base = {
-      seq: nextSeq,
-      type: String(type),
-      payload: Object.assign({}, payload, { lineage }),
-      created: now
-    };
-    const id = new Actor({ content: base }).id;
-    chain.messages[id] = Object.assign({ id }, base);
-    chain.counts.messages = nextSeq;
-    this._buildDocumentChainMerkle(chain);
-
-    if (this.fs && typeof this.fs.publish === 'function') {
-      try {
-        await this.fs.publish(`documents/${lineage}.chain.json`, chain);
-      } catch (err) {
-        console.error('[HUB] Failed to persist document chain:', err && err.message ? err.message : err);
-      }
-    }
-
-    return chain.messages[id];
-  }
-
-  async _ensureDocumentChainsFromState () {
-    const docs = Object.values(this._state.documents || {}).filter((doc) => doc && doc.id);
-    if (!docs.length) return;
-
-    const grouped = {};
-    for (const doc of docs) {
-      const lineage = String(doc.lineage || doc.id);
-      grouped[lineage] = grouped[lineage] || [];
-      grouped[lineage].push(doc);
-    }
-
-    const chains = this._getDocumentChains();
-    for (const [lineage, revisions] of Object.entries(grouped)) {
-      const existing = chains[lineage];
-      if (existing && existing.counts && Number(existing.counts.messages || 0) > 0) continue;
-
-      const ordered = revisions.slice().sort((a, b) => {
-        const ra = Number(a.revision || 1);
-        const rb = Number(b.revision || 1);
-        if (ra !== rb) return ra - rb;
-        const ta = new Date(a.created || 0).getTime();
-        const tb = new Date(b.created || 0).getTime();
-        return ta - tb;
-      });
-
-      const first = ordered[0];
-      await this._appendDocumentChainMessage(lineage, 'DOCUMENT_PUBLISH', this._buildDocumentPublishPayload(first));
-      for (let i = 1; i < ordered.length; i++) {
-        const doc = ordered[i];
-        await this._appendDocumentChainMessage(lineage, 'DOCUMENT_EDIT', {
-          id: doc.id,
-          lineage,
-          parent: doc.parent || null,
-          revision: Number(doc.revision || (i + 1)),
-          edited: doc.edited || doc.created || null,
-          name: doc.name,
-          mime: doc.mime,
-          size: doc.size,
-          sha256: doc.sha256 || doc.id
-        });
-      }
-    }
   }
 
   _buildMessageTreeFromLog () {
@@ -754,10 +641,12 @@ class Hub extends Service {
       ? this._fabricMessageTree.root
       : null;
     const rootHex = Buffer.isBuffer(root) ? root.toString('hex') : (root ? String(root) : null);
-    this._state.content.fabricMessageTree = {
+    this._state.content.chain = this._state.content.chain || {};
+    this._state.content.chain.tree = {
       leaves: leaves.length,
       root: rootHex
     };
+    this._state.content.chain.messages = entries.map((e) => e.id).filter(Boolean);
     return rootHex;
   }
 
@@ -832,48 +721,44 @@ class Hub extends Service {
   _computeMerkleRoots () {
     const collections = (this._state.content && this._state.content.collections) || {};
     const messageRoot = this._buildMessageTreeFromLog();
-    const documentChains = this._getDocumentChains();
-    const normalizedChains = {};
-    for (const [lineage, chain] of Object.entries(documentChains || {})) {
-      normalizedChains[lineage] = {
-        id: chain && chain.id ? chain.id : lineage,
-        tip: chain && chain.tip ? chain.tip : null,
-        root: chain && chain.merkle ? chain.merkle.root : null,
-        messages: chain && chain.counts ? Number(chain.counts.messages || 0) : 0
-      };
-    }
     const beaconRoot = (this.beacon && typeof this.beacon.merkleRoot === 'string') ? this.beacon.merkleRoot : null;
     return {
       documents: this._computeMerkleRootForMap(this._state.documents || {}, 'Document'),
       publishedDocuments: this._computeMerkleRootForMap(collections.documents || {}, 'PublishedDocument'),
       contracts: this._computeMerkleRootForMap(collections.contracts || {}, 'Contract'),
-      documentChains: this._computeMerkleRootForMap(normalizedChains, 'DocumentChain'),
       fabricMessages: messageRoot,
       beacon: beaconRoot
     };
   }
 
-  _refreshMerkleState (reason = 'update') {
+  _refreshChainState (reason = 'update') {
     this._ensureResourceCollections();
-    this._state.content.collections.merkle = this._state.content.collections.merkle || {};
+    this._state.content.collections.chain = this._state.content.collections.chain || {};
 
     const roots = this._computeMerkleRoots();
     const rootsId = crypto.createHash('sha256').update(JSON.stringify(roots)).digest('hex');
     const now = new Date().toISOString();
+    const tree = this._state.content.chain?.tree || this._state.content.fabricMessageTree || { leaves: 0, root: null };
+    const genesis = this._state.content.chain?.genesis || this._state.content.genesisMessage || null;
+    const messageIds = this._getFabricMessages().map((e) => e.id).filter(Boolean);
 
-    this._state.content.merkle = {
+    this._state.content.chain = {
       id: rootsId,
       updatedAt: now,
-      roots
+      roots,
+      tree,
+      genesis,
+      messages: messageIds
     };
 
-    const history = this._state.content.collections.merkle;
+    const history = this._state.content.collections.chain;
     if (!history[rootsId]) {
       history[rootsId] = {
         id: rootsId,
         created: now,
         reason,
-        roots
+        roots,
+        tree
       };
 
       // Keep bounded history to avoid unbounded growth.
@@ -885,10 +770,10 @@ class Hub extends Service {
       const capped = entries.slice(0, 256);
       const compacted = {};
       for (const entry of capped) compacted[entry.id] = entry;
-      this._state.content.collections.merkle = compacted;
+      this._state.content.collections.chain = compacted;
     }
 
-    return this._state.content.merkle;
+    return this._state.content.chain;
   }
 
   /**
@@ -967,14 +852,6 @@ class Hub extends Service {
     return this;
   }
 
-  _handleContractListRequest (req, res, next) {
-    return res.send({ status: 'error', message: 'Not yet implemented.' });
-  }
-
-  _handleContractViewRequest (req, res, next) {
-    return res.send({ status: 'error', message: 'Not yet implemented.' });
-  }
-
   _getBitcoinService () {
     return this.bitcoin || null;
   }
@@ -1043,11 +920,26 @@ class Hub extends Service {
     })();
   }
 
+  /**
+   * Returns minimal public Bitcoin status for global state / GetNetworkStatus.
+   * Excludes balance, beacon, blockchain, networkInfo, mempoolInfo, recentBlocks, recentTransactions.
+   */
+  _sanitizeBitcoinStatusForPublic (full) {
+    if (!full || typeof full !== 'object') return { available: false, status: 'UNKNOWN', message: 'No status.' };
+    return {
+      available: !!full.available,
+      status: full.status || (full.available ? 'ONLINE' : 'UNAVAILABLE'),
+      network: full.network || null,
+      height: typeof full.height === 'number' ? full.height : undefined,
+      message: full.message || undefined
+    };
+  }
+
   async _collectBitcoinStatus (options = {}) {
     const force = !!options.force;
     const now = Date.now();
     this._state.content.services = this._state.content.services || {};
-    this._state.content.services.bitcoin = this._state.content.services.bitcoin || { balance: 0 };
+    this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
     if (!force && this._bitcoinStatusCache.value && (now - this._bitcoinStatusCache.updatedAt) < this._bitcoinCacheTTL) {
       return this._bitcoinStatusCache.value;
     }
@@ -1061,7 +953,7 @@ class Hub extends Service {
         balance: 0,
         beacon: { balanceSats: 0, clock: 0 }
       };
-      this._state.content.services.bitcoin.status = unavailable;
+      this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic(unavailable);
       this._bitcoinStatusCache = { value: unavailable, updatedAt: now };
       return unavailable;
     }
@@ -1111,9 +1003,7 @@ class Hub extends Service {
         }));
 
       const trusted = balances && balances.mine && balances.mine.trusted != null ? balances.mine.trusted : 0;
-      const beacon = this._state.content.services && this._state.content.services.bitcoin && this._state.content.services.bitcoin.beacon
-        ? this._state.content.services.bitcoin.beacon
-        : null;
+      const beacon = this._beaconEpochState || null;
       const summary = {
         available: true,
         status: 'ONLINE',
@@ -1129,8 +1019,7 @@ class Hub extends Service {
         beacon: beacon || undefined
       };
 
-      this._state.content.services.bitcoin.balance = trusted;
-      this._state.content.services.bitcoin.status = summary;
+      this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic(summary);
       this._bitcoinStatusCache = { value: summary, updatedAt: now };
       return summary;
     } catch (error) {
@@ -1141,7 +1030,7 @@ class Hub extends Service {
         balance: 0,
         beacon: { balanceSats: 0, clock: 0 }
       };
-      this._state.content.services.bitcoin.status = failed;
+      this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic(failed);
       this._bitcoinStatusCache = { value: failed, updatedAt: now };
       return failed;
     }
@@ -1164,7 +1053,7 @@ class Hub extends Service {
         at: new Date().toISOString()
       });
 
-      const patch = { op: 'add', path: '/bitcoin', value: status };
+      const patch = { op: 'add', path: '/bitcoin', value: this._sanitizeBitcoinStatusForPublic(status) };
       const msg = Message.fromVector(['JSONPatch', JSON.stringify(patch)]);
       if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
       if (this.http && typeof this.http.broadcast === 'function') {
@@ -1217,7 +1106,9 @@ class Hub extends Service {
         LIGHTNING_MANAGED: body.LIGHTNING_MANAGED !== false && body.lightningManaged !== false,
         ...(body.LIGHTNING_MANAGED === false || body.lightningManaged === false ? {
           LIGHTNING_SOCKET: body.LIGHTNING_SOCKET || body.lightningSocket || ''
-        } : {})
+        } : {}),
+        DISK_ALLOCATION_MB: body.DISK_ALLOCATION_MB ?? body.diskAllocationMb ?? 1024,
+        COST_PER_BYTE_SATS: body.COST_PER_BYTE_SATS ?? body.costPerByteSats ?? 0.01
       };
       const result = await this.setup.createAdminToken(initialConfig);
       return res.status(200).json(result);
@@ -1367,8 +1258,11 @@ class Hub extends Service {
       if (!txhash) return res.status(400).json({ status: 'error', message: 'Transaction hash is required.' });
 
       try {
-        const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txhash, true]);
-        return res.json(tx);
+        const [tx, hex] = await Promise.all([
+          bitcoin._makeRPCRequest('getrawtransaction', [txhash, true]),
+          bitcoin._makeRPCRequest('getrawtransaction', [txhash, false])
+        ]);
+        return res.json({ ...tx, hex: hex || null });
       } catch (error) {
         if (error && error.code === -5) {
           return res.status(404).json({
@@ -1868,8 +1762,7 @@ class Hub extends Service {
       const capabilities = payjoin.getCapabilities();
       this._state.content.services.payjoin = {
         available: !!capabilities.available,
-        sessions: Number(capabilities.counts && capabilities.counts.sessions ? capabilities.counts.sessions : 0),
-        merkle: capabilities.merkle || {}
+        sessions: Number(capabilities.counts && capabilities.counts.sessions ? capabilities.counts.sessions : 0)
       };
       return res.json(capabilities);
     });
@@ -1902,7 +1795,6 @@ class Hub extends Service {
       this._state.content.services.payjoin = this._state.content.services.payjoin || {};
       this._state.content.services.payjoin.available = true;
       this._state.content.services.payjoin.sessions = Number((payjoin.state && payjoin.state.counts && payjoin.state.counts.sessions) || 0);
-      this._state.content.services.payjoin.merkle = (payjoin.state && payjoin.state.merkle) || {};
 
       return res.json({
         service: 'payjoin',
@@ -2570,14 +2462,10 @@ class Hub extends Service {
 
     this.beacon.on('epoch', (epoch) => {
       try {
-        this._state.content.services = this._state.content.services || {};
-        this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
-        const storedInterval = this.beacon.settings.regtest !== false
-          ? Number(beaconConfig.interval || 600000)
-          : 0;
-        this._state.content.services.bitcoin.beacon = {
+        // Store beacon in private state only (not in global state) — balance/blockHash are sensitive.
+        this._beaconEpochState = {
           status: 'RUNNING',
-          interval: storedInterval,
+          interval: this.beacon.settings.regtest !== false ? Number(beaconConfig.interval || 600000) : 0,
           clock: Number(epoch && epoch.clock ? epoch.clock : 0),
           lastBlockHash: epoch && epoch.blockHash ? epoch.blockHash : null,
           height: epoch && Number.isFinite(epoch.height) ? epoch.height : null,
@@ -2596,9 +2484,9 @@ class Hub extends Service {
 
     this.beacon.on('reorg', () => {
       try {
-        this._refreshMerkleState('beacon-reorg');
+        this._refreshChainState('beacon-reorg');
       } catch (e) {
-        console.warn('[HUB:BEACON] Failed to refresh merkle after reorg:', e && e.message ? e.message : e);
+        console.warn('[HUB:BEACON] Failed to refresh chain after reorg:', e && e.message ? e.message : e);
       }
     });
 
@@ -2624,8 +2512,8 @@ class Hub extends Service {
         settled = true;
         const msg = bitcoinStartError && bitcoinStartError.message ? bitcoinStartError.message : String(bitcoinStartError);
         console.warn('[HUB] Bitcoin service failed to start:', msg);
-        this._state.content.services.bitcoin.status = { available: false, status: 'ERROR', message: msg };
-        return { started: false, reason: msg };
+          this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'ERROR', message: msg });
+          return { started: false, reason: msg };
       }
     })();
 
@@ -2748,8 +2636,8 @@ class Hub extends Service {
         this.bitcoin.on('warning', (...warning) => console.warn('[BITCOIN]', '[WARNING]', ...warning));
         this.bitcoin.on('block', this._handleBitcoinBlockUpdate.bind(this));
         this.bitcoin.on('transaction', this._handleBitcoinBlockUpdate.bind(this));
-        this._state.content.services.bitcoin = this._state.content.services.bitcoin || { balance: 0 };
-        this._state.content.services.bitcoin.status = { available: false, status: 'STARTING', message: 'Starting Bitcoin...' };
+        this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
+        this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
         // Enable debug so bitcoind stdout and RPC wait progress are visible while startup takes time
         this.bitcoin.settings.debug = true;
         console.log('[HUB] Starting Bitcoin (blocking until ready or timeout)...');
@@ -2762,7 +2650,7 @@ class Hub extends Service {
           const msg = result && result.timedOut
             ? `Bitcoin did not become ready within ${this.settings.bitcoin.startTimeoutMs || 15000}ms.`
             : (result && result.reason ? result.reason : 'Bitcoin failed to start.');
-          this._state.content.services.bitcoin.status = { available: false, status: 'ERROR', message: msg };
+          this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'ERROR', message: msg });
           throw new Error(`[HUB] Bitcoin startup required but failed: ${msg}`);
         }
       }
@@ -2783,25 +2671,108 @@ class Hub extends Service {
       // Assign properties
       Object.assign(this._state.content, state);
       this._ensureResourceCollections();
-      // Remove legacy bundle-specific state from persisted snapshots now that
-      // documents are the single resource model.
-      if (this._state.content.collections && this._state.content.collections.bundles) {
-        delete this._state.content.collections.bundles;
+
+      // Migrate to Fabric chain shape: chain.tree, chain.genesis. Messages stay at top level (collections.messages).
+      this._state.content.chain = this._state.content.chain || {};
+      if (this._state.content.fabricMessageTree && !this._state.content.chain.tree) {
+        this._state.content.chain.tree = this._state.content.fabricMessageTree;
+        delete this._state.content.fabricMessageTree;
       }
-      if (this._state.content.merkle && this._state.content.merkle.roots && Object.prototype.hasOwnProperty.call(this._state.content.merkle.roots, 'bundles')) {
-        delete this._state.content.merkle.roots.bundles;
+      if (this._state.content.genesisMessage != null && this._state.content.chain.genesis == null) {
+        this._state.content.chain.genesis = this._state.content.genesisMessage;
+        delete this._state.content.genesisMessage;
       }
-      if (this._state.content.collections && this._state.content.collections.merkle) {
-        for (const entry of Object.values(this._state.content.collections.merkle)) {
+      // Migrate chain.messages (object of full messages) -> collections.messages. chain.messages stays as array of IDs.
+      if (this._state.content.chain?.messages && typeof this._state.content.chain.messages === 'object' && !Array.isArray(this._state.content.chain.messages)) {
+        if (!this._state.content.collections) this._state.content.collections = {};
+        if (!this._state.content.collections.messages || Object.keys(this._state.content.collections.messages).length === 0) {
+          this._state.content.collections.messages = this._state.content.chain.messages;
+        }
+        this._state.content.chain.messages = Object.values(this._state.content.collections.messages)
+          .filter((m) => m && m.id)
+          .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0))
+          .map((m) => m.id);
+      }
+      // Migrate merkle -> chain (legacy)
+      if (this._state.content.merkle && !this._state.content.chain.id) {
+        this._state.content.chain = Object.assign({}, this._state.content.chain, this._state.content.merkle);
+        if (this._state.content.chain.fabricMessageTree) {
+          this._state.content.chain.tree = this._state.content.chain.tree || this._state.content.chain.fabricMessageTree;
+          delete this._state.content.chain.fabricMessageTree;
+        }
+        delete this._state.content.merkle;
+      }
+      if (this._state.content.collections?.merkle && !this._state.content.collections.chain) {
+        const tree = this._state.content.chain?.tree || { leaves: 0, root: null };
+        this._state.content.collections.chain = {};
+        for (const [k, v] of Object.entries(this._state.content.collections.merkle)) {
+          this._state.content.collections.chain[k] = v && typeof v === 'object'
+            ? Object.assign({}, v, { tree: v.tree || v.fabricMessageTree || tree })
+            : v;
+        }
+        if (this._state.content.collections.chain) {
+          for (const entry of Object.values(this._state.content.collections.chain)) {
+            if (entry && entry.fabricMessageTree) delete entry.fabricMessageTree;
+          }
+        }
+        delete this._state.content.collections.merkle;
+      }
+
+      // Sanitize services on restore — only public info in global state
+      this._state.content.services = this._state.content.services || {};
+      if (this._state.content.services.bitcoin && this._state.content.services.bitcoin.status) {
+        this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic(this._state.content.services.bitcoin.status);
+      }
+      if (this._state.content.services.bitcoin) {
+        delete this._state.content.services.bitcoin.balance;
+        delete this._state.content.services.bitcoin.beacon;
+      }
+      if (this._state.content.services.payjoin && this._state.content.services.payjoin.merkle !== undefined) {
+        delete this._state.content.services.payjoin.merkle;
+      }
+
+      if (this._state.content.collections && this._state.content.collections.chain) {
+        for (const entry of Object.values(this._state.content.collections.chain)) {
           if (entry && entry.roots && Object.prototype.hasOwnProperty.call(entry.roots, 'bundles')) {
             delete entry.roots.bundles;
           }
         }
       }
+
       this._state.content.services = this._state.content.services || {};
       this._state.content.services.payjoin = this._state.content.services.payjoin || { available: false, sessions: 0 };
+
+      // Seed _state.documents from restored collections so ListDocuments has the index
+      try {
+        this._state.documents = this._state.documents || {};
+        const collections = this._state && this._state.content && this._state.content.collections;
+        const publishedDocs = collections && collections.documents;
+        if (publishedDocs && typeof publishedDocs === 'object') {
+          for (const id of Object.keys(publishedDocs)) {
+            const entry = publishedDocs[id];
+            if (!entry || typeof entry !== 'object') continue;
+            if (!this._state.documents[id]) {
+              this._state.documents[id] = {
+                id: entry.id || id,
+                sha256: entry.sha256 || id,
+                name: entry.name,
+                mime: entry.mime,
+                size: entry.size,
+                created: entry.created,
+                published: entry.published,
+                lineage: entry.lineage || entry.id || id,
+                parent: entry.parent || null,
+                revision: entry.revision || 1,
+                edited: entry.edited || entry.created || null
+              };
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[HUB] Failed to seed documents index from content store:', err);
+      }
+
       await this._ensureGenesisMessage();
-      await this._ensureDocumentChainsFromState();
 
       // Contract deploy
       console.debug('[HUB]', 'Contract ID:', this.contract.id);
@@ -3111,9 +3082,8 @@ class Hub extends Service {
 
           // Enforce an upper bound on file size to avoid memory/disk exhaustion.
           const buf = Buffer.from(doc.contentBase64, 'base64');
-          if (buf.length > MAX_DOCUMENT_BYTES) {
-            return { status: 'error', message: `document too large (max ${MAX_DOCUMENT_BYTES} bytes)` };
-          }
+          const sizeErr = this._validateDocumentSize(buf);
+          if (sizeErr) return sizeErr;
 
           const totalChunks = Math.max(1, Math.ceil(buf.length / P2P_FILE_CHUNK_BYTES));
           const transferId = `${doc.id || (doc.sha256 || 'document')}:${Date.now()}:${crypto.randomBytes(4).toString('hex')}`;
@@ -3198,40 +3168,7 @@ class Hub extends Service {
         }
       });
 
-      // Ensure in-memory documents index includes any documents already present
-      // in the global content store (e.g. previously published documents).
-      try {
-        this._state.documents = this._state.documents || {};
-        this._state.content = this._state.content || {};
-        const collections = this._state && this._state.content && this._state.content.collections;
-        const publishedDocs = collections && collections.documents;
-        if (publishedDocs && typeof publishedDocs === 'object') {
-          for (const id of Object.keys(publishedDocs)) {
-            const entry = publishedDocs[id];
-            if (!entry || typeof entry !== 'object') continue;
-            if (!this._state.documents[id]) {
-              this._state.documents[id] = {
-                id: entry.id || id,
-                sha256: entry.sha256 || id,
-                name: entry.name,
-                mime: entry.mime,
-                size: entry.size,
-                created: entry.created,
-                published: entry.published,
-                lineage: entry.lineage || entry.id || id,
-                parent: entry.parent || null,
-                revision: entry.revision || 1,
-                edited: entry.edited || entry.created || null
-              };
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[HUB] Failed to seed documents index from content store:', err);
-      }
-
-      await this._ensureDocumentChainsFromState();
-      this._refreshMerkleState('startup-resource-sync');
+      this._refreshChainState('startup-resource-sync');
 
       // Create a document from a locally-processed upload (content is sent from client).
       // Params: (doc: { name, mime, size, sha256, contentBase64 })
@@ -3246,9 +3183,8 @@ class Hub extends Service {
         if (!contentBase64) return { status: 'error', message: 'contentBase64 required' };
 
         const buffer = Buffer.from(contentBase64, 'base64');
-        if (buffer.length > MAX_DOCUMENT_BYTES) {
-          return { status: 'error', message: `document too large (max ${MAX_DOCUMENT_BYTES} bytes)` };
-        }
+        const sizeErr = this._validateDocumentSize(buffer);
+        if (sizeErr) return sizeErr;
         const sha256 = doc.sha256 ? String(doc.sha256) : crypto.createHash('sha256').update(buffer).digest('hex');
         const id = sha256;
         const now = new Date().toISOString();
@@ -3281,10 +3217,9 @@ class Hub extends Service {
         // Keep a lightweight index in memory/state (no content)
         this._state.documents = this._state.documents || {};
         this._state.documents[id] = meta;
-        await this._appendDocumentChainMessage(meta.lineage || id, 'DOCUMENT_PUBLISH', this._buildDocumentPublishPayload(meta));
         // Local creation is not a major global state update; message log
         // updates occur when resource collections (public state) are changed.
-        this._refreshMerkleState('create-document');
+        this._refreshChainState('create-document');
 
         // Push network status so document lists update
         if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
@@ -3334,7 +3269,7 @@ class Hub extends Service {
             return Object.assign(
               {},
               meta,
-              publishedMeta && publishedMeta.published ? { published: publishedMeta.published } : null,
+              publishedMeta && publishedMeta.published ? { published: publishedMeta.published, purchasePriceSats: publishedMeta.purchasePriceSats } : null,
               storageContractId ? { storageContractId } : null
             );
           });
@@ -3360,6 +3295,9 @@ class Hub extends Service {
           const publishedMeta = collections[id];
           if (publishedMeta && publishedMeta.published && !parsed.published) {
             parsed.published = publishedMeta.published;
+          }
+          if (publishedMeta && publishedMeta.purchasePriceSats != null) {
+            parsed.purchasePriceSats = publishedMeta.purchasePriceSats;
           }
 
           const contracts = (this._state.content && this._state.content.collections && this._state.content.collections.contracts) || {};
@@ -3399,6 +3337,7 @@ class Hub extends Service {
         const now = new Date().toISOString();
         const distributeConfig = {
           amountSats,
+          desiredCopies: Math.max(1, Number(config.desiredCopies || 1)),
           durationYears: Number(config.durationYears || 4),
           challengeCadence: config.challengeCadence || 'daily',
           responseDeadline: config.responseDeadline || '10s',
@@ -3480,6 +3419,7 @@ class Hub extends Service {
           const now = new Date().toISOString();
           const distributeConfig = {
             amountSats,
+            desiredCopies: Math.max(1, Number((proposal.config && proposal.config.desiredCopies) || 1)),
             durationYears: Number((proposal.config && proposal.config.durationYears) || 4),
             challengeCadence: (proposal.config && proposal.config.challengeCadence) || 'daily',
             responseDeadline: (proposal.config && proposal.config.responseDeadline) || '10s',
@@ -3522,9 +3462,13 @@ class Hub extends Service {
       });
 
       // Publish a document ID into the global store (hub node state.collections.documents)
-      // Params: (id: string | { id: string })
+      // Params: (id: string | { id: string, purchasePriceSats?: number })
       this.http._registerMethod('PublishDocument', async (...params) => {
-        const id = this._normalizeDocumentId(params[0] && (params[0].id || params[0]));
+        const arg = params[0];
+        const id = this._normalizeDocumentId(arg && (arg.id || arg));
+        const purchasePriceSats = arg && typeof arg === 'object' && Number.isFinite(Number(arg.purchasePriceSats))
+          ? Math.max(0, Number(arg.purchasePriceSats))
+          : 0;
         if (!id) return { status: 'error', message: 'id required' };
         try {
           // Ensure the document exists locally
@@ -3551,7 +3495,8 @@ class Hub extends Service {
             parent: parsed.parent || null,
             revision: parsed.revision || 1,
             edited: parsed.edited || parsed.created || now,
-            published: now
+            published: now,
+            ...(purchasePriceSats > 0 ? { purchasePriceSats } : {})
           };
           if (!exists) {
             this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
@@ -3563,19 +3508,7 @@ class Hub extends Service {
             name: parsed.name,
             mime: parsed.mime
           });
-          await this._appendDocumentChainMessage(parsed.lineage || id, 'DOCUMENT_PUBLISH', this._buildDocumentPublishPayload({
-            id,
-            lineage: parsed.lineage || id,
-            name: parsed.name,
-            mime: parsed.mime,
-            size: parsed.size,
-            sha256: parsed.sha256 || id,
-            created: parsed.created || now,
-            parent: parsed.parent || null,
-            revision: parsed.revision || 1,
-            published: now
-          }));
-          this._refreshMerkleState('publish-document');
+          this._refreshChainState('publish-document');
           this.commit();
 
           // Update UI clients
@@ -3606,6 +3539,129 @@ class Hub extends Service {
         }
       });
 
+      // Create an HTLC purchase invoice for a published document. Returns address + amount.
+      // Params: ({ documentId, amountSats? }) — amountSats defaults to document's purchasePriceSats
+      this.http._registerMethod('CreatePurchaseInvoice', async (...params) => {
+        const config = params[0] || {};
+        const documentId = this._normalizeDocumentId(config.documentId || config.id);
+        if (!documentId) return { status: 'error', message: 'documentId required' };
+
+        const bitcoin = this._getBitcoinService();
+        if (!bitcoin) return { status: 'error', message: 'Bitcoin service unavailable for document purchase' };
+
+        const raw = this.fs.readFile(`documents/${documentId}.json`);
+        if (!raw) return { status: 'error', message: 'document not found' };
+
+        const parsed = JSON.parse(raw);
+        const collections = this._state.content && this._state.content.collections && this._state.content.collections.documents;
+        const publishedMeta = collections && collections[documentId];
+        if (!publishedMeta || !publishedMeta.published) {
+          return { status: 'error', message: 'document is not published' };
+        }
+
+        const contentBase64 = parsed.contentBase64;
+        if (!contentBase64) return { status: 'error', message: 'document content not available' };
+        const contentBuffer = Buffer.from(contentBase64, 'base64');
+        const contentSize = contentBuffer.length;
+        const costPerByteSats = Math.max(0, Number(this.setup.getSetting('COST_PER_BYTE_SATS') || 0.01));
+        const floorSats = costPerByteSats > 0 ? Math.ceil(contentSize * costPerByteSats) : 0;
+        const docPrice = Number(publishedMeta.purchasePriceSats || 0);
+        const amountSats = Math.max(Number(config.amountSats || 0) || docPrice, floorSats);
+        if (!Number.isFinite(amountSats) || amountSats <= 0) {
+          return { status: 'error', message: 'document has no purchase price. Set purchasePriceSats when publishing or configure COST_PER_BYTE_SATS.' };
+        }
+
+        const contentHash = crypto.createHash('sha256').update(
+          crypto.createHash('sha256').update(contentBuffer).digest()
+        ).digest('hex');
+
+        const address = await bitcoin.getUnusedAddress();
+        const now = new Date().toISOString();
+        this._purchaseRequests[documentId] = { address, amountSats, contentHash, createdAt: now };
+
+        return {
+          type: 'CreatePurchaseInvoiceResult',
+          documentId,
+          address,
+          amountSats,
+          contentHash,
+          network: bitcoin.network || 'regtest',
+          expiresAt: now
+        };
+      });
+
+      // Claim an HTLC purchase: verify payment, verify sha256(sha256(content)), return document.
+      // Params: ({ documentId, txid })
+      this.http._registerMethod('ClaimPurchase', async (...params) => {
+        const config = params[0] || {};
+        const documentId = this._normalizeDocumentId(config.documentId || config.id);
+        const txid = config.txid ? String(config.txid).trim() : null;
+        if (!documentId) return { status: 'error', message: 'documentId required', documentId: null };
+        if (!txid) return { status: 'error', message: 'txid required (proof of payment)', documentId };
+
+        const bitcoin = this._getBitcoinService();
+        const pending = this._purchaseRequests[documentId];
+        if (!bitcoin || !pending) {
+          return { status: 'error', message: 'Purchase invoice required. Call CreatePurchaseInvoice first, pay, then pass txid.', documentId };
+        }
+
+        const verified = await this._verifyL1Payment(bitcoin, txid, pending.address, pending.amountSats);
+        if (!verified) {
+          return { status: 'error', message: 'Payment verification failed. Ensure the transaction pays to the invoice address with at least the required amount.', documentId };
+        }
+
+        const raw = this.fs.readFile(`documents/${documentId}.json`);
+        if (!raw) return { status: 'error', message: 'document not found', documentId };
+        const parsed = JSON.parse(raw);
+        const contentBase64 = parsed.contentBase64;
+        if (!contentBase64) return { status: 'error', message: 'document content not available', documentId };
+
+        const contentBuffer = Buffer.from(contentBase64, 'base64');
+        const contentHash = crypto.createHash('sha256').update(
+          crypto.createHash('sha256').update(contentBuffer).digest()
+        ).digest('hex');
+        if (contentHash !== pending.contentHash) {
+          return { status: 'error', message: 'Content hash mismatch. HTLC unlock failed.', documentId };
+        }
+
+        delete this._purchaseRequests[documentId];
+
+        return {
+          type: 'ClaimPurchaseResult',
+          documentId,
+          document: {
+            id: parsed.id,
+            name: parsed.name,
+            mime: parsed.mime,
+            size: parsed.size,
+            sha256: parsed.sha256,
+            contentBase64,
+            contentHash
+          }
+        };
+      });
+
+      // Set purchase price for a published document. Admin or document owner.
+      this.http._registerMethod('SetDocumentPrice', async (...params) => {
+        const config = params[0] || {};
+        const documentId = this._normalizeDocumentId(config.documentId || config.id);
+        const purchasePriceSats = Math.max(0, Number(config.purchasePriceSats || config.amountSats || 0));
+        if (!documentId) return { status: 'error', message: 'documentId required' };
+
+        this._ensureResourceCollections();
+        const collections = this._state.content.collections.documents;
+        const entry = collections && collections[documentId];
+        if (!entry || !entry.published) {
+          return { status: 'error', message: 'document not found or not published' };
+        }
+
+        entry.purchasePriceSats = purchasePriceSats > 0 ? purchasePriceSats : undefined;
+        if (purchasePriceSats <= 0) delete entry.purchasePriceSats;
+        this._refreshChainState('set-document-price');
+        if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+        return { type: 'SetDocumentPriceResult', documentId, purchasePriceSats: entry.purchasePriceSats };
+      });
+
       // Edit an existing document and create a new revision.
       // Params: ({ id, contentBase64|content, mime?, name?, publish? })
       this.http._registerMethod('EditDocument', async (...params) => {
@@ -3630,9 +3686,8 @@ class Hub extends Service {
 
           if (!nextContentBase64) return { status: 'error', message: 'content required' };
           const buffer = Buffer.from(nextContentBase64, 'base64');
-          if (buffer.length > MAX_DOCUMENT_BYTES) {
-            return { status: 'error', message: `document too large (max ${MAX_DOCUMENT_BYTES} bytes)` };
-          }
+          const sizeErr = this._validateDocumentSize(buffer);
+          if (sizeErr) return sizeErr;
 
           const now = new Date().toISOString();
           const nextId = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -3698,22 +3753,9 @@ class Hub extends Service {
               lineage,
               revision: nextRevision
             });
-            await this._appendDocumentChainMessage(lineage, 'DOCUMENT_EDIT', {
-              sourceId: source.id || sourceId,
-              document: nextId,
-              name: nextName,
-              mime: nextMime,
-              size: buffer.length,
-              sha256: nextId,
-              parent: source.id || sourceId,
-              revision: nextRevision,
-              edited: now
-            }, {
-              publishPayload: this._buildDocumentPublishPayload(source)
-            });
           }
 
-          this._refreshMerkleState('edit-document');
+          this._refreshChainState('edit-document');
           if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
 
           return {
@@ -3744,8 +3786,7 @@ class Hub extends Service {
         return {
           type: 'ListDocumentRevisionsResult',
           lineage,
-          revisions,
-          chain: (this._getDocumentChains() && this._getDocumentChains()[lineage]) ? this._getDocumentChains()[lineage] : null
+          revisions
         };
       });
 
@@ -3789,6 +3830,7 @@ class Hub extends Service {
         const durationYears = Number(config.durationYears || 4);
         const challengeCadence = config.challengeCadence || 'daily';
         const responseDeadline = config.responseDeadline || '10s';
+        const desiredCopies = Math.max(1, Number(pending ? pending.config?.desiredCopies : config.desiredCopies) || 1);
         const ownerId = config.actorId || (this.agent && this.agent.identity && this.agent.identity.id) || null;
 
         try {
@@ -3803,7 +3845,9 @@ class Hub extends Service {
             durationYears,
             challengeCadence,
             responseDeadline,
-            created: new Date().toISOString()
+            desiredCopies,
+            created: new Date().toISOString(),
+            ...(txid ? { txid } : {})
           };
 
           const contract = new Actor({ content: descriptor });
@@ -3824,9 +3868,11 @@ class Hub extends Service {
               id: contractId,
               document: documentId,
               amountSats,
-              durationYears
+              durationYears,
+              desiredCopies,
+              ...(txid ? { txid } : {})
             });
-            this._refreshMerkleState('create-storage-contract');
+            this._refreshChainState('create-storage-contract');
             this.commit();
             if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
           } catch (e) {
@@ -3860,7 +3906,7 @@ class Hub extends Service {
       });
 
       const buildNetworkStatus = () => {
-        const merkle = this._refreshMerkleState('network-status');
+        const chain = this._refreshChainState('network-status');
         const fabricMessages = this._getFabricMessages();
         const setupStatus = this.setup.getSetupStatus();
         return {
@@ -3869,9 +3915,8 @@ class Hub extends Service {
           documents: this._state.documents,
           setup: setupStatus,
           publishedDocuments: (this._state.content && this._state.content.collections && this._state.content.collections.documents) ? this._state.content.collections.documents : {},
-          documentChains: this._getDocumentChains(),
           fabricMessages,
-          merkle,
+          chain,
           network: {
             address: this.http.agent.listenAddress,
             listening: this.http.agent.listening
@@ -3896,12 +3941,12 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('GetMerkleState', (...params) => {
-        const current = this._refreshMerkleState('rpc-get-merkle-state');
+        const current = this._refreshChainState('rpc-get-chain-state');
         return {
           type: 'GetMerkleStateResult',
           current,
-          history: (this._state.content && this._state.content.collections && this._state.content.collections.merkle)
-            ? this._state.content.collections.merkle
+          history: (this._state.content && this._state.content.collections && this._state.content.collections.chain)
+            ? this._state.content.collections.chain
             : {}
         };
       });
@@ -4284,7 +4329,7 @@ class Hub extends Service {
 
       const persistIncomingDocument = async (doc, origin) => {
         const incomingBuffer = Buffer.from(doc.contentBase64, 'base64');
-        if (incomingBuffer.length > MAX_DOCUMENT_BYTES) {
+        if (this._validateDocumentSize(incomingBuffer)) {
           console.warn('[HUB] Dropping incoming file (too large):', doc.id);
           return;
         }

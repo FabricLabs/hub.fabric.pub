@@ -28,6 +28,7 @@ const Onboarding = require('./Onboarding');
 const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
 const BitcoinTransactionView = require('./BitcoinTransactionView');
+const InvoiceListHome = require('./InvoiceListHome');
 const BottomPanel = require('./BottomPanel');
 const ContractList = require('./ContractList');
 const ContractView = require('./ContractView');
@@ -1003,6 +1004,19 @@ class HubInterface extends React.Component {
                     )}
                   />
                   <Route
+                    path="/services/bitcoin/invoices"
+                    element={(
+                      <InvoiceListHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bitcoin={bitcoin}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
                     path="/services/bitcoin/transactions/:txhash"
                     element={(
                       <BitcoinTransactionView
@@ -1210,6 +1224,8 @@ class HubInterface extends React.Component {
                       <DocumentView
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
+                        identity={local || effectiveAuth}
+                        bitcoin={bitcoin}
                         hasDocumentKey={
                           !!(bridgeInstance &&
                             typeof bridgeInstance.hasDocumentEncryptionKey === 'function' &&
@@ -1232,12 +1248,26 @@ class HubInterface extends React.Component {
                             ? bridgeInstance.getDecryptedDocumentContent(id)
                             : null;
                         }}
-                        onPublishDocument={(id) => {
+                        onPublishDocument={(id, opts) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
                           if (typeof bridgeInstance.sendPublishDocumentRequest === 'function') {
-                            bridgeInstance.sendPublishDocumentRequest(id);
+                            bridgeInstance.sendPublishDocumentRequest(id, opts);
                           }
+                        }}
+                        onRequestPurchaseInvoice={(id) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendCreatePurchaseInvoiceRequest === 'function') {
+                            bridgeInstance.sendCreatePurchaseInvoiceRequest(id);
+                          }
+                        }}
+                        onClaimPurchase={(id, txid) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return null;
+                          const bridgeInstance = this.bridgeRef.current;
+                          return typeof bridgeInstance.sendClaimPurchaseRequest === 'function'
+                            ? bridgeInstance.sendClaimPurchaseRequest(id, txid)
+                            : Promise.resolve({ error: 'Claim not available' });
                         }}
                         onRequestDistributeInvoice={(id, config) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;

@@ -234,8 +234,6 @@ function DocumentsPage (props) {
 
         <Divider />
 
-        <DistributeProposalsList bridgeRef={props.bridgeRef} />
-
         {hasEncryptionKey && (
           <Segment loading={busy}>
             <Header as="h3">Add content</Header>
@@ -297,6 +295,14 @@ function DocumentsPage (props) {
             )}
           </Segment>
         )}
+
+        <Segment>
+          <Header as="h3">
+            <Icon name="gift" />
+            Offers
+          </Header>
+          <DistributeProposalsList bridgeRef={props.bridgeRef} embedded />
+        </Segment>
 
         <Segment>
           <Header as="h3">Documents</Header>

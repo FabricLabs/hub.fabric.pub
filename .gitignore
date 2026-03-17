@@ -106,5 +106,8 @@ dist
 # Fabric Schema Store
 stores/schemata
 
+# Test store (isolated from main hub; do not commit)
+stores/hub-test
+
 # MacOS garbage
 .DS_Store

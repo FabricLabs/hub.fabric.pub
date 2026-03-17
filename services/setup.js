@@ -24,7 +24,9 @@ const GLOBAL_SETTINGS = [
   'BITCOIN_USERNAME',
   'BITCOIN_PASSWORD',
   'LIGHTNING_MANAGED',
-  'LIGHTNING_SOCKET'
+  'LIGHTNING_SOCKET',
+  'DISK_ALLOCATION_MB',
+  'COST_PER_BYTE_SATS'
 ];
 
 /**
@@ -159,7 +161,7 @@ class SetupService {
     // Apply initial config (no token storage)
     const settings = this._loadSettings();
     for (const [key, val] of Object.entries(initialConfig)) {
-      if (key !== 'IS_CONFIGURED' && (GLOBAL_SETTINGS.includes(key) || key.startsWith('NODE_') || key.startsWith('BITCOIN_') || key.startsWith('LIGHTNING_'))) {
+      if (key !== 'IS_CONFIGURED' && (GLOBAL_SETTINGS.includes(key) || key.startsWith('NODE_') || key.startsWith('BITCOIN_') || key.startsWith('LIGHTNING_') || key.startsWith('DISK_') || key.startsWith('COST_PER_BYTE_'))) {
         settings[key] = typeof val === 'string' ? val : JSON.stringify(val);
       }
     }
