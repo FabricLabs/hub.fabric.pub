@@ -61,12 +61,12 @@ function DocumentsPage (props) {
 
   const navigate = useNavigate();
 
-  // Pull documents index from hub networkStatus (metadata only), fallback to bridge globalState cache.
+  // Pull published index from hub networkStatus (global store = source of truth for published state).
   const bridgeRef = props.bridgeRef;
   const current = bridgeRef && bridgeRef.current;
   const hasEncryptionKey = !!(current && typeof current.hasDocumentEncryptionKey === 'function' && current.hasDocumentEncryptionKey());
   const networkStatus = current && (current.networkStatus || current.lastNetworkStatus);
-  const indexed = networkStatus && networkStatus.documents ? networkStatus.documents : null;
+  const indexed = networkStatus && networkStatus.publishedDocuments ? networkStatus.publishedDocuments : null;
 
   const [docsState, setDocsState] = React.useState({});
 

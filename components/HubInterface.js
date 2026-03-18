@@ -14,7 +14,8 @@ const { renderToString } = require('react-dom/server');
 const {
   BrowserRouter,
   Routes,
-  Route
+  Route,
+  useNavigate
 } = require('react-router-dom');
 
 // Fabric Types
@@ -28,6 +29,7 @@ const Onboarding = require('./Onboarding');
 const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
 const BitcoinTransactionView = require('./BitcoinTransactionView');
+const ChannelView = require('./ChannelView');
 const InvoiceListHome = require('./InvoiceListHome');
 const BottomPanel = require('./BottomPanel');
 const ContractList = require('./ContractList');
@@ -57,6 +59,11 @@ const {
   Message,
   Segment
 } = require('semantic-ui-react');
+
+function BitcoinHomeWithNav (props) {
+  const navigate = useNavigate();
+  return <BitcoinHome {...props} navigate={navigate} />;
+}
 
 /**
  * Login wall: shown when user tries to access a gated route without a local identity.
@@ -968,7 +975,7 @@ class HubInterface extends React.Component {
                   <Route
                     path="/services/bitcoin"
                     element={(
-                      <BitcoinHome
+                      <BitcoinHomeWithNav
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
                         bridge={this.props.bridge}
@@ -1024,6 +1031,16 @@ class HubInterface extends React.Component {
                         identity={local || effectiveAuth}
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/channels/:id"
+                    element={(
+                      <ChannelView
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
                         {...this.props}
                       />
                     )}

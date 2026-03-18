@@ -1210,6 +1210,19 @@ class Hub extends Service {
       });
   }
 
+  _handleBitcoinBlockByHeightRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      const heightParam = req && req.params ? req.params.height : null;
+      const height = parseInt(heightParam, 10);
+      if (isNaN(height) || height < 0) return res.status(400).json({ status: 'error', message: 'Valid block height is required.' });
+      const hash = await bitcoin._makeRPCRequest('getblockhash', [height]);
+      const block = await bitcoin._makeRPCRequest('getblock', [hash, 2]);
+      return res.json(block);
+    });
+  }
+
   _handleBitcoinBlockViewRequest (req, res) {
     return this._jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
@@ -1417,6 +1430,71 @@ class Hub extends Service {
         network: bitcoin.network,
         address
       });
+    });
+  }
+
+  /**
+   * Full address info for explorer: balance, unspents, recent txids.
+   * Compatible with Fabric CLI and Blockstream-style chain_stats/mempool_stats.
+   */
+  _handleBitcoinAddressInfoRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+
+      const address = (req.params && req.params.address) || '';
+      const raw = String(address || '').trim();
+      if (!raw) return res.status(400).json({ status: 'error', message: 'Address is required.' });
+
+      try {
+        const scanObj = `addr(${raw})`;
+        const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', [scanObj]]);
+        const totalBTC = result && typeof result.total_amount === 'number' ? result.total_amount : 0;
+        const totalSats = Math.round(totalBTC * 100000000);
+        const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+        const fundedTxoSum = unspents.reduce((s, u) => s + (u.amount || 0), 0);
+        const fundedTxoSats = Math.round(fundedTxoSum * 100000000);
+
+        const recentTxids = [...new Set(unspents.map(u => u.txid).filter(Boolean))].slice(0, 25);
+        const recentTxs = await Promise.all(recentTxids.map(async (txid) => {
+          try {
+            const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
+            return tx ? { txid: tx.txid || txid, status: { confirmed: (tx.confirmations || 0) > 0 } } : null;
+          } catch (_) {
+            return { txid, status: { confirmed: false } };
+          }
+        }));
+
+        return res.json({
+          address: raw,
+          network: bitcoin.network || 'regtest',
+          chain_stats: {
+            funded_txo_sum: fundedTxoSats,
+            funded_txo_count: unspents.length,
+            spent_txo_sum: 0,
+            spent_txo_count: 0,
+            tx_count: recentTxids.length
+          },
+          mempool_stats: {
+            funded_txo_sum: 0,
+            funded_txo_count: 0,
+            spent_txo_sum: 0,
+            spent_txo_count: 0,
+            tx_count: 0
+          },
+          balance: totalBTC,
+          balanceSats: totalSats,
+          unspents,
+          recent_txs: recentTxs.filter(Boolean)
+        });
+      } catch (err) {
+        if (this.settings.debug) console.error('[HUB] address info:', err && err.message);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to fetch address info. Ensure txindex is enabled.',
+          details: err && err.message ? err.message : String(err)
+        });
+      }
     });
   }
 
@@ -2283,6 +2361,14 @@ class Hub extends Service {
               payment: { preimage: pay.payment_preimage, paymentHash: pay.payment_hash }
             });
           }
+          if ((pathName.includes('/channels/close') || pathName.endsWith('/close')) && body.channelId) {
+            const channelId = String(body.channelId || '').trim();
+            if (!channelId) return res.status(400).json({ error: 'channelId required' });
+            const result = await this._serializedLightningRpc(() =>
+              this.lightning._makeRPCRequest('close', [channelId])
+            );
+            return res.status(200).json({ closed: true, result });
+          }
           if (pathName.endsWith('/channels') || pathName.includes('/channel')) {
             const peerId = String(body.peerId || body.peer_id || '').trim();
             const remote = String(body.remote || '').trim();
@@ -2823,6 +2909,7 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/bitcoin', this._handleBitcoinRPCRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/blocks', this._handleBitcoinBlocksListRequest.bind(this));
       this.http._addRoute('POST', '/services/bitcoin/blocks', this._handleBitcoinGenerateBlockRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/blocks/height/:height', this._handleBitcoinBlockByHeightRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/blocks/:blockhash', this._handleBitcoinBlockViewRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/transactions', this._handleBitcoinTransactionsListRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/transactions/:txhash', this._handleBitcoinTransactionViewRequest.bind(this));
@@ -2830,6 +2917,7 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/bitcoin/wallets/:walletId', this._handleBitcoinWalletSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/addresses', this._handleBitcoinWalletAddressRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/addresses/:address/balance', this._handleBitcoinAddressBalanceRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/addresses/:address', this._handleBitcoinAddressInfoRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/wallets/:walletId/utxos', this._handleBitcoinWalletUtxosRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/wallets/:walletId/transactions', this._handleBitcoinWalletTransactionsRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/payments', this._handleBitcoinPaymentsListRequest.bind(this));
@@ -2847,6 +2935,7 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/lightning/decodes', this._handleLightningCollectionRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/channels', this._handleLightningMutationRequest.bind(this));
+      this.http._addRoute('POST', '/services/lightning/channels/close', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/invoices', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/payments', this._handleLightningMutationRequest.bind(this));
       this.http._addRoute('POST', '/services/lightning/decodes', this._handleLightningMutationRequest.bind(this));

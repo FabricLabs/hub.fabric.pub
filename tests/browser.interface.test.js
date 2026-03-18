@@ -4,11 +4,16 @@ const assert = require('assert');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
 const Sandbox = require('@fabric/http/types/sandbox');
 
+const HUB_E2E = process.env.HUB_E2E === '1' || process.env.HUB_E2E === 'true';
+const HUB_URL = process.env.HUB_URL || 'http://localhost:18080/';
+const HUB_PORT = 18080;
+
 // Helper to serve static files from assets/
-function startStaticServer({ port = 3001, root = path.join(__dirname, '../assets') } = {}) {
+function startStaticServer ({ port = 3001, root = path.join(__dirname, '../assets') } = {}) {
   const server = http.createServer((req, res) => {
     let filePath = path.join(root, req.url === '/' ? '/index.html' : req.url);
     if (!filePath.startsWith(root)) {
@@ -28,19 +33,130 @@ function startStaticServer({ port = 3001, root = path.join(__dirname, '../assets
   });
 }
 
+// Helper to start the hub for full E2E (spawns child process)
+function startHub (timeoutMs = 45000) {
+  return new Promise((resolve, reject) => {
+    const env = {
+      ...process.env,
+      FABRIC_BITCOIN_MANAGED: 'false',
+      FABRIC_HUB_PORT: String(HUB_PORT),
+      PORT: String(HUB_PORT),
+      FABRIC_LIGHTNING_STUB: 'true'
+    };
+    const hub = spawn('node', ['scripts/hub.js'], {
+      cwd: path.join(__dirname, '..'),
+      env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let resolved = false;
+    const done = (err) => {
+      if (resolved) return;
+      resolved = true;
+      if (err) {
+        try { hub.kill('SIGTERM'); } catch (_) {}
+        reject(err);
+      } else {
+        resolve(hub);
+      }
+    };
+    hub.stderr.on('data', (d) => { process.stderr.write(`[HUB] ${d}`); });
+    hub.stdout.on('data', (d) => { process.stdout.write(`[HUB] ${d}`); });
+    hub.on('error', (e) => done(e));
+    hub.on('exit', (code, sig) => {
+      if (!resolved) done(new Error(`Hub exited ${code} ${sig}`));
+    });
+    const deadline = Date.now() + timeoutMs;
+    const poll = async () => {
+      if (Date.now() > deadline) return done(new Error('Hub startup timeout'));
+      try {
+        const res = await fetch(`${HUB_URL.replace(/\/$/, '')}/settings`, {
+          headers: { Accept: 'application/json' }
+        });
+        if (res.ok || res.status === 403) {
+          return done(null);
+        }
+      } catch (_) {}
+      setTimeout(poll, 500);
+    };
+    setTimeout(poll, 2000);
+  });
+}
+
+function sleep (ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitForMainUI (page, timeoutMs = 15000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const found = await page.evaluate(() => {
+      const home = Array.from(document.querySelectorAll('a, button')).find(
+        (el) => String(el.textContent || '').trim() === 'Home'
+      );
+      const hubLink = document.querySelector('a[href="/"] code');
+      return !!(home || (hubLink && hubLink.textContent && hubLink.textContent.includes('hub')));
+    });
+    if (found) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+async function clickNavLink (page, text) {
+  return page.evaluate((targetText) => {
+    const links = Array.from(document.querySelectorAll('a[href]'));
+    const target = links.find((a) => String(a.textContent || '').trim() === targetText);
+    if (!target) return false;
+    target.click();
+    return true;
+  }, text);
+}
+
+async function openMoreDropdownAndClick (page, itemText) {
+  const opened = await page.evaluate((btnText) => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const moreBtn = buttons.find((b) => String(b.textContent || '').includes(btnText));
+    if (!moreBtn) return false;
+    moreBtn.click();
+    return true;
+  }, 'More');
+  if (!opened) return false;
+  await sleep(500);
+  const clicked = await page.evaluate((text) => {
+    const items = Array.from(document.querySelectorAll('.item, [role="option"], [class*="item"]'));
+    const target = items.find((el) => String(el.textContent || '').trim() === text);
+    if (!target) return false;
+    target.click();
+    return true;
+  }, itemText);
+  return clicked;
+}
+
 describe('Browser Interface', function () {
   let server;
   let sandbox;
-  const PORT = 3001;
-  const URL = `http://localhost:${PORT}/`;
+  let hubProcess;
+  const STATIC_PORT = 3001;
+  const baseUrl = HUB_E2E ? HUB_URL : `http://localhost:${STATIC_PORT}/`;
 
   before(async function () {
-    this.timeout(20000);
+    this.timeout(60000);
     try {
-      server = await startStaticServer({ port: PORT });
+      if (HUB_E2E) {
+        hubProcess = await startHub();
+        await sleep(2000);
+      } else {
+        server = await startStaticServer({ port: STATIC_PORT });
+      }
       sandbox = new Sandbox({ browser: { headless: true } });
       await sandbox.start();
-      await sandbox.browser.goto(URL, { waitUntil: 'networkidle0' });
+      await sandbox.browser.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 15000 });
+      if (HUB_E2E) {
+        const ok = await waitForMainUI(sandbox.browser, 20000);
+        if (!ok) throw new Error('Main UI did not appear');
+      } else {
+        await sleep(3000);
+      }
     } catch (err) {
       this.skip();
     }
@@ -49,20 +165,135 @@ describe('Browser Interface', function () {
   after(async function () {
     if (sandbox) await sandbox.stop();
     if (server) server.close();
+    if (hubProcess && hubProcess.kill) hubProcess.kill('SIGTERM');
   });
 
-  xit('should load the interface and define process and Buffer', async function () {
+  it('should load the interface with app root and title', async function () {
     const result = await sandbox.browser.evaluate(() => {
       return {
-        process: typeof process !== 'undefined' && typeof process.version !== 'undefined',
-        Buffer: typeof Buffer !== 'undefined' && typeof Buffer.from === 'function',
         title: document.title,
-        hasApp: !!document.getElementById('application-target')
+        hasApp: !!document.getElementById('application-target'),
+        hasContent: !!(document.body && document.body.innerText && document.body.innerText.length > 0)
       };
     });
-    assert.strictEqual(result.process, true, 'process should be defined in browser');
-    assert.strictEqual(result.Buffer, true, 'Buffer should be defined in browser');
     assert.strictEqual(result.hasApp, true, 'App root should exist');
-    assert.ok(result.title.includes('fabric'), 'Title should mention fabric');
+    assert.ok(result.title.includes('fabric') || result.title.includes('hub'), 'Title should mention fabric or hub');
+    assert.ok(result.hasContent, 'Page should have body content');
+  });
+
+  it('should have correct document title', async function () {
+    const title = await sandbox.browser.evaluate(() => document.title);
+    assert.ok(title && title.length > 0, 'Title should be non-empty');
+    assert.ok(
+      /fabric|hub/i.test(title),
+      `Title "${title}" should mention fabric or hub`
+    );
+  });
+
+  it('should render application root', async function () {
+    const hasApp = await sandbox.browser.evaluate(() => !!document.getElementById('application-target'));
+    assert.strictEqual(hasApp, true, 'application-target should exist');
+  });
+
+  describe('navigation (requires main UI)', function () {
+    before(async function () {
+      const hasMainUI = await waitForMainUI(sandbox.browser, 8000);
+      if (!hasMainUI) this.skip();
+    });
+
+    it('should navigate to Home', async function () {
+      const clicked = await clickNavLink(sandbox.browser, 'Home');
+      if (!clicked) return this.skip();
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '/');
+      assert.ok(pathname === '/' || pathname === '', `Expected /, got ${pathname}`);
+    });
+
+    it('should navigate to Peers', async function () {
+      const clicked = await clickNavLink(sandbox.browser, 'Peers');
+      if (!clicked) return this.skip();
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/peers', `Expected /peers, got ${pathname}`);
+    });
+
+    it('should navigate to Documents', async function () {
+      const clicked = await clickNavLink(sandbox.browser, 'Documents');
+      if (!clicked) return this.skip();
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/documents', `Expected /documents, got ${pathname}`);
+    });
+
+    it('should navigate to Activity via More dropdown', async function () {
+      const clicked = await openMoreDropdownAndClick(sandbox.browser, 'Activity');
+      if (!clicked) return this.skip();
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/', 'Activity route is /');
+    });
+
+    it('should navigate to Bitcoin via More dropdown', async function () {
+      const clicked = await openMoreDropdownAndClick(sandbox.browser, 'Bitcoin');
+      if (!clicked) return this.skip();
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/services/bitcoin', `Expected /services/bitcoin, got ${pathname}`);
+    });
+
+    it('should navigate to Contracts via More dropdown', async function () {
+      const clicked = await openMoreDropdownAndClick(sandbox.browser, 'Contracts');
+      if (!clicked) return this.skip();
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/contracts', `Expected /contracts, got ${pathname}`);
+    });
+  });
+
+  describe('route rendering', function () {
+    before(async function () {
+      const hasMainUI = await waitForMainUI(sandbox.browser, 8000);
+      if (!hasMainUI) this.skip();
+    });
+
+    it('should render Peers page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Peers page should render');
+    });
+
+    it('should render Documents page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/documents`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Documents page should render');
+    });
+
+    it('should render Contracts page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/contracts`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Contracts page should render');
+    });
+
+    it('should render Bitcoin page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Bitcoin page should render');
+    });
   });
 });

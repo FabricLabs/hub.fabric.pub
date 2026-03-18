@@ -2396,7 +2396,26 @@ class Bridge extends React.Component {
                   // When network status changes (especially peer connectivity),
                   // try to flush any queued peer messages.
                   this._flushPeerMessageQueue();
+                  window.dispatchEvent(new CustomEvent('networkStatusUpdate', { detail: { networkStatus: result } }));
                 });
+                // Sync published state from hub global store into globalState.documents.
+                const published = result.publishedDocuments;
+                if (published && typeof published === 'object' && this.globalState && this.globalState.documents) {
+                  let changed = false;
+                  for (const [docId, doc] of Object.entries(this.globalState.documents)) {
+                    if (!doc) continue;
+                    const inStore = published[docId] || (doc.sha256 && published[doc.sha256]);
+                    if (inStore && !doc.published) {
+                      this.globalState.documents[docId] = { ...doc, published: inStore.published || true };
+                      changed = true;
+                    }
+                  }
+                  if (changed) {
+                    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                      detail: { operation: { op: 'replace', path: '/documents', value: this.globalState.documents }, globalState: this.globalState }
+                    }));
+                  }
+                }
               }
 
               // WebRTC peer discovery response (does not touch networkStatus)

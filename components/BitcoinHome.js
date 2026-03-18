@@ -1064,7 +1064,11 @@ class BitcoinHome extends React.Component {
 
           {lightningAvailable && (
             <>
-              <Header as='h4' style={{ marginTop: '1em' }}>Channels ({this.state.lightningChannels.length})</Header>
+              <Header as='h4' style={{ marginTop: '1em' }}>
+                <Link to="/contracts" style={{ color: 'inherit' }}>
+                  Channels ({this.state.lightningChannels.length})
+                </Link>
+              </Header>
               {this.state.lightningChannels.length === 0 ? (
                 <p style={{ color: '#666' }}>No channels yet. Create one below to connect to another Lightning node.</p>
               ) : (
@@ -1079,23 +1083,31 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.lightningChannels.map((ch, idx) => (
-                      <Table.Row key={ch.channel_id || ch.funding_txid || idx}>
-                        <Table.Cell>
-                          <code style={{ fontSize: '0.85em' }}>{this.trimHash(ch.peer_id || ch.funding_txid || '')}</code>
-                        </Table.Cell>
-                        <Table.Cell>{ch.state || '—'}</Table.Cell>
-                        <Table.Cell>
-                          {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
-                        </Table.Cell>
-                        <Table.Cell>
-                          <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
+                    {this.state.lightningChannels.map((ch, idx) => {
+                      const chId = ch.channel_id || ch.funding_txid || idx;
+                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(chId)}`;
+                      return (
+                        <Table.Row
+                          key={chId}
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => this.props.navigate ? this.props.navigate(toUrl) : (window.location.href = toUrl)}
+                        >
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(ch.peer_id || ch.funding_txid || '')}</code>
+                          </Table.Cell>
+                          <Table.Cell>{ch.state || '—'}</Table.Cell>
+                          <Table.Cell>
+                            {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
+                          </Table.Cell>
+                          <Table.Cell>
+                            {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
+                          </Table.Cell>
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
+                          </Table.Cell>
+                        </Table.Row>
+                      );
+                    })}
                   </Table.Body>
                 </Table>
               )}

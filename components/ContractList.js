@@ -1,7 +1,7 @@
 'use strict';
 
 const React = require('react');
-const { Link } = require('react-router-dom');
+const { Link, useNavigate } = require('react-router-dom');
 const { Segment, Header, List, Icon, Label, Loader, Button, ButtonGroup, Table } = require('semantic-ui-react');
 const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
 
@@ -17,6 +17,7 @@ function trimHash (value = '', left = 8, right = 8) {
 }
 
 function ContractList (props) {
+  const navigate = useNavigate();
   const [contracts, setContracts] = React.useState([]);
   const [lightningChannels, setLightningChannels] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
@@ -200,7 +201,9 @@ function ContractList (props) {
 
               <Header as='h4' dividing style={{ marginTop: '1.5em' }}>
                 <Icon name='bolt' color='yellow' />
-                Lightning Channels
+                <Link to="/services/bitcoin" style={{ color: 'inherit' }}>
+                  Lightning Channels
+                </Link>
                 <Button as={Link} to="/services/bitcoin" basic size="small" style={{ marginLeft: '0.5em' }}>
                   Manage
                 </Button>
@@ -219,23 +222,31 @@ function ContractList (props) {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {lightningChannels.map((ch, idx) => (
-                      <Table.Row key={ch.channel_id || ch.funding_txid || idx}>
-                        <Table.Cell>
-                          <code style={{ fontSize: '0.85em' }}>{trimHash(ch.peer_id || ch.funding_txid || '')}</code>
-                        </Table.Cell>
-                        <Table.Cell>{ch.state || '—'}</Table.Cell>
-                        <Table.Cell>
-                          {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
-                        </Table.Cell>
-                        <Table.Cell>
-                          <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
+                    {lightningChannels.map((ch, idx) => {
+                      const chId = ch.channel_id || ch.funding_txid || idx;
+                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(chId)}`;
+                      return (
+                        <Table.Row
+                          key={chId}
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => navigate(toUrl)}
+                        >
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.85em' }}>{trimHash(ch.peer_id || ch.funding_txid || '')}</code>
+                          </Table.Cell>
+                          <Table.Cell>{ch.state || '—'}</Table.Cell>
+                          <Table.Cell>
+                            {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
+                          </Table.Cell>
+                          <Table.Cell>
+                            {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
+                          </Table.Cell>
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
+                          </Table.Cell>
+                        </Table.Row>
+                      );
+                    })}
                   </Table.Body>
                 </Table>
               )}

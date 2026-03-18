@@ -133,6 +133,7 @@ function DocumentDetail (props) {
     return () => window.removeEventListener('purchaseInvoiceReady', handler);
   }, [id, doc, purchaseOpen]);
 
+  const [, setNetworkTick] = React.useState(0);
   React.useEffect(() => {
     const handler = (event) => {
       const gs = event && event.detail && event.detail.globalState;
@@ -150,6 +151,11 @@ function DocumentDetail (props) {
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
   }, [id]);
+  React.useEffect(() => {
+    const handler = () => setNetworkTick((n) => n + 1);
+    window.addEventListener('networkStatusUpdate', handler);
+    return () => window.removeEventListener('networkStatusUpdate', handler);
+  }, []);
 
   // On mount, hydrate from existing Bridge globalState so locally-added documents
   // are immediately visible without waiting for another event.
@@ -172,7 +178,8 @@ function DocumentDetail (props) {
   // Stop "publishing…" state once the document has a published timestamp,
   // or after a safety timeout if the hub reports an error.
   React.useEffect(() => {
-    if (doc && doc.published) {
+    const pub = doc?.published || (props.bridgeRef?.current?.networkStatus?.publishedDocuments?.[doc?.id] || (doc?.sha256 && props.bridgeRef?.current?.networkStatus?.publishedDocuments?.[doc?.sha256]));
+    if (doc && pub) {
       setIsPublishing(false);
       return;
     }
@@ -181,7 +188,7 @@ function DocumentDetail (props) {
       setIsPublishing(false);
     }, 10000);
     return () => clearTimeout(timeout);
-  }, [doc && doc.published, isPublishing]);
+  }, [doc, doc?.published, doc?.id, doc?.sha256, isPublishing, props.bridgeRef]);
 
   // Decrypt only when user clicks Unlock (for encrypted docs)
   const handleUnlock = React.useCallback(() => {
@@ -201,10 +208,14 @@ function DocumentDetail (props) {
   const name = (doc && doc.name) || id;
   const mime = (doc && doc.mime) || 'application/octet-stream';
   const created = doc && doc.created ? new Date(doc.created).toLocaleString() : '';
-  const publishedAt = doc && doc.published ? new Date(doc.published).toLocaleString() : '';
+  // Published state: prefer hub global store (publishedDocuments) over doc.published
+  const publishedDocs = props.bridgeRef?.current?.networkStatus?.publishedDocuments || props.bridgeRef?.current?.lastNetworkStatus?.publishedDocuments;
+  const isPublishedInStore = !!(doc && (doc.published || (publishedDocs && (publishedDocs[id] || (doc.sha256 && publishedDocs[doc.sha256])))));
+  const publishedTs = doc?.published || (publishedDocs && (publishedDocs[id] || (doc?.sha256 && publishedDocs[doc.sha256]))?.published);
+  const publishedAt = publishedTs ? new Date(publishedTs).toLocaleString() : '';
   const storageContractId = doc && doc.storageContractId;
   const docPurchasePriceSats = doc && doc.purchasePriceSats;
-  const canPurchase = !!(doc && doc.published && docPurchasePriceSats && docPurchasePriceSats > 0);
+  const canPurchase = !!(doc && isPublishedInStore && docPurchasePriceSats && docPurchasePriceSats > 0);
 
   // Never expose decrypted content when we don't currently have a document key,
   // even if contentBase64 is still present on the doc from a prior unlock.
@@ -300,7 +311,7 @@ function DocumentDetail (props) {
               Encrypted
             </Label>
           )}
-          {doc && doc.published && (
+          {doc && isPublishedInStore && (
             <Label size="small" color="blue" title={publishedAt ? `Published: ${publishedAt}` : 'Published'}>
               <Icon name="bullhorn" />
               Published
@@ -358,27 +369,27 @@ function DocumentDetail (props) {
               </Button>
               <Button
                 size="small"
-                basic={!doc || !doc.published}
-                color={doc && doc.published ? 'blue' : undefined}
+                basic={!doc || !isPublishedInStore}
+                color={doc && isPublishedInStore ? 'blue' : undefined}
                 icon
                 labelPosition="left"
                 onClick={() => {
-                  if (doc && doc.published) return;
+                  if (doc && isPublishedInStore) return;
                   if (!id || typeof props.onPublishDocument !== 'function') return;
                   setIsPublishing(true);
                   const price = parseInt(publishPriceSats, 10);
                   props.onPublishDocument(id, price > 0 ? { purchasePriceSats: price } : undefined);
                 }}
-                disabled={!doc || isPublishing || !!(doc && doc.published)}
-                title={doc && doc.published ? 'Document is published' : 'Publish this document ID to the hub global store'}
+                disabled={!doc || isPublishing || !!isPublishedInStore}
+                title={doc && isPublishedInStore ? 'Document is published' : 'Publish this document ID to the hub global store'}
               >
                 <Icon
-                  name={isPublishing ? 'spinner' : (doc && doc.published ? 'check' : 'bullhorn')}
+                  name={isPublishing ? 'spinner' : (doc && isPublishedInStore ? 'check' : 'bullhorn')}
                   loading={isPublishing}
                 />
-                {isPublishing ? 'Publishing…' : (doc && doc.published ? 'Published' : 'Publish')}
+                {isPublishing ? 'Publishing…' : (doc && isPublishedInStore ? 'Published' : 'Publish')}
               </Button>
-              {!doc?.published && (
+              {!isPublishedInStore && (
                 <Input
                   type="number"
                   min="0"
