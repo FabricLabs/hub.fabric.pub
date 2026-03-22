@@ -111,3 +111,10 @@ stores/hub-test
 
 # MacOS garbage
 .DS_Store
+
+# Store
+store/
+
+# Browser extension build artifacts (@fabric/hub)
+extension/vendor/
+extension/popup.bundle.js

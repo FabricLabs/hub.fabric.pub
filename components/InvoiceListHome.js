@@ -3,9 +3,10 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 const { Button, Form, Header, Icon, Message, Segment } = require('semantic-ui-react');
-const { loadInvoices, createInvoice, deleteInvoice } = require('../functions/invoiceStore');
+const { loadInvoices, createInvoice, deleteInvoice, addPaymentToInvoice } = require('../functions/invoiceStore');
 const { getWalletContextFromIdentity, reserveNextReceiveAddress } = require('../functions/bitcoinClient');
 const Invoice = require('./Invoice');
+const { formatSatsDisplay } = require('../functions/formatSats');
 
 /**
  * InvoiceListHome: create invoices and store them in localStorage (not global state).
@@ -64,7 +65,7 @@ class InvoiceListHome extends React.Component {
         address,
         amountSats,
         memo,
-        label: label || memo || `Invoice ${amountSats} sats`,
+        label: label || memo || `Invoice ${formatSatsDisplay(amountSats)} sats`,
         network
       });
 
@@ -176,14 +177,19 @@ class InvoiceListHome extends React.Component {
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1em', flexWrap: 'wrap' }}>
                     <div style={{ flex: '1 1 300px', minWidth: 0 }}>
                       <Invoice
+                        invoiceId={inv.id}
                         address={inv.address}
                         amountSats={inv.amountSats}
                         network={inv.network || network}
-                        label={inv.label || inv.memo || `Invoice ${inv.amountSats} sats`}
+                        label={inv.label || inv.memo || `Invoice ${formatSatsDisplay(inv.amountSats)} sats`}
                         memo={inv.memo}
+                        txids={inv.txids || []}
                         identity={identity}
                         compact
-                        onPaid={() => this.refresh()}
+                        onPaid={(txid) => {
+                          if (inv.id && txid) addPaymentToInvoice(inv.id, txid);
+                          this.refresh();
+                        }}
                       />
                     </div>
                     <Button

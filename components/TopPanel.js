@@ -15,6 +15,7 @@ const {
   Label,
   Segment
 } = require('semantic-ui-react');
+const { formatSatsDisplay } = require('../functions/formatSats');
 
 function TopPanel (props) {
   const location = useLocation();
@@ -135,7 +136,10 @@ function TopPanel (props) {
             <Dropdown.Item as={Link} to="/services/bitcoin" icon="bitcoin" text="Bitcoin" />
             <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card" text="Payments" />
             <Dropdown.Item as={Link} to="/services/bitcoin/invoices" icon="file alternate" text="Invoices" />
+            <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Sidechain & demo" />
             <Dropdown.Item as={Link} to="/contracts" icon="file contract" text="Contracts" />
+            <Dropdown.Item as={Link} to="/settings" icon="setting" text="Settings" />
+            <Dropdown.Item as={Link} to="/settings/security" icon="shield" text="Security & delegation" />
           </Dropdown.Menu>
         </Dropdown>
       </div>
@@ -171,8 +175,21 @@ function TopPanel (props) {
             {clientBalance != null && Number.isFinite(clientBalance.balanceSats)
               ? (clientBalance.balanceSats >= 100000000
                   ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
-                  : `${clientBalance.balanceSats} sats`)
+                  : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
               : (bitcoin && typeof bitcoin.balance === 'number' ? String(bitcoin.balance) : '—')}
+          </Label>
+        )}
+        {bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
+          <Label
+            as={Link}
+            to="/services/bitcoin"
+            size="small"
+            color="orange"
+            title="Transactions waiting in this Hub node’s mempool — open Bitcoin dashboard"
+            style={{ cursor: 'pointer' }}
+          >
+            <Icon name="clock outline" />
+            Mempool {bitcoin.mempoolTxCount}
           </Label>
         )}
         {isAuthed ? (

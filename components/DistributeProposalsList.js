@@ -15,6 +15,7 @@ const {
   Message,
   Segment
 } = require('semantic-ui-react');
+const { formatSatsDisplay } = require('../functions/formatSats');
 
 function DistributeProposalsList (props) {
   const bridgeRef = props.bridgeRef;
@@ -191,7 +192,7 @@ function DistributeProposalsList (props) {
                 <List.Header>
                   {proposal.documentName || proposal.documentId}
                   <Label size="mini" color="orange" style={{ marginLeft: '0.5em' }}>
-                    {proposal.amountSats} sats
+                    {formatSatsDisplay(proposal.amountSats)} sats
                   </Label>
                 </List.Header>
                 <List.Description>
@@ -222,7 +223,7 @@ function DistributeProposalsList (props) {
                     <Message.Header>Invoice sent to proposer</Message.Header>
                     <p>
                       Address: <code>{invoice.address}</code><br />
-                      Amount: {invoice.amountSats} sats
+                      Amount: {formatSatsDisplay(invoice.amountSats)} sats
                     </p>
                     <p>When the proposer pays, enter the transaction ID below:</p>
                     <Input
@@ -271,7 +272,7 @@ function DistributeProposalsList (props) {
                     </List.Header>
                     <List.Description>
                       From {proposal.senderAddress ? `${String(proposal.senderAddress).slice(0, 12)}…` : 'unknown'}
-                      {proposal.amountSats ? ` — ${proposal.amountSats} sats` : ''}
+                      {proposal.amountSats ? ` — ${formatSatsDisplay(proposal.amountSats)} sats` : ''}
                     </List.Description>
                     {contractId && (
                       <div style={{ marginTop: '0.5em' }}>

@@ -1,27 +1,49 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const http = require('http');
+const net = require('net');
+const path = require('path');
 const url = require('url');
 const merge = require('lodash.merge');
 const Hub = require('../services/hub');
 const settings = require('../settings/local');
+
+function getFreePort () {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const addr = s.address();
+      const port = typeof addr === 'object' && addr ? addr.port : null;
+      s.close((err) => (err ? reject(err) : resolve(port)));
+    });
+    s.on('error', reject);
+  });
+}
 
 describe('@fabric/hub', function () {
   describe('HTTP Endpoints', function () {
     let hub;
     let server;
     let baseUrl;
+    let testFsPath;
 
     before(async function () {
       this.timeout(30000);
 
-      // Use project settings with test overrides: distinct ports to avoid EADDRINUSE,
+      const [p2pPort, httpPort] = await Promise.all([getFreePort(), getFreePort()]);
+
+      // Use project settings with test overrides: ephemeral ports to avoid EADDRINUSE
+      // when another hub or parallel test holds fixed ports.
       // Bitcoin disabled so we don't need bitcoind or regtest lock for HTTP-only tests.
-      // Isolated store path so test documents (e.g. document lifecycle) don't pollute stores/hub.
+      // Fresh filesystem store under the repo (sandbox-safe; avoids polluted `stores/hub-test`).
+      testFsPath = path.join(__dirname, '..', 'stores', `hub-http-test-${process.pid}-${Date.now()}`);
+      fs.mkdirSync(testFsPath, { recursive: true });
+
       hub = new Hub(merge({}, settings, {
-        port: 7778,
-        fs: { path: 'stores/hub-test' },
+        port: p2pPort,
+        fs: { path: testFsPath },
         bitcoin: {
           enable: false,
           network: 'regtest'
@@ -29,7 +51,7 @@ describe('@fabric/hub', function () {
         http: {
           hostname: 'localhost',
           listen: true,
-          port: 8082
+          port: httpPort
         },
         debug: false
       }));
@@ -38,7 +60,7 @@ describe('@fabric/hub', function () {
 
       // Get the HTTP server instance and base URL
       // The HTTP server might be accessed differently, let's try to get the address from the hub
-      baseUrl = `http://localhost:8082`;
+      baseUrl = `http://localhost:${httpPort}`;
 
       // Wait a moment for the server to be ready
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -51,6 +73,11 @@ describe('@fabric/hub', function () {
           hub.stop(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('hub.stop() timeout')), 8000))
         ]).catch(() => {});
+      }
+      if (testFsPath) {
+        try {
+          fs.rmSync(testFsPath, { recursive: true, force: true });
+        } catch (_) {}
       }
     });
 
@@ -319,6 +346,60 @@ describe('@fabric/hub', function () {
       });
     });
 
+    describe('Execution contract RPC (mirrors ContractView)', function () {
+      it('CreateExecutionContract then RunExecutionContract returns trace and runCommitmentHex', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+
+        const program = {
+          version: 1,
+          steps: [
+            { op: 'FabricOpcode', fabricType: 'ChatMessage' },
+            { op: 'Push', value: { uiDemo: true } }
+          ]
+        };
+
+        const createResponse = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 201,
+          method: 'CreateExecutionContract',
+          params: [{ name: 'http-test-exec', program }]
+        }, { Accept: 'application/json' });
+
+        assert.strictEqual(createResponse.status, 200);
+        assert.ok(createResponse.body && createResponse.body.result, 'JSON-RPC result');
+        const created = createResponse.body.result;
+        assert.strictEqual(created.type, 'CreateExecutionContractResult');
+        assert.ok(created.id, 'contract id');
+        assert.ok(created.contract && created.contract.program, 'persisted contract');
+
+        const runResponse = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 202,
+          method: 'RunExecutionContract',
+          params: [{ contractId: created.id }]
+        }, { Accept: 'application/json' });
+
+        assert.strictEqual(runResponse.status, 200);
+        const run = runResponse.body && runResponse.body.result;
+        assert.ok(run, 'run result');
+        assert.strictEqual(run.type, 'RunExecutionContractResult');
+        assert.strictEqual(run.contractId, created.id);
+        assert.strictEqual(run.ok, true);
+        assert.strictEqual(run.stepsExecuted, program.steps.length);
+        assert.ok(Array.isArray(run.trace));
+        assert.ok(typeof run.runCommitmentHex === 'string');
+        assert.strictEqual(run.runCommitmentHex.length, 64);
+      });
+    });
+
     describe('Accept Header Response Format', function () {
       describe('JSON responses', function () {
         it('should return JSON when Accept header is application/json', async function () {
@@ -418,6 +499,86 @@ describe('@fabric/hub', function () {
           assert.ok(typeof response.body === 'string', 'Response should be a string');
           assert.ok(response.body.includes('<html'), 'Response should contain HTML');
         });
+
+        it('should return HTML shell for React Router paths without explicit API handlers (e.g. /sessions)', async function () {
+          const response = await makeRequest('GET', '/sessions', null, { 'Accept': 'text/html' });
+
+          assert.strictEqual(response.status, 200, 'Should return 200 status');
+          assert.ok(response.headers['content-type'].includes('text/html'), 'Should return HTML content type');
+          const raw = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+          assert.ok(raw.includes('<html'), 'Should serve index.html for SPA refresh');
+        });
+
+        it('should return HTML shell for GET /settings with text/html (overview route)', async function () {
+          const response = await makeRequest('GET', '/settings', null, { Accept: 'text/html' });
+          assert.strictEqual(response.status, 200);
+          assert.ok(response.headers['content-type'].includes('text/html'));
+          const raw = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+          assert.ok(raw.includes('<html'), 'Should serve SPA shell');
+        });
+
+        it('should return HTML shell for GET /settings/security with text/html', async function () {
+          const response = await makeRequest('GET', '/settings/security', null, { Accept: 'text/html' });
+          assert.strictEqual(response.status, 200);
+          assert.ok(response.headers['content-type'].includes('text/html'));
+          const raw = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+          assert.ok(raw.includes('<html'), 'Should serve SPA shell');
+        });
+
+        it('should return HTML shell for GET /sessions/:id with text/html (session detail)', async function () {
+          const response = await makeRequest('GET', '/sessions/test-token', null, { Accept: 'text/html' });
+          assert.strictEqual(response.status, 200);
+          assert.ok(response.headers['content-type'].includes('text/html'));
+          const raw = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+          assert.ok(raw.includes('<html'), 'Should serve SPA shell for refresh on session detail');
+        });
+
+        it('should return HTML shell for nested UI paths (e.g. /services/bitcoin/resources)', async function () {
+          const response = await makeRequest('GET', '/services/bitcoin/resources', null, { 'Accept': 'text/html' });
+
+          assert.strictEqual(response.status, 200, 'Should return 200 status');
+          assert.ok(response.headers['content-type'].includes('text/html'), 'Should return HTML content type');
+          const raw = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+          assert.ok(raw.includes('<html'), 'Should serve index.html for SPA refresh');
+        });
+      });
+
+      describe('Peering service', function () {
+        const jsonApi = { Accept: 'application/json' };
+
+        it('GET /services/peering returns verifiable OracleAttestation', async function () {
+          const response = await makeRequest('GET', '/services/peering', null, jsonApi);
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(response.body.service, 'peering');
+          assert.ok(response.body.oracleAttestation);
+          const PeeringService = require('../services/peering');
+          assert.strictEqual(PeeringService.verifyOracleAttestation(response.body.oracleAttestation), true);
+        });
+
+        it('GET /services/peering/attestation returns a valid attestation', async function () {
+          const response = await makeRequest('GET', '/services/peering/attestation', null, jsonApi);
+          assert.strictEqual(response.status, 200);
+          const PeeringService = require('../services/peering');
+          assert.strictEqual(PeeringService.verifyOracleAttestation(response.body), true);
+        });
+      });
+
+      describe('Distributed execution HTTP', function () {
+        const jsonApi = { Accept: 'application/json' };
+
+        it('GET /services/distributed/manifest returns JSON manifest', async function () {
+          const response = await makeRequest('GET', '/services/distributed/manifest', null, jsonApi);
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(response.body.version, 1);
+          assert.ok(typeof response.body.programId === 'string');
+        });
+
+        it('GET /services/distributed/epoch returns beacon summary', async function () {
+          const response = await makeRequest('GET', '/services/distributed/epoch', null, jsonApi);
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(response.body.service, 'distributed');
+          assert.ok(response.body.beacon);
+        });
       });
 
       describe('Accept header precedence', function () {
@@ -448,27 +609,61 @@ describe('@fabric/hub', function () {
         });
       });
 
+      describe('L1 payment verification', function () {
+        const jsonApi = { Accept: 'application/json' };
+
+        it('GET /services/bitcoin/transactions/:txid?address&amountSats returns 503 when Bitcoin is disabled (L1 proof)', async function () {
+          const tx = 'a'.repeat(64);
+          const path = `/services/bitcoin/transactions/${tx}?address=${encodeURIComponent('bcrt1qtest')}&amountSats=1000`;
+          const response = await makeRequest('GET', path, null, jsonApi);
+          assert.strictEqual(response.status, 503);
+          assert.strictEqual(response.body.status, 'error');
+          assert.ok(String(response.body.message || '').toLowerCase().includes('bitcoin'), 'error mentions Bitcoin');
+        });
+      });
+
+      it('GET /sessions/:sessionId/delegation/audit returns 403 without Bearer token', async function () {
+        const response = await makeRequest('GET', '/sessions/not-a-real-token/delegation/audit', null, { Accept: 'application/json' });
+        assert.strictEqual(response.status, 403);
+        assert.strictEqual(response.body.ok, false);
+      });
+
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {
+        // Requires @fabric/http with HTTP JSON-RPC (`jsonRpc` + `POST /services/rpc`). Older pins only expose WebSocket JSONCall.
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+
         const createBody = {
           name: 'activity-log-test.txt',
           mime: 'text/plain',
           contentBase64: Buffer.from('hello-activity-log').toString('base64')
         };
 
-        const createResponse = await makeRequest('POST', '/rpc', {
+        const createResponse = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 2,
           method: 'CreateDocument',
           params: [createBody]
-        }, { 'Accept': 'application/json' });
+        }, { Accept: 'application/json' });
 
         assert.strictEqual(createResponse.status, 200, 'CreateDocument should return 200 status');
         assert.ok(createResponse.body && createResponse.body.result && createResponse.body.result.document, 'CreateDocument should return a document');
 
         const createdId = createResponse.body.result.document.id;
 
-        const publishResponse = await makeRequest('POST', '/rpc', {
+        const publishResponse = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 3,
           method: 'PublishDocument',
           params: [createdId]
-        }, { 'Accept': 'application/json' });
+        }, { Accept: 'application/json' });
 
         assert.strictEqual(publishResponse.status, 200, 'PublishDocument should return 200 status');
       });

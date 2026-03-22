@@ -49,7 +49,7 @@ class HeaderBar extends React.Component {
       <fabric-hub-header>
         {/* (showBrand) && <Link to='/' style={{ float: 'left' }}><Icon name='eye' size='big' style={{ verticalAlign: 'bottom' }} /> <span className='brand'>{BRAND_NAME}</span></Link> */}
         {/* <Button.Group floated='right'>
-          <Button as={Link} to='/sessions' color='green'><Icon name='key' /> Sign In</Button>
+          <Button as={Link} to='/settings/security' color='green'><Icon name='key' /> Sign In</Button>
         </Button.Group> */}
         <br style={{ clear: 'both' }} />
       </fabric-hub-header>

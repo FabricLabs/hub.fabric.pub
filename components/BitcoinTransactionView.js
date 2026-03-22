@@ -85,6 +85,12 @@ function BitcoinTransactionView () {
             <Icon name='arrow left' />
             Back
           </Button>
+          {TXHASH_REGEX.test(hash) && (
+            <Button as={Link} to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`} basic size='small' title='Open L1 payment verification for this txid'>
+              <Icon name='check circle outline' />
+              L1 verify
+            </Button>
+          )}
           <Icon name='exchange' />
           <Header.Content>Transaction</Header.Content>
           {isMempool && tx && (
@@ -131,6 +137,15 @@ function BitcoinTransactionView () {
 
       {!loading && !error && tx && (
         <>
+          {isMempool && (
+            <Message warning icon>
+              <Icon name="clock outline" />
+              <Message.Content>
+                <Message.Header>Waiting for confirmation</Message.Header>
+                <p>This transaction is not in a block yet. It can be replaced or dropped while in the mempool; depth and inclusion depend on miners and fees.</p>
+              </Message.Content>
+            </Message>
+          )}
           <Segment>
             <List divided>
               <List.Item>

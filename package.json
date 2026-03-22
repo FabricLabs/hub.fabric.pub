@@ -3,13 +3,30 @@
   "version": "0.1.0-RC1",
   "description": "Peer rendezvous for Fabric.",
   "main": "services/hub.js",
+  "exports": {
+    ".": "./services/hub.js",
+    "./components/HubInterface": "./components/HubInterface.js",
+    "./components/DelegationSigningModal": "./components/DelegationSigningModal.js",
+    "./components/SettingsHome": "./components/SettingsHome.js",
+    "./functions/fabricMessageEnvelope": "./functions/fabricMessageEnvelope.js",
+    "./functions/fabricProtocolUrl": "./functions/fabricProtocolUrl.js",
+    "./components/SecuritySessionHome": "./components/SecuritySessionHome.js",
+    "./types/LightningChannel": "./types/lightningChannel.js"
+  },
   "engines": {
     "node": "22.14.0"
   },
   "scripts": {
     "build": "npm run build:browser",
     "build:browser": "node scripts/build.js",
+    "build:desktop": "npm run build:browser && electron-builder build",
+    "build:desktop:dir": "npm run build:browser && electron-builder --dir",
+    "link:fabric": "bash scripts/link-fabric.sh",
+    "predesktop": "node scripts/ensure-fabric-linked.js",
+    "desktop": "npm run build:browser && electron electron/main.js",
+    "build:extension": "node scripts/build-extension.js",
     "build:semantic": "cd libraries/semantic && npx gulp build && cd ../..",
+    "ci": "npm run build && npm run test:unit",
     "coverage": "c8 npm test",
     "dev": "webpack serve --mode development --open",
     "make:api": "jsdoc2md --configure jsdoc.json --files services/hub.js README.md > API.md",
@@ -33,6 +50,9 @@
     "test:browser": "mocha tests/browser.interface.test.js --exit --timeout 60000",
     "test:e2e-browser": "HUB_E2E=1 mocha tests/browser.interface.test.js --exit --timeout 90000",
     "test:e2e-payjoin": "node scripts/verify-payjoin-e2e.js",
+    "test:lightning": "mocha tests/lightning.hub.http.test.js tests/lightning.bitcoinClient.test.js --exit",
+    "test:smoke-mainnet-rpc": "node scripts/verify-mainnet-rpc-smoke.js",
+    "bitcoin:addnode": "node scripts/bitcoin-addnode.js",
     "test:e2e-webrtc": "node scripts/verify-webrtc-chat-e2e.js",
     "test:hub-webrtc": "mocha tests/hub.webrtc.rpc.test.js",
     "test:webrtc": "npm run test:bridge && npm run test:hub-webrtc",
@@ -56,6 +76,7 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
+    "@fabric/core": "FabricLabs/fabric#feature/cli-refresh",
     "@babel/preset-env": "=7.26.7",
     "@babel/preset-react": "=7.26.3",
     "@babel/register": "=7.25.9",
@@ -64,6 +85,7 @@
     "@noble/hashes": "=1.5.0",
     "@types/react": "=18.3.18",
     "bs58check": "=3.0.1",
+    "cross-fetch": "=4.1.0",
     "fast-json-patch": "=3.1.1",
     "html5-qrcode": "=2.3.8",
     "jquery": "=3.7.1",
@@ -72,7 +94,6 @@
     "lodash.merge": "=4.6.2",
     "mocha": "=10.8.2",
     "path-browserify": "=1.0.1",
-    "peerjs": "=1.5.4",
     "process": "=0.11.10",
     "qrcode": "=1.5.4",
     "react": "=18.2.0",
@@ -95,7 +116,8 @@
     "c8": "=7.11.3",
     "crypto-browserify": "=3.12.1",
     "css-loader": "=6.10.0",
-    "patch-package": "=8.0.1",
+    "electron": "^36.3.2",
+    "electron-builder": "^24.13.3",
     "style-loader": "=3.3.4",
     "vm-browserify": "=1.1.2",
     "webpack-bundle-analyzer": "=4.10.2",
@@ -110,5 +132,66 @@
     ],
     "report-dir": "./reports/coverage",
     "temp-dir": "./reports/c8"
+  },
+  "build": {
+    "appId": "pub.fabric.hub",
+    "productName": "Fabric Hub",
+    "copyright": "Copyright © Fabric Labs",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "assets/**/*",
+      "scripts/hub.js",
+      "services/**/*",
+      "functions/**/*",
+      "types/**/*",
+      "routes/**/*",
+      "settings/**/*",
+      "shims/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!stores/**",
+      "!tests/**",
+      "!docs/**",
+      "!coverage/**",
+      "!reports/**",
+      "!extension/**",
+      "!libraries/**"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "protocols": [
+      {
+        "name": "Fabric Hub",
+        "schemes": [
+          "fabric"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
+    }
   }
 }

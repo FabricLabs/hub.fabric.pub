@@ -4,6 +4,7 @@ const React = require('react');
 const { Link, useParams } = require('react-router-dom');
 const { Button, Header, Icon, Label, List, Loader, Message, Segment } = require('semantic-ui-react');
 const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { formatSatsDisplay } = require('../functions/formatSats');
 
 function trimHash (value = '', left = 8, right = 8) {
   const text = String(value || '');
@@ -63,11 +64,14 @@ function ChannelView () {
     setCloseError(null);
     const upstream = loadUpstreamSettings();
     const baseUrl = (upstream.lightningBaseUrl || '/services/lightning').replace(/\/+$/, '');
-    const url = `${baseUrl}/channels/close`;
+    const cid = encodeURIComponent(String(channel.channel_id));
+    const url = `${baseUrl}/channels/${cid}`;
+    const headers = { Accept: 'application/json' };
+    const token = String(upstream.apiToken || '').trim();
+    if (token) headers.Authorization = `Bearer ${token}`;
     fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelId: channel.channel_id })
+      method: 'DELETE',
+      headers
     })
       .then((r) => r.json())
       .then((data) => {
@@ -162,13 +166,13 @@ function ChannelView () {
               <List.Item>
                 <List.Content>
                   <List.Header>Capacity</List.Header>
-                  {capacitySats != null ? `${capacitySats.toLocaleString()} sats` : '—'}
+                  {capacitySats != null ? `${formatSatsDisplay(capacitySats)} sats` : '—'}
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Content>
                   <List.Header>Our balance</List.Header>
-                  {ourSats != null ? `${ourSats.toLocaleString()} sats` : '—'}
+                  {ourSats != null ? `${formatSatsDisplay(ourSats)} sats` : '—'}
                 </List.Content>
               </List.Item>
               {channel.funding_txid && (

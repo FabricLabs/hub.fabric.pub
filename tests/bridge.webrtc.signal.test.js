@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const { P2P_PEER_GOSSIP } = require('@fabric/core/constants');
 require('@babel/register');
 
 describe('Bridge WebRTC signaling metadata', function () {
@@ -228,6 +229,91 @@ describe('Bridge WebRTC signaling metadata', function () {
     ]);
 
     assert.deepStrictEqual(attempted, ['newer-peer']);
+  });
+
+  it('orders hub candidates by lastSeen when connectedAt ties', function () {
+    const bridge = new Bridge({ maxWebrtcPeers: 1 });
+    bridge.peerId = 'fabric-bridge-local';
+    bridge._webrtcReady = true;
+    bridge.webrtcPeers.clear();
+    bridge._connectingPeers.clear();
+    const t = Date.now();
+
+    const attempted = [];
+    bridge.connectToWebRTCPeer = (peerId) => {
+      attempted.push(peerId);
+      bridge._connectingPeers.add(peerId);
+    };
+
+    bridge.handlePeerCandidates([
+      { id: 'stale-heartbeat', connectedAt: t - 60000, lastSeen: t - 5000, registeredAt: t - 60000 },
+      { id: 'fresh-heartbeat', connectedAt: t - 60000, lastSeen: t - 100, registeredAt: t - 60000 }
+    ]);
+
+    assert.deepStrictEqual(attempted, ['fresh-heartbeat']);
+  });
+
+  it('builds gossip payload with self and connected peers for multi-node discovery', function () {
+    const bridge = new Bridge({});
+    bridge.peerId = 'node-self';
+    bridge.webrtcPeers.set('mesh-neighbor', {
+      id: 'mesh-neighbor',
+      status: 'connected',
+      connectedAt: Date.now() - 1000,
+      lastSeen: Date.now()
+    });
+
+    const payload = bridge._buildWebRTCPeerGossipPayload();
+    assert.strictEqual(payload.type, P2P_PEER_GOSSIP);
+    assert.ok(Array.isArray(payload.object.peers));
+    assert.ok(payload.object.peers.some((p) => p.id === 'node-self'));
+    assert.ok(payload.object.peers.some((p) => p.id === 'mesh-neighbor'));
+  });
+
+  it('merges peer candidates from WebRTC gossip (cross-cluster relay)', function () {
+    const bridge = new Bridge({ maxWebrtcPeers: 3 });
+    bridge.peerId = 'node-a';
+    bridge._webrtcReady = true;
+    bridge.webrtcPeers.clear();
+    bridge._connectingPeers.clear();
+
+    const attempted = [];
+    bridge.connectToWebRTCPeer = (peerId) => {
+      attempted.push(peerId);
+      bridge._connectingPeers.add(peerId);
+    };
+
+    bridge.handleWebRTCPeerMessage('node-b', JSON.stringify({
+      type: 'webrtc-peer-gossip',
+      object: {
+        peers: [{ id: 'node-c', lastSeen: Date.now(), registeredAt: Date.now() }]
+      }
+    }));
+
+    assert.ok(attempted.includes('node-c'), 'should attempt outbound connect to gossiped peer id');
+  });
+
+  it('accepts P2P_PEER_GOSSIP typed mesh relay same as webrtc-peer-gossip alias', function () {
+    const bridge = new Bridge({ maxWebrtcPeers: 3 });
+    bridge.peerId = 'node-a';
+    bridge._webrtcReady = true;
+    bridge.webrtcPeers.clear();
+    bridge._connectingPeers.clear();
+
+    const attempted = [];
+    bridge.connectToWebRTCPeer = (peerId) => {
+      attempted.push(peerId);
+      bridge._connectingPeers.add(peerId);
+    };
+
+    bridge.handleWebRTCPeerMessage('node-b', JSON.stringify({
+      type: P2P_PEER_GOSSIP,
+      object: {
+        peers: [{ id: 'node-d', lastSeen: Date.now() }]
+      }
+    }));
+
+    assert.ok(attempted.includes('node-d'));
   });
 
   it('re-registers WebRTC presence on heartbeat ticks', function () {

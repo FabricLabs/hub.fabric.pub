@@ -16,6 +16,7 @@ const {
 } = require('semantic-ui-react');
 
 const ActivityStream = require('./ActivityStream');
+const NotificationsStream = require('./NotificationsStream');
 
 class Home extends React.Component {
   render () {
@@ -29,7 +30,8 @@ class Home extends React.Component {
       onSendWebRTCTestPing,
       onToggleWebRTCChatOnly,
       webrtcChatOnly,
-      onRequireUnlock
+      onRequireUnlock,
+      adminToken
     } = this.props;
     // Prefer the live Bridge ref; fall back to legacy `bridge` prop.
     const ref = bridgeRef || bridge;
@@ -308,10 +310,20 @@ class Home extends React.Component {
           </Card>
         </Segment>
         <Segment>
+          <Header as='h2'>Notifications</Header>
+          <NotificationsStream
+            bridge={ref}
+            bridgeRef={ref}
+            adminToken={adminToken}
+            onRequireUnlock={onRequireUnlock}
+          />
+        </Segment>
+        <Segment>
           <Header as='h2'>Activity</Header>
           <ActivityStream
             bridge={ref}
             bridgeRef={ref}
+            adminToken={adminToken}
             onRequireUnlock={onRequireUnlock}
           />
         </Segment>

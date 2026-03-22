@@ -2,7 +2,7 @@
 
 const React = require('react');
 const { Link } = require('react-router-dom');
-const { Button, Form, Header, Icon, Message, Segment, Table } = require('semantic-ui-react');
+const { Button, Form, Header, Icon, Label, Message, Segment, Table } = require('semantic-ui-react');
 const {
   decodeLightningInvoice,
   fetchPayments,
@@ -18,6 +18,9 @@ const {
   sendPayment,
   submitPayjoinProposal
 } = require('../functions/bitcoinClient');
+const { formatSatsDisplay } = require('../functions/formatSats');
+const txContractLabels = require('../functions/txContractLabels');
+const invoiceStore = require('../functions/invoiceStore');
 const QrScannerModal = require('./QrScannerModal');
 
 class BitcoinPaymentsHome extends React.Component {
@@ -70,9 +73,14 @@ class BitcoinPaymentsHome extends React.Component {
         fetchReceiveAddress(upstream, wallet, { network }).catch(() => ''),
         fetchUTXOs(upstream, wallet).catch(() => []),
         fetchPayments(upstream, wallet, { limit: 50 }).catch(() => []),
-        fetchPayjoinSessions(upstream, { limit: 25 }).catch(() => []),
+        fetchPayjoinSessions(upstream, { limit: 50, includeExpired: true }).catch(() => []),
         fetchWalletTransactions(upstream, wallet, { limit: 50, network }).catch(() => [])
       ]);
+      const invLabels = txContractLabels.buildInvoiceTxLabels(invoiceStore.loadInvoices());
+      const txRows = Array.isArray(transactions)
+        ? txContractLabels.mergeServerAndLocalLabels(transactions, invLabels)
+        : [];
+
       this.setState({
         loading: false,
         summary,
@@ -80,7 +88,7 @@ class BitcoinPaymentsHome extends React.Component {
         utxos: Array.isArray(utxos) ? utxos : [],
         payments: Array.isArray(payments) ? payments : [],
         payjoinSessions: Array.isArray(payjoinSessions) ? payjoinSessions : [],
-        transactions: Array.isArray(transactions) ? transactions : []
+        transactions: txRows
       });
     } catch (error) {
       this.setState({ loading: false, error: error && error.message ? error.message : String(error) });
@@ -194,17 +202,25 @@ class BitcoinPaymentsHome extends React.Component {
     const summary = this.state.summary || {};
     const balanceSats = summary && Number.isFinite(summary.balanceSats) ? summary.balanceSats : (summary && summary.summary && summary.summary.trusted != null ? Math.round(Number(summary.summary.trusted) * 100000000) : null);
     const balanceDisplay = balanceSats != null
-      ? (balanceSats >= 100000000 ? `${(balanceSats / 100000000).toFixed(4)} BTC` : `${balanceSats} sats`)
+      ? (balanceSats >= 100000000 ? `${(balanceSats / 100000000).toFixed(4)} BTC` : `${formatSatsDisplay(balanceSats)} sats`)
       : 'n/a';
     return (
       <div className='fade-in'>
         <Segment loading={this.state.loading}>
-          <Header as='h2'>
+          <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+            <Button as={Link} to="/services/bitcoin" basic size="small">
+              <Icon name="arrow left" />
+              Back
+            </Button>
             <Icon name='credit card outline' />
             <Header.Content>Bitcoin Payments</Header.Content>
             <Button as={Link} to="/services/bitcoin/invoices" basic size="small" style={{ marginLeft: '0.5em' }}>
               <Icon name='file alternate outline' />
               Invoices
+            </Button>
+            <Button as={Link} to="/services/bitcoin/resources" basic size="small" title="HTTP resources and L1 payment verification">
+              <Icon name='sitemap' />
+              Resources
             </Button>
           </Header>
           {this.state.error && <Message negative content={this.state.error} />}
@@ -237,7 +253,7 @@ class BitcoinPaymentsHome extends React.Component {
               </Button>
             </Segment>
 
-            <Segment>
+            <Segment style={{ marginTop: 0 }}>
               <Header as='h4'>
                 <Icon name='send' />
                 Make Payment
@@ -255,12 +271,12 @@ class BitcoinPaymentsHome extends React.Component {
                       onChange={(e) => {
                         const v = e.target.value;
                         if (!v) {
-                          this.setState({ to: '', lightningInvoice: '', decodedInvoice: null });
+                          this.setState({ result: null, to: '', lightningInvoice: '', decodedInvoice: null });
                         } else if (this.isLightningInvoice(v)) {
-                          this.setState({ lightningInvoice: v, to: '' });
+                          this.setState({ result: null, lightningInvoice: v, to: '' });
                           this.handleDecodeInvoice(v);
                         } else {
-                          this.setState({ to: v, lightningInvoice: '', decodedInvoice: null });
+                          this.setState({ result: null, to: v, lightningInvoice: '', decodedInvoice: null });
                         }
                       }}
                       style={{ flex: 1 }}
@@ -280,7 +296,7 @@ class BitcoinPaymentsHome extends React.Component {
                 )}
                 {!this.state.lightningInvoice && (
                   <Form.Group widths='equal'>
-                    <Form.Input label='Amount (sats)' type='number' min='1' step='1' placeholder='1000' value={this.state.amountSats} onChange={(e) => this.setState({ amountSats: e.target.value })} />
+                    <Form.Input label='Amount (sats)' type='number' min='1' step='1' placeholder='1000' value={this.state.amountSats} onChange={(e) => { this.setState({ amountSats: e.target.value, result: null }); }} />
                     <Form.Input label='Memo' placeholder='Optional' value={this.state.memo} onChange={(e) => this.setState({ memo: e.target.value })} />
                   </Form.Group>
                 )}
@@ -298,7 +314,22 @@ class BitcoinPaymentsHome extends React.Component {
               </Form>
               {this.state.result && (
                 <Message size="small" positive={!this.state.result.error} negative={!!this.state.result.error} style={{ marginTop: '0.5em' }}>
-                  {this.state.result.error ? this.state.result.error : (this.state.result.ok ? 'Payment successful.' : 'Payment submitted.')}
+                  {this.state.result.error ? this.state.result.error : (
+                    <>
+                      {this.state.result.ok ? 'Payment successful.' : 'Payment submitted.'}
+                      {(() => {
+                        const r = this.state.result;
+                        const tid = (r && r.payment && r.payment.txid) || (r && r.txid);
+                        return tid ? (
+                          <span style={{ display: 'block', marginTop: '0.5em' }}>
+                            <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(tid))}`}>
+                              View transaction
+                            </Link>
+                          </span>
+                        ) : null;
+                      })()}
+                    </>
+                  )}
                 </Message>
               )}
             </Segment>
@@ -315,6 +346,7 @@ class BitcoinPaymentsHome extends React.Component {
               <Table.Header>
                 <Table.Row>
                   <Table.HeaderCell>Txid</Table.HeaderCell>
+                  <Table.HeaderCell>Contract</Table.HeaderCell>
                   <Table.HeaderCell>Amount</Table.HeaderCell>
                   <Table.HeaderCell>Confirmations</Table.HeaderCell>
                   <Table.HeaderCell>Time</Table.HeaderCell>
@@ -338,8 +370,28 @@ class BitcoinPaymentsHome extends React.Component {
                           <code>-</code>
                         )}
                       </Table.Cell>
+                      <Table.Cell>
+                        {tx.fabricContract && tx.fabricContract.label ? (
+                          <Label size="small" color="blue" title={JSON.stringify(tx.fabricContract.meta || {})}>
+                            {tx.fabricContract.label}
+                          </Label>
+                        ) : (
+                          <span style={{ color: '#999' }}>—</span>
+                        )}
+                      </Table.Cell>
                       <Table.Cell>{amt != null ? `${Number(amt).toFixed(8)} BTC` : '-'}</Table.Cell>
-                      <Table.Cell>{tx.confirmations != null ? tx.confirmations : '-'}</Table.Cell>
+                      <Table.Cell>
+                        {tx.confirmations != null ? (
+                          <>
+                            {tx.confirmations}
+                            {Number(tx.confirmations) === 0 && (
+                              <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>
+                                mempool
+                              </Label>
+                            )}
+                          </>
+                        ) : '-'}
+                      </Table.Cell>
                       <Table.Cell>{dateStr}</Table.Cell>
                     </Table.Row>
                   );
@@ -366,7 +418,22 @@ class BitcoinPaymentsHome extends React.Component {
               <Table.Body>
                 {this.state.payments.map((p, idx) => (
                   <Table.Row key={`${p.txid || 'tx'}:${idx}`}>
-                    <Table.Cell><code>{p.txid || '-'}</code></Table.Cell>
+                    <Table.Cell>
+                      {p.txid ? (
+                        <span>
+                          <Link to={`/services/bitcoin/transactions/${encodeURIComponent(p.txid)}`}>
+                            <code style={{ fontSize: '0.85em' }} title={p.txid}>
+                              {`${p.txid.slice(0, 8)}…${p.txid.slice(-8)}`}
+                            </code>
+                          </Link>
+                          <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>
+                            unconfirmed
+                          </Label>
+                        </span>
+                      ) : (
+                        <code>-</code>
+                      )}
+                    </Table.Cell>
                     <Table.Cell>{p.fee != null ? p.fee : '-'}</Table.Cell>
                     <Table.Cell>{p.value != null ? `${p.value} BTC` : '-'}</Table.Cell>
                   </Table.Row>
@@ -406,28 +473,75 @@ class BitcoinPaymentsHome extends React.Component {
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.payjoinResult, null, 2)}</pre>
             </Message>
           )}
-          <Header as='h4' style={{ marginTop: '1em' }}>Active Payjoin Sessions</Header>
+          <Header as='h4' style={{ marginTop: '1em' }}>Payjoin sessions &amp; proposals</Header>
+          <p style={{ color: '#666', marginBottom: '0.75em' }}>
+            Includes expired sessions (append <code>?includeExpired=false</code> on the API to hide them). Each row lists proposal contracts (txid when derivable from PSBT / raw tx).
+          </p>
           {this.state.payjoinSessions.length === 0 ? (
-            <p style={{ color: '#666' }}>No active Payjoin sessions discovered.</p>
+            <p style={{ color: '#666' }}>No Payjoin sessions found.</p>
           ) : (
             <Table compact='very' celled>
               <Table.Header>
                 <Table.Row>
                   <Table.HeaderCell>Session</Table.HeaderCell>
                   <Table.HeaderCell>Status</Table.HeaderCell>
+                  <Table.HeaderCell>Label / memo</Table.HeaderCell>
                   <Table.HeaderCell>Address</Table.HeaderCell>
+                  <Table.HeaderCell>Amount (sats)</Table.HeaderCell>
                   <Table.HeaderCell>Proposals</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {this.state.payjoinSessions.map((s, idx) => (
-                  <Table.Row key={`${s.id || 's'}:${idx}`}>
-                    <Table.Cell><code>{s.id || '-'}</code></Table.Cell>
-                    <Table.Cell>{s.status || '-'}</Table.Cell>
-                    <Table.Cell><code>{s.address || '-'}</code></Table.Cell>
-                    <Table.Cell>{s.proposalCount != null ? s.proposalCount : '-'}</Table.Cell>
-                  </Table.Row>
-                ))}
+                {this.state.payjoinSessions.map((s, idx) => {
+                  const expired = s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now();
+                  const proposals = Array.isArray(s.proposals) ? s.proposals : [];
+                  return (
+                    <Table.Row key={`${s.id || 's'}:${idx}`}>
+                      <Table.Cell>
+                        <code style={{ fontSize: '0.85em' }}>{s.id || '-'}</code>
+                        {expired && (
+                          <Label size="mini" color="grey" style={{ marginLeft: '0.35em' }}>expired</Label>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell>{s.status || '-'}</Table.Cell>
+                      <Table.Cell>
+                        {(s.label || s.memo) ? (
+                          <span>{[s.label, s.memo].filter(Boolean).join(' · ')}</span>
+                        ) : (
+                          <span style={{ color: '#999' }}>—</span>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell><code style={{ fontSize: '0.8em' }}>{s.address || '-'}</code></Table.Cell>
+                      <Table.Cell>{s.amountSats != null && s.amountSats > 0 ? String(s.amountSats) : '—'}</Table.Cell>
+                      <Table.Cell>
+                        {proposals.length === 0 ? (
+                          <span style={{ color: '#999' }}>0</span>
+                        ) : (
+                          <div style={{ maxWidth: '28em' }}>
+                            {proposals.map((p, j) => (
+                              <div key={p.id || j} style={{ marginBottom: '0.35em' }}>
+                                <Label size="small" color="teal" style={{ marginRight: '0.35em' }}>
+                                  {p.status || 'proposal'}
+                                </Label>
+                                {p.proposalTxid ? (
+                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(p.proposalTxid)}`}>
+                                    <code style={{ fontSize: '0.75em' }} title={p.proposalTxid}>
+                                      {`${p.proposalTxid.slice(0, 10)}…${p.proposalTxid.slice(-8)}`}
+                                    </code>
+                                  </Link>
+                                ) : (
+                                  <span style={{ color: '#888', fontSize: '0.85em' }}>
+                                    {p.hasPsbt || p.hasTxhex ? 'txid pending / partial PSBT' : '—'}
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                })}
               </Table.Body>
             </Table>
           )}
@@ -452,7 +566,7 @@ class BitcoinPaymentsHome extends React.Component {
                   <Table.Row key={`${u.txid || 'u'}:${u.vout || 0}:${idx}`}>
                     <Table.Cell><code>{u.txid || '-'}</code></Table.Cell>
                     <Table.Cell>{u.vout != null ? u.vout : '-'}</Table.Cell>
-                    <Table.Cell>{u.amount != null ? u.amount : (u.amountSats != null ? `${u.amountSats} sats` : '-')}</Table.Cell>
+                    <Table.Cell>{u.amount != null ? u.amount : (u.amountSats != null ? `${formatSatsDisplay(u.amountSats)} sats` : '-')}</Table.Cell>
                   </Table.Row>
                 ))}
               </Table.Body>

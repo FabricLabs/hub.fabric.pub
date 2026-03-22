@@ -5,6 +5,7 @@ const DEFAULT_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 // Dependencies
 const React = require('react');
+const { Link } = require('react-router-dom');
 const crypto = require('crypto');
 
 // Fabric Types
@@ -24,6 +25,30 @@ const {
   Modal,
   Segment
 } = require('semantic-ui-react');
+
+const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
+
+function readLinkedDevices () {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
+    const raw = window.localStorage.getItem(STORAGE_LINKED_DEVICES);
+    if (!raw) return [];
+    const j = JSON.parse(raw);
+    return Array.isArray(j) ? j : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function mergeLinkedDevice (entry) {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    let list = readLinkedDevices();
+    list = list.filter((d) => !(d && d.kind === entry.kind && d.hubOrigin === entry.hubOrigin));
+    list.push(entry);
+    window.localStorage.setItem(STORAGE_LINKED_DEVICES, JSON.stringify(list));
+  } catch (e) {}
+}
 
 function IdentityManager (props) {
   const lockTimeoutMs = (props && typeof props.lockTimeoutMs === 'number' && props.lockTimeoutMs > 0)
@@ -183,6 +208,213 @@ function IdentityManager (props) {
     props.onLockStateChange(isLocked);
   }, [localIdentity, isLocked, props.onLockStateChange]);
 
+  // Sync identity to chrome.storage when running in extension popup (enables Login with Extension on Hub page).
+  React.useEffect(() => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage?.local || !chrome.runtime?.id) return;
+      if (localIdentity && localIdentity.xpub) {
+        const payload = {
+          id: localIdentity.id,
+          xpub: localIdentity.xpub,
+          xprv: localIdentity.xprv || undefined,
+          passwordProtected: !!localIdentity.passwordProtected
+        };
+        chrome.storage.local.set({ 'fabric.identity.ext': payload });
+      } else {
+        chrome.storage.local.remove('fabric.identity.ext');
+      }
+    } catch (e) {}
+  }, [localIdentity]);
+
+  const [extensionAvailable, setExtensionAvailable] = React.useState(false);
+  const desktopPollIntervalRef = React.useRef(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (desktopPollIntervalRef.current) {
+        clearInterval(desktopPollIntervalRef.current);
+        desktopPollIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const check = () => setExtensionAvailable(!!(typeof window !== 'undefined' && window.__FABRIC_HUB_EXTENSION__?.isAvailable));
+    check();
+    const t = setTimeout(check, 300);
+    return () => clearTimeout(t);
+  }, []);
+
+  const handleLoginWithExtension = React.useCallback(async () => {
+    if (!window.__FABRIC_HUB_EXTENSION__?.getIdentity) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const identity = await window.__FABRIC_HUB_EXTENSION__.getIdentity();
+      if (!identity || !identity.xpub) {
+        setError('No identity found in extension. Create or restore one in the Fabric Hub extension popup first.');
+        return;
+      }
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          const toStore = identity.xprv
+            ? { id: identity.id, xpub: identity.xpub, xprv: identity.xprv, passwordProtected: !!identity.passwordProtected }
+            : { id: identity.id, xpub: identity.xpub };
+          window.localStorage.setItem('fabric.identity.local', JSON.stringify(toStore));
+        }
+        if (identity.xprv && typeof window !== 'undefined' && window.sessionStorage) {
+          window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify({
+            id: identity.id,
+            xpub: identity.xpub,
+            xprv: identity.xprv,
+            passwordProtected: !!identity.passwordProtected
+          }));
+        }
+      } catch (e) {}
+      setLocalIdentity({
+        id: identity.id,
+        xpub: identity.xpub,
+        xprv: identity.xprv || null,
+        passwordProtected: !!identity.passwordProtected
+      });
+      if (typeof props.onLocalIdentityChange === 'function') {
+        props.onLocalIdentityChange({
+          id: identity.id,
+          xpub: identity.xpub,
+          xprv: identity.xprv,
+          passwordProtected: !!identity.passwordProtected
+        });
+      }
+      if (identity.xprv && typeof props.onUnlockSuccess === 'function') {
+        props.onUnlockSuccess(identity);
+      }
+    } catch (e) {
+      setError((e && e.message) ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
+
+  const handleLoginWithDesktop = React.useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    if (window.fabricDesktop && window.fabricDesktop.isDesktopShell) return;
+    if (desktopPollIntervalRef.current) {
+      clearInterval(desktopPollIntervalRef.current);
+      desktopPollIntervalRef.current = null;
+    }
+    setBusy(true);
+    setError(null);
+    const origin = window.location.origin;
+    let sessionId = null;
+    const maxAttempts = 360;
+    let attempts = 0;
+    try {
+      const res = await fetch(`${origin}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.sessionId) {
+        throw new Error((data && data.error) || 'Could not start desktop login session');
+      }
+      sessionId = data.sessionId;
+      const protocolUrl = data.protocolUrl || (`fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`);
+
+      desktopPollIntervalRef.current = setInterval(() => {
+        attempts++;
+        if (attempts > maxAttempts) {
+          if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
+          desktopPollIntervalRef.current = null;
+          setBusy(false);
+          setError('Timed out waiting for the Fabric Hub desktop app. Start it, then try again.');
+          return;
+        }
+        void (async () => {
+          try {
+            const r = await fetch(`${origin}/sessions/${encodeURIComponent(sessionId)}`, {
+              headers: { Accept: 'application/json' }
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!j.ok || j.status !== 'signed' || !j.identity) return;
+            if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
+            desktopPollIntervalRef.current = null;
+            if (j.delegationToken) {
+              try {
+                window.localStorage.setItem('fabric.delegation', JSON.stringify({
+                  token: j.delegationToken,
+                  externalSigning: true,
+                  hubOrigin: origin,
+                  linkedAt: new Date().toISOString()
+                }));
+              } catch (e) {}
+            }
+            const xpub = j.identity.xpub;
+            const rid = j.identity.id;
+            if (!xpub) throw new Error('Hub did not return xpub');
+            const k = new Key({ xpub });
+            const ident = new Identity(k);
+            const resolvedId = rid != null ? String(rid) : String(ident.id);
+            const payload = { id: resolvedId, xpub, linkedFromDesktop: true };
+            try {
+              window.localStorage.setItem('fabric.identity.local', JSON.stringify(payload));
+            } catch (e) {}
+            mergeLinkedDevice({
+              kind: 'fabric-desktop',
+              hubOrigin: origin,
+              fabricId: resolvedId,
+              linkedAt: new Date().toISOString(),
+              label: 'Fabric Hub (desktop)'
+            });
+            setLocalIdentity({
+              id: resolvedId,
+              xpub,
+              xprv: null,
+              passwordProtected: false,
+              linkedFromDesktop: true
+            });
+            if (typeof props.onLocalIdentityChange === 'function') {
+              props.onLocalIdentityChange({
+                id: resolvedId,
+                xpub,
+                xprv: undefined,
+                passwordProtected: false
+              });
+            }
+            if (typeof props.onUnlockSuccess === 'function') {
+              props.onUnlockSuccess({
+                id: resolvedId,
+                xpub,
+                xprv: null,
+                passwordProtected: false
+              });
+            }
+            setBusy(false);
+          } catch (err) {
+            if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
+            desktopPollIntervalRef.current = null;
+            setBusy(false);
+            setError((err && err.message) ? err.message : String(err));
+          }
+        })();
+      }, 600);
+
+      const a = document.createElement('a');
+      a.href = protocolUrl;
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      if (desktopPollIntervalRef.current) {
+        clearInterval(desktopPollIntervalRef.current);
+        desktopPollIntervalRef.current = null;
+      }
+      setError((e && e.message) ? e.message : String(e));
+      setBusy(false);
+    }
+  }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
+
   return (
     <Segment basic>
       <Header as="h3">
@@ -194,6 +426,37 @@ function IdentityManager (props) {
           <>
             <p><strong>XPUB (public identifier):</strong> <code>{localIdentity.xpub}</code></p>
             <p><strong>Bech32m ID:</strong> <code>{localIdentity.id}</code></p>
+            {localIdentity.linkedFromDesktop ? (
+              <Message info size="small" style={{ marginTop: '0.75em' }}>
+                <Icon name="shield" />
+                <strong>External signing</strong> is enabled — private keys stay on the Hub node; this browser holds a watch-only xpub.
+                Use <strong>Sign message</strong> from the profile menu and confirm each request in the <strong>Fabric Hub desktop</strong> app.
+                {' '}
+                <Link to="/settings">Settings</Link>
+                {' · '}
+                <Link to="/settings/security">Security & delegation</Link>
+              </Message>
+            ) : null}
+            {readLinkedDevices().length > 0 ? (
+              <Segment style={{ marginTop: '1em' }}>
+                <Header as="h4" size="small">
+                  <Icon name="linkify" />
+                  Linked devices
+                </Header>
+                <p style={{ color: '#666', fontSize: '0.95em' }}>
+                  Browsers and apps you have authorized with this identity (same Hub origin).
+                </p>
+                <ul style={{ margin: '0.5em 0 0 1em' }}>
+                  {readLinkedDevices().map((d, i) => (
+                    <li key={i}>
+                      <strong>{d.label || d.kind || 'Device'}</strong>
+                      {d.hubOrigin ? ` — ${d.hubOrigin}` : ''}
+                      {d.linkedAt ? ` (${new Date(d.linkedAt).toLocaleString()})` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </Segment>
+            ) : null}
             <p style={{ color: '#666' }}>
               <strong>Private Key:</strong>{' '}
               {localIdentity.xprv
@@ -552,7 +815,6 @@ function IdentityManager (props) {
                       passwordProtected: isPasswordProtected
                     };
 
-                    // Make refresh-after-login deterministic for this tab/session.
                     try {
                       if (typeof window !== 'undefined' && window.sessionStorage) {
                         window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
@@ -815,8 +1077,38 @@ function IdentityManager (props) {
               Choose how you would like to connect:
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', maxWidth: 320 }}>
+              {extensionAvailable ? (
+                <Button
+                  primary
+                  fluid
+                  icon
+                  labelPosition="left"
+                  loading={busy}
+                  disabled={busy}
+                  onClick={handleLoginWithExtension}
+                  title="Use identity from the Fabric Hub browser extension"
+                >
+                  <Icon name="puzzle piece" />
+                  Login with Extension
+                </Button>
+              ) : null}
+              {typeof window !== 'undefined' && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
+                <Button
+                  primary={!extensionAvailable}
+                  fluid
+                  icon
+                  labelPosition="left"
+                  loading={busy}
+                  disabled={busy}
+                  onClick={handleLoginWithDesktop}
+                  title="Open the Fabric Hub desktop app to sign in with the same identity as this Hub node"
+                >
+                  <Icon name="desktop" />
+                  Log in with Fabric Hub (desktop)
+                </Button>
+              ) : null}
               <Button
-                primary
+                primary={!extensionAvailable && (typeof window === 'undefined' || !!(window.fabricDesktop && window.fabricDesktop.isDesktopShell))}
                 fluid
                 icon
                 labelPosition="left"

@@ -7,12 +7,15 @@ const { useLocation, Link } = require('react-router-dom');
 const {
   Button,
   Card,
+  Divider,
   Header,
   Icon,
   Label,
   List,
   Loader,
-  Segment
+  Message,
+  Segment,
+  Statistic
 } = require('semantic-ui-react');
 
 class PeersPage extends React.Component {
@@ -65,9 +68,15 @@ class PeersPage extends React.Component {
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
     const state = networkStatus && networkStatus.state;
     const isOnline = !!networkStatus;
-    const peerId = networkStatus && networkStatus.contract ? String(networkStatus.contract) : null;
+    const fabricPeerId = networkStatus && networkStatus.fabricPeerId
+      ? String(networkStatus.fabricPeerId)
+      : null;
+    const legacyUnstableId = !fabricPeerId && networkStatus && networkStatus.contract != null
+      ? String(networkStatus.contract)
+      : null;
+    const shareNodeId = fabricPeerId || legacyUnstableId;
     const hostPort = network && network.address ? String(network.address) : null;
-    const shareableString = [peerId, hostPort].filter(Boolean).join('\n');
+    const shareableString = [shareNodeId, hostPort].filter(Boolean).join('\n');
 
     // WebRTC peers currently registered with the hub signaling RPC
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
@@ -94,6 +103,21 @@ class PeersPage extends React.Component {
       ? current.webrtcMeshStatus
       : null;
 
+    const bitcoin = networkStatus && networkStatus.bitcoin && typeof networkStatus.bitcoin === 'object'
+      ? networkStatus.bitcoin
+      : null;
+    const chainHeight = bitcoin && typeof bitcoin.height === 'number' && Number.isFinite(bitcoin.height)
+      ? bitcoin.height
+      : null;
+    const tipFull = bitcoin && typeof bitcoin.bestBlockHash === 'string' && /^[0-9a-fA-F]{64}$/.test(bitcoin.bestBlockHash)
+      ? bitcoin.bestBlockHash
+      : null;
+    const tipShort = tipFull ? `${tipFull.slice(0, 10)}…${tipFull.slice(-6)}` : null;
+    const btcNetwork = bitcoin && bitcoin.network != null ? String(bitcoin.network) : null;
+    const mempoolN = bitcoin && bitcoin.mempoolTxCount != null && Number.isFinite(Number(bitcoin.mempoolTxCount))
+      ? Number(bitcoin.mempoolTxCount)
+      : null;
+
     return (
       <fabric-hub-peers class='fade-in'>
         <Segment style={{ clear: 'both' }}>
@@ -102,41 +126,100 @@ class PeersPage extends React.Component {
               <Icon name="arrow left" />
               Back
             </Button>
-            <code>Peers</code>
+            <span>Peers</span>
           </Header>
-          <p>full peer list and controls</p>
+          <Header.Subheader style={{ marginTop: '0.35em' }}>
+            Fabric TCP peers, WebRTC mesh, and the hub&apos;s Bitcoin chain head (height / tip) for comparing regtest sync across linked nodes.
+          </Header.Subheader>
         </Segment>
 
           {networkStatus ? (
+            <>
+            <Segment>
+              <Statistic.Group size='small' widths='five' stackable>
+                <Statistic>
+                  <Statistic.Value>{chainHeight != null ? chainHeight : '—'}</Statistic.Value>
+                  <Statistic.Label>Block height</Statistic.Label>
+                </Statistic>
+                <Statistic>
+                  <Statistic.Value text style={{ fontSize: '1rem', fontFamily: 'monospace' }}>
+                    {tipFull ? (
+                      <Link to={`/services/bitcoin/blocks/${encodeURIComponent(tipFull)}`} title={tipFull}>
+                        {tipShort}
+                      </Link>
+                    ) : (
+                      '—'
+                    )}
+                  </Statistic.Value>
+                  <Statistic.Label>Chain tip</Statistic.Label>
+                </Statistic>
+                <Statistic>
+                  <Statistic.Value>{btcNetwork || '—'}</Statistic.Value>
+                  <Statistic.Label>Bitcoin network</Statistic.Label>
+                </Statistic>
+                <Statistic>
+                  <Statistic.Value>{mempoolN != null ? mempoolN : '—'}</Statistic.Value>
+                  <Statistic.Label>Mempool (tx)</Statistic.Label>
+                </Statistic>
+                <Statistic>
+                  <Statistic.Value>{fabricPeers.length}</Statistic.Value>
+                  <Statistic.Label>Fabric peers</Statistic.Label>
+                </Statistic>
+              </Statistic.Group>
+              {bitcoin && bitcoin.available === false && bitcoin.message && (
+                <Message warning size='small' style={{ marginTop: '1em' }} content={bitcoin.message} />
+              )}
+              <Message info size='small' style={{ marginTop: '1em' }}>
+                <Message.Header>Block relay over Fabric</Message.Header>
+                <p style={{ margin: '0.35em 0 0' }}>
+                  When this hub&apos;s bitcoind advances the tip (ZMQ <code>hashblock</code>), it signs a <code>BitcoinBlock</code> P2P message and peers relay it (same wire bytes; duplicates are ignored). Use height and tip here to confirm your regtest head vs. peers after <code>addnode</code> / long chains.
+                </p>
+              </Message>
+            </Segment>
+
             <Card fluid>
               <Card.Content>
                 <Card.Header>
-                  Bridge{' '}
+                  Fabric P2P{' '}
                   <Label size='small' color={isOnline ? 'green' : 'grey'}>
                     {isOnline ? 'Online' : 'Offline'}
                   </Label>
                 </Card.Header>
                 <Card.Meta>
                   <span>
-                    <strong>State:</strong> {(state && state.status) || 'unknown'}
+                    <strong>Bridge state:</strong> {(state && state.status) || 'unknown'}
                   </span>
                 </Card.Meta>
                 <Card.Description>
-                  {(peerId || hostPort) && (
-                    <div style={{ marginBottom: '1em', padding: '0.75em', background: 'rgba(0,0,0,0.03)', borderRadius: '4px' }}>
+                  {(shareNodeId || hostPort) && (
+                    <div style={{ marginBottom: '1em' }}>
                       <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Share with other peers</Header>
-                      {peerId && (
-                        <div style={{ marginBottom: '0.5em' }}>
-                          <strong>Peer ID:</strong>{' '}
-                          <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{peerId}</code>
-                        </div>
-                      )}
-                      {hostPort && (
-                        <div style={{ marginBottom: '0.5em' }}>
-                          <strong>Address:</strong>{' '}
-                          <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{hostPort}</code>
-                        </div>
-                      )}
+                      <List relaxed size='small'>
+                        {shareNodeId && (
+                          <List.Item>
+                            <List.Header>{fabricPeerId ? 'Fabric node ID' : 'Node ID (legacy)'}</List.Header>
+                            <List.Description>
+                              <code
+                                style={{ wordBreak: 'break-all', fontSize: '0.9em', display: 'block', marginTop: '0.25em' }}
+                                title={fabricPeerId ? 'Stable P2P identity (public key).' : 'May change when contract state updates — upgrade hub for fabricPeerId.'}
+                              >{shareNodeId}</code>
+                              {legacyUnstableId && (
+                                <span style={{ fontSize: '0.85em', color: '#886', display: 'block', marginTop: '0.35em' }}>
+                                  Can change when the hub processes messages. Prefer <code>fabricPeerId</code> when available.
+                                </span>
+                              )}
+                            </List.Description>
+                          </List.Item>
+                        )}
+                        {hostPort && (
+                          <List.Item>
+                            <List.Header>Listen address</List.Header>
+                            <List.Description>
+                              <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{hostPort}</code>
+                            </List.Description>
+                          </List.Item>
+                        )}
+                      </List>
                       {shareableString && (
                         <Button
                           size='small'
@@ -159,20 +242,21 @@ class PeersPage extends React.Component {
                               }
                             } catch (e) {}
                           }}
-                          title='Copy peer ID and address'
+                          title='Copy Fabric node ID and listen address'
                         >
                           <Icon name='copy' />
-                          Copy to clipboard
+                          Copy node ID + address
                         </Button>
                       )}
                     </div>
                   )}
+                  <Divider section />
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75em', flexWrap: 'wrap' }}>
                     <div>
                       <Label size='tiny' basic color='green' style={{ marginRight: '0.5em' }}>
-                        Fabric Network
+                        Fabric network
                       </Label>
-                      <strong>Peers:</strong> {fabricPeers.length}
+                      <strong>Connected list:</strong> {fabricPeers.length}
                     </div>
                     {isLoggedIn && (
                       <Button.Group size='small'>
@@ -203,6 +287,8 @@ class PeersPage extends React.Component {
                       {fabricPeers.map((peer, idx) => {
                         const id = peer && (peer.id || peer.address || peer.pubkey || `peer-${idx}`);
                         const address = peer && (peer.address || peer.host || peer.url);
+                        const routeTarget = String((address && address.trim()) || id || `peer-${idx}`);
+                        const rowKey = routeTarget;
                         const status = (peer && peer.status) || 'unknown';
                         const isConnected = status === 'connected';
                         const score = peer && (peer.score != null ? peer.score : null);
@@ -211,7 +297,7 @@ class PeersPage extends React.Component {
                         const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
                         const primary = nickname || alias || id;
                         return (
-                          <List.Item as={Link} to={`/peers/${encodeURIComponent(id)}`} key={id || idx}>
+                          <List.Item as={Link} to={`/peers/${encodeURIComponent(routeTarget)}`} key={rowKey}>
                             <List.Content>
                               <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
                                 {primary}
@@ -253,6 +339,7 @@ class PeersPage extends React.Component {
                 </Card.Description>
               </Card.Content>
             </Card>
+            </>
           ) : (
             <Segment basic>
               <Segment

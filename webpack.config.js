@@ -23,7 +23,7 @@ module.exports = {
   },
   optimization: {
     // Disable module concatenation to avoid intermittent "Cannot read properties of undefined (reading 'module')"
-    // when bundling ESM packages like @msgpack/msgpack via peerjs
+    // when bundling ESM packages like @msgpack/msgpack
     concatenateModules: false,
     minimize: true,
     minimizer: [
@@ -69,8 +69,6 @@ module.exports = {
     // (like elliptic via browserify-sign) can resolve @noble/curves regardless
     // of subpath form used in requires.
     alias: {
-      // Use the browser UMD bundle of PeerJS to avoid ESM + msgpack bundling issues
-      peerjs: path.resolve(__dirname, 'node_modules/peerjs/dist/peerjs.min.js'),
       // Force @noble/hashes to use browser crypto (avoids node:crypto UnhandledSchemeError)
       '@noble/hashes/crypto': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
       // Redirect cryptoNode.js when package exports resolve to it (e.g. from nested @noble/hashes in elliptic)
@@ -95,13 +93,17 @@ module.exports = {
       '@noble/curves/utils.js': path.resolve(__dirname, 'shims/noble-utils.js')
     },
     fallback: {
+      // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle
+      "fs": false,
       "crypto": require.resolve("crypto-browserify"),
       "node:crypto": require.resolve("crypto-browserify"),
       "path": require.resolve("path-browserify"),
       "buffer": require.resolve("buffer"),
       // Use stream-browserify for Node.js stream polyfill in the browser
       "stream": require.resolve("stream-browserify"),
-      "process": require.resolve("process/browser")
+      "process": require.resolve("process/browser"),
+      // asn1.js (via parse-asn1 / crypto-browserify) expects Node's vm in some paths
+      "vm": require.resolve("vm-browserify")
     }
   },
   devServer: {
@@ -116,14 +118,8 @@ module.exports = {
       }
     ],
     // Proxy backend services when running via webpack-dev-server
-    // so WebRTC signaling (/services/peering) and other HTTP APIs
-    // hit the real hub server instead of the dev server.
+    // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
     proxy: {
-      '/services/peering': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-        ws: true
-      },
       '/services': {
         target: 'http://localhost:8080',
         changeOrigin: true,

@@ -12,7 +12,9 @@ const {
   Header,
   Icon,
   Label,
+  List,
   Loader,
+  Message,
   Modal,
   Input,
   Segment,
@@ -20,6 +22,18 @@ const {
   Dropdown
 } = require('semantic-ui-react');
 const Invoice = require('./Invoice');
+const { formatSatsDisplay } = require('../functions/formatSats');
+const { loadUpstreamSettings, fetchTransactionByHash } = require('../functions/bitcoinClient');
+
+const DEFAULT_PUBLISH_PRICE_SATS = '25';
+const TXID_HEX_64 = /^[a-fA-F0-9]{64}$/;
+
+function shortHexId (value) {
+  const s = String(value || '');
+  if (!s) return '—';
+  if (s.length <= 20) return s;
+  return `${s.slice(0, 10)}…${s.slice(-8)}`;
+}
 
 function DocumentDetail (props) {
   const params = useParams();
@@ -48,19 +62,38 @@ function DocumentDetail (props) {
   const [distributeInvoice, setDistributeInvoice] = React.useState(null);
   const [distributeTxid, setDistributeTxid] = React.useState('');
   const [distributeSuccessContractId, setDistributeSuccessContractId] = React.useState(null);
+  const [distributeTxChain, setDistributeTxChain] = React.useState(null);
 
-  const [publishPriceSats, setPublishPriceSats] = React.useState('');
+  const [publishPriceSats, setPublishPriceSats] = React.useState(DEFAULT_PUBLISH_PRICE_SATS);
   const [purchaseOpen, setPurchaseOpen] = React.useState(false);
   const [purchaseInvoice, setPurchaseInvoice] = React.useState(null);
   const [purchaseTxid, setPurchaseTxid] = React.useState('');
   const [purchaseBusy, setPurchaseBusy] = React.useState(false);
   const [purchaseError, setPurchaseError] = React.useState(null);
   const [purchasedContent, setPurchasedContent] = React.useState(null);
+  const [contractPayTx, setContractPayTx] = React.useState(null);
+
+  const [htlcPreimageHex, setHtlcPreimageHex] = React.useState('');
+  const [htlcUnlockBusy, setHtlcUnlockBusy] = React.useState(false);
+  const [htlcUnlockError, setHtlcUnlockError] = React.useState(null);
+  const [tombstoneOpen, setTombstoneOpen] = React.useState(false);
+  const [tombstoneBusy, setTombstoneBusy] = React.useState(false);
+  const [tombstoneError, setTombstoneError] = React.useState(null);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  React.useEffect(() => {
+    setPublishPriceSats(DEFAULT_PUBLISH_PRICE_SATS);
+  }, [id]);
+
+  React.useEffect(() => {
+    setHtlcPreimageHex('');
+    setHtlcUnlockError(null);
+    setHtlcUnlockBusy(false);
+  }, [id, doc?.htlcPendingDecrypt]);
 
   // Listen for pay-to-distribute invoice; show payment step when it matches this document
   React.useEffect(() => {
@@ -204,7 +237,28 @@ function DocumentDetail (props) {
     setUnlocked(true);
   }, [doc, id, decryptedContent, props.hasDocumentKey, props.onGetDecryptedContent, props.onRequestUnlock]);
 
+  const handleHtlcPreimageUnlock = React.useCallback(async () => {
+    if (!doc || !doc.htlcPendingDecrypt || typeof props.onUnlockHtlcDocument !== 'function') return;
+    setHtlcUnlockBusy(true);
+    setHtlcUnlockError(null);
+    try {
+      const r = await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim());
+      if (!r || !r.ok) {
+        setHtlcUnlockError((r && r.error) || 'Unlock failed.');
+      } else {
+        setHtlcPreimageHex('');
+        setUnlocked(false);
+        setDecryptedContent(null);
+      }
+    } catch (e) {
+      setHtlcUnlockError((e && e.message) || 'Unlock failed.');
+    } finally {
+      setHtlcUnlockBusy(false);
+    }
+  }, [doc, id, htlcPreimageHex, props.onUnlockHtlcDocument]);
+
   const isEncrypted = !!(doc && doc.contentEncrypted);
+  const isHtlcPendingDecrypt = !!(doc && doc.htlcPendingDecrypt);
   const name = (doc && doc.name) || id;
   const mime = (doc && doc.mime) || 'application/octet-stream';
   const created = doc && doc.created ? new Date(doc.created).toLocaleString() : '';
@@ -216,6 +270,58 @@ function DocumentDetail (props) {
   const storageContractId = doc && doc.storageContractId;
   const docPurchasePriceSats = doc && doc.purchasePriceSats;
   const canPurchase = !!(doc && isPublishedInStore && docPurchasePriceSats && docPurchasePriceSats > 0);
+  const fabricPeerId = props.bridgeRef?.current?.networkStatus?.fabricPeerId
+    || props.bridgeRef?.current?.lastNetworkStatus?.fabricPeerId
+    || null;
+  const authorDocId = doc && (doc.lineage || doc.id) ? String(doc.lineage || doc.id) : '';
+
+  const adminTokenResolved = String(
+    (props.adminToken != null && props.adminToken) ||
+      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken')) ||
+      ''
+  ).trim();
+  const canAdminUnpublish = !!(adminTokenResolved && doc && isPublishedInStore && id);
+
+  const handleConfirmTombstone = React.useCallback(async () => {
+    if (!id) return;
+    const token = String(
+      (props.adminToken != null && props.adminToken) ||
+        (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken')) ||
+        ''
+    ).trim();
+    if (!token) {
+      setTombstoneError('Admin token required.');
+      return;
+    }
+    const bridge = props.bridgeRef && props.bridgeRef.current;
+    if (!bridge || typeof bridge.emitTombstone !== 'function') {
+      setTombstoneError('Bridge is not ready.');
+      return;
+    }
+    // Hub published catalog keys documents by content hash; URL may use lineage / actor id.
+    const canonicalDocId = (doc && doc.sha256) ? String(doc.sha256).trim() : String(id).trim();
+    setTombstoneBusy(true);
+    setTombstoneError(null);
+    try {
+      const r = await bridge.emitTombstone({ documentId: canonicalDocId, adminToken: token });
+      if (!r || !r.ok) {
+        setTombstoneError((r && r.message) ? r.message : 'Unpublish failed. Check admin token and that the document is still in the hub published catalog.');
+        return;
+      }
+      setTombstoneOpen(false);
+      const refresh = () => {
+        if (bridge && typeof bridge.sendNetworkStatusRequest === 'function') {
+          bridge.sendNetworkStatusRequest();
+        }
+        if (typeof props.onGetDocument === 'function') props.onGetDocument(id);
+      };
+      setTimeout(refresh, 400);
+    } catch (e) {
+      setTombstoneError((e && e.message) ? e.message : 'Unpublish failed.');
+    } finally {
+      setTombstoneBusy(false);
+    }
+  }, [id, props.adminToken, props.bridgeRef, props.onGetDocument]);
 
   // Never expose decrypted content when we don't currently have a document key,
   // even if contentBase64 is still present on the doc from a prior unlock.
@@ -269,6 +375,98 @@ function DocumentDetail (props) {
       setAutoTriedDecrypt(false);
     }
   }, [props.hasDocumentKey]);
+
+  // Storage contract L1 payment: load contract txid and mempool / confirmation depth
+  React.useEffect(() => {
+    const cid = doc && doc.storageContractId ? String(doc.storageContractId).trim() : '';
+    if (!cid) {
+      setContractPayTx(null);
+      return;
+    }
+    let cancelled = false;
+    setContractPayTx({ loading: true });
+    (async () => {
+      try {
+        const res = await fetch(`/contracts/${encodeURIComponent(cid)}`, { method: 'GET' });
+        const body = await res.json();
+        if (cancelled) return;
+        if (!res.ok || !body || body.status === 'error') {
+          setContractPayTx({
+            loading: false,
+            error: (body && body.message) || 'Could not load contract.'
+          });
+          return;
+        }
+        const c = body.contract || body.result || body;
+        const txid = c && c.txid ? String(c.txid).trim() : '';
+        if (!txid) {
+          setContractPayTx({ loading: false, txid: null });
+          return;
+        }
+        const upstream = loadUpstreamSettings();
+        const data = await fetchTransactionByHash(upstream, txid);
+        if (cancelled) return;
+        if (data && data.status === 'error') {
+          setContractPayTx({
+            loading: false,
+            txid,
+            error: data.message || 'Transaction not found.'
+          });
+          return;
+        }
+        setContractPayTx({ loading: false, txid, tx: data });
+      } catch (e) {
+        if (!cancelled) {
+          setContractPayTx({
+            loading: false,
+            error: e && e.message ? e.message : String(e)
+          });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [doc && doc.storageContractId]);
+
+  // Distribute modal: poll funding tx depth while invoice step is open
+  React.useEffect(() => {
+    if (!distributeOpen || distributeSuccessContractId) {
+      setDistributeTxChain(null);
+      return;
+    }
+    const tx = String(distributeTxid || '').trim();
+    if (!TXID_HEX_64.test(tx)) {
+      setDistributeTxChain(null);
+      return;
+    }
+    if (!distributeInvoice) {
+      setDistributeTxChain(null);
+      return;
+    }
+    let cancelled = false;
+    const upstream = loadUpstreamSettings();
+    const tick = async () => {
+      try {
+        const data = await fetchTransactionByHash(upstream, tx);
+        if (cancelled) return;
+        if (data && data.status === 'error') {
+          setDistributeTxChain({ loading: false, error: data.message || 'Tx not found' });
+          return;
+        }
+        setDistributeTxChain({ loading: false, tx: data });
+      } catch (e) {
+        if (!cancelled) {
+          setDistributeTxChain({ loading: false, error: e && e.message ? e.message : String(e) });
+        }
+      }
+    };
+    setDistributeTxChain({ loading: true });
+    tick();
+    const iv = setInterval(tick, 12000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [distributeOpen, distributeInvoice, distributeTxid, distributeSuccessContractId]);
 
   // URLs for sharing: canonical (path param) and hash-only (keeps id client-side).
   let shareUrlHash = '';
@@ -337,14 +535,173 @@ function DocumentDetail (props) {
 
         <Divider />
 
+        {doc && (
+          <Message info style={{ marginBottom: '1.25em' }}>
+            <Message.Header>Storage &amp; availability</Message.Header>
+            <p style={{ marginBottom: '0.75em', color: 'rgba(0,0,0,0.7)' }}>
+              How this document exists on your node and on the hub. <strong>Author</strong> is the creator’s document id (lineage);
+              <strong> publisher</strong> is the Fabric peer id of the hub that hosts the published listing.
+              <strong> Publish</strong> advertises it; <strong> Distribute</strong> pays for multi-node storage contracts; <strong> Purchase</strong> uses L1 HTLC when a price is set.
+            </p>
+            <List relaxed>
+              <List.Item>
+                <List.Icon name="hdd" color="grey" verticalAlign="middle" />
+                <List.Content>
+                  <List.Header>Local copy</List.Header>
+                  <List.Description>
+                    This browser holds metadata{doc.sha256 ? ` (content hash ${String(doc.sha256).slice(0, 16)}…)` : ''}.
+                  </List.Description>
+                </List.Content>
+              </List.Item>
+              <List.Item>
+                <List.Icon name="bullhorn" color={isPublishedInStore ? 'blue' : 'grey'} verticalAlign="middle" />
+                <List.Content>
+                  <List.Header>Published to hub index</List.Header>
+                  <List.Description>
+                    {isPublishedInStore
+                      ? (publishedAt
+                        ? `Visible in the network store since ${publishedAt}.${fabricPeerId ? ` Publisher (Fabric peer): ${shortHexId(fabricPeerId)}.` : ''}`
+                        : `Listed in the hub published index.${fabricPeerId ? ` Publisher: ${shortHexId(fabricPeerId)}.` : ''}`)
+                      : 'Not published — only you see it until you publish.'}
+                  </List.Description>
+                </List.Content>
+              </List.Item>
+              <List.Item>
+                <List.Icon name="cloud" color={storageContractId ? 'purple' : 'grey'} verticalAlign="middle" />
+                <List.Content>
+                  <List.Header>Network storage contract</List.Header>
+                  <List.Description>
+                    {storageContractId ? (
+                      <span>
+                        Active contract{' '}
+                        <code style={{ cursor: 'pointer', textDecoration: 'underline' }} role="button" tabIndex={0}
+                          onClick={() => navigate(`/contracts/${encodeURIComponent(storageContractId)}`)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/contracts/${encodeURIComponent(storageContractId)}`); }}
+                        >
+                          {String(storageContractId).slice(0, 12)}…
+                        </code>
+                        {' '}(pay-to-distribute bonded storage).
+                        {contractPayTx && (
+                          <div style={{ marginTop: '0.5em' }}>
+                            {contractPayTx.loading && (
+                              <span style={{ color: '#666', fontSize: '0.92em' }}>Checking L1 payment transaction…</span>
+                            )}
+                            {!contractPayTx.loading && contractPayTx.txid && contractPayTx.tx
+                              && (contractPayTx.tx.blockhash == null || contractPayTx.tx.blockhash === '')
+                              && Number(contractPayTx.tx.confirmations || 0) === 0 && (
+                              <div style={{ fontSize: '0.92em' }}>
+                                <Label size="small" color="orange">
+                                  <Icon name="clock" />
+                                  Mempool
+                                </Label>
+                                {' '}
+                                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
+                                  Payment transaction
+                                </Link>
+                                <span style={{ color: '#666' }}> — awaiting confirmation</span>
+                              </div>
+                            )}
+                            {!contractPayTx.loading && contractPayTx.txid && contractPayTx.tx
+                              && contractPayTx.tx.confirmations != null && Number(contractPayTx.tx.confirmations) > 0 && (
+                              <div style={{ fontSize: '0.92em' }}>
+                                <Label size="small" color="green">
+                                  <Icon name="check" />
+                                  {contractPayTx.tx.confirmations} confirmation{Number(contractPayTx.tx.confirmations) === 1 ? '' : 's'}
+                                </Label>
+                                {' '}
+                                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
+                                  View payment transaction
+                                </Link>
+                              </div>
+                            )}
+                            {!contractPayTx.loading && contractPayTx.error && contractPayTx.txid && (
+                              <div style={{ fontSize: '0.92em', color: '#666' }}>
+                                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
+                                  Payment transaction
+                                </Link>
+                                <span> — {contractPayTx.error}</span>
+                              </div>
+                            )}
+                            {!contractPayTx.loading && contractPayTx.error && !contractPayTx.txid && (
+                              <span style={{ fontSize: '0.92em', color: '#888' }}>{contractPayTx.error}</span>
+                            )}
+                            {!contractPayTx.loading && contractPayTx.txid === null && !contractPayTx.error && (
+                              <span style={{ fontSize: '0.92em', color: '#888' }}>No payment tx id on contract yet.</span>
+                            )}
+                          </div>
+                        )}
+                      </span>
+                    ) : (
+                      'No storage contract — use Distribute to bond L1 payment for replicated storage.'
+                    )}
+                  </List.Description>
+                </List.Content>
+              </List.Item>
+              <List.Item>
+                <List.Icon name="bitcoin" color={docPurchasePriceSats > 0 ? 'orange' : 'grey'} verticalAlign="middle" />
+                <List.Content>
+                  <List.Header>Paid access (inventory HTLC)</List.Header>
+                  <List.Description>
+                    {docPurchasePriceSats > 0
+                      ? `Buyers pay ${formatSatsDisplay(docPurchasePriceSats)} sats via P2TR HTLC to unlock content (Fabric protocol; not a Lightning invoice).`
+                      : 'No list price — document is free to fetch once published.'}
+                  </List.Description>
+                </List.Content>
+              </List.Item>
+            </List>
+          </Message>
+        )}
+
         <Card fluid>
           <Card.Content>
             <Card.Header>Document</Card.Header>
           <Card.Meta>{created}</Card.Meta>
             <Card.Description>
               <div><strong>ID:</strong> <code>{id}</code></div>
+              <div title="Fabric document id for the content creator (original lineage)">
+                <strong>Author:</strong> <code>{authorDocId || '—'}</code>
+              </div>
+              <div title="Fabric peer id of the hub hosting this document in its published index">
+                <strong>Publisher:</strong>{' '}
+                {isPublishedInStore && fabricPeerId
+                  ? <code>{fabricPeerId}</code>
+                  : <span style={{ color: '#888' }}>— (listed hub peer id when published)</span>}
+              </div>
               <div><strong>MIME:</strong> {mime}</div>
               <div><strong>Size:</strong> {doc && doc.size != null ? `${doc.size} bytes` : ''}</div>
+              {isHtlcPendingDecrypt && (
+                <Message info style={{ marginTop: '0.75em' }}>
+                  <Message.Header>HTLC-encrypted delivery</Message.Header>
+                  <p style={{ margin: '0.5em 0 0.75em', fontSize: '0.95em' }}>
+                    This file was sent after an inventory HTLC was funded. Use the same 32-byte preimage that appears in the seller&apos;s on-chain claim witness (Taproot hashlock). That preimage is <code>SHA256</code> of the canonical Fabric <code>DocumentPublish</code> message (AMP wire bytes) wrapping the stored document fields — the same binding as JSON-RPC <code>CreatePurchaseInvoice</code> <code>contentHash</code> (payment hash is <code>SHA256</code> of the preimage). Implemented in <code>@fabric/core/functions/publishedDocumentEnvelope</code>.
+                  </p>
+                  {doc.htlcPaymentHashHex && (
+                    <div style={{ fontSize: '0.88em', marginBottom: '0.5em', wordBreak: 'break-all' }}>
+                      <strong>Payment hash (verify on-chain / invoice):</strong> <code>{doc.htlcPaymentHashHex}</code>
+                    </div>
+                  )}
+                  <Input
+                    fluid
+                    placeholder="Preimage (64 hex characters)"
+                    value={htlcPreimageHex}
+                    onChange={(e, d) => setHtlcPreimageHex((d && d.value) != null ? d.value : e.target.value)}
+                    style={{ marginBottom: '0.5em' }}
+                  />
+                  <Button
+                    size="small"
+                    primary
+                    loading={htlcUnlockBusy}
+                    disabled={!TXID_HEX_64.test(htlcPreimageHex.trim())}
+                    onClick={handleHtlcPreimageUnlock}
+                  >
+                    <Icon name="key" />
+                    Decrypt with preimage
+                  </Button>
+                  {htlcUnlockError && (
+                    <div style={{ marginTop: '0.5em', color: '#9f3a38', fontSize: '0.9em' }}>{htlcUnlockError}</div>
+                  )}
+                </Message>
+              )}
               {isEncrypted && !contentBase64 && (
                 <div style={{ marginTop: '0.5em' }}>
                   <Button size="small" onClick={handleUnlock} title="Decrypt and show content">
@@ -397,7 +754,7 @@ function DocumentDetail (props) {
                   value={publishPriceSats}
                   onChange={(e) => setPublishPriceSats(e.target.value)}
                   style={{ width: 110 }}
-                  title="Optional: set purchase price when publishing (HTLC)"
+                  title={`List price when publishing (default ${DEFAULT_PUBLISH_PRICE_SATS} sats; HTLC purchase)`}
                 />
               )}
               {canPurchase && (
@@ -419,7 +776,7 @@ function DocumentDetail (props) {
                   title="Purchase this document (HTLC: pay to unlock with sha256(sha256(content)))"
                 >
                   <Icon name="bitcoin" />
-                  Purchase ({docPurchasePriceSats} sats)
+                  Purchase ({formatSatsDisplay(docPurchasePriceSats)} sats)
                 </Button>
               )}
               <Button
@@ -453,6 +810,23 @@ function DocumentDetail (props) {
                 <Icon name="share alternate" />
                 Share
               </Button>
+              {canAdminUnpublish && (
+                <Button
+                  size="small"
+                  color="red"
+                  basic
+                  icon
+                  labelPosition="left"
+                  onClick={() => {
+                    setTombstoneError(null);
+                    setTombstoneOpen(true);
+                  }}
+                  title="Remove this document from the hub published catalog (requires admin token)"
+                >
+                  <Icon name="trash" />
+                  Unpublish
+                </Button>
+              )}
               {downloadHref && (
                 <Button
                   size="small"
@@ -505,6 +879,48 @@ function DocumentDetail (props) {
           <Modal.Actions>
             <Button basic onClick={() => setShareOpen(false)}>
               Close
+            </Button>
+          </Modal.Actions>
+        </Modal>
+
+        <Modal
+          size="small"
+          open={tombstoneOpen}
+          onClose={() => {
+            if (tombstoneBusy) return;
+            setTombstoneOpen(false);
+            setTombstoneError(null);
+          }}
+        >
+          <Header icon="trash" content="Unpublish document (admin)" />
+          <Modal.Content>
+            <p style={{ color: '#666' }}>
+              This removes the document from the hub&apos;s <strong>published catalog</strong> so it no longer appears in the network index.
+              The hub may still keep the stored file under <code>documents/</code>; this action is the same as{' '}
+              <code>EmitTombstone</code> with <code>documentId</code>.
+            </p>
+            <p style={{ color: '#666' }}>
+              <strong>Document id:</strong> <code>{id}</code>
+            </p>
+            {tombstoneError && (
+              <Message negative size="small">
+                <p>{tombstoneError}</p>
+              </Message>
+            )}
+          </Modal.Content>
+          <Modal.Actions>
+            <Button type="button" basic onClick={() => { if (!tombstoneBusy) { setTombstoneOpen(false); setTombstoneError(null); } }}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              negative
+              loading={tombstoneBusy}
+              disabled={tombstoneBusy}
+              onClick={handleConfirmTombstone}
+            >
+              <Icon name="trash" />
+              Remove from hub index
             </Button>
           </Modal.Actions>
         </Modal>
@@ -701,6 +1117,36 @@ function DocumentDetail (props) {
                     onChange={(e) => setDistributeTxid(e.target.value)}
                   />
                 </Form.Field>
+                {TXID_HEX_64.test(String(distributeTxid || '').trim()) && (
+                  <div style={{ marginTop: '0.5em', fontSize: '0.9em' }}>
+                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(distributeTxid).trim())}`}>
+                      Open transaction
+                    </Link>
+                    <span style={{ color: '#666' }}>
+                      {' '}— on-chain sends often appear in the mempool first; mine a block on regtest to confirm.
+                    </span>
+                    {distributeTxChain && !distributeSuccessContractId && (
+                      <div style={{ marginTop: '0.35em', color: '#555' }}>
+                        {distributeTxChain.loading && <span>Checking depth…</span>}
+                        {!distributeTxChain.loading && distributeTxChain.tx
+                          && (distributeTxChain.tx.blockhash == null || distributeTxChain.tx.blockhash === '')
+                          && Number(distributeTxChain.tx.confirmations || 0) === 0 && (
+                          <span><strong>Mempool</strong> — 0 confirmations</span>
+                        )}
+                        {!distributeTxChain.loading && distributeTxChain.tx
+                          && Number(distributeTxChain.tx.confirmations || 0) > 0 && (
+                          <span>
+                            <strong>{distributeTxChain.tx.confirmations}</strong> confirmation
+                            {Number(distributeTxChain.tx.confirmations) === 1 ? '' : 's'}
+                          </span>
+                        )}
+                        {!distributeTxChain.loading && distributeTxChain.error && (
+                          <span style={{ color: '#888' }}>{distributeTxChain.error}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </Modal.Content>

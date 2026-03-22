@@ -25,6 +25,9 @@ const {
   decodeLightningInvoice,
   fetchAddressBalance,
   fetchBitcoinStatus,
+  fetchBitcoinPeers,
+  fetchBitcoinNetworkSummary,
+  broadcastRawTransaction,
   fetchExplorerData,
   fetchLightningChannels,
   fetchLightningStatus,
@@ -43,6 +46,7 @@ const {
   generateBlock,
   requestFaucet
 } = require('../functions/bitcoinClient');
+const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSats');
 
 class BitcoinHome extends React.Component {
   constructor (props) {
@@ -100,7 +104,13 @@ class BitcoinHome extends React.Component {
       faucetResult: null,
       lookupAddress: '',
       lookupResult: null,
-      lookupLoading: false
+      lookupLoading: false,
+      nodePeers: [],
+      nodeNetwork: {},
+      rawTxHex: '',
+      rawTxResult: null,
+      txLookupId: '',
+      txLookupError: null
     };
   }
 
@@ -158,8 +168,7 @@ class BitcoinHome extends React.Component {
   }
 
   satsToBTC (value) {
-    const sats = Number(value || 0);
-    return (sats / 100000000).toFixed(8);
+    return formatBtcFromSats(value);
   }
 
   /** Compute Lightning balance from listfunds outputs (client-side fallback when status returns 0). */
@@ -182,6 +191,54 @@ class BitcoinHome extends React.Component {
     const text = String(value || '');
     if (text.length <= left + right + 1) return text;
     return `${text.slice(0, left)}...${text.slice(-right)}`;
+  }
+
+  formatDifficulty (value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    if (n >= 1e12) return n.toExponential(4);
+    return n.toLocaleString();
+  }
+
+  formatBytes (n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v < 0) return '—';
+    if (v < 1024) return `${Math.round(v)} B`;
+    if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
+    return `${(v / 1048576).toFixed(2)} MiB`;
+  }
+
+  async handleBroadcastRawTx () {
+    const token = this.props.adminToken;
+    if (!token) {
+      this.setState({ rawTxResult: { error: 'Admin token required. Complete node setup or refresh your session.' } });
+      return;
+    }
+    const settings = { ...this.state.upstream, apiToken: token };
+    try {
+      const r = await broadcastRawTransaction(settings, this.state.rawTxHex);
+      const err = r && (r.error || r.message);
+      if (err) {
+        this.setState({ rawTxResult: { error: String(err) } });
+        return;
+      }
+      this.setState({ rawTxResult: r, rawTxHex: '' });
+      await this.refresh();
+    } catch (error) {
+      this.setState({ rawTxResult: { error: error && error.message ? error.message : String(error) } });
+    }
+  }
+
+  handleTxLookup () {
+    const id = String(this.state.txLookupId || '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(id)) {
+      this.setState({ txLookupError: 'Enter a 64-character transaction id (hex).' });
+      return;
+    }
+    this.setState({ txLookupError: null });
+    const nav = this.props.navigate;
+    if (typeof nav === 'function') nav(`/services/bitcoin/transactions/${encodeURIComponent(id)}`);
+    else if (typeof window !== 'undefined') window.location.assign(`/services/bitcoin/transactions/${encodeURIComponent(id)}`);
   }
 
   getIdentity () {
@@ -207,9 +264,11 @@ class BitcoinHome extends React.Component {
     const payjoinSessionTask = this.state.payjoinSessionId
       ? fetchPayjoinSession(upstream, this.state.payjoinSessionId).catch(() => null)
       : Promise.resolve(null);
+    const nodePeersTask = fetchBitcoinPeers(upstream).catch(() => []);
+    const nodeNetworkTask = fetchBitcoinNetworkSummary(upstream).catch(() => ({}));
 
     try {
-      const [summary, explorer, bitcoinStatus, lightningStatus, lightningChannels, utxos, payjoinCapabilities, payjoinSession] = await Promise.all([
+      const [summary, explorer, bitcoinStatus, lightningStatus, lightningChannels, utxos, payjoinCapabilities, payjoinSession, nodePeers, nodeNetwork] = await Promise.all([
         summaryTask,
         explorerTask,
         bitcoinStatusTask,
@@ -217,7 +276,9 @@ class BitcoinHome extends React.Component {
         lightningChannelsTask,
         utxoTask,
         payjoinCapabilitiesTask,
-        payjoinSessionTask
+        payjoinSessionTask,
+        nodePeersTask,
+        nodeNetworkTask
       ]);
       const network = (bitcoinStatus && bitcoinStatus.network) ? String(bitcoinStatus.network).toLowerCase() : '';
       const address = await fetchReceiveAddress(upstream, wallet, { network }).catch(() => summary.address || '');
@@ -259,7 +320,9 @@ class BitcoinHome extends React.Component {
         payjoinCapabilities: payjoinCapabilities && typeof payjoinCapabilities === 'object'
           ? payjoinCapabilities
           : { available: false },
-        payjoinResult: payjoinSession || this.state.payjoinResult
+        payjoinResult: payjoinSession || this.state.payjoinResult,
+        nodePeers: Array.isArray(nodePeers) ? nodePeers : [],
+        nodeNetwork: nodeNetwork && typeof nodeNetwork === 'object' ? nodeNetwork : {}
       });
       if (typeof window !== 'undefined' && Number.isFinite(balanceSats)) {
         window.dispatchEvent(new CustomEvent('clientBalanceUpdate', {
@@ -521,6 +584,19 @@ class BitcoinHome extends React.Component {
     const lightningAvailable = !!(this.state.lightningStatus && this.state.lightningStatus.available);
     const addressPlaceholder = this.getAddressPlaceholder(bitcoinNetwork);
 
+    const bc = this.state.bitcoinStatus && this.state.bitcoinStatus.blockchain;
+    const mp = this.state.bitcoinStatus && this.state.bitcoinStatus.mempoolInfo;
+    const nodePeers = Array.isArray(this.state.nodePeers) ? this.state.nodePeers : [];
+    const nn = this.state.nodeNetwork && typeof this.state.nodeNetwork === 'object' ? this.state.nodeNetwork : {};
+    const ni = nn.networkInfo && typeof nn.networkInfo === 'object' ? nn.networkInfo : null;
+    const depRoot = nn.deployments && typeof nn.deployments === 'object' ? nn.deployments : null;
+    const deploymentsInner = depRoot && depRoot.deployments && typeof depRoot.deployments === 'object'
+      ? depRoot.deployments
+      : null;
+    const deploymentEntries = deploymentsInner
+      ? Object.entries(deploymentsInner)
+      : (depRoot ? Object.entries(depRoot).filter(([k]) => k !== 'deployments') : []);
+
     return (
       <div className='fade-in'>
         <Segment>
@@ -550,6 +626,10 @@ class BitcoinHome extends React.Component {
               <Button as={Link} to="/services/bitcoin/invoices" basic title='Create and manage invoices'>
                 <Icon name='file alternate outline' />
                 Invoices
+              </Button>
+              <Button as={Link} to="/services/bitcoin/resources" basic title='Browse Bitcoin HTTP resources (GET) and L1 verify'>
+                <Icon name='sitemap' />
+                Resources
               </Button>
             </div>
           </div>
@@ -587,6 +667,257 @@ class BitcoinHome extends React.Component {
               ? 'stub (UI testing)'
               : (this.state.lightningStatus && this.state.lightningStatus.status ? this.state.lightningStatus.status : 'unknown')}</div>
           <div style={{ color: '#666' }}>{this.state.lightningStatus && this.state.lightningStatus.message ? this.state.lightningStatus.message : ''}</div>
+        </Segment>
+
+        <Segment loading={this.state.loading}>
+          <Header as='h3'>Node console</Header>
+          <p style={{ color: '#666', marginBottom: '0.75em' }}>
+            Parity with <a href='https://github.com/janb84/bitcoin-tui' target='_blank' rel='noreferrer'>bitcoin-tui</a>
+            {' '}(dashboard, mempool, network, peers, search, broadcast). Data comes from this Hub&apos;s Bitcoin Core RPC.
+          </p>
+
+          <Header as='h4'>Dashboard</Header>
+          <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
+            <Table.Body>
+              <Table.Row>
+                <Table.Cell><strong>Chain height</strong></Table.Cell>
+                <Table.Cell>{bc && bc.blocks != null ? bc.blocks : (this.state.bitcoinStatus.height != null ? this.state.bitcoinStatus.height : '—')}</Table.Cell>
+                <Table.Cell><strong>Headers</strong></Table.Cell>
+                <Table.Cell>{bc && bc.headers != null ? bc.headers : '—'}</Table.Cell>
+              </Table.Row>
+              <Table.Row>
+                <Table.Cell><strong>Verification</strong></Table.Cell>
+                <Table.Cell>
+                  {bc && bc.verificationprogress != null
+                    ? `${(Number(bc.verificationprogress) * 100).toFixed(2)}%`
+                    : '—'}
+                  {bc && bc.initialblockdownload ? ' (IBD)' : ''}
+                </Table.Cell>
+                <Table.Cell><strong>Difficulty</strong></Table.Cell>
+                <Table.Cell>{bc ? this.formatDifficulty(bc.difficulty) : '—'}</Table.Cell>
+              </Table.Row>
+              <Table.Row>
+                <Table.Cell><strong>Chain</strong></Table.Cell>
+                <Table.Cell>{bc && bc.chain ? String(bc.chain) : '—'}</Table.Cell>
+                <Table.Cell><strong>Median time</strong></Table.Cell>
+                <Table.Cell>
+                  {bc && bc.mediantime
+                    ? new Date(Number(bc.mediantime) * 1000).toLocaleString()
+                    : '—'}
+                </Table.Cell>
+              </Table.Row>
+            </Table.Body>
+          </Table>
+
+          <Header as='h4'>Mempool</Header>
+          <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
+            <Table.Body>
+              <Table.Row>
+                <Table.Cell><strong>Transactions</strong></Table.Cell>
+                <Table.Cell>
+                  {this.state.bitcoinStatus.mempoolTxCount != null
+                    ? this.state.bitcoinStatus.mempoolTxCount
+                    : (mp && mp.size != null ? mp.size : '—')}
+                </Table.Cell>
+                <Table.Cell><strong>Memory usage</strong></Table.Cell>
+                <Table.Cell>{mp && mp.usage != null ? this.formatBytes(mp.usage) : '—'}</Table.Cell>
+              </Table.Row>
+              <Table.Row>
+                <Table.Cell><strong>Total vsize (mempool)</strong></Table.Cell>
+                <Table.Cell>{mp && mp.bytes != null ? this.formatBytes(mp.bytes) : '—'}</Table.Cell>
+                <Table.Cell><strong>Total fees (est.)</strong></Table.Cell>
+                <Table.Cell>
+                  {this.state.bitcoinStatus.mempoolFeeSats != null
+                    ? (
+                      <>
+                        {this.satsToBTC(this.state.bitcoinStatus.mempoolFeeSats)} BTC
+                        {' '}
+                        <span style={{ color: '#888' }}>({formatSatsDisplay(this.state.bitcoinStatus.mempoolFeeSats)} sats)</span>
+                      </>
+                      )
+                    : '—'}
+                  {this.state.bitcoinStatus.mempoolFeesTruncated
+                    ? <span style={{ color: '#b60' }}> (partial sum)</span>
+                    : null}
+                </Table.Cell>
+              </Table.Row>
+              <Table.Row>
+                <Table.Cell><strong>Min relay fee</strong></Table.Cell>
+                <Table.Cell>{mp && mp.minrelaytxfee != null ? `${mp.minrelaytxfee} BTC/kvB` : '—'}</Table.Cell>
+                <Table.Cell><strong>Mempool min fee</strong></Table.Cell>
+                <Table.Cell>{mp && mp.mempoolminfee != null ? `${mp.mempoolminfee} BTC/kvB` : '—'}</Table.Cell>
+              </Table.Row>
+            </Table.Body>
+          </Table>
+
+          <Header as='h4'>Network</Header>
+          <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
+            <Table.Body>
+              <Table.Row>
+                <Table.Cell><strong>Connections</strong></Table.Cell>
+                <Table.Cell>
+                  {ni
+                    ? `${ni.connections != null ? ni.connections : '—'} total (${ni.connections_in != null ? ni.connections_in : 0} in / ${ni.connections_out != null ? ni.connections_out : 0} out)`
+                    : '—'}
+                </Table.Cell>
+                <Table.Cell><strong>Relay fee</strong></Table.Cell>
+                <Table.Cell>{ni && ni.relayfee != null ? `${ni.relayfee} BTC/kvB` : '—'}</Table.Cell>
+              </Table.Row>
+              <Table.Row>
+                <Table.Cell><strong>User agent</strong></Table.Cell>
+                <Table.Cell colSpan='3'>{ni && ni.subversion ? String(ni.subversion) : '—'}</Table.Cell>
+              </Table.Row>
+              <Table.Row>
+                <Table.Cell><strong>Protocol / version</strong></Table.Cell>
+                <Table.Cell colSpan='3'>
+                  {ni
+                    ? `protocol ${ni.protocolversion != null ? ni.protocolversion : '—'} · version ${ni.version != null ? ni.version : '—'}`
+                    : '—'}
+                </Table.Cell>
+              </Table.Row>
+            </Table.Body>
+          </Table>
+
+          <Header as='h4'>Consensus deployments</Header>
+          {deploymentEntries.length === 0 ? (
+            <p style={{ color: '#666', marginBottom: '1em' }}>No deployment data (requires <code>getdeploymentinfo</code> on your Core version).</p>
+          ) : (
+            <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
+              <Table.Header>
+                <Table.Row>
+                  <Table.HeaderCell>Deployment</Table.HeaderCell>
+                  <Table.HeaderCell>Status</Table.HeaderCell>
+                  <Table.HeaderCell>Height / bit</Table.HeaderCell>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {deploymentEntries.map(([name, info]) => {
+                  const row = info && typeof info === 'object' ? info : {};
+                  const active = row.active === true ? 'active' : (row.active === false ? 'inactive' : '—');
+                  const h = row.height != null ? row.height : (row.min_activation_height != null ? row.min_activation_height : '—');
+                  const bit = row.bip9 && row.bip9.bit != null ? row.bip9.bit : row.bit;
+                  return (
+                    <Table.Row key={name}>
+                      <Table.Cell><code>{name}</code></Table.Cell>
+                      <Table.Cell>{active}{row.type ? ` · ${row.type}` : ''}</Table.Cell>
+                      <Table.Cell>{h}{bit != null && bit !== '' ? ` · bit ${bit}` : ''}</Table.Cell>
+                    </Table.Row>
+                  );
+                })}
+              </Table.Body>
+            </Table>
+          )}
+
+          <Header as='h4'>Peers ({nodePeers.length})</Header>
+          {nodePeers.length === 0 ? (
+            <p style={{ color: '#666', marginBottom: '1em' }}>No peer list (Hub Bitcoin RPC offline or <code>GET /services/bitcoin/peers</code> unavailable).</p>
+          ) : (
+            <div style={{ overflowX: 'auto', marginBottom: '1em' }}>
+              <Table compact celled unstackable size='small'>
+                <Table.Header>
+                  <Table.Row>
+                    <Table.HeaderCell>Address</Table.HeaderCell>
+                    <Table.HeaderCell>Direction</Table.HeaderCell>
+                    <Table.HeaderCell>Ping (ms)</Table.HeaderCell>
+                    <Table.HeaderCell>Bytes in / out</Table.HeaderCell>
+                    <Table.HeaderCell>User agent</Table.HeaderCell>
+                    <Table.HeaderCell>Height</Table.HeaderCell>
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
+                  {nodePeers.slice(0, 40).map((p, i) => (
+                    <Table.Row key={`${p.id != null ? p.id : i}-${p.addr || i}`}>
+                      <Table.Cell><code style={{ fontSize: '0.85em' }}>{p.addr || p.addrbind || '—'}</code></Table.Cell>
+                      <Table.Cell>{p.inbound ? 'inbound' : 'outbound'}</Table.Cell>
+                      <Table.Cell>{p.pingtime != null ? Number(p.pingtime).toFixed(0) : '—'}</Table.Cell>
+                      <Table.Cell>
+                        {p.bytesrecv != null || p.bytessent != null
+                          ? `${p.bytesrecv != null ? this.formatBytes(p.bytesrecv) : '—'} / ${p.bytessent != null ? this.formatBytes(p.bytessent) : '—'}`
+                          : '—'}
+                      </Table.Cell>
+                      <Table.Cell style={{ maxWidth: '14em', wordBreak: 'break-word', fontSize: '0.85em' }}>
+                        {p.subver || '—'}
+                      </Table.Cell>
+                      <Table.Cell>
+                        {p.synced_headers != null
+                          ? p.synced_headers
+                          : (p.synced_blocks != null ? p.synced_blocks : (p.startingheight != null ? p.startingheight : '—'))}
+                      </Table.Cell>
+                    </Table.Row>
+                  ))}
+                </Table.Body>
+              </Table>
+            </div>
+          )}
+
+          <Header as='h4'>Search &amp; tools</Header>
+          <Form style={{ marginBottom: '0.75em' }}>
+            <Form.Group widths='equal'>
+              <Form.Field>
+                <label>Open transaction by txid</label>
+                <Input
+                  placeholder='64-char hex txid'
+                  value={this.state.txLookupId}
+                  onChange={(e) => this.setState({ txLookupId: e.target.value, txLookupError: null })}
+                />
+              </Form.Field>
+              <Form.Field style={{ alignSelf: 'flex-end' }}>
+                <Button type='button' primary disabled={!bitcoinReady} onClick={() => this.handleTxLookup()}>
+                  <Icon name='search' />
+                  Open
+                </Button>
+              </Form.Field>
+            </Form.Group>
+            {this.state.txLookupError && (
+              <Message negative size='small'>{this.state.txLookupError}</Message>
+            )}
+          </Form>
+
+          <p style={{ color: '#666', marginBottom: '0.35em' }}>
+            <strong>Broadcast raw transaction</strong> — <code>sendrawtransaction</code>. Requires admin token (same as Generate Block).
+          </p>
+          <Form>
+            <Form.TextArea
+              rows={4}
+              placeholder='Paste hex (no spaces required)'
+              value={this.state.rawTxHex}
+              onChange={(e) => this.setState({ rawTxHex: e.target.value, rawTxResult: null })}
+              disabled={!hasAdminToken}
+            />
+            <Button
+              type='button'
+              color='orange'
+              style={{ marginTop: '0.5em' }}
+              disabled={!bitcoinReady || !hasAdminToken || !(this.state.rawTxHex || '').trim()}
+              onClick={() => this.handleBroadcastRawTx()}
+            >
+              <Icon name='send' />
+              Broadcast
+            </Button>
+          </Form>
+          {this.state.rawTxResult && (
+            <Message
+              style={{ marginTop: '0.75em' }}
+              negative={!!this.state.rawTxResult.error}
+              positive={!this.state.rawTxResult.error}
+            >
+              <Message.Header>{this.state.rawTxResult.error ? 'Broadcast failed' : 'Broadcast accepted'}</Message.Header>
+              {this.state.rawTxResult.error ? (
+                <p>{this.state.rawTxResult.error}</p>
+              ) : (
+                <p>
+                  txid{' '}
+                  {this.state.rawTxResult.txid
+                    ? (
+                      <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(this.state.rawTxResult.txid))}`}>
+                        <code>{this.state.rawTxResult.txid}</code>
+                      </Link>
+                      )
+                    : '—'}
+                </p>
+              )}
+            </Message>
+          )}
         </Segment>
 
         <Segment loading={this.state.loading}>
@@ -692,7 +1023,7 @@ class BitcoinHome extends React.Component {
                 <p>{this.state.lookupResult.error}</p>
               ) : (
                 <div>
-                  <div><strong>Balance:</strong> {this.satsToBTC(this.state.lookupResult.balanceSats || 0)} BTC ({Number(this.state.lookupResult.balanceSats || 0).toLocaleString()} sats)</div>
+                  <div><strong>Balance:</strong> {this.satsToBTC(this.state.lookupResult.balanceSats || 0)} BTC ({formatSatsDisplay(this.state.lookupResult.balanceSats || 0)} sats)</div>
                   {this.state.lookupResult.network && <div><strong>Network:</strong> {this.state.lookupResult.network}</div>}
                 </div>
               )}
@@ -771,7 +1102,7 @@ class BitcoinHome extends React.Component {
             {Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null ? this.state.bitcoinStatus.balance : 0).toFixed(8)} BTC
             {this.state.bitcoinStatus && this.state.bitcoinStatus.beacon && (
               <span style={{ marginLeft: '1em', color: '#666' }}>
-                (Beacon: {Number(this.state.bitcoinStatus.beacon.balanceSats || 0).toLocaleString()} sats)
+                (Beacon: {formatSatsDisplay(this.state.bitcoinStatus.beacon.balanceSats || 0)} sats)
               </span>
             )}
           </div>
@@ -822,7 +1153,30 @@ class BitcoinHome extends React.Component {
           {this.state.faucetResult && (
             <Message style={{ marginTop: '1em' }} positive={!this.state.faucetResult.error} negative={!!this.state.faucetResult.error}>
               <Message.Header>{this.state.faucetResult.error ? 'Faucet failed' : 'Faucet'}</Message.Header>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.faucetResult, null, 2)}</pre>
+              {!this.state.faucetResult.error && (() => {
+                const fr = this.state.faucetResult;
+                const faucet = fr && fr.faucet;
+                const txid = faucet && faucet.txid;
+                const amountSats = faucet && faucet.amountSats;
+                const dest = faucet && faucet.destination;
+                if (txid || amountSats) {
+                  return (
+                    <p style={{ marginTop: '0.5em', marginBottom: '0.5em' }}>
+                      {amountSats ? `Sent ${Number(amountSats).toLocaleString()} sats` : 'Sent'}
+                      {dest ? ` to ${dest.slice(0, 12)}…${dest.slice(-8)}` : ''}.
+                      {txid ? (
+                        <span style={{ display: 'block', marginTop: '0.35em' }}>
+                          <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid))}`}>
+                            View transaction
+                          </Link>
+                        </span>
+                      ) : null}
+                    </p>
+                  );
+                }
+                return null;
+              })()}
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '0.5em' }}>{JSON.stringify(this.state.faucetResult, null, 2)}</pre>
             </Message>
           )}
         </Segment>
@@ -875,6 +1229,17 @@ class BitcoinHome extends React.Component {
               positive={!this.state.paymentResult.error}
             >
               <Message.Header>{this.state.paymentResult.error ? 'Payment failed' : 'Payment response'}</Message.Header>
+              {!this.state.paymentResult.error && (() => {
+                const pr = this.state.paymentResult;
+                const tid = (pr && pr.payment && pr.payment.txid) || (pr && pr.txid);
+                return tid ? (
+                  <p style={{ marginTop: '0.75em', marginBottom: '0.5em', color: '#555' }}>
+                    On-chain sends often appear in the <strong>mempool</strong> first (0 confirmations).{' '}
+                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(tid))}`}>Open this transaction</Link>
+                    {' '}to watch depth; mine a block on regtest to confirm.
+                  </p>
+                ) : null;
+              })()}
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.paymentResult, null, 2)}</pre>
             </Message>
           )}
@@ -1032,20 +1397,20 @@ class BitcoinHome extends React.Component {
                 return (
                 <div style={{ marginBottom: '0.5em' }}>
                   <strong>On-chain balance:</strong>{' '}
-                  {bal.confirmed.toLocaleString()} sats confirmed
+                  {formatSatsDisplay(bal.confirmed)} sats confirmed
                   {bal.unconfirmed > 0 && (
                     <span style={{ marginLeft: '0.5em' }}>
-                      + {bal.unconfirmed.toLocaleString()} unconfirmed
+                      + {formatSatsDisplay(bal.unconfirmed)} unconfirmed
                     </span>
                   )}
                   {bal.immature > 0 && (
                     <span style={{ marginLeft: '0.5em' }}>
-                      + {bal.immature.toLocaleString()} immature
+                      + {formatSatsDisplay(bal.immature)} immature
                     </span>
                   )}
                   {total > 0 && (bal.unconfirmed > 0 || bal.immature > 0) && (
                     <span style={{ marginLeft: '0.5em', fontWeight: 600 }}>
-                      = {total.toLocaleString()} sats total
+                      = {formatSatsDisplay(total)} sats total
                     </span>
                   )}
                   {total < 10000 && (
@@ -1097,10 +1462,10 @@ class BitcoinHome extends React.Component {
                           </Table.Cell>
                           <Table.Cell>{ch.state || '—'}</Table.Cell>
                           <Table.Cell>
-                            {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
+                            {ch.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.amount_msat) / 1000))} sats` : (ch.channel_sat != null ? `${formatSatsDisplay(ch.channel_sat)} sats` : '—')}
                           </Table.Cell>
                           <Table.Cell>
-                            {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
+                            {ch.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.our_amount_msat) / 1000))} sats` : '—'}
                           </Table.Cell>
                           <Table.Cell>
                             <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
@@ -1275,22 +1640,43 @@ class BitcoinHome extends React.Component {
             <p style={{ color: '#666' }}>No block data yet.</p>
           ) : (
             <List divided relaxed>
-              {this.state.blocks.map((block, idx) => (
-                <List.Item key={block.hash || block.id || idx}>
-                  <List.Content>
-                    <List.Header>
-                      {block.hash || block.id ? (
-                        <Link to={`/services/bitcoin/blocks/${encodeURIComponent(block.hash || block.id)}`}>
-                          #{block.height != null ? block.height : 'n/a'} - {this.trimHash(block.hash || block.id || '')}
-                        </Link>
-                      ) : (
-                        <span>#{block.height != null ? block.height : 'n/a'} - hash unavailable</span>
-                      )}
-                    </List.Header>
-                    <List.Description>{block.time ? new Date(Number(block.time) * 1000).toLocaleString() : 'time unavailable'}</List.Description>
-                  </List.Content>
-                </List.Item>
-              ))}
+              {this.state.blocks.map((block, idx) => {
+                const txCount = block.txCount != null
+                  ? Number(block.txCount)
+                  : (block.tx_count != null ? Number(block.tx_count) : null);
+                const rewardSats = block.rewardSats != null ? Number(block.rewardSats) : null;
+                const totalOutSats = block.totalOutSats != null ? Number(block.totalOutSats) : null;
+                const txPart = Number.isFinite(txCount)
+                  ? `${txCount} tx${txCount === 1 ? '' : 's'}`
+                  : null;
+                const rewardPart = Number.isFinite(rewardSats) && rewardSats >= 0
+                  ? `reward ${this.satsToBTC(rewardSats)} BTC`
+                  : null;
+                const volumePart = Number.isFinite(totalOutSats) && totalOutSats >= 0
+                  ? `volume ${this.satsToBTC(totalOutSats)} BTC`
+                  : null;
+                const metaBits = [txPart, rewardPart, volumePart].filter(Boolean);
+                const meta = metaBits.length ? ` · ${metaBits.join(' · ')}` : '';
+                return (
+                  <List.Item key={block.hash || block.id || idx}>
+                    <List.Content>
+                      <List.Header>
+                        {block.hash || block.id ? (
+                          <Link to={`/services/bitcoin/blocks/${encodeURIComponent(block.hash || block.id)}`}>
+                            #{block.height != null ? block.height : 'n/a'} - {this.trimHash(block.hash || block.id || '')}
+                          </Link>
+                        ) : (
+                          <span>#{block.height != null ? block.height : 'n/a'} - hash unavailable</span>
+                        )}
+                      </List.Header>
+                      <List.Description>
+                        {block.time ? new Date(Number(block.time) * 1000).toLocaleString() : 'time unavailable'}
+                        {meta}
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                );
+              })}
             </List>
           )}
 
@@ -1299,16 +1685,31 @@ class BitcoinHome extends React.Component {
             <p style={{ color: '#666' }}>No transaction data yet.</p>
           ) : (
             <List divided relaxed>
-              {this.state.transactions.map((tx, idx) => (
-                <List.Item key={tx.txid || tx.id || idx}>
-                  <List.Content>
-                    <List.Header>{this.trimHash(tx.txid || tx.id || '')}</List.Header>
-                    <List.Description>
-                      {tx.value != null ? `${tx.value} BTC` : (tx.amountSats != null ? `${tx.amountSats} sats` : 'amount unavailable')}
-                    </List.Description>
-                  </List.Content>
-                </List.Item>
-              ))}
+              {this.state.transactions.map((tx, idx) => {
+                const tid = tx.txid || tx.id || '';
+                const unconfirmed = tx.confirmations != null ? Number(tx.confirmations) === 0 : true;
+                return (
+                  <List.Item key={tid || idx}>
+                    <List.Content>
+                      <List.Header>
+                        {tid ? (
+                          <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(tid))}`}>
+                            {this.trimHash(tid)}
+                          </Link>
+                        ) : (
+                          this.trimHash(tid)
+                        )}
+                        {unconfirmed && (
+                          <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#f2711c' }}>(mempool)</span>
+                        )}
+                      </List.Header>
+                      <List.Description>
+                        {tx.value != null ? `${tx.value} BTC` : (tx.amountSats != null ? `${formatSatsDisplay(tx.amountSats)} sats` : 'amount unavailable')}
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                );
+              })}
             </List>
           )}
         </Segment>
@@ -1339,7 +1740,7 @@ class BitcoinHome extends React.Component {
                       <Table.Row key={`${utxo.txid || idx}:${utxo.vout || 0}`}>
                         <Table.Cell><code>{this.trimHash(utxo.txid || utxo.id || '')}</code></Table.Cell>
                         <Table.Cell>{utxo.vout != null ? utxo.vout : '-'}</Table.Cell>
-                        <Table.Cell>{utxo.amount != null ? utxo.amount : (utxo.amountSats != null ? `${utxo.amountSats} sats` : '-')}</Table.Cell>
+                        <Table.Cell>{utxo.amount != null ? utxo.amount : (utxo.amountSats != null ? `${formatSatsDisplay(utxo.amountSats)} sats` : '-')}</Table.Cell>
                         <Table.Cell>{utxo.confirmations != null ? utxo.confirmations : '-'}</Table.Cell>
                       </Table.Row>
                     ))}
@@ -1381,7 +1782,7 @@ class BitcoinHome extends React.Component {
               <Form.Field>
                 <label>Payjoin API base URL</label>
                 <Input
-                  placeholder='https://hub.fabric.pub/services/bitcoin/payjoin'
+                  placeholder='https://hub.fabric.pub/services/payjoin'
                   value={this.state.upstreamDraft.payjoinBaseUrl || ''}
                   onChange={(e) => this.setState({ upstreamDraft: { ...this.state.upstreamDraft, payjoinBaseUrl: e.target.value } })}
                 />

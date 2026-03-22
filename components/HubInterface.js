@@ -15,6 +15,7 @@ const {
   BrowserRouter,
   Routes,
   Route,
+  Navigate,
   useNavigate
 } = require('react-router-dom');
 
@@ -28,6 +29,7 @@ const BitcoinHome = require('./BitcoinHome');
 const Onboarding = require('./Onboarding');
 const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
+const BitcoinResourcesHome = require('./BitcoinResourcesHome');
 const BitcoinTransactionView = require('./BitcoinTransactionView');
 const ChannelView = require('./ChannelView');
 const InvoiceListHome = require('./InvoiceListHome');
@@ -46,6 +48,25 @@ const {
   fetchWalletSummaryWithCache,
   loadUpstreamSettings
 } = require('../functions/bitcoinClient');
+const { ToastContainer, toast: toastify, Slide } = require('react-toastify');
+const { toast } = require('../functions/toast');
+const SecurityHome = require('./SecurityHome');
+const SecuritySessionHome = require('./SecuritySessionHome');
+const SettingsHome = require('./SettingsHome');
+const SidechainHome = require('./SidechainHome');
+const DelegationSigningModal = require('./DelegationSigningModal');
+
+function hasExternalSigningDelegation () {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    const raw = window.localStorage.getItem('fabric.delegation');
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    return !!(d && d.token && d.externalSigning);
+  } catch (e) {
+    return false;
+  }
+}
 
 // Semantic UI
 const {
@@ -208,6 +229,7 @@ class HubInterface extends React.Component {
       uiSignMessageOpen: false,
       uiSignMessageText: '',
       uiSignMessageResult: null,
+      uiSignMessageBusy: false,
       uiVerifyMessageText: '',
       uiVerifySignature: '',
       uiVerifyPublicKey: '',
@@ -347,10 +369,19 @@ class HubInterface extends React.Component {
       window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
       this._adminTokenRefreshInterval = setInterval(() => this._refreshAdminTokenIfNeeded(), 24 * 60 * 60 * 1000);
     }
+    this._toastUnsub = toast.addListener((t) => {
+      const msg = t.header ? `${t.header}: ${t.message}` : t.message;
+      const opts = { autoClose: t.duration || 4000, transition: Slide };
+      if (t.type === 'success') toastify.success(msg, opts);
+      else if (t.type === 'error') toastify.error(msg, opts);
+      else if (t.type === 'warning') toastify.warning(msg, opts);
+      else toastify.info(msg, opts);
+    });
   }
 
   componentWillUnmount () {
     console.debug('[HUB]', 'Cleaning up...');
+    if (typeof this._toastUnsub === 'function') this._toastUnsub();
     if (typeof window !== 'undefined') {
       if (this._onGlobalStateUpdate) window.removeEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       if (this._onClientBalanceUpdate) window.removeEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
@@ -517,6 +548,7 @@ class HubInterface extends React.Component {
               onStateUpdate={this.handleBridgeStateUpdate}
               responseCapture={this.responseCapture}
             />
+            <DelegationSigningModal bridgeRef={this.bridgeRef} />
             {(this.props.auth && this.props.auth.loading) ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <Loader active inline="centered" size='huge' />
@@ -549,6 +581,7 @@ class HubInterface extends React.Component {
               />
             ) : (
               <BrowserRouter style={{ marginTop: 0 }}>
+                <ToastContainer position="bottom-center" newestOnTop closeOnClick pauseOnFocusLoss draggable pauseOnHover />
                 <TopPanel
                   hubAddress={this.state.uiHubAddress}
                   auth={effectiveAuth}
@@ -772,6 +805,9 @@ class HubInterface extends React.Component {
                       <Header as="h4" dividing style={{ marginTop: '1.5em' }}>
                         Verify signature
                       </Header>
+                      <p style={{ color: '#666', fontSize: '0.95em', marginBottom: '1em' }}>
+                        When you use <strong>external signing</strong> (desktop delegation), the Hub records a Fabric message and the same message, public key, and signature appear here for verification—same flow as local signing.
+                      </p>
                       <Form.Field>
                         <label>Message</label>
                         <Input
@@ -824,10 +860,37 @@ class HubInterface extends React.Component {
                     </Button>
                     <Button
                       primary
+                      loading={!!this.state.uiSignMessageBusy}
                       onClick={() => {
                         const text = (this.state.uiSignMessageText || '').trim();
                         if (!text) return;
                         const bridge = this.bridgeRef && this.bridgeRef.current;
+                        const useDelegation = hasExternalSigningDelegation() &&
+                          bridge && typeof bridge.signArbitraryTextDelegated === 'function';
+                        if (useDelegation) {
+                          this.setState({ uiSignMessageBusy: true, uiSignMessageResult: null });
+                          toast.info('Confirm signing in the Fabric Hub desktop app…', { duration: 12000, header: 'External signing' });
+                          void (async () => {
+                            let result = null;
+                            try {
+                              result = await bridge.signArbitraryTextDelegated(text);
+                            } catch (e) {
+                              console.error('[HUB]', 'Delegated sign failed:', e);
+                            }
+                            this.setState({
+                              uiSignMessageBusy: false,
+                              uiSignMessageResult: result,
+                              uiVerifyMessageText: result ? text : this.state.uiVerifyMessageText,
+                              uiVerifyPublicKey: result ? result.publicKey : this.state.uiVerifyPublicKey,
+                              uiVerifySignature: result ? result.signature : this.state.uiVerifySignature,
+                              uiVerifyResult: null
+                            });
+                            if (!result) {
+                              toast.warning('Signing was cancelled or timed out.', { header: 'External signing' });
+                            }
+                          })();
+                          return;
+                        }
                         const result = bridge && typeof bridge.signArbitraryText === 'function' ? bridge.signArbitraryText(text) : null;
                         this.setState({
                           uiSignMessageResult: result,
@@ -887,6 +950,7 @@ class HubInterface extends React.Component {
                         try {
                           if (typeof window !== 'undefined') {
                             if (window.localStorage) window.localStorage.removeItem('fabric.identity.local');
+                            if (window.localStorage) window.localStorage.removeItem('fabric.delegation');
                             if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
                             if (window.localStorage) window.localStorage.removeItem('fabric:documents');
                           }
@@ -969,6 +1033,7 @@ class HubInterface extends React.Component {
                         }}
                         webrtcChatOnly={this.state.webrtcChatOnly}
                         {...this.props}
+                        adminToken={this.state.adminToken}
                       />
                     )}
                   />
@@ -989,6 +1054,18 @@ class HubInterface extends React.Component {
                     path="/services/bitcoin/blocks/:blockhash"
                     element={(
                       <BitcoinBlockView
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/resources"
+                    element={(
+                      <BitcoinResourcesHome
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
                         bridge={this.props.bridge}
@@ -1041,6 +1118,23 @@ class HubInterface extends React.Component {
                       <ChannelView
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
+                        {...this.props}
+                      />
+                    )}
+                  />
+                  <Route
+                    path="/services/sidechain"
+                    element={<Navigate to="/sidechains" replace />}
+                  />
+                  <Route
+                    path="/sidechains"
+                    element={(
+                      <SidechainHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        adminToken={this.state.adminToken}
                         {...this.props}
                       />
                     )}
@@ -1194,6 +1288,7 @@ class HubInterface extends React.Component {
                           }
                         }}
                         {...this.props}
+                        adminToken={this.state.adminToken}
                       />
                     )}
                   />
@@ -1265,6 +1360,16 @@ class HubInterface extends React.Component {
                             ? bridgeInstance.getDecryptedDocumentContent(id)
                             : null;
                         }}
+                        onUnlockHtlcDocument={async (docId, preimageHex) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) {
+                            return { ok: false, error: 'Bridge not ready.' };
+                          }
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.unlockHtlcEncryptedDocument !== 'function') {
+                            return { ok: false, error: 'HTLC unlock not available.' };
+                          }
+                          return bridgeInstance.unlockHtlcEncryptedDocument(docId, preimageHex);
+                        }}
                         onPublishDocument={(id, opts) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
@@ -1302,19 +1407,40 @@ class HubInterface extends React.Component {
                           return null;
                         }}
                         {...this.props}
+                        adminToken={this.state.adminToken}
                       />
                     )}
                   />
                   <Route
+                    path="/settings"
+                    element={<SettingsHome />}
+                  />
+                  <Route
+                    path="/settings/security"
+                    element={<SecurityHome />}
+                  />
+                  <Route
+                    path="/sessions/:sessionId"
+                    element={<SecuritySessionHome />}
+                  />
+                  <Route
+                    path="/sessions"
+                    element={<Navigate to="/settings/security" replace />}
+                  />
+                  <Route
+                    path="/security"
+                    element={<Navigate to="/settings/security" replace />}
+                  />
+                  <Route
                     path="/contracts"
                     element={(
-                      <ContractList {...this.props} />
+                      <ContractList {...this.props} bridgeRef={this.bridgeRef} />
                     )}
                   />
                   <Route
                     path="/contracts/:id"
                     element={(
-                      <ContractView {...this.props} />
+                      <ContractView {...this.props} adminToken={this.state.adminToken} />
                     )}
                   />
                 </Routes>

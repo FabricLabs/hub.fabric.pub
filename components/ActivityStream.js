@@ -6,6 +6,7 @@ const React = require('react');
 const { Link } = require('react-router-dom');
 const { Button, Icon, Label } = require('semantic-ui-react');
 const ChatInput = require('./ChatInput');
+const { isDelegationSignatureRequestActivity } = require('../functions/messageTypes');
 
 const MESSAGE_PAGE_SIZE = 10;
 
@@ -61,6 +62,7 @@ class ActivityStreamElement extends React.Component {
     if (this.props.fetchResource) this.props.fetchResource('/activities');
     window.addEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
     window.addEventListener('fabric:chatWarning', this._handleChatWarning);
+    window.addEventListener('fabric:l1PaymentActivity', this._handleL1PaymentActivity);
     // Initial load from persisted/restored state (survives refresh)
     const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
     const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
@@ -89,6 +91,7 @@ class ActivityStreamElement extends React.Component {
   componentWillUnmount () {
     window.removeEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
     window.removeEventListener('fabric:chatWarning', this._handleChatWarning);
+    window.removeEventListener('fabric:l1PaymentActivity', this._handleL1PaymentActivity);
     if (this._chatWarningTimer) clearTimeout(this._chatWarningTimer);
     if (this._intersectionObserver && this._loadMoreSentinelRef.current) {
       this._intersectionObserver.unobserve(this._loadMoreSentinelRef.current);
@@ -131,14 +134,70 @@ class ActivityStreamElement extends React.Component {
     }
   }
 
+  _tombstoneDocumentId (entry) {
+    if (!entry || !entry.object) return null;
+    if (entry.type === 'Add' && entry.object.type === 'Document' && entry.object.id) {
+      return String(entry.object.id).trim();
+    }
+    return null;
+  }
+
+  _handlePurgeEntry = (messageKey, documentId) => {
+    const mk = typeof messageKey === 'string' ? messageKey.trim() : '';
+    const docId = typeof documentId === 'string' ? documentId.trim() : '';
+    if (!mk && !docId) return;
+    const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
+    const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
+    if (!bridgeInstance || typeof bridgeInstance.emitTombstone !== 'function') return;
+    const token = (this.props && this.props.adminToken) ||
+      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    bridgeInstance.emitTombstone({
+      messageId: mk || undefined,
+      documentId: docId || undefined,
+      adminToken: token
+    });
+  };
+
+  _renderPurgeButton (entry) {
+    const adminToken = (this.props && this.props.adminToken) ||
+      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    if (!adminToken || !entry || !entry.messageKey) return null;
+    const docId = this._tombstoneDocumentId(entry);
+    const title = docId
+      ? 'Remove this activity row and unpublish the document from the hub catalog (requires admin)'
+      : 'Purge this entry from the hub activity log (requires admin)';
+    return (
+      <Button
+        type="button"
+        basic
+        icon
+        size="mini"
+        compact
+        title={title}
+        style={{ marginLeft: '0.5em', verticalAlign: 'middle' }}
+        onClick={(e) => {
+          e.stopPropagation();
+          this._handlePurgeEntry(entry.messageKey, docId || undefined);
+        }}
+      >
+        <Icon name="trash" />
+      </Button>
+    );
+  }
+
   _handleGlobalStateUpdate = (event) => {
     try {
       const globalState = event && event.detail && event.detail.globalState;
       if (!globalState) return;
       const messages = globalState.messages || {};
-      const allMessages = Object.values(messages).filter((m) => m && typeof m === 'object');
-
-      const entries = allMessages
+      const preset = this.props.streamPreset || 'default';
+      const fabricEntries = Object.entries(messages)
+        .filter(([, m]) => m && typeof m === 'object')
+        .map(([messageKey, m]) => Object.assign({}, m, { messageKey }))
+        .filter((m) => {
+          if (preset === 'notifications') return isDelegationSignatureRequestActivity(m);
+          return !isDelegationSignatureRequestActivity(m);
+        })
         .sort((a, b) => {
           const ta = (a.object && a.object.created) || 0;
           const tb = (b.object && b.object.created) || 0;
@@ -148,6 +207,16 @@ class ActivityStreamElement extends React.Component {
       this._shouldScrollToBottom = this._isScrolledToBottom();
       this.setState((s) => {
         const isFirstLoad = s.entries.length === 0;
+        const prevNotices = preset === 'notifications'
+          ? []
+          : (Array.isArray(s.entries) ? s.entries : []).filter(
+            (e) => e && e.type === 'CLIENT_NOTICE'
+          );
+        const tNotice = (e) => {
+          const c = e && e.object && e.object.created;
+          return typeof c === 'number' ? c : new Date(c || 0).getTime() || 0;
+        };
+        const entries = fabricEntries.concat(prevNotices).sort((a, b) => tNotice(a) - tNotice(b));
         return {
           entries,
           displayLimit: isFirstLoad ? MESSAGE_PAGE_SIZE : s.displayLimit
@@ -236,9 +305,14 @@ class ActivityStreamElement extends React.Component {
       typeof bridgeInstance.hasUnlockedIdentity === 'function'
     ) ? bridgeInstance.hasUnlockedIdentity() : true;
     const chatDisabledReason = canSubmitChat ? null : 'Unlock identity to send chat messages.';
+    const streamPreset = this.props.streamPreset || 'default';
+    const headerTitle = typeof this.props.headerTitle === 'string' && this.props.headerTitle.trim()
+      ? this.props.headerTitle.trim()
+      : (streamPreset === 'notifications' ? 'Notifications' : 'Activity Stream');
+    const showChatChrome = streamPreset !== 'notifications';
     return (
       <fabric-activity-stream className='activity-stream'>
-        {this.props.includeHeader && <h3>Activity Stream</h3>}
+        {this.props.includeHeader && <h3>{headerTitle}</h3>}
         <div
           ref={this._scrollContainerRef}
           style={{
@@ -266,6 +340,72 @@ class ActivityStreamElement extends React.Component {
           {entries.length > 0 && (
             <div>
               {entries.map((entry, index) => {
+                if (entry.type === 'CLIENT_NOTICE') {
+                  const isLast = index === entries.length - 1;
+                  const txid = entry.object && entry.object.txid;
+                  return (
+                    <div
+                      key={`notice-${entry.object && entry.object.created}-${index}`}
+                      ref={isLast ? this._lastEntryRef : null}
+                      style={{ marginBottom: '0.35em', fontSize: '0.92em', color: '#555' }}
+                    >
+                      <Icon name="bitcoin" color="orange" />
+                      {' '}
+                      {entry.object && entry.object.content}
+                      {txid && (
+                        <>
+                          {' '}
+                          <Link
+                            to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid).trim())}`}
+                            style={{ color: '#2185d0' }}
+                          >
+                            Transaction
+                          </Link>
+                        </>
+                      )}
+                      {this._renderPurgeButton(entry)}
+                    </div>
+                  );
+                }
+                if (isDelegationSignatureRequestActivity(entry)) {
+                  const o = entry.object || {};
+                  const content = typeof o.content === 'string' ? o.content : '';
+                  const purpose = typeof o.purpose === 'string' ? o.purpose : '';
+                  const ost = o.status || entry.status;
+                  const isPending = ost === 'pending';
+                  const created = o.created || null;
+                  const actorId = (entry.actor && (entry.actor.username || entry.actor.id)) || 'local';
+                  const isLast = index === entries.length - 1;
+                  return (
+                    <div
+                      key={`delegation-${o.messageId || created || index}`}
+                      ref={isLast ? this._lastEntryRef : null}
+                      style={{
+                        marginBottom: '0.5em',
+                        fontSize: '0.95em',
+                        opacity: isPending ? 0.85 : 1
+                      }}
+                    >
+                      <Label size="small" color="teal" style={{ marginRight: '0.35em' }}>
+                        <Icon name="key" />
+                        Signing
+                      </Label>
+                      <Label size="small" basic title="Same activity stream as public chat; delegation channel">
+                        #delegation
+                      </Label>
+                      {' '}
+                      <strong>@{actorId}</strong>
+                      {purpose ? <> · {purpose}</> : null}
+                      {isPending ? ' — waiting for Fabric Hub desktop…' : null}
+                      {!isPending && ost === 'approved' ? ' — approved' : null}
+                      {!isPending && ost === 'rejected' ? ' — rejected' : null}
+                      {!isPending && ost === 'timeout' ? ' — timed out' : null}
+                      <div style={{ marginTop: '0.25em', color: '#444', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {content || '(no preview)'}
+                      </div>
+                    </div>
+                  );
+                }
                 const isChat = entry.type === 'P2P_CHAT_MESSAGE';
                 const created = (entry.object && entry.object.created) || entry.created || null;
                 const rawActorId = (entry.actor && (entry.actor.username || entry.actor.id)) || (isChat ? 'unknown' : 'system');
@@ -331,6 +471,54 @@ class ActivityStreamElement extends React.Component {
                           )}
                         </span>
                       )}
+                      {this._renderPurgeButton(entry)}
+                    </div>
+                  );
+                }
+
+                if (entry.object && entry.object.type === 'BitcoinBlock') {
+                  const o = entry.object;
+                  const hash = String(o.hash || o.id || '').trim();
+                  const height = o.height;
+                  const txCount = o.txCount;
+                  const net = o.network ? String(o.network) : '';
+                  const isLast = index === entries.length - 1;
+                  const bbCreated = o.created || null;
+                  const heightLabel = height != null && Number.isFinite(Number(height)) ? `#${height}` : 'block';
+                  const txLabel = txCount != null && Number.isFinite(Number(txCount))
+                    ? `${Number(txCount)} tx${Number(txCount) === 1 ? '' : 's'}`
+                    : null;
+                  return (
+                    <div
+                      key={`${hash || 'block'}-${bbCreated || index}`}
+                      ref={isLast ? this._lastEntryRef : null}
+                      style={{ marginBottom: '0.4em', fontSize: '0.95em' }}
+                    >
+                      <Icon name='cube' color='yellow' title='New chain tip' />
+                      {' '}
+                      <strong>New block</strong>
+                      {' '}
+                      {hash
+                        ? (
+                          <Link
+                            to={`/services/bitcoin/blocks/${encodeURIComponent(hash)}`}
+                            style={{ color: '#2185d0' }}
+                          >
+                            {heightLabel}
+                          </Link>
+                          )
+                        : <span>{heightLabel}</span>}
+                      {hash && (
+                        <>
+                          {' '}
+                          <code style={{ fontSize: '0.88em', color: '#555' }} title={hash}>
+                            {hash.length > 18 ? `${hash.slice(0, 10)}…${hash.slice(-8)}` : hash}
+                          </code>
+                        </>
+                      )}
+                      {txLabel ? <> · {txLabel}</> : null}
+                      {net ? <span style={{ color: '#888' }}> · {net}</span> : null}
+                      {this._renderPurgeButton(entry)}
                     </div>
                   );
                 }
@@ -395,6 +583,7 @@ class ActivityStreamElement extends React.Component {
                         : <span>{targetLabel}</span>}
                       </>
                     )}
+                    {this._renderPurgeButton(entry)}
                   </div>
                 );
               })}
@@ -402,7 +591,7 @@ class ActivityStreamElement extends React.Component {
           )}
         </div>
         <div style={{ marginTop: '0.5em' }}>
-          {(meshStatus || chatDebug) && (
+          {showChatChrome && (meshStatus || chatDebug) && (
             <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
               WebRTC Debug: mesh connected {meshStatus && Number.isFinite(meshStatus.connected) ? meshStatus.connected : 0}
               {' '}| self {toShortId(chatDebug && chatDebug.peerId)}
@@ -430,7 +619,7 @@ class ActivityStreamElement extends React.Component {
               )}
             </div>
           )}
-          {((typeof this.props.onSubmitChat === 'function') || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
+          {showChatChrome && ((typeof this.props.onSubmitChat === 'function') || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
             <ChatInput
               value={this.state.chatInput}
               onChange={(value) => this.setState({ chatInput: value })}

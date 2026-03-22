@@ -6,8 +6,33 @@ const path = require('path');
 // Settings
 let settings = require('../settings/local');
 
+// Default RPC port per Bitcoin network (bitcoind standard ports)
+const defaultBitcoinRpcPort = (network) => {
+  const n = String(network || 'mainnet').toLowerCase();
+  if (n === 'regtest') return 18443;
+  if (n === 'testnet') return 18332;
+  if (n === 'signet') return 38332;
+  return 8332;
+};
+
+/** Writable root for stores (Electron desktop sets FABRIC_HUB_USER_DATA to app.getPath('userData')). */
+const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
+
+function bitcoinDataDirForNetwork (root, network) {
+  const n = String(network || 'regtest').toLowerCase();
+  const rel = {
+    mainnet: path.join('stores', 'bitcoin'),
+    testnet: path.join('stores', 'bitcoin-testnet'),
+    testnet4: path.join('stores', 'bitcoin-testnet4'),
+    signet: path.join('stores', 'bitcoin-signet'),
+    regtest: path.join('stores', 'bitcoin-regtest'),
+    playnet: path.join('stores', 'bitcoin-playnet')
+  }[n] || path.join('stores', 'bitcoin-regtest');
+  return path.join(root, rel);
+}
+
 // Merge setup settings from stores/hub/settings.json (written during first-time setup)
-const setupPath = path.resolve(process.cwd(), 'stores/hub/settings.json');
+const setupPath = path.join(userDataRoot, 'stores', 'hub', 'settings.json');
 try {
   if (fs.existsSync(setupPath)) {
     const raw = fs.readFileSync(setupPath, 'utf8');
@@ -30,12 +55,14 @@ try {
       const managed = parseVal(setup.BITCOIN_MANAGED);
       settings = { ...settings, bitcoin: { ...settings.bitcoin, managed: managed !== false } };
       if (managed === false) {
+        const network = setup.BITCOIN_NETWORK || settings.bitcoin?.network || 'mainnet';
+        const rpcPort = parseVal(setup.BITCOIN_RPC_PORT);
         settings = {
           ...settings,
           bitcoin: {
             ...settings.bitcoin,
             host: parseVal(setup.BITCOIN_HOST) || '127.0.0.1',
-            rpcport: Number(parseVal(setup.BITCOIN_RPC_PORT) || 8332),
+            rpcport: Number(rpcPort) || defaultBitcoinRpcPort(network),
             username: parseVal(setup.BITCOIN_USERNAME) || '',
             password: parseVal(setup.BITCOIN_PASSWORD) || ''
           }
@@ -56,8 +83,30 @@ try {
   // Ignore; use defaults from local.js
 }
 
+// Electron / packaged desktop: writable stores + absolute bitcoind datadir under userData
+if (process.env.FABRIC_HUB_USER_DATA) {
+  const u = process.env.FABRIC_HUB_USER_DATA;
+  const net = (settings.bitcoin && settings.bitcoin.network) || 'regtest';
+  const hubStore = path.join(u, 'stores', 'hub');
+  settings = {
+    ...settings,
+    path: hubStore,
+    fs: { ...settings.fs, path: hubStore },
+    peersDb: process.env.FABRIC_HUB_PEERS_DB || path.join(hubStore, 'peers'),
+    bitcoin: {
+      ...settings.bitcoin,
+      datadir: bitcoinDataDirForNetwork(u, net)
+    },
+    lightning: {
+      ...(settings.lightning || {}),
+      datadir: path.join(u, 'stores', 'lightning', 'hub')
+    }
+  };
+}
+
 // Services
 const Hub = require('../services/hub');
+const { logCrashReportHint } = require('../functions/fabricReportHint');
 
 // Process Management
 let activeHub = null;
@@ -130,6 +179,7 @@ async function main (input = {}) {
     await hub.start();
   } catch (err) {
     console.error('[FABRIC:HUB]', 'Failed to start hub:', err);
+    logCrashReportHint('[FABRIC:HUB]');
     await exitWithHubStop('startup failure', 1);
   }
 
@@ -141,11 +191,13 @@ async function main (input = {}) {
 // Start & handle errors
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FABRIC:HUB] Unhandled Rejection:', reason && reason.stack ? reason.stack : reason);
+  logCrashReportHint('[FABRIC:HUB]');
   void exitWithHubStop('unhandledRejection', 1);
 });
 
 process.on('uncaughtException', (err) => {
   console.error('[FABRIC:HUB] Uncaught Exception:', err && err.stack ? err.stack : err);
+  logCrashReportHint('[FABRIC:HUB]');
   void exitWithHubStop('uncaughtException', 1);
 });
 
@@ -167,5 +219,6 @@ process.on('exit', (code) => {
 
 main(settings).catch((exception) => {
   console.error('[FABRIC:HUB]', 'Main process threw Exception:', exception && exception.stack ? exception.stack : exception);
+  logCrashReportHint('[FABRIC:HUB]');
   void exitWithHubStop('main exception', 1);
 });

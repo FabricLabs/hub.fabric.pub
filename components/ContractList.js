@@ -2,13 +2,38 @@
 
 const React = require('react');
 const { Link, useNavigate } = require('react-router-dom');
-const { Segment, Header, List, Icon, Label, Loader, Button, ButtonGroup, Table } = require('semantic-ui-react');
+const {
+  Segment,
+  Header,
+  List,
+  Icon,
+  Label,
+  Loader,
+  Button,
+  ButtonGroup,
+  Table,
+  Form,
+  TextArea,
+  Message
+} = require('semantic-ui-react');
 const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { formatSatsDisplay } = require('../functions/formatSats');
 
 const FILTER_ALL = 'all';
 const FILTER_NEW = 'new';
 const FILTER_PARTIAL = 'partial';
 const FILTER_COMPLETE = 'complete';
+
+const DEFAULT_EXEC_PROGRAM = JSON.stringify({
+  version: 1,
+  steps: [
+    { op: 'FabricOpcode', fabricType: 'ChatMessage' },
+    { op: 'FabricOpcode', fabricType: 'JSONCall' },
+    { op: 'Push', value: { demo: true } },
+    { op: 'Dup' },
+    { op: 'Pop' }
+  ]
+}, null, 2);
 
 function trimHash (value = '', left = 8, right = 8) {
   const text = String(value || '');
@@ -23,55 +48,81 @@ function ContractList (props) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [filter, setFilter] = React.useState(FILTER_ALL);
+  const [execName, setExecName] = React.useState('');
+  const [execJson, setExecJson] = React.useState(DEFAULT_EXEC_PROGRAM);
+  const [execBusy, setExecBusy] = React.useState(false);
+  const [execFeedback, setExecFeedback] = React.useState(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [contractsRes, lightningRes] = await Promise.all([
-          fetch('/contracts', { method: 'GET' }),
-          fetchLightningChannels(loadUpstreamSettings()).catch(() => ({ channels: [] }))
-        ]);
-        if (cancelled) return;
+  const loadContracts = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [contractsRes, lightningRes] = await Promise.all([
+        fetch('/contracts', { method: 'GET' }),
+        fetchLightningChannels(loadUpstreamSettings()).catch(() => ({ channels: [] }))
+      ]);
 
-        const body = await contractsRes.json();
-        if (!contractsRes.ok || !body || body.status === 'error') {
-          setError((body && body.message) || 'Failed to load contracts.');
-          setContracts([]);
-        } else {
-          const list = Array.isArray(body.contracts) ? body.contracts : (body.result || []);
-          setContracts(list || []);
-        }
-
-        const channels = lightningRes && Array.isArray(lightningRes.channels) ? lightningRes.channels : [];
-        setLightningChannels(channels);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e && e.message ? e.message : 'Failed to load contracts.');
-      } finally {
-        if (!cancelled) setLoading(false);
+      const body = await contractsRes.json();
+      if (!contractsRes.ok || !body || body.status === 'error') {
+        setError((body && body.message) || 'Failed to load contracts.');
+        setContracts([]);
+      } else {
+        const list = Array.isArray(body.contracts) ? body.contracts : (body.result || []);
+        setContracts(list || []);
       }
-    };
-    load();
-    return () => { cancelled = true; };
+
+      const channels = lightningRes && Array.isArray(lightningRes.channels) ? lightningRes.channels : [];
+      setLightningChannels(channels);
+    } catch (e) {
+      setError(e && e.message ? e.message : 'Failed to load contracts.');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Group contracts by document to compute accepted count vs desired
+  React.useEffect(() => {
+    loadContracts();
+  }, [loadContracts]);
+
+  React.useEffect(() => {
+    const onCreated = () => {
+      setExecFeedback({ positive: true, content: 'Execution contract created.' });
+      loadContracts();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('executionContractCreated', onCreated);
+      return () => window.removeEventListener('executionContractCreated', onCreated);
+    }
+    return undefined;
+  }, [loadContracts]);
+
+  const storageContracts = React.useMemo(() => {
+    return contracts.filter((c) => {
+      if (!c) return false;
+      if (c.type === 'ExecutionContract') return false;
+      if (c.type === 'StorageContract') return true;
+      return !!c.document;
+    });
+  }, [contracts]);
+
+  const executionContracts = React.useMemo(() => {
+    return contracts.filter((c) => c && c.type === 'ExecutionContract');
+  }, [contracts]);
+
+  // Group storage contracts by document to compute accepted count vs desired
   const contractsByDoc = React.useMemo(() => {
     const map = {};
-    for (const c of contracts) {
+    for (const c of storageContracts) {
       if (!c || !c.document) continue;
       const docId = c.document;
       if (!map[docId]) map[docId] = [];
       map[docId].push(c);
     }
     return map;
-  }, [contracts]);
+  }, [storageContracts]);
 
   const filteredContracts = React.useMemo(() => {
-    return contracts.filter((c) => {
+    return storageContracts.filter((c) => {
       if (!c || !c.document) return false;
       const docContracts = contractsByDoc[c.document] || [];
       const acceptedCount = docContracts.length;
@@ -82,7 +133,33 @@ function ContractList (props) {
       if (filter === FILTER_COMPLETE) return acceptedCount >= desired;
       return true;
     });
-  }, [contracts, contractsByDoc, filter]);
+  }, [storageContracts, contractsByDoc, filter]);
+
+  const submitExecutionContract = React.useCallback(() => {
+    setExecFeedback(null);
+    let program;
+    try {
+      program = JSON.parse(execJson);
+    } catch (e) {
+      setExecFeedback({ negative: true, content: 'Program must be valid JSON.' });
+      return;
+    }
+    const bridge = props.bridgeRef && props.bridgeRef.current;
+    if (!bridge || typeof bridge.sendCreateExecutionContractRequest !== 'function') {
+      setExecFeedback({ negative: true, content: 'Connect to the hub (bridge) to create an execution contract.' });
+      return;
+    }
+    setExecBusy(true);
+    try {
+      bridge.sendCreateExecutionContractRequest({
+        name: execName.trim() || undefined,
+        program
+      });
+      setExecFeedback({ info: true, content: 'Create request sent. The list refreshes when the hub confirms.' });
+    } finally {
+      setExecBusy(false);
+    }
+  }, [execJson, execName, props.bridgeRef]);
 
   return (
     <fabric-contracts class='fade-in'>
@@ -192,12 +269,96 @@ function ContractList (props) {
                 <List.Item>
                   <List.Content>
                     <List.Description style={{ color: '#666' }}>
-                      {contracts.length === 0 ? 'No contracts yet.' : `No contracts match "${filter}".`}
+                      {storageContracts.length === 0 && executionContracts.length === 0
+                        ? 'No contracts yet.'
+                        : `No storage contracts match "${filter}".`}
                     </List.Description>
                   </List.Content>
                 </List.Item>
               )}
             </List>
+
+              <Header as='h4' dividing style={{ marginTop: '1.5em' }}>
+                <Icon name='microchip' />
+                Execution contracts
+              </Header>
+              <p style={{ color: '#666', marginBottom: '0.75em' }}>
+                Programs are lists of Fabric opcode descriptors and stack operations. They run in a sandboxed machine (no arbitrary code) — locally in the browser on the detail page, or validated when you create them on the hub.
+              </p>
+              {execFeedback && (
+                <Message
+                  positive={!!execFeedback.positive}
+                  negative={!!execFeedback.negative}
+                  info={!!execFeedback.info}
+                  content={execFeedback.content}
+                  onDismiss={() => setExecFeedback(null)}
+                  style={{ marginBottom: '1em' }}
+                />
+              )}
+              <Form style={{ marginBottom: '1.25em' }}>
+                <Form.Field>
+                  <label>Name (optional)</label>
+                  <Form.Input
+                    value={execName}
+                    onChange={(e, d) => setExecName(d.value)}
+                    placeholder="e.g. Ping demo"
+                  />
+                </Form.Field>
+                <Form.Field>
+                  <label>Program (JSON)</label>
+                  <TextArea
+                    value={execJson}
+                    onChange={(e, d) => setExecJson(d.value)}
+                    rows={12}
+                    style={{ fontFamily: 'monospace', fontSize: '0.85em' }}
+                  />
+                </Form.Field>
+                <Button
+                  primary
+                  type="button"
+                  loading={execBusy}
+                  disabled={execBusy}
+                  onClick={submitExecutionContract}
+                >
+                  <Icon name="plus" />
+                  Create execution contract
+                </Button>
+              </Form>
+              <List divided relaxed>
+                {executionContracts.map((c) => {
+                  if (!c || !c.id) return null;
+                  const created = c.created ? new Date(c.created).toLocaleString() : '';
+                  const steps = c.program && Array.isArray(c.program.steps) ? c.program.steps.length : 0;
+                  return (
+                    <List.Item key={c.id}>
+                      <List.Content>
+                        <List.Header>
+                          <Link to={`/contracts/${encodeURIComponent(c.id)}`}>
+                            {c.name || c.id}
+                          </Link>
+                          <Label size="mini" color="teal" style={{ marginLeft: '0.5em' }}>
+                            <Icon name="code" />
+                            Execution
+                          </Label>
+                        </List.Header>
+                        <List.Description style={{ color: '#666' }}>
+                          {steps ? `${steps} step${steps === 1 ? '' : 's'}` : 'Program'}
+                          {created ? ` — ${created}` : ''}
+                        </List.Description>
+                      </List.Content>
+                    </List.Item>
+                  );
+                })}
+                {executionContracts.length === 0 && (
+                  <List.Item>
+                    <List.Content>
+                      <List.Description style={{ color: '#666' }}>
+                        No execution contracts yet. Create one above.
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                )}
+              </List>
 
               <Header as='h4' dividing style={{ marginTop: '1.5em' }}>
                 <Icon name='bolt' color='yellow' />
@@ -236,10 +397,10 @@ function ContractList (props) {
                           </Table.Cell>
                           <Table.Cell>{ch.state || '—'}</Table.Cell>
                           <Table.Cell>
-                            {ch.amount_msat != null ? `${Math.floor(Number(ch.amount_msat) / 1000).toLocaleString()} sats` : (ch.channel_sat != null ? `${Number(ch.channel_sat).toLocaleString()} sats` : '—')}
+                            {ch.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.amount_msat) / 1000))} sats` : (ch.channel_sat != null ? `${formatSatsDisplay(ch.channel_sat)} sats` : '—')}
                           </Table.Cell>
                           <Table.Cell>
-                            {ch.our_amount_msat != null ? `${Math.floor(Number(ch.our_amount_msat) / 1000).toLocaleString()} sats` : '—'}
+                            {ch.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.our_amount_msat) / 1000))} sats` : '—'}
                           </Table.Cell>
                           <Table.Cell>
                             <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>

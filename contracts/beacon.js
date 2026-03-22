@@ -4,6 +4,7 @@ const merge = require('lodash.merge');
 const Actor = require('@fabric/core/types/actor');
 const Message = require('@fabric/core/types/message');
 const Tree = require('@fabric/core/types/tree');
+const DistributedExecution = require('@fabric/core/types/distributedExecution');
 
 const BEACON_CHAIN_PATH = 'beacon/CHAIN';
 
@@ -15,7 +16,10 @@ class Beacon extends Actor {
       name: 'HUB:BEACON',
       debug: false,
       interval: 60000,
-      regtest: true
+      regtest: true,
+      /** Comma-separated hex pubkeys (optional) — see {@link DistributedExecution.verifyFederationWitnessOnMessage} */
+      federationValidators: [],
+      federationThreshold: 1
     }, settings);
 
     this.bitcoin = null;
@@ -25,6 +29,12 @@ class Beacon extends Actor {
     this._blockHandler = null;
     /** @type {Array<{ type: string, payload: object, id?: string }>} Chain of Fabric messages representing epochs. */
     this._epochChain = [];
+    this._federationValidators = Array.isArray(this.settings.federationValidators)
+      ? this.settings.federationValidators.slice()
+      : [];
+    this._federationThreshold = Math.max(1, Number(this.settings.federationThreshold) || 1);
+    /** @type {null | (() => { clock: number, stateDigest: string } | null)} */
+    this._getSidechainSnapshotForEpoch = null;
     this._state = {
       content: {
         clock: 0,
@@ -48,13 +58,128 @@ class Beacon extends Actor {
   }
 
   /**
+   * Summary for HTTP `/services/distributed/epoch` (no private keys).
+   */
+  getEpochChainSummary () {
+    const last = this._epochChain[this._epochChain.length - 1];
+    return {
+      length: this._epochChain.length,
+      last: last
+        ? {
+          payload: last.payload,
+          federationWitness: last.federationWitness || null
+        }
+        : null
+    };
+  }
+
+  /**
    * Attach Filesystem and optional key for persistent epoch chain and signing.
-   * @param {{ fs?: object, key?: object }} deps
+   * @param {{
+   *   fs?: object,
+   *   key?: object,
+   *   federationValidators?: string[],
+   *   federationThreshold?: number,
+   *   getSidechainSnapshotForEpoch?: () => ({ clock: number, stateDigest: string } | null)
+   * }} deps
    */
   attach (deps = {}) {
     if (deps.fs) this.fs = deps.fs;
     if (deps.key) this.key = deps.key;
+    if (Array.isArray(deps.federationValidators)) {
+      this._federationValidators = deps.federationValidators.slice();
+    }
+    if (deps.federationThreshold != null) {
+      this._federationThreshold = Math.max(1, Number(deps.federationThreshold) || 1);
+    }
+    if (typeof deps.getSidechainSnapshotForEpoch === 'function') {
+      this._getSidechainSnapshotForEpoch = deps.getSidechainSnapshotForEpoch;
+    }
     return this;
+  }
+
+  /**
+   * Federation policy for HTTP manifest / operators (compressed pubkey hex list + threshold).
+   */
+  getFederationPolicy () {
+    return {
+      validators: this._federationValidators.slice(),
+      threshold: this._federationThreshold
+    };
+  }
+
+  _hubCompressedPubkeyHex () {
+    if (!this.key || !this.key.public || typeof this.key.public.encodeCompressed !== 'function') return null;
+    try {
+      return this.key.public.encodeCompressed('hex');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _mergeSidechainIntoEpoch (epoch) {
+    const out = { ...epoch };
+    if (typeof this._getSidechainSnapshotForEpoch !== 'function') return out;
+    try {
+      const snap = this._getSidechainSnapshotForEpoch();
+      if (snap && typeof snap === 'object') {
+        out.sidechain = {
+          clock: Number(snap.clock) || 0,
+          stateDigest: snap.stateDigest != null ? String(snap.stateDigest) : null
+        };
+      }
+    } catch (err) {
+      this.emit('warning', '[BEACON] sidechain snapshot failed:', err && err.message ? err.message : err);
+    }
+    return out;
+  }
+
+  _makeFederationWitnessForEpoch (epochPayload) {
+    if (!this._federationValidators.length) return null;
+    if (!this.key || !this.key.private) return null;
+    const pk = this._hubCompressedPubkeyHex();
+    if (!pk || !this._federationValidators.includes(pk)) return null;
+    const msg = Buffer.from(DistributedExecution.signingStringForBeaconEpoch(epochPayload), 'utf8');
+    let sig;
+    try {
+      sig = this.key.signSchnorr(msg);
+    } catch (_) {
+      return null;
+    }
+    return {
+      version: 1,
+      signatures: { [pk]: Buffer.isBuffer(sig) ? sig.toString('hex') : String(sig) }
+    };
+  }
+
+  /**
+   * Build a chain entry: Fabric message + optional federation witness over the full epoch payload (incl. sidechain head).
+   */
+  _buildEpochEntry (epochBase) {
+    const fullEpoch = this._mergeSidechainIntoEpoch(epochBase);
+    const message = Message.fromVector(['BEACON_EPOCH', JSON.stringify(fullEpoch)]);
+    if (this.key && this.key.private) message.signWithKey(this.key);
+    const entry = { type: 'BEACON_EPOCH', payload: fullEpoch, id: message.id || null };
+    const witness = this._makeFederationWitnessForEpoch(fullEpoch);
+    if (witness) entry.federationWitness = witness;
+    return entry;
+  }
+
+  _verifyEpochWitnessesIfConfigured () {
+    if (!this._federationValidators.length) return;
+    for (const e of this._epochChain) {
+      if (e.type !== 'BEACON_EPOCH' || !e.payload) continue;
+      const buf = Buffer.from(DistributedExecution.signingStringForBeaconEpoch(e.payload), 'utf8');
+      const ok = DistributedExecution.verifyFederationWitnessOnMessage(
+        buf,
+        e.federationWitness,
+        this._federationValidators,
+        this._federationThreshold
+      );
+      if (!ok) {
+        this.emit('warning', `[BEACON] Federation witness missing or invalid for epoch clock ${e.payload.clock}`);
+      }
+    }
   }
 
   /**
@@ -76,6 +201,7 @@ class Beacon extends Actor {
         this._state.content.balance = last.payload.balance != null ? last.payload.balance : 0;
         this._state.content.balanceSats = last.payload.balanceSats != null ? last.payload.balanceSats : 0;
       }
+      this._verifyEpochWitnessesIfConfigured();
     } catch (err) {
       this.emit('warning', '[BEACON] Failed to load epoch chain from filesystem:', err && err.message ? err.message : err);
     }
@@ -89,7 +215,8 @@ class Beacon extends Actor {
     const leaves = this._epochChain.map((e) => JSON.stringify({
       type: e.type,
       payload: e.payload,
-      id: e.id
+      id: e.id,
+      federationWitness: e.federationWitness || null
     }));
     const tree = new Tree({ leaves });
     const root = tree && tree.root;
@@ -136,29 +263,38 @@ class Beacon extends Actor {
       timestamp: new Date().toISOString()
     };
 
-    // Append epoch as a Fabric message to the chain and persist via Filesystem.
+    let committedPayload = epoch;
     try {
-      const message = Message.fromVector(['BEACON_EPOCH', JSON.stringify(epoch)]);
-      if (this.key && this.key.private) message.signWithKey(this.key);
-      const entry = { type: 'BEACON_EPOCH', payload: epoch, id: message.id || null };
+      const entry = this._buildEpochEntry(epoch);
       this._epochChain.push(entry);
       await this._persistEpochChain();
+      committedPayload = entry.payload;
     } catch (err) {
       this.emit('error', err);
     }
 
-    this.emit('epoch', epoch);
-    return epoch;
+    this.emit('epoch', committedPayload);
+    return committedPayload;
   }
 
   /**
    * Prune epochs from the chain (reorg). Updates state from last remaining epoch.
-   * Emits 'reorg' so consumers can refresh merkle state.
-   * @param {number} keepHeightMax Keep epochs with height < keepHeightMax.
+   * Emits 'reorg' so consumers can refresh merkle state and rewind sidechain snapshots.
+   * @param {number} inclusiveMaxHeight Keep epochs whose L1 `height` is **<=** this (the new chain tip height).
    */
-  _pruneEpochChain (keepHeightMax) {
+  _pruneEpochChain (inclusiveMaxHeight) {
+    const maxH = Number(inclusiveMaxHeight);
+    if (!Number.isFinite(maxH)) return;
+
+    const removedBeaconClocks = [];
+    const next = [];
+    for (const e of this._epochChain) {
+      const h = e.payload && e.payload.height != null ? Number(e.payload.height) : 0;
+      if (h <= maxH) next.push(e);
+      else if (e.payload && e.payload.clock != null) removedBeaconClocks.push(Number(e.payload.clock));
+    }
     const before = this._epochChain.length;
-    this._epochChain = this._epochChain.filter((e) => (e.payload && e.payload.height != null ? Number(e.payload.height) : 0) < keepHeightMax);
+    this._epochChain = next;
     const pruned = before - this._epochChain.length;
     if (pruned === 0) return;
 
@@ -176,11 +312,14 @@ class Beacon extends Actor {
       this._state.content.balance = 0;
       this._state.content.balanceSats = 0;
     }
-    this.emit('reorg', { pruned, keepHeightMax });
+    this.emit('reorg', { pruned, inclusiveMaxHeight, removedBeaconClocks });
   }
 
   /**
-   * Record an epoch from an external block event (non-regtest). Does not generate blocks.
+   * Record an epoch from a chain-tip event (does not generate blocks).
+   * Mainnet/testnet/signet: Beacon listens to bitcoin `'block'` and calls this.
+   * Regtest: the Hub also calls this from ZMQ hashblock so externally mined blocks update the epoch chain;
+   * blocks from the regtest interval timer (`createEpoch`) dedupe here when the same tip arrives via ZMQ.
    * Handles reorgs: prunes chain when new tip is at lower height or same height with different hash.
    * @param {{ tip?: string, height?: number, supply?: number }} payload From bitcoin 'block' event.
    */
@@ -200,7 +339,10 @@ class Beacon extends Actor {
     if (height < this._state.content.height) {
       this._pruneEpochChain(height);
     } else if (height === this._state.content.height && blockHash !== this._state.content.lastBlockHash) {
-      this._epochChain.pop();
+      const popped = this._epochChain.pop();
+      const poppedClock = popped && popped.payload && popped.payload.clock != null
+        ? Number(popped.payload.clock)
+        : null;
       const last = this._epochChain[this._epochChain.length - 1];
       if (last && last.payload) {
         this._state.content.clock = last.payload.clock != null ? last.payload.clock : 0;
@@ -208,8 +350,18 @@ class Beacon extends Actor {
         this._state.content.height = last.payload.height != null ? last.payload.height : 0;
         this._state.content.balance = last.payload.balance != null ? last.payload.balance : 0;
         this._state.content.balanceSats = last.payload.balanceSats != null ? last.payload.balanceSats : 0;
+      } else if (!this._epochChain.length) {
+        this._state.content.clock = 0;
+        this._state.content.lastBlockHash = null;
+        this._state.content.height = 0;
+        this._state.content.balance = 0;
+        this._state.content.balanceSats = 0;
       }
-      this.emit('reorg', { pruned: 1, sameHeight: true });
+      this.emit('reorg', {
+        pruned: 1,
+        sameHeight: true,
+        removedBeaconClocks: poppedClock != null && Number.isFinite(poppedClock) ? [poppedClock] : []
+      });
     }
 
     this._state.content.clock += 1;
@@ -227,18 +379,18 @@ class Beacon extends Actor {
       timestamp: new Date().toISOString()
     };
 
+    let committedPayload = epoch;
     try {
-      const message = Message.fromVector(['BEACON_EPOCH', JSON.stringify(epoch)]);
-      if (this.key && this.key.private) message.signWithKey(this.key);
-      const entry = { type: 'BEACON_EPOCH', payload: epoch, id: message.id || null };
+      const entry = this._buildEpochEntry(epoch);
       this._epochChain.push(entry);
       await this._persistEpochChain();
+      committedPayload = entry.payload;
     } catch (err) {
       this.emit('error', err);
     }
 
-    this.emit('epoch', epoch);
-    return epoch;
+    this.emit('epoch', committedPayload);
+    return committedPayload;
   }
 
   async start () {

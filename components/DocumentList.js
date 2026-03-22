@@ -23,6 +23,14 @@ const { sha256: sha256Hash } = require('@noble/hashes/sha256');
 // Fabric Types
 const Actor = require('@fabric/core/types/actor');
 const DistributeProposalsList = require('./DistributeProposalsList');
+const { formatSatsDisplay } = require('../functions/formatSats');
+
+function shortHexId (value) {
+  const s = String(value || '');
+  if (!s) return '';
+  if (s.length <= 20) return s;
+  return `${s.slice(0, 10)}…${s.slice(-8)}`;
+}
 
 function base64FromArrayBuffer (buffer) {
   const bytes = new Uint8Array(buffer);
@@ -67,6 +75,7 @@ function DocumentsPage (props) {
   const hasEncryptionKey = !!(current && typeof current.hasDocumentEncryptionKey === 'function' && current.hasDocumentEncryptionKey());
   const networkStatus = current && (current.networkStatus || current.lastNetworkStatus);
   const indexed = networkStatus && networkStatus.publishedDocuments ? networkStatus.publishedDocuments : null;
+  const fabricPeerId = networkStatus && networkStatus.fabricPeerId ? String(networkStatus.fabricPeerId) : null;
 
   const [docsState, setDocsState] = React.useState({});
 
@@ -379,6 +388,72 @@ function DocumentsPage (props) {
                   );
                 }
 
+                if (doc.storageContractId) {
+                  labels.push(
+                    <Label
+                      key="storage"
+                      as={Link}
+                      to={`/contracts/${encodeURIComponent(doc.storageContractId)}`}
+                      size="mini"
+                      color="purple"
+                      style={{ marginLeft: '0.25em' }}
+                      title="Pay-to-distribute storage contract (L1 bonded)"
+                    >
+                      <Icon name="cloud" />
+                      Storage
+                    </Label>
+                  );
+                }
+
+                if (doc.storageContractId && doc.storageL1Status && typeof doc.storageL1Status === 'object') {
+                  const st = doc.storageL1Status;
+                  const conf = st.confirmations != null ? Number(st.confirmations) : null;
+                  let payColor = 'grey';
+                  let payText = '';
+                  let payTitle = 'Storage contract funding tx (from hub / bitcoind)';
+                  if (conf != null && !Number.isNaN(conf) && conf > 0) {
+                    payColor = 'green';
+                    payText = `${conf} confirmation${conf === 1 ? '' : 's'}`;
+                  } else if (st.inMempool) {
+                    payColor = 'yellow';
+                    payText = 'Mempool';
+                    payTitle = 'Funding tx in mempool (0 confirmations)';
+                  } else if (conf === 0) {
+                    payColor = 'yellow';
+                    payText = '0 confirmations';
+                  } else {
+                    payText = 'L1 n/a';
+                    payTitle = 'Could not load tx from Bitcoin RPC';
+                  }
+                  labels.push(
+                    <Label
+                      key="storage-l1"
+                      size="mini"
+                      color={payColor}
+                      style={{ marginLeft: '0.25em' }}
+                      title={payTitle}
+                    >
+                      <Icon name="bitcoin" />
+                      {payText}
+                    </Label>
+                  );
+                }
+
+                if (doc.isPublished && doc.purchasePriceSats != null && Number(doc.purchasePriceSats) > 0) {
+                  labels.push(
+                    <Label
+                      key="priced"
+                      size="mini"
+                      color="orange"
+                      style={{ marginLeft: '0.25em' }}
+                      title="Listed L1 price (inventory HTLC)"
+                    >
+                      <Icon name="bitcoin" />
+                      {formatSatsDisplay(doc.purchasePriceSats)} sats
+                    </Label>
+                  );
+                }
+
                 const isRecent = recentDocId && recentDocId === doc.id;
                 const itemStyle = isRecent
                   ? {
@@ -400,6 +475,19 @@ function DocumentsPage (props) {
                       <List.Description style={{ color: '#666' }}>
                         {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}
                         {doc.created ? ` — ${new Date(doc.created).toLocaleString()}` : ''}
+                        {(doc.lineage || doc.id) && (
+                          <span title="Fabric document id for the content creator (lineage)">
+                            {' — '}author <code style={{ fontSize: '0.92em' }}>{shortHexId(doc.lineage || doc.id)}</code>
+                          </span>
+                        )}
+                        {doc.isPublished && fabricPeerId && (
+                          <span title="Fabric peer id of the hub hosting the published index">
+                            {' — '}publisher <code style={{ fontSize: '0.92em' }}>{shortHexId(fabricPeerId)}</code>
+                          </span>
+                        )}
+                        {!doc.storageContractId && doc.isPublished && (
+                          <span title="Published but no bonded storage contract yet"> — not replicated</span>
+                        )}
                       </List.Description>
                     </List.Content>
                   </List.Item>

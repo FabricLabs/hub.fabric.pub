@@ -51,6 +51,7 @@ describe('Hub WebRTC RPC methods', function () {
     };
 
     const webrtcPeers = new Map();
+    const relayP2pCalls = [];
 
     hub.http = {
       on: () => {},
@@ -87,11 +88,12 @@ describe('Hub WebRTC RPC methods', function () {
       connections: {},
       _state: { peers: {} },
       knownPeers: [],
-      _addressToId: {}
+      _addressToId: {},
+      relayFrom: (tag, msg) => { relayP2pCalls.push({ tag, msg }); }
     };
 
     await hub.start();
-    return { hub, methods, broadcasts, published, chainUpdates, agentHandlers, fsStore };
+    return { hub, methods, broadcasts, published, chainUpdates, agentHandlers, fsStore, relayP2pCalls };
   }
 
   let harness;
@@ -114,6 +116,10 @@ describe('Hub WebRTC RPC methods', function () {
     harness.broadcasts.length = 0;
     harness.published.length = 0;
     harness.chainUpdates.length = 0;
+    harness.relayP2pCalls.length = 0;
+    if (harness.hub._webrtcRelayRate && typeof harness.hub._webrtcRelayRate.clear === 'function') {
+      harness.hub._webrtcRelayRate.clear();
+    }
     harness.hub.http.webrtcPeers.clear();
     harness.hub._state.documents = {};
     harness.hub._state.content.collections = harness.hub._state.content.collections || {};
@@ -122,6 +128,50 @@ describe('Hub WebRTC RPC methods', function () {
     harness.hub._state.content.collections.contracts = {};
     harness.hub._state.content.counts = harness.hub._state.content.counts || {};
     harness.hub._state.content.counts.messages = 0;
+  });
+
+  it('RelayFromWebRTC fans out P2P_RELAY and respects hop limit', async function () {
+    const { methods, broadcasts, relayP2pCalls } = harness;
+    assert.ok(methods.RelayFromWebRTC, 'RelayFromWebRTC should be registered');
+
+    const base = {
+      fromPeerId: 'webrtc-peer-a',
+      envelope: {
+        original: JSON.stringify({ type: 'P2P_CHAT_MESSAGE', hello: 'world' }),
+        originalType: 'P2P_CHAT_MESSAGE',
+        hops: []
+      }
+    };
+
+    const ok = methods.RelayFromWebRTC(base);
+    assert.strictEqual(ok.status, 'success');
+    assert.strictEqual(broadcasts.length, 1, 'should broadcast to WebSocket clients');
+    assert.strictEqual(relayP2pCalls.length, 1, 'should relay to Fabric P2P');
+
+    const tooManyHops = {
+      fromPeerId: 'webrtc-peer-a',
+      envelope: {
+        original: '{}',
+        originalType: 'P2P_CHAT_MESSAGE',
+        hops: Array.from({ length: 40 }, (_, i) => ({ from: `p${i}`, at: 0 }))
+      }
+    };
+    const denied = methods.RelayFromWebRTC(tooManyHops);
+    assert.strictEqual(denied.status, 'error');
+    assert.ok(/hop limit/i.test(denied.message));
+  });
+
+  it('RelayFromWebRTC rate-limits per fromPeerId', function () {
+    const { methods } = harness;
+    let errors = 0;
+    for (let i = 0; i < 52; i++) {
+      const r = methods.RelayFromWebRTC({
+        fromPeerId: 'rate-test-peer',
+        envelope: { original: `{"i":${i}}`, originalType: 'P2P_CHAT_MESSAGE', hops: [] }
+      });
+      if (r.status === 'error' && /rate limit/i.test(r.message)) errors++;
+    }
+    assert.ok(errors >= 1, 'should reject relay after burst over default per-second cap');
   });
 
   it('registers peers and lists candidates excluding self', async function () {
@@ -194,6 +244,40 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(listed.type, 'ListWebRTCPeersResult');
     assert.ok(Array.isArray(listed.peers));
     assert.ok(listed.peers.length <= 16, 'peer candidate list should be bounded');
+  });
+
+  it('includes lastSeen and registeredAt on candidates for cross-node relay ordering', function () {
+    const { methods, hub } = harness;
+    const now = Date.now();
+    methods.RegisterWebRTCPeer({ peerId: 'relay-order-a', metadata: { tag: 'a' } });
+    const entry = hub.http.webrtcPeers.get('relay-order-a');
+    entry.lastSeen = now - 2000;
+    entry.registeredAt = now - 5000;
+    hub.http.webrtcPeers.set('relay-order-a', entry);
+
+    const listed = methods.ListWebRTCPeers({ excludeSelf: true, peerId: 'other' });
+    const row = listed.peers.find((p) => p.id === 'relay-order-a');
+    assert.ok(row, 'peer should be listed');
+    assert.strictEqual(row.lastSeen, now - 2000);
+    assert.strictEqual(row.registeredAt, now - 5000);
+  });
+
+  it('RelayFromWebRTC accepts P2P_PEER_GOSSIP envelopes for mesh relay', function () {
+    const { methods, broadcasts, relayP2pCalls } = harness;
+    const r = methods.RelayFromWebRTC({
+      fromPeerId: 'webrtc-mesh',
+      envelope: {
+        original: JSON.stringify({
+          type: 'P2P_PEER_GOSSIP',
+          object: { peers: [{ id: 'gossip-peer-1', lastSeen: Date.now() }] }
+        }),
+        originalType: 'P2P_PEER_GOSSIP',
+        hops: []
+      }
+    });
+    assert.strictEqual(r.status, 'success');
+    assert.strictEqual(broadcasts.length, 1);
+    assert.strictEqual(relayP2pCalls.length, 1);
   });
 
   it('requires document id for GetDocument', async function () {
@@ -293,7 +377,7 @@ describe('Hub WebRTC RPC methods', function () {
     });
     await methods.PublishDocument(created.document.id);
 
-    const status = methods.GetNetworkStatus();
+    const status = await methods.GetNetworkStatus();
     assert.ok(status.chain, 'chain should exist');
     assert.ok(status.chain.tree, 'chain should have tree');
     assert.ok(status.chain.genesis, 'chain should have genesis');
@@ -314,7 +398,7 @@ describe('Hub WebRTC RPC methods', function () {
     });
     await methods.PublishDocument(created.document.id);
 
-    const status = methods.GetNetworkStatus();
+    const status = await methods.GetNetworkStatus();
     assert.ok(status.chain, 'network status should include chain');
     assert.ok(status.chain.roots, 'chain payload should include roots');
     assert.ok(status.chain.tree, 'chain should include tree');

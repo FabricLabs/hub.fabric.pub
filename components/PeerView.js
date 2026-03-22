@@ -2,6 +2,7 @@
 
 // Dependencies
 const React = require('react');
+const QRCode = require('qrcode');
 const {
   Link,
   useNavigate,
@@ -14,13 +15,29 @@ const {
   Divider,
   Header,
   Icon,
+  Input,
   Label,
   List,
+  Message,
   Segment,
   Loader
 } = require('semantic-ui-react');
 
 const ChatInput = require('./ChatInput');
+const { formatSatsDisplay } = require('../functions/formatSats');
+const { loadUpstreamSettings, sendBridgePayment } = require('../functions/bitcoinClient');
+
+function getAdminTokenFromProps (props) {
+  const t = props && props.adminToken;
+  if (t && String(t).trim()) return String(t).trim();
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const s = window.localStorage.getItem('fabric.hub.adminToken');
+      if (s && String(s).trim()) return String(s).trim();
+    }
+  } catch (e) {}
+  return '';
+}
 
 function isNetworkStatus (obj) {
   return !!(obj && typeof obj === 'object' && (obj.network || Array.isArray(obj.peers)));
@@ -46,6 +63,12 @@ function PeerDetail (props) {
   const [peerChats, setPeerChats] = React.useState([]);
   const [outgoingText, setOutgoingText] = React.useState('');
   const [inventoryDocs, setInventoryDocs] = React.useState([]);
+  const [htlcTxids, setHtlcTxids] = React.useState({});
+  const [htlcConfirmFeedback, setHtlcConfirmFeedback] = React.useState(null);
+  const [htlcFundingQrBySettlement, setHtlcFundingQrBySettlement] = React.useState({});
+  const [htlcFundingCopied, setHtlcFundingCopied] = React.useState(null);
+  const [inventoryRelayTarget, setInventoryRelayTarget] = React.useState('');
+  const [bridgePaySettlementId, setBridgePaySettlementId] = React.useState(null);
 
   const bridge = props.bridge;
   const bridgeRef = props.bridgeRef;
@@ -59,12 +82,57 @@ function PeerDetail (props) {
   const peer = detail && (detail.id || detail.address) ? detail : peerFromStatus;
   const status = peer && peer.status ? peer.status : 'unknown';
   const isConnected = status === 'connected';
+  const adminTokenPresent = !!getAdminTokenFromProps(props);
 
   React.useEffect(() => {
     if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
     if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const pairs = [];
+    for (let i = 0; i < inventoryDocs.length; i++) {
+      const doc = inventoryDocs[i];
+      const h = doc && doc.htlc;
+      const sid = h && h.settlementId;
+      const uri = h && h.bitcoinUri && String(h.bitcoinUri).trim();
+      if (sid && uri) pairs.push({ sid, uri });
+    }
+    if (pairs.length === 0) {
+      setHtlcFundingQrBySettlement({});
+      return;
+    }
+    Promise.all(pairs.map(({ sid, uri }) =>
+      QRCode.toDataURL(uri, {
+        width: 140,
+        margin: 2,
+        color: { dark: '#000000', light: '#ffffff' }
+      })
+        .then((dataUrl) => ({ sid, dataUrl }))
+        .catch(() => ({ sid, dataUrl: null }))
+    )).then((rows) => {
+      if (cancelled) return;
+      const next = {};
+      for (let j = 0; j < rows.length; j++) {
+        const r = rows[j];
+        if (r.dataUrl) next[r.sid] = r.dataUrl;
+      }
+      setHtlcFundingQrBySettlement(next);
+    });
+    return () => { cancelled = true; };
+  }, [inventoryDocs]);
+
+  const copyHtlcFunding = React.useCallback((text, flashKey) => {
+    try {
+      if (text && typeof navigator !== 'undefined' && navigator.clipboard) {
+        navigator.clipboard.writeText(text);
+        setHtlcFundingCopied(flashKey);
+        setTimeout(() => setHtlcFundingCopied((k) => (k === flashKey ? null : k)), 1500);
+      }
+    } catch (e) {}
+  }, []);
 
   React.useEffect(() => {
     const deriveChatsAndInventory = (globalState, currentDetail) => {
@@ -250,15 +318,46 @@ function PeerDetail (props) {
               </Button>
             )}
             {id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
-              <Button
-                size="small"
-                basic
-                onClick={() => bridgeRef.current.sendPeerInventoryRequest(id, 'documents')}
-                title="Request document inventory from this peer"
-              >
-                <Icon name="list alternate outline" />
-                Docs
-              </Button>
+              <>
+                <Input
+                  size="small"
+                  placeholder="Relay: seller Fabric ID (optional)"
+                  title="When this connection is a relay, set the seller’s Fabric id so the hub forwards INVENTORY_REQUEST"
+                  value={inventoryRelayTarget}
+                  onChange={(e, { value }) => setInventoryRelayTarget(value)}
+                  style={{ minWidth: '10em', maxWidth: '14em' }}
+                />
+                <Button
+                  size="small"
+                  basic
+                  onClick={() => {
+                    const t = (inventoryRelayTarget || '').trim();
+                    const opts = t ? { inventoryTarget: t } : {};
+                    bridgeRef.current.sendPeerInventoryRequest(id, 'documents', opts);
+                  }}
+                  title="Request document inventory from this peer"
+                >
+                  <Icon name="list alternate outline" />
+                  Docs
+                </Button>
+                {typeof bridgeRef.current.getHtlcRefundPublicKeyHex === 'function' && bridgeRef.current.getHtlcRefundPublicKeyHex() && (
+                  <Button
+                    size="small"
+                    basic
+                    onClick={() => {
+                      const refundPk = bridgeRef.current.getHtlcRefundPublicKeyHex();
+                      const t = (inventoryRelayTarget || '').trim();
+                      const opts = { buyerRefundPublicKey: refundPk };
+                      if (t) opts.inventoryTarget = t;
+                      bridgeRef.current.sendPeerInventoryRequest(id, 'documents', opts);
+                    }}
+                    title="Inventory with P2TR HTLC on priced items (your identity pubkey = refund path)"
+                  >
+                    <Icon name="bitcoin" />
+                    Docs+HTLC
+                  </Button>
+                )}
+              </>
             )}
             {id && typeof props.onSetPeerNickname === 'function' && (
               <Button
@@ -460,7 +559,41 @@ function PeerDetail (props) {
 
         {peer && (
           <Segment style={{ marginTop: '1em' }}>
-            <Header as="h3">Documents</Header>
+            <Header as="h3">Publisher inventory</Header>
+            <p style={{ color: '#666', marginBottom: '0.75em' }}>
+              Documents offered by this <strong>publisher</strong>
+              {id ? <> (Fabric peer <code style={{ fontSize: '0.9em' }}>{id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-8)}` : id}</code>)</> : ''}.
+              <strong> Author</strong> is the creator&apos;s document id when known (lineage).
+            </p>
+            {htlcConfirmFeedback && (
+              <Message
+                positive={htlcConfirmFeedback.status === 'success'}
+                negative={htlcConfirmFeedback.status === 'error'}
+                onDismiss={() => setHtlcConfirmFeedback(null)}
+                style={{ marginBottom: '1em', textAlign: 'left' }}
+              >
+                <Message.Header>
+                  {htlcConfirmFeedback.status === 'success'
+                    ? 'HTLC verified — document transfer'
+                    : 'HTLC confirmation'}
+                </Message.Header>
+                {(htlcConfirmFeedback.message || htlcConfirmFeedback.funded) && (
+                  <p>{htlcConfirmFeedback.message || (htlcConfirmFeedback.funded ? 'Funding accepted; fix connection or retry if needed.' : '')}</p>
+                )}
+                {htlcConfirmFeedback.documentId && (
+                  <p style={{ fontSize: '0.9em' }}>Document <code>{htlcConfirmFeedback.documentId}</code></p>
+                )}
+                {htlcConfirmFeedback.txid && (
+                  <p style={{ fontSize: '0.9em' }}>
+                    Txid{' '}
+                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcConfirmFeedback.txid).trim())}`}>
+                      <code>{htlcConfirmFeedback.txid}</code>
+                    </Link>
+                    <span style={{ color: '#666' }}> — mempool until confirmed on-chain</span>
+                  </p>
+                )}
+              </Message>
+            )}
             {inventoryDocs.length > 0 ? (
               <List divided relaxed size="small">
                 {inventoryDocs.map((doc, index) => (
@@ -471,9 +604,146 @@ function PeerDetail (props) {
                       </List.Header>
                       <List.Description style={{ color: '#666' }}>
                         {doc && doc.id && (<span>ID: <code>{doc.id}</code></span>)}
+                        {doc && (doc.lineage || doc.id) && (
+                          <> — author <code style={{ fontSize: '0.9em' }}>{String(doc.lineage || doc.id).length > 20 ? `${String(doc.lineage || doc.id).slice(0, 10)}…${String(doc.lineage || doc.id).slice(-6)}` : String(doc.lineage || doc.id)}</code></>
+                        )}
                         {doc && doc.size != null && <> — {doc.size} bytes</>}
                         {doc && doc.published && <> — published</>}
+                        {doc && doc.purchasePriceSats != null && <> — <strong>{formatSatsDisplay(doc.purchasePriceSats)} sats</strong></>}
                       </List.Description>
+                      {doc && doc.htlc && doc.htlc.settlementId && (
+                        <div style={{ marginTop: '0.75em', fontSize: '0.85em', textAlign: 'left' }}>
+                          <Label color="orange" size="small">P2TR HTLC</Label>
+                          <div style={{ marginTop: '0.35em' }}>
+                            <strong>{formatSatsDisplay(doc.htlc.amountSats || 0)} sats</strong>
+                            {doc.htlc.amountBtc && (
+                              <> (<code>{doc.htlc.amountBtc}</code> BTC)</>
+                            )}
+                            {' '}→ <code style={{ wordBreak: 'break-all' }}>{doc.htlc.paymentAddress}</code>
+                          </div>
+                          {doc.htlc.bitcoinUri && (
+                            <div style={{ marginTop: '0.5em', display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'flex-start' }}>
+                              {htlcFundingQrBySettlement[doc.htlc.settlementId] && (
+                                <img
+                                  src={htlcFundingQrBySettlement[doc.htlc.settlementId]}
+                                  alt="BIP21 funding QR"
+                                  style={{ borderRadius: 4, border: '1px solid #ddd' }}
+                                />
+                              )}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35em' }}>
+                                <Button
+                                  size="mini"
+                                  basic
+                                  onClick={() => copyHtlcFunding(doc.htlc.bitcoinUri, `${doc.htlc.settlementId}:uri`)}
+                                >
+                                  <Icon name="copy" /> {htlcFundingCopied === `${doc.htlc.settlementId}:uri` ? 'Copied' : 'Copy BIP21 URI'}
+                                </Button>
+                                <Button
+                                  size="mini"
+                                  basic
+                                  onClick={() => copyHtlcFunding(doc.htlc.paymentAddress, `${doc.htlc.settlementId}:addr`)}
+                                >
+                                  <Icon name="copy" /> {htlcFundingCopied === `${doc.htlc.settlementId}:addr` ? 'Copied' : 'Copy address'}
+                                </Button>
+                                {adminTokenPresent && doc.htlc.bitcoinUri && (
+                                  <>
+                                    <Button
+                                      as="a"
+                                      size="mini"
+                                      primary
+                                      href={String(doc.htlc.bitcoinUri).trim()}
+                                      title="Open BIP21 URI in your default wallet"
+                                    >
+                                      <Icon name="bitcoin" /> Pay Now
+                                    </Button>
+                                    <Button
+                                      size="mini"
+                                      color="orange"
+                                      loading={bridgePaySettlementId === doc.htlc.settlementId}
+                                      disabled={bridgePaySettlementId === doc.htlc.settlementId}
+                                      onClick={async () => {
+                                        const token = getAdminTokenFromProps(props);
+                                        const h = doc.htlc;
+                                        if (!token || !h || !h.paymentAddress) return;
+                                        setBridgePaySettlementId(h.settlementId);
+                                        setHtlcConfirmFeedback(null);
+                                        try {
+                                          const upstream = loadUpstreamSettings();
+                                          const res = await sendBridgePayment(upstream, {
+                                            to: h.paymentAddress,
+                                            amountSats: Math.round(Number(h.amountSats || 0)),
+                                            memo: `HTLC ${h.settlementId}`
+                                          }, token);
+                                          const txid = res && res.payment && res.payment.txid
+                                            ? String(res.payment.txid)
+                                            : '';
+                                          if (txid) {
+                                            setHtlcTxids((prev) => ({ ...prev, [h.settlementId]: txid }));
+                                            setHtlcConfirmFeedback({
+                                              status: 'success',
+                                              message: `Hub wallet sent transaction. Txid filled below — use Confirm when ready.`,
+                                              txid
+                                            });
+                                          } else {
+                                            setHtlcConfirmFeedback({
+                                              status: 'error',
+                                              message: (res && res.message) ? res.message : 'No txid returned from Hub wallet.'
+                                            });
+                                          }
+                                        } catch (err) {
+                                          setHtlcConfirmFeedback({
+                                            status: 'error',
+                                            message: err && err.message ? err.message : String(err)
+                                          });
+                                        } finally {
+                                          setBridgePaySettlementId(null);
+                                        }
+                                      }}
+                                      title="Spend from this Hub bitcoind wallet (requires admin token)"
+                                    >
+                                      <Icon name="server" /> Pay from Bridge
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ marginTop: '0.35em', color: '#666' }}>
+                            Hash <code>{String(doc.htlc.paymentHashHex || '').slice(0, 16)}…</code>
+                            {' · '}refund CLTV height <code>{doc.htlc.refundLockHeight}</code>
+                          </div>
+                          <div style={{ marginTop: '0.5em', display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
+                            <Input
+                              placeholder="Funding txid"
+                              size="small"
+                              style={{ flex: '1 1 10em', minWidth: '12em' }}
+                              value={htlcTxids[doc.htlc.settlementId] || ''}
+                              onChange={(e, { value }) => setHtlcTxids((prev) => ({ ...prev, [doc.htlc.settlementId]: value }))}
+                            />
+                            <Button
+                              size="small"
+                              primary
+                              disabled={!(bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendConfirmInventoryHtlcPayment === 'function') || !(htlcTxids[doc.htlc.settlementId] || '').trim()}
+                              onClick={() => {
+                                const tx = (htlcTxids[doc.htlc.settlementId] || '').trim();
+                                if (bridgeRef && bridgeRef.current && tx) {
+                                  bridgeRef.current.sendConfirmInventoryHtlcPayment(doc.htlc.settlementId, tx);
+                                }
+                              }}
+                            >
+                              Confirm HTLC &amp; receive
+                            </Button>
+                            {/^[a-fA-F0-9]{64}$/.test(String(htlcTxids[doc.htlc.settlementId] || '').trim()) && (
+                              <Link
+                                style={{ fontSize: '0.85em', alignSelf: 'center' }}
+                                to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcTxids[doc.htlc.settlementId]).trim())}`}
+                              >
+                                View funding tx
+                              </Link>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </List.Content>
                   </List.Item>
                 ))}

@@ -52,7 +52,7 @@ class FrontPage extends React.Component {
               {BRAND_TAGLINE}
             </p>
             <Button.Group size='huge'>
-              <Button color='blue' as={Link} to='/sessions' icon labelPosition='left'>
+              <Button color='blue' as={Link} to='/settings/security' icon labelPosition='left'>
                 <Icon name='user' />Log In
               </Button>
               <Button color='green' as={Link} to='/features' icon labelPosition='right'>

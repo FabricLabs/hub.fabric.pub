@@ -3,6 +3,7 @@
 const Service = require('@fabric/core/types/service');
 const Actor = require('@fabric/core/types/actor');
 const Tree = require('@fabric/core/types/tree');
+const psbtFabric = require('../functions/psbtFabric');
 
 class PayjoinService extends Service {
   constructor (settings = {}) {
@@ -12,7 +13,7 @@ class PayjoinService extends Service {
       name: 'Payjoin',
       enable: true,
       network: 'mainnet',
-      endpointBasePath: '/services/bitcoin/payjoin',
+      endpointBasePath: '/services/payjoin',
       defaultSessionTTLSeconds: 1800,
       maxOpenSessions: 256
     }, settings);
@@ -125,7 +126,7 @@ class PayjoinService extends Service {
     };
     const actor = new Actor({ content: payload });
     const sessionId = actor.id;
-    const proposalURL = `${this.settings.endpointBasePath}/sessions/${sessionId}/proposal`;
+    const proposalURL = `${this.settings.endpointBasePath}/sessions/${sessionId}/proposals`;
     const bip21Uri = this._buildBIP21Uri(address, payload.amountSats, label, proposalURL);
 
     const createdEvent = this._createEvent('PAYJOIN_SESSION_CREATED', {
@@ -205,6 +206,8 @@ class PayjoinService extends Service {
       txhex,
       analysis
     };
+    const proposalTxid = this.extractProposalTxid(proposal);
+    if (proposalTxid) proposal.proposalTxid = proposalTxid;
 
     session.proposals[proposalId] = proposal;
     session.status = 'proposal-received';
@@ -244,8 +247,62 @@ class PayjoinService extends Service {
     return { id: actor.id, type, created, payload };
   }
 
+  /**
+   * Best-effort txid for wallet labeling (final tx, unsigned PSBT id, or decodepsbt hints).
+   * @param {{ psbt?: string, txhex?: string, analysis?: object, proposalTxid?: string }} proposal
+   * @returns {string} hex64 or ''
+   */
+  extractProposalTxid (proposal) {
+    if (!proposal || typeof proposal !== 'object') return '';
+    const cached = String(proposal.proposalTxid || '').trim().toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(cached)) return cached;
+    const bitcoinjs = require('bitcoinjs-lib');
+    const hex = String(proposal.txhex || '').trim();
+    if (hex) {
+      try {
+        return bitcoinjs.Transaction.fromHex(hex).getId();
+      } catch (_) {}
+    }
+    const p = String(proposal.psbt || '').trim();
+    if (p) {
+      try {
+        return psbtFabric.extractTransactionId(p);
+      } catch (_) {}
+    }
+    const a = proposal.analysis;
+    if (a && !a.error) {
+      const u = a.unsigned_txid || (a.tx && typeof a.tx === 'object' ? a.tx.txid : null);
+      if (typeof u === 'string' && /^[a-fA-F0-9]{64}$/.test(u)) return u.toLowerCase();
+    }
+    return '';
+  }
+
+  /**
+   * List-safe proposal row (no PSBT / txhex bodies).
+   * @param {object} proposal
+   * @returns {object}
+   */
+  _proposalListSummary (proposal) {
+    if (!proposal) return null;
+    const proposalTxid = this.extractProposalTxid(proposal);
+    return {
+      id: proposal.id,
+      sessionId: proposal.sessionId,
+      created: proposal.created,
+      status: proposal.status,
+      proposalTxid: proposalTxid || undefined,
+      hasPsbt: !!proposal.psbt,
+      hasTxhex: !!proposal.txhex
+    };
+  }
+
   _publicSessionView (session, options = {}) {
     const includeProposals = options.includeProposals !== false;
+    const summariesOnly = !!options.proposalSummariesOnly;
+    const proposalRows = includeProposals
+      ? Object.values(session.proposals || {})
+        .sort((a, b) => new Date(a.created || 0).getTime() - new Date(b.created || 0).getTime())
+      : null;
     return {
       id: session.id,
       created: session.created,
@@ -261,7 +318,9 @@ class PayjoinService extends Service {
       proposalURL: session.proposalURL,
       proposalCount: Object.keys(session.proposals || {}).length,
       merkle: session.merkle || {},
-      proposals: includeProposals ? Object.values(session.proposals || {}).sort((a, b) => new Date(a.created || 0).getTime() - new Date(b.created || 0).getTime()) : undefined
+      proposals: proposalRows
+        ? (summariesOnly ? proposalRows.map((p) => this._proposalListSummary(p)) : proposalRows)
+        : undefined
     };
   }
 

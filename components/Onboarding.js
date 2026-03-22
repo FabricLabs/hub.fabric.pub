@@ -21,10 +21,10 @@ const {
 } = require('semantic-ui-react');
 
 const BITCOIN_NETWORKS = [
-  { key: 'regtest', value: 'regtest', text: 'Regtest (local dev)' },
-  { key: 'signet', value: 'signet', text: 'Signet' },
-  { key: 'testnet', value: 'testnet', text: 'Testnet' },
-  { key: 'mainnet', value: 'mainnet', text: 'Mainnet' }
+  { key: 'regtest', value: 'regtest', text: 'Regtest (local dev)', rpcPort: 18443 },
+  { key: 'signet', value: 'signet', text: 'Signet (stable testing)', rpcPort: 38332 },
+  { key: 'testnet', value: 'testnet', text: 'Testnet (public testing)', rpcPort: 18332 },
+  { key: 'mainnet', value: 'mainnet', text: 'Mainnet (production)', rpcPort: 8332 }
 ];
 
 class Onboarding extends React.Component {
@@ -36,7 +36,7 @@ class Onboarding extends React.Component {
       bitcoinNetwork: props.bitcoinNetwork || 'regtest',
       bitcoinManaged: props.bitcoinManaged !== false,
       bitcoinHost: props.bitcoinHost || '127.0.0.1',
-      bitcoinRpcPort: props.bitcoinRpcPort || '8332',
+      bitcoinRpcPort: props.bitcoinRpcPort || String(BITCOIN_NETWORKS.find((n) => n.value === (props.bitcoinNetwork || 'regtest'))?.rpcPort ?? 18443),
       bitcoinUsername: props.bitcoinUsername || '',
       bitcoinPassword: props.bitcoinPassword || '',
       lightningManaged: props.lightningManaged !== false,
@@ -164,7 +164,13 @@ class Onboarding extends React.Component {
                 <Select
                   options={BITCOIN_NETWORKS}
                   value={this.state.bitcoinNetwork}
-                  onChange={(e, { value }) => this.setState({ bitcoinNetwork: value })}
+                  onChange={(e, { value }) => {
+                    const net = BITCOIN_NETWORKS.find((n) => n.value === value);
+                    this.setState({
+                      bitcoinNetwork: value,
+                      bitcoinRpcPort: net && net.rpcPort ? String(net.rpcPort) : this.state.bitcoinRpcPort
+                    });
+                  }}
                 />
               </Form.Field>
               <Form.Field>
@@ -187,11 +193,14 @@ class Onboarding extends React.Component {
                   <Form.Field>
                     <label>Bitcoin RPC port</label>
                     <Input
-                      placeholder="8332"
+                      placeholder={BITCOIN_NETWORKS.find((n) => n.value === this.state.bitcoinNetwork)?.rpcPort ?? 8332}
                       type="number"
                       value={this.state.bitcoinRpcPort}
                       onChange={(e) => this.setState({ bitcoinRpcPort: e.target.value })}
                     />
+                    <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+                      Default: regtest 18443, signet 38332, testnet 18332, mainnet 8332
+                    </small>
                   </Form.Field>
                   <Form.Field>
                     <label>Bitcoin RPC username</label>
@@ -267,6 +276,11 @@ class Onboarding extends React.Component {
               {this.state.bitcoinNetwork === 'regtest' && this.state.bitcoinManaged && (
                 <Message info size='small'>
                   Regtest runs managed bitcoind automatically. Lightning (lightningd) is optional and requires bitcoind.
+                </Message>
+              )}
+              {(this.state.bitcoinNetwork === 'signet' || this.state.bitcoinNetwork === 'testnet') && this.state.bitcoinManaged && (
+                <Message info size='small'>
+                  Managed signet/testnet runs bitcoind locally. Signet has predictable ~1 min blocks; testnet uses PoW and can be unstable.
                 </Message>
               )}
             </Form>

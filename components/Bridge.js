@@ -18,6 +18,8 @@ const {
 const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
 const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER } = require('@fabric/core/constants');
+const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
+const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
 
 /**
  * Manages a WebSocket connection to a remote server.
@@ -108,6 +110,8 @@ class Bridge extends React.Component {
 
     // Track backing SHA ids that should be published once CreateDocument succeeds.
     this._pendingPublishBySha = new Set();
+    /** @type {Map<string, object>} Incomplete P2P_FILE_SEND transfers keyed by transferId */
+    this._p2pFileReceivers = new Map();
 
     // Initialize key if provided
     if (props.key) {
@@ -647,6 +651,17 @@ class Bridge extends React.Component {
         });
 
         window.dispatchEvent(event);
+
+        // Keep `networkStatus` in sync when the hub pushes wallet-safe Bitcoin fields (`/bitcoin`).
+        if (typeof path === 'string' && path === '/bitcoin' && patchMessage.value && typeof patchMessage.value === 'object') {
+          this.setState((prev) => {
+            const merge = (ns) => (ns && typeof ns === 'object' ? { ...ns, bitcoin: patchMessage.value } : ns);
+            return {
+              networkStatus: merge(prev.networkStatus),
+              lastNetworkStatus: merge(prev.lastNetworkStatus)
+            };
+          });
+        }
       } else {
         console.error('[BRIDGE]', 'Failed to apply JSON-Patch:', result);
       }
@@ -910,18 +925,288 @@ class Bridge extends React.Component {
     }
   }
 
+  _pruneP2pFileReceivers () {
+    const TTL = 10 * 60 * 1000;
+    const now = Date.now();
+    for (const [k, v] of this._p2pFileReceivers) {
+      if (!v || now - (v.startedAt || 0) > TTL) this._p2pFileReceivers.delete(k);
+    }
+  }
+
+  _resolveDocumentTargetId (rawId, meta) {
+    let targetId = rawId;
+    const sha = meta && (meta.sha256 || meta.sha);
+    this.globalState.documents = this.globalState.documents || {};
+    if (sha && rawId === sha) {
+      for (const [localId, existingDoc] of Object.entries(this.globalState.documents)) {
+        if (existingDoc && (existingDoc.sha256 === sha || existingDoc.sha === sha) && localId !== rawId) {
+          targetId = localId;
+          break;
+        }
+      }
+    }
+    return targetId;
+  }
+
+  _decodeBase64ToUint8 (b64) {
+    const bin = atob(b64);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  }
+
+  _uint8ToBase64 (u8) {
+    let bin = '';
+    for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+    return btoa(bin);
+  }
+
+  _bytesToHex (buf) {
+    const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < u8.length; i++) {
+      const h = u8[i].toString(16);
+      s += h.length === 1 ? `0${h}` : h;
+    }
+    return s;
+  }
+
+  _hexToUint8 (hex) {
+    const s = String(hex).trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(s)) return null;
+    const u = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) u[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+    return u;
+  }
+
+  _handleP2pFileChunk (doc, part) {
+    const transferId = String(part.transferId || '');
+    const index = Number(part.index);
+    const total = Number(part.total);
+    if (!transferId || !Number.isFinite(index) || !Number.isFinite(total) || total < 1 || index < 0 || index >= total) {
+      console.warn('[BRIDGE] Invalid P2P file part metadata');
+      return;
+    }
+    this._pruneP2pFileReceivers();
+    let state = this._p2pFileReceivers.get(transferId);
+    if (!state) {
+      state = {
+        transferId,
+        total,
+        chunks: new Array(total),
+        received: 0,
+        startedAt: Date.now(),
+        meta: null,
+        htlcFileV1: null
+      };
+      this._p2pFileReceivers.set(transferId, state);
+    }
+    if (state.total !== total) {
+      console.warn('[BRIDGE] P2P file part total mismatch');
+      return;
+    }
+    if (state.chunks[index]) return;
+    if (index === 0) {
+      state.meta = {
+        id: doc.id,
+        name: doc.name,
+        mime: doc.mime,
+        size: doc.size,
+        sha256: doc.sha256,
+        created: doc.created,
+        target: doc.target,
+        htlcSettlement: doc.htlcSettlement,
+        deliveryFabricId: doc.deliveryFabricId,
+        fileRelayTtl: doc.fileRelayTtl
+      };
+      if (doc.htlcFileV1 && Number(doc.htlcFileV1.v) === 1 && doc.htlcFileV1.iv && doc.htlcFileV1.paymentHashHex) {
+        state.htlcFileV1 = doc.htlcFileV1;
+      }
+    }
+    state.chunks[index] = doc.contentBase64;
+    state.received++;
+    if (state.received < state.total) return;
+
+    this._p2pFileReceivers.delete(transferId);
+    const pieces = state.chunks.map((b64) => this._decodeBase64ToUint8(b64));
+    const len = pieces.reduce((a, u) => a + u.length, 0);
+    const merged = new Uint8Array(len);
+    let o = 0;
+    for (const u of pieces) {
+      merged.set(u, o);
+      o += u.length;
+    }
+
+    const rawId = state.meta.id;
+    const targetId = this._resolveDocumentTargetId(rawId, state.meta);
+
+    if (state.htlcFileV1) {
+      const h = state.htlcFileV1;
+      this.globalState.documents = this.globalState.documents || {};
+      const existing = this.globalState.documents[targetId] || {};
+      this.globalState.documents[targetId] = {
+        ...existing,
+        ...state.meta,
+        id: targetId,
+        htlcPendingDecrypt: true,
+        htlcPaymentHashHex: String(h.paymentHashHex).toLowerCase(),
+        htlcIvBase64: h.iv,
+        htlcCiphertextBase64: this._uint8ToBase64(merged),
+        receivedFromPeer: true
+      };
+      delete this.globalState.documents[targetId].contentBase64;
+      if (targetId !== rawId && this.globalState.documents[rawId]) delete this.globalState.documents[rawId];
+      this._persistDocuments();
+      window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+        detail: {
+          operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
+          globalState: this.globalState
+        }
+      }));
+      return;
+    }
+
+    const contentBase64 = this._uint8ToBase64(merged);
+    this._storeDocument(targetId, { ...state.meta, id: rawId, contentBase64, receivedFromPeer: true });
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
+        globalState: this.globalState
+      }
+    }));
+  }
+
+  /**
+   * After inventory HTLC phase 2, ciphertext is stored locally until the buyer supplies the
+   * same 32-byte preimage used for the on-chain hashlock (sha256(document bytes)).
+   * @param {string} documentId
+   * @param {string} preimageHex - 64 hex chars
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  async unlockHtlcEncryptedDocument (documentId, preimageHex) {
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+      return { ok: false, error: 'Web Crypto API not available in this context.' };
+    }
+    const id = documentId;
+    const doc = this.globalState.documents && this.globalState.documents[id];
+    if (!doc || !doc.htlcPendingDecrypt) {
+      return { ok: false, error: 'Document is not waiting for an HTLC preimage.' };
+    }
+    const preimageU8 = this._hexToUint8(preimageHex);
+    if (!preimageU8) {
+      return { ok: false, error: 'Preimage must be 64 hex characters (32 bytes).' };
+    }
+    const hashBuf = await crypto.subtle.digest('SHA-256', preimageU8);
+    const hashHex = this._bytesToHex(new Uint8Array(hashBuf)).toLowerCase();
+    const expected = String(doc.htlcPaymentHashHex || '').toLowerCase();
+    if (!expected || hashHex !== expected) {
+      return { ok: false, error: 'Preimage does not match the HTLC payment hash for this transfer.' };
+    }
+    let iv;
+    let ct;
+    try {
+      iv = this._decodeBase64ToUint8(doc.htlcIvBase64);
+      ct = this._decodeBase64ToUint8(doc.htlcCiphertextBase64);
+    } catch (e) {
+      return { ok: false, error: 'Stored ciphertext or IV is invalid.' };
+    }
+    const key = await crypto.subtle.importKey('raw', preimageU8, { name: 'AES-GCM' }, false, ['decrypt']);
+    let plain;
+    try {
+      plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, ct);
+    } catch (e) {
+      return { ok: false, error: 'Decryption failed (wrong key or corrupted ciphertext).' };
+    }
+    const contentBase64 = this._uint8ToBase64(new Uint8Array(plain));
+    const cleaned = { ...doc };
+    delete cleaned.htlcPendingDecrypt;
+    delete cleaned.htlcPaymentHashHex;
+    delete cleaned.htlcIvBase64;
+    delete cleaned.htlcCiphertextBase64;
+    this._storeDocument(id, { ...cleaned, contentBase64, receivedFromPeer: true });
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+        globalState: this.globalState
+      }
+    }));
+    return { ok: true };
+  }
+
   _persistMessages () {
     const messages = this.globalState.messages || {};
-    const keys = Object.keys(messages);
+    const keys = Object.keys(messages).filter((k) => {
+      const m = messages[k];
+      return !(m && isDelegationSignatureRequestActivity(m));
+    });
+    const filtered = {};
+    for (const k of keys) filtered[k] = messages[k];
     // Cap at 500 messages to avoid localStorage bloat
     const toStore = keys.length > 500
       ? Object.fromEntries(keys.sort((a, b) => {
-          const ta = (messages[a] && messages[a].object && messages[a].object.created) || 0;
-          const tb = (messages[b] && messages[b].object && messages[b].object.created) || 0;
+          const ta = (filtered[a] && filtered[a].object && filtered[a].object.created) || 0;
+          const tb = (filtered[b] && filtered[b].object && filtered[b].object.created) || 0;
           return ta - tb;
-        }).slice(-500).map((k) => [k, messages[k]]))
-      : messages;
+        }).slice(-500).map((k) => [k, filtered[k]]))
+      : filtered;
     this._writeJSONToStorage('fabric:messages', toStore);
+  }
+
+  /**
+   * Activity stream row for Hub delegation signing (same panel as public chat; channel #delegation).
+   */
+  _emitDelegationSignRequestActivity ({ messageId, preview, purpose }) {
+    if (!messageId) return;
+    const id = `delegation-${messageId}`;
+    const actorId = this._getIdentityId() || 'local';
+    const created = Date.now();
+    this.globalState.messages = this.globalState.messages || {};
+    this.globalState.messages[id] = {
+      type: DELEGATION_SIGNATURE_REQUEST,
+      actor: { id: actorId },
+      object: {
+        content: typeof preview === 'string' ? preview : '',
+        purpose: typeof purpose === 'string' ? purpose : 'sign',
+        messageId,
+        created,
+        channel: 'delegation',
+        status: 'pending'
+      },
+      status: 'pending'
+    };
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/messages/${id}`, value: this.globalState.messages[id] },
+        globalState: this.globalState
+      }
+    }));
+  }
+
+  _resolveDelegationSignRequestActivity (messageId, resolution) {
+    if (!messageId) return;
+    const id = `delegation-${messageId}`;
+    const cur = this.globalState.messages && this.globalState.messages[id];
+    if (!cur || !isDelegationSignatureRequestActivity(cur)) return;
+    const status = resolution === 'approved'
+      ? 'approved'
+      : resolution === 'timeout'
+        ? 'timeout'
+        : 'rejected';
+    this.globalState.messages[id] = Object.assign({}, cur, {
+      status: 'resolved',
+      object: Object.assign({}, cur.object, {
+        status,
+        resolvedAt: Date.now()
+      })
+    });
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'replace', path: `/messages/${id}`, value: this.globalState.messages[id] },
+        globalState: this.globalState
+      }
+    }));
   }
 
   /**
@@ -1070,6 +1355,23 @@ class Bridge extends React.Component {
     }
   }
 
+  /**
+   * Append optional WS token for hub `settings.websocket` auth (MESSAGE_TRANSPORT.md).
+   * Set `window.FABRIC_WS_CLIENT_TOKEN` before Bridge connects when FABRIC_WS_REQUIRE_TOKEN is on.
+   */
+  _websocketUrlWithAuth (path) {
+    const base = `${this.authority}${path}`;
+    let token = '';
+    try {
+      token = (typeof window !== 'undefined' && window.FABRIC_WS_CLIENT_TOKEN)
+        ? String(window.FABRIC_WS_CLIENT_TOKEN).trim()
+        : '';
+    } catch (e) {}
+    if (!token) return base;
+    const sep = base.indexOf('?') >= 0 ? '&' : '?';
+    return `${base}${sep}token=${encodeURIComponent(token)}`;
+  }
+
   _applyHubAddressString (input) {
     const parsed = this._parseHubAddressString(input);
     if (!parsed) return false;
@@ -1137,8 +1439,9 @@ class Bridge extends React.Component {
       this.ws = null;
     }
 
-    console.debug('[BRIDGE]', 'Opening connection to:', `${this.authority}${path}`);
-    this.ws = new WebSocket(`${this.authority}${path}`);
+    const wsUrl = this._websocketUrlWithAuth(path);
+    console.debug('[BRIDGE]', 'Opening connection to:', wsUrl);
+    this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
 
     // Attach Event Handlers
@@ -1504,6 +1807,22 @@ class Bridge extends React.Component {
     try {
       console.debug('[BRIDGE]', 'Processing message from WebRTC peer:', peerId);
 
+      if (typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer) {
+        this.onSocketMessage({ data });
+        return;
+      }
+      if (typeof Uint8Array !== 'undefined' && data instanceof Uint8Array) {
+        const u8 = data;
+        this.onSocketMessage({ data: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) });
+        return;
+      }
+      if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        data.arrayBuffer().then((ab) => {
+          this.onSocketMessage({ data: ab });
+        }).catch((err) => console.error('[BRIDGE]', 'WebRTC Blob read failed:', err));
+        return;
+      }
+
       let payload = data;
       // RTCDataChannel text frames arrive as strings; normalize to object when possible.
       if (typeof payload === 'string') {
@@ -1717,6 +2036,21 @@ class Bridge extends React.Component {
     }
 
     try {
+      if (data && typeof data.toBuffer === 'function') {
+        const buf = data.toBuffer();
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        peerInfo.connection.send(ab);
+        return true;
+      }
+      if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(data)) {
+        const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        peerInfo.connection.send(ab);
+        return true;
+      }
+      if (typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer) {
+        peerInfo.connection.send(data);
+        return true;
+      }
       const outbound = (data && typeof data === 'object')
         ? JSON.stringify(data)
         : data;
@@ -1775,7 +2109,7 @@ class Bridge extends React.Component {
     return {
       type: P2P_PEER_GOSSIP,
       actor: { id: this.peerId },
-      object: { peers, timestamp: now },
+      object: { peers, timestamp: now, relayTtl: 8 },
       timestamp: now
     };
   }
@@ -1788,7 +2122,7 @@ class Bridge extends React.Component {
     return {
       type: P2P_PEERING_OFFER,
       actor: { id: this.peerId },
-      object: { slots, transport: 'webrtc', timestamp: Date.now() },
+      object: { slots, transport: 'webrtc', timestamp: Date.now(), relayTtl: 8 },
       timestamp: Date.now()
     };
   }
@@ -2163,12 +2497,96 @@ class Bridge extends React.Component {
   }
 
   /**
+   * External signing: post a `DELEGATION_SIGNATURE_REQUEST` Fabric message (JSON-RPC) and poll until the desktop resolves it.
+   * Requires `fabric.delegation` in localStorage (set after desktop browser login).
+   * @param {string} text
+   * @returns {Promise<{ signature: string, publicKey: string }|null>}
+   */
+  async signArbitraryTextDelegated (text) {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    let raw;
+    try {
+      raw = window.localStorage.getItem('fabric.delegation');
+    } catch (e) {
+      return null;
+    }
+    if (!raw) return null;
+    let d;
+    try {
+      d = JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+    const token = d && d.token;
+    if (!token && d && d.externalSigning === false) return null;
+    if (!token) return null;
+    const origin = window.location.origin;
+    const rpc = async (method, params) => {
+      const res = await fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ method, params: [params] })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (body && body.error) return { rpcError: body.error.message || 'RPC error' };
+      return body && body.result != null ? body.result : null;
+    };
+    const postResult = await rpc('PostDelegationSignatureMessage', {
+      sessionToken: token,
+      message: String(text),
+      purpose: 'arbitrary'
+    });
+    if (!postResult || postResult.rpcError || !postResult.ok || !postResult.messageId) return null;
+    const messageId = postResult.messageId;
+    this._emitDelegationSignRequestActivity({
+      messageId,
+      preview: postResult.preview || String(text).slice(0, 400),
+      purpose: postResult.purpose || 'arbitrary'
+    });
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 500));
+      const pj = await rpc('GetDelegationSignatureMessage', {
+        sessionToken: token,
+        messageId
+      });
+      if (!pj || pj.rpcError) continue;
+      if (pj.ok === false) continue;
+      if (pj.status === 'pending') continue;
+      if (pj.status === 'rejected') {
+        this._resolveDelegationSignRequestActivity(messageId, 'rejected');
+        return null;
+      }
+      if (pj.status === 'approved' && pj.signature) {
+        this._resolveDelegationSignRequestActivity(messageId, 'approved');
+        return { signature: pj.signature, publicKey: pj.pubkeyHex };
+      }
+    }
+    this._resolveDelegationSignRequestActivity(messageId, 'timeout');
+    return null;
+  }
+
+  /**
    * Verifies a Schnorr signature for arbitrary text.
    * @param {string} text - The original message
    * @param {string} signatureHex - The signature (64-byte hex)
    * @param {string} publicKeyHex - The compressed public key (33-byte hex)
    * @returns {boolean|null} - True if valid, false if invalid, null on error
    */
+  /**
+   * Compressed secp256k1 public key (hex) for the local identity — used as buyer refund key in inventory P2TR HTLCs.
+   * @returns {string|null}
+   */
+  getHtlcRefundPublicKeyHex () {
+    const k = this.settings.signingKey;
+    if (!k || !k.public || typeof k.public.encodeCompressed !== 'function') return null;
+    try {
+      return k.public.encodeCompressed('hex');
+    } catch (e) {
+      return null;
+    }
+  }
+
   verifyArbitraryText (text, signatureHex, publicKeyHex) {
     if (!text || !signatureHex || !publicKeyHex) return null;
     try {
@@ -2183,34 +2601,50 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Signs a message with the component's signing key
+   * True when the Bridge has a key that can produce Schnorr signatures (xprv / private material).
+   * Watch-only and desktop-delegated identities use xpub-only {@link Key} — JSONCall may be sent unsigned.
+   */
+  _canSignOutgoing () {
+    const k = this.settings.signingKey;
+    return !!(k && k.private);
+  }
+
+  /**
+   * Signs a message with the component's signing key when a private key is available.
+   * Without a private key, returns the buffer unchanged (Hub accepts unsigned JSONCall for many read paths).
    * @param {Buffer} message - The message to sign
-   * @returns {Object} - The signed message object
+   * @returns {Buffer|Message} - Signed Fabric Message, or original buffer when unsigned
    */
   signMessage (message) {
     if (!this.settings.signingKey) {
-      console.warn('[BRIDGE]', 'No signing key configured, skipping signing');
+      if (this.settings.debug) console.debug('[BRIDGE]', 'No signing key — sending unsigned');
       return message;
     }
 
-    // Create a Fabric Message from the buffer
+    if (!this._canSignOutgoing()) {
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'Watch-only or delegated identity (public key only) — sending unsigned');
+      }
+      return message;
+    }
+
     const fabricMessage = Message.fromBuffer(message);
     if (!fabricMessage) {
       console.warn('[BRIDGE]', 'Could not create Fabric Message from buffer');
       return message;
     }
 
-    // Sign the message with the key
     try {
       return fabricMessage.signWithKey(this.settings.signingKey);
     } catch (error) {
-      console.error('[BRIDGE]', 'Error signing message:', error);
+      console.warn('[BRIDGE]', 'Signing failed, sending unsigned:', error && error.message ? error.message : error);
       return message;
     }
   }
 
   /**
-   * Sends a signed message over WebSocket or WebRTC connection
+   * Sends a Fabric wire message over WebSocket (or WebRTC). Signs via `signMessage` when
+   * `_canSignOutgoing()`; otherwise sends the same buffer unsigned (watch-only / delegated clients).
    * @param {Buffer} message - The message to send
    * @param {Boolean} preferWebRTC - Whether to prefer WebRTC over WebSocket
    */
@@ -2378,6 +2812,9 @@ class Bridge extends React.Component {
         default:
           console.debug('[BRIDGE]', 'Unhandled message type:', message.type);
           break;
+        case 'P2P_MESSAGE_RECEIPT':
+          // Server ack for a delivered inbound message; JSONCall path does not require client handling.
+          break;
         case 'Pong':
           // Keepalive response from hub; no action needed beyond acknowledging receipt.
           break;
@@ -2407,6 +2844,11 @@ class Bridge extends React.Component {
                     const inStore = published[docId] || (doc.sha256 && published[doc.sha256]);
                     if (inStore && !doc.published) {
                       this.globalState.documents[docId] = { ...doc, published: inStore.published || true };
+                      changed = true;
+                    } else if (doc.published && !inStore) {
+                      const next = { ...doc };
+                      delete next.published;
+                      this.globalState.documents[docId] = next;
                       changed = true;
                     }
                   }
@@ -2460,6 +2902,9 @@ class Bridge extends React.Component {
                     globalState: this.globalState
                   }
                 }));
+              }
+              if (result && typeof result === 'object' && result.type === 'ConfirmInventoryHtlcPaymentResult') {
+                window.dispatchEvent(new CustomEvent('inventoryHtlcConfirmResult', { detail: result }));
               }
               if (result && typeof result === 'object' && result.type === 'CreateDocumentResult' && result.document && result.document.id) {
                 const backendId = result.document.id; // sha-based id from hub
@@ -2566,6 +3011,13 @@ class Bridge extends React.Component {
                   }
                 }));
               }
+              if (result && typeof result === 'object' && result.type === 'CreateExecutionContractResult' && result.contract) {
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('executionContractCreated', {
+                    detail: { contract: result.contract, id: result.id || result.contract.id }
+                  }));
+                }
+              }
               if (result && typeof result === 'object' && result.type === 'CreateStorageContractResult' && result.contract && result.contract.document) {
                 const backendDocId = result.contract.document; // sha-based id
                 const contractId = result.id || result.contract.id;
@@ -2615,21 +3067,44 @@ class Bridge extends React.Component {
             console.debug('[BRIDGE]', 'JSONCall body is not valid JSON, skipping parse');
           }
           break;
+        case 'GENERIC_MESSAGE':
         case 'GenericMessage':
           // Check for FileMessage and Inventory responses (broadcast as GenericMessage when type unknown)
           try {
             const parsed = JSON.parse(message.body);
+            const bridgeEnv = fabricBridgeEnvelope.tryParse(parsed);
+            if (bridgeEnv && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabricBridgeEnvelope', { detail: bridgeEnv }));
+            }
+            if (parsed && parsed.type === 'Tombstone' && parsed.object && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabric:tombstone', {
+                detail: {
+                  messageId: parsed.object.activityMessageId || null,
+                  documentId: parsed.object.documentId || null
+                }
+              }));
+              break;
+            }
+            if (parsed && parsed.type === DOCUMENT_OFFER && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabric:documentOffer', { detail: parsed }));
+              break;
+            }
             if (parsed && parsed.type === 'P2P_FILE_SEND' && parsed.object) {
               const doc = parsed.object;
               if (doc.id && doc.contentBase64) {
-                this._storeDocument(doc.id, { ...doc, receivedFromPeer: true });
-                this._persistDocuments();
-                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                  detail: {
-                    operation: { op: 'add', path: `/documents/${doc.id}`, value: this.globalState.documents[doc.id] },
-                    globalState: this.globalState
-                  }
-                }));
+                if (doc.part && doc.part.transferId != null && doc.part.total != null) {
+                  this._handleP2pFileChunk(doc, doc.part);
+                } else {
+                  const targetId = this._resolveDocumentTargetId(doc.id, doc);
+                  this._storeDocument(targetId, { ...doc, receivedFromPeer: true });
+                  this._persistDocuments();
+                  window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                    detail: {
+                      operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
+                      globalState: this.globalState
+                    }
+                  }));
+                }
               }
               break;
             }
@@ -2741,6 +3216,15 @@ class Bridge extends React.Component {
               this._storeDistributeProposal(proposal);
               break;
             }
+            const relayOfferPrefix = `[${DOCUMENT_OFFER}] `;
+            if (typeof content === 'string' && content.startsWith(relayOfferPrefix) && typeof window !== 'undefined') {
+              try {
+                const env = JSON.parse(content.slice(relayOfferPrefix.length));
+                if (env && env.type === DOCUMENT_OFFER) {
+                  window.dispatchEvent(new CustomEvent('fabric:documentOffer', { detail: env }));
+                }
+              } catch (_) { /* ignore */ }
+            }
             const created = (chat.object && chat.object.created) || chat.created || Date.now();
             const id = `chat:${created}:${(chat.actor && chat.actor.id) || 'unknown'}`;
             this.globalState.messages = this.globalState.messages || {};
@@ -2763,6 +3247,7 @@ class Bridge extends React.Component {
             console.error('[BRIDGE]', 'Could not parse P2P_RELAY envelope:', e);
           }
           break;
+        case 'CHAT_MESSAGE':
         case 'ChatMessage':
           try {
             const chat = JSON.parse(message.body);
@@ -2772,6 +3257,16 @@ class Bridge extends React.Component {
             if (proposal) {
               this._storeDistributeProposal(proposal);
               break;
+            }
+
+            const offerPrefix = `[${DOCUMENT_OFFER}] `;
+            if (typeof content === 'string' && content.startsWith(offerPrefix) && typeof window !== 'undefined') {
+              try {
+                const env = JSON.parse(content.slice(offerPrefix.length));
+                if (env && env.type === DOCUMENT_OFFER) {
+                  window.dispatchEvent(new CustomEvent('fabric:documentOffer', { detail: env }));
+                }
+              } catch (_) { /* ignore malformed demo line */ }
             }
 
             const created = (chat && chat.object && chat.object.created) || (chat && chat.created) || Date.now();
@@ -2886,8 +3381,10 @@ class Bridge extends React.Component {
   sendNetworkStatusRequest () {
     const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [] })]);
     const buffer = message.toBuffer();
-    console.debug('[BRIDGE]', 'JSONCall:', message);
-    console.debug('[BRIDGE]', 'Sending network status request:', buffer);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'JSONCall:', message);
+      console.debug('[BRIDGE]', 'Sending network status request:', buffer);
+    }
     this.sendSignedMessage(buffer);
   }
 
@@ -2899,8 +3396,10 @@ class Bridge extends React.Component {
   sendListPeersRequest () {
     const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'ListPeers', params: [] })]);
     const buffer = message.toBuffer();
-    console.debug('[BRIDGE]', 'JSONCall:', message);
-    console.debug('[BRIDGE]', 'Sending ListPeers request:', buffer);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'JSONCall:', message);
+      console.debug('[BRIDGE]', 'Sending ListPeers request:', buffer);
+    }
     this.sendSignedMessage(buffer);
   }
 
@@ -3176,6 +3675,71 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending SubmitChatMessage:', error);
+    }
+  }
+
+  /**
+   * Ask the hub to remove an activity row and/or unpublish a document (admin token required server-side).
+   * Uses HTTP POST `/services/rpc` so the caller can await success or surface `status: 'error'` from the hub
+   * (WebSocket JSONCall alone does not return a result to the client).
+   * @param {string} [messageId] - Hub `globalState.messages` key (omit for unpublish-only).
+   * @param {string} [adminToken] - Hub admin token (from setup / localStorage).
+   * @param {string} [documentId] - optional published document id to remove from the hub catalog.
+   * @returns {Promise<{ ok: boolean, message?: string, result?: object }>}
+   */
+  async emitTombstone (messageId, adminToken, documentId) {
+    let mid, token, docId;
+    const isOpts = messageId !== null && typeof messageId === 'object' && !Array.isArray(messageId) &&
+      (Object.prototype.hasOwnProperty.call(messageId, 'messageId') ||
+        Object.prototype.hasOwnProperty.call(messageId, 'documentId') ||
+        Object.prototype.hasOwnProperty.call(messageId, 'adminToken'));
+    if (isOpts) {
+      mid = messageId.messageId;
+      token = messageId.adminToken;
+      docId = messageId.documentId;
+    } else {
+      mid = messageId;
+      token = adminToken;
+      docId = documentId;
+    }
+    const id = typeof mid === 'string' ? mid.trim() : '';
+    const d = typeof docId === 'string' ? docId.trim() : '';
+    if (!id && !d) return { ok: false, message: 'messageId or documentId required' };
+
+    const rpcParams = {
+      messageId: id || undefined,
+      documentId: d || undefined,
+      adminToken: token || null
+    };
+
+    try {
+      const res = await fetch('/services/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ method: 'EmitTombstone', params: [rpcParams] })
+      });
+      let body = {};
+      try {
+        body = await res.json();
+      } catch (_) {}
+      if (!res.ok) {
+        const msg = (body && body.error && body.error.message) || res.statusText || `HTTP ${res.status}`;
+        return { ok: false, message: msg };
+      }
+      if (body && body.error) {
+        return { ok: false, message: body.error.message || 'RPC error' };
+      }
+      const result = body && body.result != null ? body.result : null;
+      if (result && result.status === 'error') {
+        return { ok: false, message: result.message || 'Operation failed' };
+      }
+      if (result && result.status === 'success') {
+        return { ok: true, result };
+      }
+      return { ok: false, message: (result && result.message) || 'Unexpected response from hub' };
+    } catch (error) {
+      console.error('[BRIDGE]', 'emitTombstone error:', error);
+      return { ok: false, message: error && error.message ? error.message : String(error) };
     }
   }
 
@@ -3627,6 +4191,46 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Create an Execution contract (sandboxed opcode program stored on the hub).
+   * Uses the same signing rules as other JSONCalls: unsigned when identity is public-key only
+   * (e.g. desktop delegation); Hub policy applies.
+   * @param {Object} config - `{ name?: string, program: { steps: [...] } }`
+   */
+  sendCreateExecutionContractRequest (config = {}) {
+    if (!config.program || typeof config.program !== 'object') return;
+    try {
+      const actorId = this._getIdentityId();
+      const payloadConfig = {
+        name: config.name,
+        program: config.program,
+        actorId
+      };
+      const payload = { method: 'CreateExecutionContract', params: [payloadConfig] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending CreateExecutionContract:', error);
+    }
+  }
+
+  /**
+   * Run a persisted Execution contract on the hub (returns trace/stack in JSONCallResult).
+   * Read-heavy path: safe to send unsigned for watch-only clients if the Hub allows it.
+   * @param {string} contractId
+   */
+  sendRunExecutionContractRequest (contractId) {
+    const id = String(contractId || '').trim();
+    if (!id) return;
+    try {
+      const payload = { method: 'RunExecutionContract', params: [{ contractId: id }] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending RunExecutionContract:', error);
+    }
+  }
+
+  /**
    * Request a long-term storage contract for a document, paid in Bitcoin (L1).
    * When txid is provided, completes the pay-to-distribute flow (step 2).
    *
@@ -3664,16 +4268,39 @@ class Bridge extends React.Component {
 
   /**
    * Request a peer's inventory (e.g., list of documents) via the hub JSON-RPC.
-   * @param {string|{id,address}} idOrAddress - Peer id or address.
+   * @param {string|{id,address}} idOrAddress - Direct Fabric connection (next hop); use with `options.inventoryTarget` when that hop is a relay.
    * @param {string} kind - Inventory kind, defaults to 'documents'.
+   * @param {Object} [options] - Optional `{ buyerRefundPublicKey, htlcLocktimeBlocks?, htlcAmountSats?, inventoryTarget?, inventoryRelayTtl? }`.
+   *   `inventoryTarget` = seller’s Fabric id when `idOrAddress` is only the relay. `inventoryRelayTtl` caps relay hops (default 6, max 16).
    */
-  sendPeerInventoryRequest (idOrAddress, kind = 'documents') {
+  sendPeerInventoryRequest (idOrAddress, kind = 'documents', options = {}) {
     try {
-      const payload = { method: 'RequestPeerInventory', params: [idOrAddress, kind] };
+      const params = (options && typeof options === 'object' && Object.keys(options).length > 0)
+        ? [idOrAddress, kind, options]
+        : [idOrAddress, kind];
+      const payload = { method: 'RequestPeerInventory', params };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending RequestPeerInventory:', error);
+    }
+  }
+
+  /**
+   * After funding an inventory HTLC P2TR output, confirm with the seller hub to start phase 2 (document transfer).
+   * @param {string} settlementId
+   * @param {string} txid
+   */
+  sendConfirmInventoryHtlcPayment (settlementId, txid) {
+    const sid = String(settlementId || '').trim();
+    const tx = String(txid || '').trim();
+    if (!sid || !tx) return;
+    try {
+      const payload = { method: 'ConfirmInventoryHtlcPayment', params: [{ settlementId: sid, txid: tx }] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending ConfirmInventoryHtlcPayment:', error);
     }
   }
 
