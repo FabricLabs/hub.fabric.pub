@@ -388,6 +388,23 @@ function DocumentsPage (props) {
                   );
                 }
 
+                const isBitcoinBlockDoc = doc.mime === 'application/x-fabric-bitcoin-block+json'
+                  || String(doc.name || '').startsWith('Bitcoin block ');
+                if (isBitcoinBlockDoc) {
+                  labels.push(
+                    <Label
+                      key="bitcoin-block"
+                      size="mini"
+                      color="orange"
+                      style={{ marginLeft: '0.25em' }}
+                      title="Auto-published L1 block summary from this hub"
+                    >
+                      <Icon name="cube" />
+                      L1 block
+                    </Label>
+                  );
+                }
+
                 if (doc.storageContractId) {
                   labels.push(
                     <Label

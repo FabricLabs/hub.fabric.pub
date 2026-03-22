@@ -2703,10 +2703,182 @@ class Hub extends Service {
 
       this._broadcastBitcoinStatusToClients(status);
 
+      const docBlocksCfg = this.settings.bitcoin && this.settings.bitcoin.documentBlocks;
+      const documentBlocksEnabled = !(docBlocksCfg === false || docBlocksCfg === 'false' || docBlocksCfg === 0 || docBlocksCfg === '0');
+      if (documentBlocksEnabled && tip) {
+        try {
+          const bitcoinSvc = this._getBitcoinService();
+          if (bitcoinSvc && typeof bitcoinSvc._makeRPCRequest === 'function') {
+            const fullBlock = await bitcoinSvc._makeRPCRequest('getblock', [tip, 2]);
+            if (fullBlock) await this._ensureBitcoinBlockPublishedDocument(fullBlock, status.network);
+          }
+        } catch (docErr) {
+          console.warn('[HUB:BITCOIN] block document index:', docErr && docErr.message ? docErr.message : docErr);
+        }
+      }
+
       await this._maybeScanSidechainBlock(tip, Number.isFinite(height) ? height : null);
     } catch (err) {
       console.error('[HUB] _handleBitcoinBlockUpdate error:', err && err.message ? err.message : err);
     }
+  }
+
+  /**
+   * Persist a compact Bitcoin block summary as a Fabric Document and publish it to the hub catalog
+   * (`collections.documents` + `PublishDocument` message). Idempotent per block (stable JSON → sha256 id).
+   * @param {object} block — Bitcoin Core `getblock` verbosity 2 JSON
+   * @param {string|null} networkName
+   */
+  async _ensureBitcoinBlockPublishedDocument (block, networkName) {
+    const {
+      bitcoinBlockDocumentBuffer,
+      bitcoinBlockDocumentId,
+      buildBitcoinBlockSummary
+    } = require('../functions/bitcoinBlockDocument');
+    if (!block || typeof block !== 'object' || !block.hash) return;
+    const buffer = bitcoinBlockDocumentBuffer(block, networkName);
+    const sizeErr = this._validateDocumentSize(buffer);
+    if (sizeErr) {
+      console.warn('[HUB:BITCOIN] block document:', sizeErr.message);
+      return;
+    }
+    const id = bitcoinBlockDocumentId(block, networkName);
+    const summary = buildBitcoinBlockSummary(block, networkName);
+    const now = new Date().toISOString();
+    const h = String(block.hash);
+    const name = `Bitcoin block ${summary.height != null && Number.isFinite(Number(summary.height)) ? summary.height : '?'} (${h.slice(0, 10)}…)`;
+    const mime = 'application/x-fabric-bitcoin-block+json';
+
+    this._ensureResourceCollections();
+    this._state.documents = this._state.documents || {};
+    this._state.content.collections = this._state.content.collections || {};
+    this._state.content.collections.documents = this._state.content.collections.documents || {};
+    this._state.content.counts = this._state.content.counts || {};
+
+    const coll = this._state.content.collections.documents;
+    if (coll[id] && coll[id].published) return;
+
+    const existingRaw = this.fs.readFile(`documents/${id}.json`);
+    let parsed;
+
+    if (!existingRaw) {
+      const meta = {
+        id,
+        sha256: id,
+        name,
+        mime,
+        size: buffer.length,
+        created: now,
+        lineage: id,
+        parent: null,
+        revision: 1,
+        edited: now,
+        bitcoinBlockHash: h,
+        bitcoinHeight: summary.height
+      };
+      try {
+        await this.fs.publish(`documents/${id}.json`, {
+          ...meta,
+          contentBase64: buffer.toString('base64')
+        });
+      } catch (e) {
+        console.error('[HUB:BITCOIN] block document persist failed:', e && e.message ? e.message : e);
+        return;
+      }
+      this._state.documents[id] = { ...meta };
+      this._refreshChainState('bitcoin-block-document');
+      try {
+        this.recordActivity({
+          type: 'Create',
+          object: {
+            type: 'Document',
+            id,
+            name,
+            mime,
+            size: buffer.length,
+            sha256: id,
+            bitcoinBlock: true
+          }
+        });
+      } catch (_) { /* optional */ }
+      parsed = meta;
+    } else {
+      try {
+        parsed = JSON.parse(existingRaw);
+      } catch (e) {
+        console.error('[HUB:BITCOIN] block document corrupt:', id, e && e.message ? e.message : e);
+        return;
+      }
+      if (!this._state.documents[id]) {
+        this._state.documents[id] = {
+          id: parsed.id || id,
+          sha256: parsed.sha256 || id,
+          name: parsed.name || name,
+          mime: parsed.mime || mime,
+          size: parsed.size != null ? parsed.size : buffer.length,
+          created: parsed.created || now,
+          lineage: parsed.lineage || id,
+          parent: parsed.parent || null,
+          revision: parsed.revision || 1,
+          edited: parsed.edited || now
+        };
+      }
+    }
+
+    if (coll[id] && coll[id].published) return;
+
+    const pubNow = new Date().toISOString();
+    const exists = !!coll[id];
+    coll[id] = {
+      id,
+      document: id,
+      name: parsed.name || name,
+      mime: parsed.mime || mime,
+      size: parsed.size != null ? parsed.size : buffer.length,
+      sha256: parsed.sha256 || id,
+      created: parsed.created || pubNow,
+      lineage: parsed.lineage || id,
+      parent: parsed.parent != null ? parsed.parent : null,
+      revision: parsed.revision || 1,
+      edited: parsed.edited || parsed.created || pubNow,
+      published: pubNow
+    };
+    if (!exists) {
+      this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
+    }
+
+    try {
+      await this._appendFabricMessage('PublishDocument', {
+        id,
+        name: coll[id].name,
+        mime: coll[id].mime
+      });
+    } catch (e) {
+      console.error('[HUB:BITCOIN] PublishDocument message failed:', e && e.message ? e.message : e);
+    }
+    this._refreshChainState('publish-bitcoin-block-document');
+    this.commit();
+    if (typeof this._pushNetworkStatus === 'function') {
+      try {
+        this._pushNetworkStatus();
+      } catch (_) { /* optional */ }
+    }
+    try {
+      this.recordActivity({
+        type: 'Add',
+        object: {
+          type: 'Document',
+          id,
+          name: coll[id].name,
+          mime: coll[id].mime,
+          size: coll[id].size,
+          sha256: coll[id].sha256,
+          published: pubNow,
+          bitcoinBlock: true
+        },
+        target: { type: 'Collection', name: 'documents' }
+      });
+    } catch (_) { /* optional */ }
   }
 
   /**

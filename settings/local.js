@@ -22,7 +22,10 @@ module.exports = Object.assign({}, defaults, {
       opReturnMagicHex: process.env.FABRIC_SIDECHAIN_OP_RETURN_MAGIC || 'fab100',
       watchAddresses: [],
       recordTimelocks: true
-    }
+    },
+    documentBlocks: process.env.FABRIC_BITCOIN_DOCUMENT_BLOCKS === '0' || process.env.FABRIC_BITCOIN_DOCUMENT_BLOCKS === 'false'
+      ? false
+      : true
   },
   payjoin: {
     enable: process.env.FABRIC_PAYJOIN_ENABLE ? process.env.FABRIC_PAYJOIN_ENABLE !== 'false' : true,

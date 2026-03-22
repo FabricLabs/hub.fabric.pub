@@ -672,8 +672,7 @@ class BitcoinHome extends React.Component {
         <Segment loading={this.state.loading}>
           <Header as='h3'>Node console</Header>
           <p style={{ color: '#666', marginBottom: '0.75em' }}>
-            Parity with <a href='https://github.com/janb84/bitcoin-tui' target='_blank' rel='noreferrer'>bitcoin-tui</a>
-            {' '}(dashboard, mempool, network, peers, search, broadcast). Data comes from this Hub&apos;s Bitcoin Core RPC.
+            Data comes from this Hub&apos;s Bitcoin Core RPC.
           </p>
 
           <Header as='h4'>Dashboard</Header>
