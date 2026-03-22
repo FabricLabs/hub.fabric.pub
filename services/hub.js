@@ -43,8 +43,8 @@ const PeeringService = require('../services/peering');
 
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
-const FabricDistributedExecutionHTTP = require('@fabric/http/types/distributedExecutionHttp');
-const DistributedExecution = require('@fabric/core/types/distributedExecution');
+const FabricDistributedExecutionHTTP = require('../functions/fabricDistributedExecutionHttp');
+const DistributedExecution = require('../functions/fabricDistributedExecution');
 const { P2P_PEERING_OFFER, P2P_PEER_GOSSIP, MAX_PEERS } = require('@fabric/core/constants');
 
 // Hard limits and validation patterns

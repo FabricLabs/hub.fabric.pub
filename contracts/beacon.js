@@ -4,7 +4,7 @@ const merge = require('lodash.merge');
 const Actor = require('@fabric/core/types/actor');
 const Message = require('@fabric/core/types/message');
 const Tree = require('@fabric/core/types/tree');
-const DistributedExecution = require('@fabric/core/types/distributedExecution');
+const DistributedExecution = require('../functions/fabricDistributedExecution');
 
 const BEACON_CHAIN_PATH = 'beacon/CHAIN';
 
