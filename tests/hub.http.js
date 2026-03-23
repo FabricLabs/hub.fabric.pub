@@ -398,6 +398,32 @@ describe('@fabric/hub', function () {
         assert.ok(typeof run.runCommitmentHex === 'string');
         assert.strictEqual(run.runCommitmentHex.length, 64);
       });
+
+      it('CreateExecutionRegistryInvoice returns error when Bitcoin is disabled', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+
+        const program = { version: 1, steps: [] };
+        const inv = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 302,
+          method: 'CreateExecutionRegistryInvoice',
+          params: [{ program, amountSats: 1000 }]
+        }, { Accept: 'application/json' });
+
+        assert.strictEqual(inv.status, 200);
+        assert.ok(inv.body && inv.body.result, 'JSON-RPC result');
+        const body = inv.body.result;
+        assert.strictEqual(body.status, 'error');
+        assert.ok(String(body.message).toLowerCase().includes('bitcoin'), body.message);
+      });
     });
 
     describe('Accept Header Response Format', function () {
@@ -571,6 +597,16 @@ describe('@fabric/hub', function () {
           assert.strictEqual(response.status, 200);
           assert.strictEqual(response.body.version, 1);
           assert.ok(typeof response.body.programId === 'string');
+          assert.ok(
+            response.body.hubFabricPeerId === null || typeof response.body.hubFabricPeerId === 'string',
+            'hubFabricPeerId is optional operator hint (Fabric pubkey hex)'
+          );
+          assert.ok(
+            response.body.federationVault === undefined ||
+              response.body.federationVault === null ||
+              typeof response.body.federationVault === 'object',
+            'federationVault is an optional summary when validators are configured'
+          );
         });
 
         it('GET /services/distributed/epoch returns beacon summary', async function () {
@@ -578,6 +614,19 @@ describe('@fabric/hub', function () {
           assert.strictEqual(response.status, 200);
           assert.strictEqual(response.body.service, 'distributed');
           assert.ok(response.body.beacon);
+        });
+
+        it('GET /services/distributed/vault returns FederationVaultSummary', async function () {
+          const response = await makeRequest('GET', '/services/distributed/vault', null, jsonApi);
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(response.body.type, 'FederationVaultSummary');
+          assert.ok(['ok', 'no_validators', 'error'].includes(response.body.status));
+        });
+
+        it('GET /services/distributed/vault/utxos returns 503 when Bitcoin is disabled', async function () {
+          const response = await makeRequest('GET', '/services/distributed/vault/utxos', null, jsonApi);
+          assert.strictEqual(response.status, 503);
+          assert.strictEqual(response.body.status, 'error');
         });
       });
 
@@ -620,12 +669,54 @@ describe('@fabric/hub', function () {
           assert.strictEqual(response.body.status, 'error');
           assert.ok(String(response.body.message || '').toLowerCase().includes('bitcoin'), 'error mentions Bitcoin');
         });
+
+        it('POST /services/bitcoin/payments returns 403 without admin token (Hub wallet spend)', async function () {
+          const response = await makeRequest('POST', '/services/bitcoin/payments', {
+            walletId: 'fabric-test-wallet',
+            to: 'bcrt1qtest000000000000000000000000000000000000000',
+            amountSats: 1000,
+            memo: 'hub.http probe'
+          }, jsonApi);
+          assert.strictEqual(response.status, 403);
+          assert.strictEqual(response.body.status, 'error');
+          assert.ok(
+            String(response.body.message || '').toLowerCase().includes('admin'),
+            'error mentions admin token'
+          );
+        });
       });
 
       it('GET /sessions/:sessionId/delegation/audit returns 403 without Bearer token', async function () {
         const response = await makeRequest('GET', '/sessions/not-a-real-token/delegation/audit', null, { Accept: 'application/json' });
         assert.strictEqual(response.status, 403);
         assert.strictEqual(response.body.ok, false);
+      });
+
+      it('DELETE /sessions/:sessionId returns 404 for unknown delegation token (loopback)', async function () {
+        const response = await makeRequest('DELETE', '/sessions/not-a-delegation-token-xyz', null, { Accept: 'application/json' });
+        assert.strictEqual(response.status, 404);
+        assert.strictEqual(response.body.ok, false);
+      });
+
+      it('desktop login GET /sessions/:id returns signed payload once then 404 (ephemeral session retired)', async function () {
+        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
+        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
+        assert.strictEqual(create.body.ok, true);
+        const sid = create.body.sessionId;
+        assert.ok(typeof sid === 'string' && sid.length > 16);
+
+        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {});
+        assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
+        assert.strictEqual(sign.body.ok, true);
+
+        const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
+        assert.strictEqual(g1.status, 200);
+        assert.strictEqual(g1.body.status, 'signed');
+        assert.ok(g1.body.delegationToken);
+
+        const g2 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
+        assert.strictEqual(g2.status, 404);
+        assert.strictEqual(g2.body.ok, false);
       });
 
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {
@@ -666,6 +757,32 @@ describe('@fabric/hub', function () {
         }, { Accept: 'application/json' });
 
         assert.strictEqual(publishResponse.status, 200, 'PublishDocument should return 200 status');
+      });
+
+      it('GetDistributedFederationPolicy JSON-RPC returns policy shape', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const r = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 42,
+          method: 'GetDistributedFederationPolicy',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(r.status, 200);
+        const res = r.body && r.body.result;
+        assert.ok(res && res.type === 'DistributedFederationPolicy');
+        assert.ok(Array.isArray(res.validators));
+        assert.ok(typeof res.threshold === 'number');
+        assert.ok(['env', 'persisted', 'default'].includes(res.source));
+        assert.ok(res.filesystem && typeof res.filesystem.registryDocument === 'string');
+        assert.ok(typeof res.filesystem.registryEntryCount === 'number');
       });
     });
   });

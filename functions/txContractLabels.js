@@ -15,7 +15,8 @@ const CONTRACT_TYPE_DISPLAY = {
   faucet_payment: 'Faucet (regtest)',
   contract_proposal: 'Contract proposal',
   fabric_invoice: 'Invoice (local)',
-  distribute_invoice: 'Distribute invoice'
+  distribute_invoice: 'Distribute invoice',
+  execution_registry: 'Execution registry'
 };
 
 function summarizeContractTypes (types) {

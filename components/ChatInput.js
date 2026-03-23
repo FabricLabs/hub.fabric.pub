@@ -35,6 +35,8 @@ function ChatInput (props) {
         type="button"
         icon="send"
         color="teal"
+        aria-label="Send message"
+        title="Send message"
         disabled={!!disabled || !(value || '').trim()}
         onClick={handleSubmit}
       />

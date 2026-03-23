@@ -4,6 +4,18 @@
 const React = require('react');
 const { useLocation, Link } = require('react-router-dom');
 
+function scrollToHashElement (hash) {
+  const raw = hash || '';
+  const h = raw.startsWith('#') ? raw.slice(1) : raw;
+  if (!h) return;
+  const el = document.getElementById(h);
+  if (el && typeof el.scrollIntoView === 'function') {
+    window.requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  }
+}
+
 const {
   Button,
   Card,
@@ -15,8 +27,9 @@ const {
   Segment
 } = require('semantic-ui-react');
 
-const ActivityStream = require('./ActivityStream');
 const NotificationsStream = require('./NotificationsStream');
+const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 
 class Home extends React.Component {
   render () {
@@ -33,20 +46,28 @@ class Home extends React.Component {
       onRequireUnlock,
       adminToken
     } = this.props;
+    const uf = loadHubUiFeatureFlags();
     // Prefer the live Bridge ref; fall back to legacy `bridge` prop.
     const ref = bridgeRef || bridge;
     const current = ref && ref.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
-    const isNetworkStatus = (obj) => !!(obj && typeof obj === 'object' && (obj.network || Array.isArray(obj.peers)));
-    const networkStatus = isNetworkStatus(candidate) ? candidate : (isNetworkStatus(fallback) ? fallback : null);
+    const networkStatus = isHubNetworkStatusShape(candidate)
+      ? candidate
+      : (isHubNetworkStatusShape(fallback) ? fallback : null);
     const network = networkStatus && networkStatus.network;
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
     const state = networkStatus && networkStatus.state;
-    const peerId = networkStatus && networkStatus.contract ? String(networkStatus.contract) : null;
+    const fabricPeerId = networkStatus && networkStatus.fabricPeerId
+      ? String(networkStatus.fabricPeerId)
+      : null;
+    const legacyUnstableId = !fabricPeerId && networkStatus && networkStatus.contract != null
+      ? String(networkStatus.contract)
+      : null;
+    const shareNodeId = fabricPeerId || legacyUnstableId;
     const hostPort = network && network.address ? String(network.address) : null;
-    const shareableString = [peerId, hostPort].filter(Boolean).join('\n');
+    const shareableString = [shareNodeId, hostPort].filter(Boolean).join('\n');
     const meshStatus = current && typeof current.webrtcMeshStatus !== 'undefined'
       ? current.webrtcMeshStatus
       : null;
@@ -79,13 +100,16 @@ class Home extends React.Component {
                   </span>
                 </Card.Meta>
                 <Card.Description>
-                  {(peerId || hostPort) && (
+                  {uf.peers && (shareNodeId || hostPort) && (
                     <div style={{ marginBottom: '1em', padding: '0.75em', background: 'rgba(0,0,0,0.03)', borderRadius: '4px' }}>
                       <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Share with other peers</Header>
-                      {peerId && (
+                      {shareNodeId && (
                         <div style={{ marginBottom: '0.5em' }}>
-                          <strong>Peer ID:</strong>{' '}
-                          <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{peerId}</code>
+                          <strong>{fabricPeerId ? 'Fabric node ID' : 'Node ID (legacy)'}</strong>{' '}
+                          <code
+                            style={{ wordBreak: 'break-all', fontSize: '0.9em' }}
+                            title={fabricPeerId ? 'Stable P2P identity (public key).' : 'May change when hub contract state updates — prefer Fabric node ID when available.'}
+                          >{shareNodeId}</code>
                         </div>
                       )}
                       {hostPort && (
@@ -116,7 +140,7 @@ class Home extends React.Component {
                               }
                             } catch (e) {}
                           }}
-                          title='Copy peer ID and address'
+                          title="Copy Fabric node ID (or legacy id) and listen address"
                         >
                           <Icon name='copy' />
                           Copy to clipboard
@@ -135,13 +159,18 @@ class Home extends React.Component {
                     }}
                   >
                     <div>
-                      <strong>Bridge Peers:</strong> {peers.length}{' '}
-                      <span style={{ color: '#777' }}>·</span>{' '}
-                      <strong>WebRTC Peers:</strong> {webrtcPeers.length}{' '}
-                      <span style={{ color: '#777' }}>·</span>{' '}
+                      {uf.peers ? (
+                        <>
+                          <strong>Bridge Peers:</strong> {peers.length}{' '}
+                          <span style={{ color: '#777' }}>·</span>{' '}
+                          <strong>WebRTC Peers:</strong> {webrtcPeers.length}{' '}
+                          <span style={{ color: '#777' }}>·</span>{' '}
+                        </>
+                      ) : null}
                       <strong>Documents:</strong> {published.length}
                     </div>
                   </div>
+                  {uf.peers ? (
                   <div
                     style={{
                       marginTop: '0.5em',
@@ -247,6 +276,7 @@ class Home extends React.Component {
                       </Button>
                     )}
                   </div>
+                  ) : null}
                 </Card.Description>
               </>
             ) : (
@@ -255,7 +285,7 @@ class Home extends React.Component {
                   placeholder
                   style={{ minHeight: '30vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                 >
-                  <div>
+                  <div style={{ textAlign: 'center', maxWidth: '28rem' }}>
                     <Loader active inline="centered" size="large" />
                     <Header as='h4' style={{ marginTop: '1em', textAlign: 'center' }}>
                       Loading network status…
@@ -263,12 +293,69 @@ class Home extends React.Component {
                         Connecting to hub and fetching peers.
                       </Header.Subheader>
                     </Header>
+                    {typeof this.props.onRefreshNetworkStatus === 'function' && (
+                      <div style={{ marginTop: '1.1em' }}>
+                        <Button
+                          type="button"
+                          size="small"
+                          basic
+                          icon
+                          labelPosition="left"
+                          onClick={() => {
+                            try {
+                              this.props.onRefreshNetworkStatus();
+                            } catch (e) {}
+                          }}
+                        >
+                          <Icon name="refresh" />
+                          Request status again
+                        </Button>
+                        <p style={{ color: '#888', fontSize: '0.85em', marginTop: '0.75em', marginBottom: 0, lineHeight: 1.45 }}>
+                          If this stays here, confirm the hub is up and the WebSocket bridge is connected.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </Segment>
               </Segment>
             )}
           </Card.Content>
         </Card>
+        <nav aria-label="Hub shortcuts" style={{ marginBottom: '0.5em' }}>
+          <Segment basic style={{ marginTop: 0, marginBottom: 0, paddingTop: '0.35em', paddingBottom: '0.35em' }}>
+            <span style={{ color: '#666', fontSize: '0.88em', marginRight: '0.35em', verticalAlign: 'middle' }}>Go to:</span>
+            {uf.peers ? (
+              <Button as={Link} to="/peers" size="tiny" basic style={{ margin: '0.15em' }}>Peers</Button>
+            ) : null}
+            <Button as={Link} to="/documents" size="tiny" basic style={{ margin: '0.15em' }}>Documents</Button>
+            {uf.activities ? (
+              <Button as={Link} to="/activities" size="tiny" basic style={{ margin: '0.15em' }}>Activities</Button>
+            ) : null}
+            <Button as={Link} to="/contracts" size="tiny" basic style={{ margin: '0.15em' }}>Contracts</Button>
+            {uf.sidechain ? (
+              <Button as={Link} to="/sidechains" size="tiny" basic style={{ margin: '0.15em' }}>Sidechain</Button>
+            ) : null}
+            {uf.sidechain ? (
+              <Button
+                as={Link}
+                to="/settings/admin/beacon-federation"
+                size="tiny"
+                basic
+                style={{ margin: '0.15em' }}
+                title="L1-bound beacon epochs, manifest, federation witnesses"
+              >
+                Beacon Fed.
+              </Button>
+            ) : null}
+            <Button as={Link} to="/services/bitcoin" size="tiny" basic style={{ margin: '0.15em' }}>Bitcoin</Button>
+            <Button as={Link} to="/settings/admin" size="tiny" basic style={{ margin: '0.15em' }}>Admin</Button>
+            <Button as={Link} to="/settings" size="tiny" basic style={{ margin: '0.15em' }}>Settings</Button>
+            <Button as={Link} to="/settings/security" size="tiny" basic style={{ margin: '0.15em' }}>Security</Button>
+            {uf.features ? (
+              <Button as={Link} to="/features" size="tiny" basic style={{ margin: '0.15em' }}>Features</Button>
+            ) : null}
+          </Segment>
+        </nav>
         <Segment>
           <Header as='h2'>Library</Header>
           <Card fluid>
@@ -310,7 +397,18 @@ class Home extends React.Component {
           </Card>
         </Segment>
         <Segment>
-          <Header as='h2'>Notifications</Header>
+          <Header as='h2'>Delegation &amp; signing</Header>
+          <p style={{ color: '#666', marginTop: '-0.35em', marginBottom: '0.75em' }}>
+            Pending Fabric hub signature requests.
+            {uf.activities ? (
+              <>
+                {' '}Wallet, Payjoin, and other toasts live under{' '}
+                <Link to="/activities">Activities</Link> (bell in the top bar).
+              </>
+            ) : (
+              <> Use <Link to="/settings/security">Security</Link> for sessions and delegation.</>
+            )}
+          </p>
           <NotificationsStream
             bridge={ref}
             bridgeRef={ref}
@@ -318,15 +416,28 @@ class Home extends React.Component {
             onRequireUnlock={onRequireUnlock}
           />
         </Segment>
+        {uf.activities ? (
         <Segment>
-          <Header as='h2'>Activity</Header>
-          <ActivityStream
-            bridge={ref}
-            bridgeRef={ref}
-            adminToken={adminToken}
-            onRequireUnlock={onRequireUnlock}
-          />
+          <section aria-labelledby="home-activities-heading">
+            <Header as='h2' id="home-activities-heading">Activities</Header>
+            <p id="home-activities-summary" style={{ color: '#666' }}>
+              Full hub message log, chat, blocks, and in-app notifications — open here or use the bell in the top bar.
+            </p>
+            <Button
+              basic
+              as={Link}
+              to="/activities"
+              icon
+              labelPosition="left"
+              title="View activities"
+              aria-describedby="home-activities-summary"
+            >
+              <Icon name="comments" aria-hidden="true" />
+              Open activities
+            </Button>
+          </section>
         </Segment>
+        ) : null}
       </fabric-hub-home>
     );
   }
@@ -334,6 +445,9 @@ class Home extends React.Component {
 
 function HomeWithLocation (props) {
   const location = useLocation();
+  React.useLayoutEffect(() => {
+    scrollToHashElement(location.hash);
+  }, [location.pathname, location.hash]);
   return <Home {...props} location={location} />;
 }
 

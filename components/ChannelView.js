@@ -6,6 +6,8 @@ const { Button, Header, Icon, Label, List, Loader, Message, Segment } = require(
 const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
 const { formatSatsDisplay } = require('../functions/formatSats');
 
+const CHANNEL_NOT_FOUND = 'Channel not found.';
+
 function trimHash (value = '', left = 8, right = 8) {
   const text = String(value || '');
   if (text.length <= left + right + 1) return text;
@@ -24,7 +26,7 @@ function ChannelView () {
   const loadChannel = React.useCallback(() => {
     if (!channelId) {
       setLoading(false);
-      setError('Channel ID is required.');
+      setError(null);
       setChannel(null);
       return;
     }
@@ -44,7 +46,7 @@ function ChannelView () {
           setError(null);
         } else {
           setChannel(null);
-          setError('Channel not found.');
+          setError(CHANNEL_NOT_FOUND);
         }
       })
       .catch((err) => {
@@ -95,19 +97,31 @@ function ChannelView () {
   return (
     <div className='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button as={Link} to="/contracts" basic size='small'>
-            <Icon name='arrow left' />
-            Back
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
+          role="banner"
+        >
+          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin and Lightning home">
+            <Icon name="arrow left" aria-hidden="true" />
+            Bitcoin / LN
           </Button>
-          <Icon name='bolt' color='yellow' />
-          <Header.Content>Lightning Channel</Header.Content>
-          {channel && channel.state && (
-            <Label color={channel.state === 'CHANNELD_NORMAL' ? 'green' : 'orange'} size="small">
-              {channel.state}
-            </Label>
-          )}
-        </Header>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap', flex: '1 1 auto' }}>
+            <Header as="h2" style={{ margin: 0 }}>
+              <Icon name="bolt" color="yellow" aria-hidden="true" />
+              <Header.Content>Lightning Channel</Header.Content>
+            </Header>
+            {channel && channel.state && (
+              <Label
+                color={channel.state === 'CHANNELD_NORMAL' ? 'green' : 'orange'}
+                size="small"
+                title="Channel state"
+                aria-hidden="true"
+              >
+                {channel.state}
+              </Label>
+            )}
+          </div>
+        </div>
       </Segment>
 
       {!channelId && (
@@ -117,21 +131,49 @@ function ChannelView () {
         </Message>
       )}
 
-      {loading && (
+      {!!channelId && loading && (
         <Segment>
           <Loader active inline="centered" />
           <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>Loading channel…</p>
         </Segment>
       )}
 
-      {error && !loading && (
+      {!!channelId && error && !loading && error === CHANNEL_NOT_FOUND && (
+        <Message warning>
+          <Message.Header>Channel not found</Message.Header>
+          <p>
+            No channel with this id appears in the Hub&apos;s Lightning list. It may have closed, or use funding txid if you opened from a transaction link.
+          </p>
+          <p style={{ marginTop: '0.5em', fontSize: '0.9em', color: '#555' }}>
+            <code style={{ wordBreak: 'break-all' }}>{channelId}</code>
+          </p>
+          <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            <Button type="button" size="small" onClick={() => void loadChannel()}>
+              <Icon name="refresh" />
+              Retry
+            </Button>
+            <Button as={Link} to="/services/bitcoin" size="small" basic>
+              <Icon name="bitcoin" />
+              Bitcoin / LN
+            </Button>
+          </div>
+        </Message>
+      )}
+
+      {!!channelId && error && !loading && error !== CHANNEL_NOT_FOUND && (
         <Message negative>
-          <Message.Header>Error</Message.Header>
+          <Message.Header>Failed to load channels</Message.Header>
           <p>{error}</p>
-          <Button size="small" onClick={loadChannel} style={{ marginTop: '0.5em' }}>
-            <Icon name="refresh" />
-            Retry
-          </Button>
+          <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            <Button type="button" size="small" onClick={() => void loadChannel()}>
+              <Icon name="refresh" />
+              Retry
+            </Button>
+            <Button as={Link} to="/services/bitcoin" size="small" basic>
+              <Icon name="bitcoin" />
+              Bitcoin / LN
+            </Button>
+          </div>
         </Message>
       )}
 
@@ -205,6 +247,7 @@ function ChannelView () {
                 </Message>
               )}
               <Button
+                type="button"
                 color="red"
                 loading={closeLoading}
                 disabled={closeLoading}

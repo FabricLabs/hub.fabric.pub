@@ -120,6 +120,10 @@ function handleSessionByIdDestroy (hub, req, res) {
     resolveRegistry(hub);
     const sessionId = req && req.params && req.params.sessionId ? String(req.params.sessionId).trim() : '';
     if (isLocalRequest(req) && sessionId) {
+      if (!hub._delegationRegistry.has(sessionId)) {
+        sendJson(res, 404, { ok: false, error: 'unknown session' });
+        return;
+      }
       deleteTokenAndRequests(hub, sessionId);
       sendJson(res, 200, { ok: true });
       return;

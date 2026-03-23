@@ -19,7 +19,15 @@ const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
 const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
+const { pushUiNotification } = require('../functions/uiNotifications');
+const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const { formatSatsDisplay } = require('../functions/formatSats');
+const { toast } = require('../functions/toast');
 const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
+const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
+const { extractPeerXpub, shortenPublicId } = require('../functions/peerIdentity');
+const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
+const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 
 /**
  * Manages a WebSocket connection to a remote server.
@@ -56,6 +64,7 @@ class Bridge extends React.Component {
       data: null,
       error: null,
       networkStatus: null,
+      lastNetworkStatus: null,
       subscriptions: new Set(),
       isConnected: false,
       webrtcConnected: false,
@@ -67,7 +76,8 @@ class Bridge extends React.Component {
       conversations: {},
       messages: {},
       documents: {},
-      distributeProposals: {}
+      distributeProposals: {},
+      peerTopologyGossip: { byReporter: {} }
     };
 
     this.attempts = 1;
@@ -107,6 +117,13 @@ class Bridge extends React.Component {
     this._lastWebRTCChatDeliveryCount = null;
     this._lastWebRTCChatSentAt = 0;
     this._lastWebRTCRecipientPeerIds = [];
+
+    this._walletBalanceBaseline = new Set();
+    this._lastWalletBalanceTotal = Object.create(null);
+    this._lastWalletConfirmedSats = Object.create(null);
+    this._lastWalletUnconfirmedSats = Object.create(null);
+    this._l1InvoiceActivityKeys = new Set();
+    this._onClientBalanceUpdate = this._onClientBalanceUpdate.bind(this);
 
     // Track backing SHA ids that should be published once CreateDocument succeeds.
     this._pendingPublishBySha = new Set();
@@ -158,6 +175,10 @@ class Bridge extends React.Component {
 
   get networkStatus () {
     return this.state.networkStatus || null;
+  }
+
+  get lastNetworkStatus () {
+    return this.state.lastNetworkStatus || null;
   }
 
   /**
@@ -598,7 +619,22 @@ class Bridge extends React.Component {
     const peers = Array.isArray(ns?.peers) ? ns.peers : [];
     const peer = peers.find((p) => p && (p.id === actorId || p.address === actorId));
     const nickname = peer && peer.nickname && String(peer.nickname).trim();
-    return nickname || actorId;
+    if (nickname) return nickname;
+    const xFromFabric = peer && extractPeerXpub(peer);
+    if (xFromFabric) return shortenPublicId(xFromFabric, 12, 10);
+    if (isLikelyBip32ExtendedKey(actorId)) return shortenPublicId(actorId, 12, 10);
+    const wrtc = Array.isArray(ns?.webrtcPeers) ? ns.webrtcPeers : [];
+    const w = wrtc.find((p) => {
+      if (!p || typeof p !== 'object') return false;
+      if (p.id === actorId) return true;
+      const m = p.metadata && typeof p.metadata === 'object' ? p.metadata : {};
+      return !!(m.fabricPeerId && String(m.fabricPeerId) === actorId);
+    });
+    const wx = w && w.metadata && typeof w.metadata === 'object' && w.metadata.xpub
+      ? String(w.metadata.xpub).trim()
+      : '';
+    if (wx && isLikelyBip32ExtendedKey(wx)) return shortenPublicId(wx, 12, 10);
+    return actorId;
   }
 
   /**
@@ -655,7 +691,11 @@ class Bridge extends React.Component {
         // Keep `networkStatus` in sync when the hub pushes wallet-safe Bitcoin fields (`/bitcoin`).
         if (typeof path === 'string' && path === '/bitcoin' && patchMessage.value && typeof patchMessage.value === 'object') {
           this.setState((prev) => {
-            const merge = (ns) => (ns && typeof ns === 'object' ? { ...ns, bitcoin: patchMessage.value } : ns);
+            const merge = (ns) => {
+              if (!ns || typeof ns !== 'object') return ns;
+              const prevBtc = ns.bitcoin && typeof ns.bitcoin === 'object' ? ns.bitcoin : {};
+              return { ...ns, bitcoin: { ...prevBtc, ...patchMessage.value } };
+            };
             return {
               networkStatus: merge(prev.networkStatus),
               lastNetworkStatus: merge(prev.lastNetworkStatus)
@@ -761,6 +801,37 @@ class Bridge extends React.Component {
         globalState: this.globalState
       }
     }));
+  }
+
+  /**
+   * Structured federation invite / response in P2P chat JSON (v1).
+   * @param {string} content
+   * @param {object|null} chatEnvelope
+   * @returns {boolean} true when handled (do not also treat as plain chat)
+   */
+  _tryDispatchFederationContractInviteFromChat (content, chatEnvelope) {
+    if (typeof window === 'undefined') return false;
+    const inv = parseFederationContractInvite(content);
+    if (inv) {
+      const toPeerId = chatEnvelope && chatEnvelope.actor && chatEnvelope.actor.id
+        ? String(chatEnvelope.actor.id)
+        : '';
+      window.dispatchEvent(new CustomEvent('fabric:federationContractInvite', {
+        detail: Object.assign({}, inv, { toPeerId })
+      }));
+      return true;
+    }
+    const res = parseFederationContractInviteResponse(content);
+    if (res) {
+      const fromPeerId = chatEnvelope && chatEnvelope.actor && chatEnvelope.actor.id
+        ? String(chatEnvelope.actor.id)
+        : '';
+      window.dispatchEvent(new CustomEvent('fabric:federationContractInviteResponse', {
+        detail: Object.assign({}, res, { fromPeerId })
+      }));
+      return true;
+    }
+    return false;
   }
 
   /** @returns {import('@fabric/core/types/key')|null} Key with private for document encrypt/decrypt */
@@ -1154,6 +1225,234 @@ class Bridge extends React.Component {
     this._writeJSONToStorage('fabric:messages', toStore);
   }
 
+  _onClientBalanceUpdate (ev) {
+    try {
+      const d = ev && ev.detail;
+      if (!d) return;
+      const walletId = String(d.walletId || 'default');
+      const balanceSats = Math.round(Number(d.balanceSats));
+      if (!Number.isFinite(balanceSats)) return;
+      const confirmedRaw = d.confirmedSats;
+      const unconfirmedRaw = d.unconfirmedSats;
+      const hasSplit = confirmedRaw != null && unconfirmedRaw != null;
+      const conf = hasSplit
+        ? Math.round(Number(confirmedRaw))
+        : balanceSats;
+      const unconf = hasSplit ? Math.round(Number(unconfirmedRaw)) : 0;
+      const confSafe = Number.isFinite(conf) ? conf : balanceSats;
+      const unconfSafe = Number.isFinite(unconf) ? unconf : 0;
+      const hint = d.hintTxid ? String(d.hintTxid).trim() : '';
+
+      if (!this._walletBalanceBaseline.has(walletId)) {
+        this._walletBalanceBaseline.add(walletId);
+        this._lastWalletBalanceTotal[walletId] = balanceSats;
+        this._lastWalletConfirmedSats[walletId] = confSafe;
+        this._lastWalletUnconfirmedSats[walletId] = unconfSafe;
+        return;
+      }
+      const prevTotal = this._lastWalletBalanceTotal[walletId];
+      const prevC = this._lastWalletConfirmedSats[walletId];
+      const prevU = this._lastWalletUnconfirmedSats[walletId];
+      if (!Number.isFinite(prevTotal)) {
+        this._lastWalletBalanceTotal[walletId] = balanceSats;
+        this._lastWalletConfirmedSats[walletId] = confSafe;
+        this._lastWalletUnconfirmedSats[walletId] = unconfSafe;
+        return;
+      }
+
+      let dUnconf = 0;
+      let dConf = 0;
+      if (hasSplit) {
+        dUnconf = unconfSafe - (Number.isFinite(prevU) ? prevU : 0);
+        dConf = confSafe - (Number.isFinite(prevC) ? prevC : 0);
+      }
+
+      if (hasSplit && dUnconf > 0) {
+        this._appendPrivateWalletReceiveNotice({
+          phase: 'mempool',
+          deltaSats: dUnconf,
+          balanceSats,
+          confirmedSats: confSafe,
+          unconfirmedSats: unconfSafe,
+          walletId,
+          txid: hint
+        });
+      }
+      if (hasSplit && dConf > 0) {
+        this._appendPrivateWalletReceiveNotice({
+          phase: 'confirmed',
+          deltaSats: dConf,
+          balanceSats,
+          confirmedSats: confSafe,
+          unconfirmedSats: unconfSafe,
+          walletId,
+          txid: hint
+        });
+      }
+
+      const totalIncreased = balanceSats > prevTotal;
+      if (totalIncreased && (!hasSplit || (dUnconf <= 0 && dConf <= 0))) {
+        this._appendPrivateWalletReceiveNotice({
+          phase: 'aggregate',
+          deltaSats: balanceSats - prevTotal,
+          balanceSats,
+          confirmedSats: confSafe,
+          unconfirmedSats: unconfSafe,
+          walletId,
+          txid: hint
+        });
+      }
+
+      this._lastWalletBalanceTotal[walletId] = balanceSats;
+      this._lastWalletConfirmedSats[walletId] = confSafe;
+      this._lastWalletUnconfirmedSats[walletId] = unconfSafe;
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Local-only activity + toast + in-app notification list on Activities (bell, top bar).
+   * @param {object} p
+   * @param {'mempool'|'confirmed'|'aggregate'} p.phase
+   */
+  _appendPrivateWalletReceiveNotice (p) {
+    if (typeof window === 'undefined' || !p) return;
+    const {
+      phase = 'aggregate',
+      deltaSats,
+      balanceSats,
+      confirmedSats,
+      unconfirmedSats,
+      walletId,
+      txid
+    } = p;
+    const d = Math.round(Number(deltaSats));
+    if (!Number.isFinite(d) || d <= 0) return;
+
+    const id = `client-wallet-${phase}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const created = new Date().toISOString();
+    const totalLabel = formatSatsDisplay(balanceSats);
+    const confU = `${formatSatsDisplay(confirmedSats)} conf · ${formatSatsDisplay(unconfirmedSats)} unconf`;
+    let content;
+    let title;
+    let subtitle;
+    let toastHeader;
+    let toastMsg;
+    let kind;
+    if (phase === 'mempool') {
+      content = `Unconfirmed +${formatSatsDisplay(d)} sats to your wallet (mempool). ${confU}. Total ~${totalLabel}.`;
+      title = 'Incoming (mempool)';
+      subtitle = `+${formatSatsDisplay(d)} unconfirmed · ${totalLabel} total`;
+      toastHeader = 'Wallet';
+      toastMsg = `+${formatSatsDisplay(d)} unconfirmed (mempool)`;
+      kind = 'wallet_receive_mempool';
+    } else if (phase === 'confirmed') {
+      content = `Confirmed +${formatSatsDisplay(d)} sats. ${confU}. Total ${totalLabel}.`;
+      title = 'Incoming confirmed';
+      subtitle = `+${formatSatsDisplay(d)} confirmed · ${formatSatsDisplay(confirmedSats)} conf`;
+      toastHeader = 'Wallet';
+      toastMsg = `+${formatSatsDisplay(d)} confirmed on-chain`;
+      kind = 'wallet_receive_confirmed';
+    } else {
+      content = `Your wallet balance increased by +${formatSatsDisplay(d)} (${totalLabel} total).`;
+      title = 'Incoming payment';
+      subtitle = `+${formatSatsDisplay(d)} · ${totalLabel} balance`;
+      toastHeader = 'Wallet';
+      toastMsg = `+${formatSatsDisplay(d)} received`;
+      kind = 'wallet_receive';
+    }
+
+    this.globalState.messages = this.globalState.messages || {};
+    this.globalState.messages[id] = {
+      type: 'CLIENT_NOTICE',
+      object: {
+        content,
+        created,
+        txid: txid || undefined,
+        kind,
+        phase,
+        localOnly: true
+      }
+    };
+    this._persistMessages();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/messages/${id}`, value: this.globalState.messages[id] },
+        globalState: this.globalState
+      }
+    }));
+    try {
+      toast.success(toastMsg, {
+        header: toastHeader,
+        duration: 5500
+      });
+    } catch (e) { /* ignore */ }
+    try {
+      const uf = loadHubUiFeatureFlags();
+      pushUiNotification({
+        id: `wallet-${phase}-${walletId}-${Date.now()}`,
+        kind,
+        title,
+        subtitle,
+        href: uf.bitcoinPayments ? '/services/bitcoin/payments' : undefined,
+        copyText: txid || undefined
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Invoice L1 verify flow (see Invoice.js) — private CLIENT_NOTICE + toast + Activities in-app list.
+   */
+  applyL1InvoicePaymentActivity (detail) {
+    if (typeof window === 'undefined' || !detail || typeof detail !== 'object') return;
+    const txid = String(detail.txid || '').trim();
+    if (!txid) return;
+    const kind = detail.kind === 'confirmed' ? 'confirmed' : 'unconfirmed';
+    const dedupeKey = `${kind}:${txid}`;
+    if (this._l1InvoiceActivityKeys.has(dedupeKey)) return;
+    this._l1InvoiceActivityKeys.add(dedupeKey);
+    const label = detail.label ? String(detail.label) : 'Invoice';
+    const created = new Date().toISOString();
+    const content = kind === 'confirmed'
+      ? `L1 invoice payment confirmed${detail.confirmations ? ` (${detail.confirmations} confirmations)` : ''}: ${label}`
+      : `L1 invoice payment seen (mempool): ${label}`;
+    const id = `client-l1-inv-${kind}-${txid.slice(0, 18)}`;
+    this.globalState.messages = this.globalState.messages || {};
+    this.globalState.messages[id] = {
+      type: 'CLIENT_NOTICE',
+      object: {
+        content,
+        created,
+        txid,
+        kind: 'l1_invoice',
+        localOnly: true
+      }
+    };
+    this._persistMessages();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/messages/${id}`, value: this.globalState.messages[id] },
+        globalState: this.globalState
+      }
+    }));
+    try {
+      toast.success(kind === 'confirmed' ? 'Invoice paid on-chain' : 'Invoice payment detected', {
+        duration: 5000,
+        header: label.length > 36 ? `${label.slice(0, 36)}…` : label
+      });
+    } catch (e) { /* ignore */ }
+    try {
+      const uf = loadHubUiFeatureFlags();
+      pushUiNotification({
+        id: `l1-inv-${dedupeKey}`,
+        kind: 'l1_invoice',
+        title: kind === 'confirmed' ? 'Invoice confirmed' : 'Invoice in mempool',
+        subtitle: `${label} · ${txid.slice(0, 14)}…`,
+        href: uf.bitcoinExplorer ? `/services/bitcoin/transactions/${encodeURIComponent(txid)}` : undefined,
+        copyText: txid
+      });
+    } catch (e) { /* ignore */ }
+  }
+
   /**
    * Activity stream row for Hub delegation signing (same panel as public chat; channel #delegation).
    */
@@ -1182,6 +1481,17 @@ class Bridge extends React.Component {
         globalState: this.globalState
       }
     }));
+    try {
+      const pv = typeof preview === 'string' ? preview : '';
+      pushUiNotification({
+        id: `delegation-req-${messageId}`,
+        kind: 'delegation',
+        title: 'Signature request',
+        subtitle: (pv && pv.slice(0, 120)) || 'Open Security & delegation to respond.',
+        href: '/settings/security',
+        copyText: String(messageId)
+      });
+    } catch (e) { /* ignore */ }
   }
 
   _resolveDelegationSignRequestActivity (messageId, resolution) {
@@ -1207,6 +1517,20 @@ class Bridge extends React.Component {
         globalState: this.globalState
       }
     }));
+    try {
+      const label = status === 'approved'
+        ? 'Signature approved'
+        : status === 'timeout'
+          ? 'Signature request timed out'
+          : 'Signature request rejected';
+      pushUiNotification({
+        id: `delegation-done-${messageId}`,
+        kind: 'delegation_resolved',
+        title: label,
+        subtitle: String(messageId),
+        href: '/settings/security'
+      });
+    } catch (e) { /* ignore */ }
   }
 
   /**
@@ -1302,7 +1626,8 @@ class Bridge extends React.Component {
       conversations: {},
       messages: {},
       users: {},
-      documents: {}
+      documents: {},
+      peerTopologyGossip: { byReporter: {} }
     };
   }
 
@@ -1311,6 +1636,8 @@ class Bridge extends React.Component {
 
     // Subscribe to initial path
     this.subscribe(this.state.currentPath);
+
+    window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
 
     // Listen for path changes
     window.addEventListener('popstate', this.handlePathChange);
@@ -1330,6 +1657,7 @@ class Bridge extends React.Component {
 
   componentWillUnmount () {
     this.stop();
+    window.removeEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
     window.removeEventListener('popstate', this.handlePathChange);
   }
 
@@ -1484,7 +1812,11 @@ class Bridge extends React.Component {
     this.ws.onmessage = this.onSocketMessage.bind(this);
 
     this.ws.onerror = (error) => {
-      console.error('[BRIDGE]', 'WebSocket error:', error);
+      const url = this.ws && this.ws.url ? this.ws.url : '(no url)';
+      const kind = error && typeof error === 'object' && error.type
+        ? error.type
+        : (error && error.message) || error;
+      console.error('[BRIDGE]', 'WebSocket error:', url, kind, error);
       this._isConnected = false;
       this.setState({ error, isConnected: false }, () => {
         // Call onStateUpdate prop if provided for backward compatibility
@@ -1594,15 +1926,24 @@ class Bridge extends React.Component {
     console.debug('[BRIDGE]', 'Publishing WebRTC offer with peer ID:', this.peerId);
 
     // Send our peer info to the server via WebSocket RPC
+    const meta = {
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+      capabilities: ['data-channel']
+    };
+    const key = this._getIdentityKey();
+    if (key && key.xpub && isLikelyBip32ExtendedKey(String(key.xpub))) {
+      meta.xpub = String(key.xpub).trim();
+    }
+    const ns = this.state && (this.state.networkStatus || this.state.lastNetworkStatus);
+    const fp = ns && ns.fabricPeerId != null ? String(ns.fabricPeerId).trim() : '';
+    if (fp) meta.fabricPeerId = fp;
+
     const payload = {
       method: 'RegisterWebRTCPeer',
       params: [{
         peerId: this.peerId,
         timestamp: Date.now(),
-        metadata: {
-          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
-          capabilities: ['data-channel']
-        }
+        metadata: meta
       }]
     };
 
@@ -1713,6 +2054,46 @@ class Bridge extends React.Component {
     for (const candidate of peersToConnect) {
       const peerId = candidate.id || candidate.peerId;
       this.connectToWebRTCPeer(peerId, candidate);
+    }
+  }
+
+  /**
+   * Merge P2P_PEER_GOSSIP into client global state for Peers topology UI (second-hop view).
+   * @param {object} parsed - payload with actor.id and object.peers[]
+   * @param {string} [fallbackReporterId] - WebRTC channel peer id when actor is missing
+   */
+  _recordPeerGossipTopology (parsed, fallbackReporterId) {
+    try {
+      const reporter = (parsed && parsed.actor && parsed.actor.id)
+        ? String(parsed.actor.id)
+        : (fallbackReporterId ? String(fallbackReporterId) : '');
+      const peers = Array.isArray(parsed && parsed.object && parsed.object.peers)
+        ? parsed.object.peers
+        : [];
+      if (!reporter || peers.length === 0) return;
+      const neighborIds = [...new Set(peers.map((p) => {
+        if (!p || typeof p !== 'object') return '';
+        return String(p.id != null ? p.id : (p.peerId != null ? p.peerId : '')).trim();
+      }).filter(Boolean))];
+      if (neighborIds.length === 0) return;
+      this.globalState.peerTopologyGossip = this.globalState.peerTopologyGossip || { byReporter: {} };
+      this.globalState.peerTopologyGossip.byReporter[reporter] = {
+        at: Date.now(),
+        neighbors: neighborIds
+      };
+      const cutoff = Date.now() - 20 * 60 * 1000;
+      const br = this.globalState.peerTopologyGossip.byReporter;
+      for (const k of Object.keys(br)) {
+        if (br[k] && typeof br[k].at === 'number' && br[k].at < cutoff) delete br[k];
+      }
+      window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+        detail: {
+          operation: { op: 'replace', path: '/peerTopologyGossip', value: this.globalState.peerTopologyGossip },
+          globalState: this.globalState
+        }
+      }));
+    } catch (e) {
+      console.debug('[BRIDGE] _recordPeerGossipTopology:', e && e.message ? e.message : e);
     }
   }
 
@@ -1855,6 +2236,10 @@ class Bridge extends React.Component {
               ? payload.object.peers
               : (Array.isArray(payload.peers) ? payload.peers : []);
             if (peers.length > 0) {
+              this._recordPeerGossipTopology(
+                { actor: payload.actor || { id: peerId }, object: { peers } },
+                peerId
+              );
               const candidates = peers.map((p) => ({
                 id: p.id || p.peerId,
                 peerId: p.id || p.peerId,
@@ -2498,7 +2883,7 @@ class Bridge extends React.Component {
 
   /**
    * External signing: post a `DELEGATION_SIGNATURE_REQUEST` Fabric message (JSON-RPC) and poll until the desktop resolves it.
-   * Requires `fabric.delegation` in localStorage (set after desktop browser login).
+   * Requires delegation JSON in localStorage (`fabricDelegationLocal` key; set after desktop browser login).
    * @param {string} text
    * @returns {Promise<{ signature: string, publicKey: string }|null>}
    */
@@ -2506,7 +2891,7 @@ class Bridge extends React.Component {
     if (typeof window === 'undefined' || !window.localStorage) return null;
     let raw;
     try {
-      raw = window.localStorage.getItem('fabric.delegation');
+      raw = window.localStorage.getItem(DELEGATION_STORAGE_KEY);
     } catch (e) {
       return null;
     }
@@ -2521,11 +2906,19 @@ class Bridge extends React.Component {
     if (!token && d && d.externalSigning === false) return null;
     if (!token) return null;
     const origin = window.location.origin;
+    let jsonRpcSeq = 0;
     const rpc = async (method, params) => {
+      jsonRpcSeq += 1;
       const res = await fetch(`${origin}/services/rpc`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ method, params: [params] })
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: jsonRpcSeq,
+          method,
+          params: [params]
+        }),
+        cache: 'no-store'
       });
       const body = await res.json().catch(() => ({}));
       if (body && body.error) return { rpcError: body.error.message || 'RPC error' };
@@ -2607,6 +3000,11 @@ class Bridge extends React.Component {
   _canSignOutgoing () {
     const k = this.settings.signingKey;
     return !!(k && k.private);
+  }
+
+  /** True when Fabric wire `JSONCall` envelopes can be Schnorr-signed in this browser (has private key). */
+  hasLocalWireSigningKey () {
+    return this._canSignOutgoing();
   }
 
   /**
@@ -2829,7 +3227,7 @@ class Bridge extends React.Component {
 
               // Treat only full network status results as networkStatus.
               if (result && typeof result === 'object' && result.network && !result.type) {
-                this.setState({ networkStatus: result }, () => {
+                this.setState({ networkStatus: result, lastNetworkStatus: result }, () => {
                   // When network status changes (especially peer connectivity),
                   // try to flush any queued peer messages.
                   this._flushPeerMessageQueue();
@@ -2868,16 +3266,23 @@ class Bridge extends React.Component {
               // Native WebRTC signaling messages
               this._handleWebRTCSignalResult(result);
               // Handle non-network results used by routed pages / detail views
-              if (result && typeof result === 'object' && result.type === 'GetPeerResult' && result.peer && result.peer.address) {
-                const addr = result.peer.address;
-                this.globalState.peers = this.globalState.peers || {};
-                this.globalState.peers[addr] = result.peer;
-                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                  detail: {
-                    operation: { op: 'add', path: `/peers/${addr}`, value: result.peer },
-                    globalState: this.globalState
+              if (result && typeof result === 'object' && result.type === 'GetPeerResult' && result.peer) {
+                const p = result.peer;
+                const addr = p.address;
+                const fabricId = p.id;
+                if (addr || fabricId) {
+                  this.globalState.peers = this.globalState.peers || {};
+                  const keys = [...new Set([addr, fabricId].filter(Boolean))];
+                  for (const k of keys) {
+                    this.globalState.peers[k] = { ...(this.globalState.peers[k] || {}), ...p };
                   }
-                }));
+                  window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                    detail: {
+                      operation: { op: 'add', path: `/peers/${keys[0]}`, value: this.globalState.peers[keys[0]] },
+                      globalState: this.globalState
+                    }
+                  }));
+                }
               }
               // Documents RPC results
               if (result && typeof result === 'object' && result.type === 'ListDocumentsResult' && Array.isArray(result.documents)) {
@@ -2893,15 +3298,24 @@ class Bridge extends React.Component {
                   }
                 }));
               }
-              if (result && typeof result === 'object' && result.type === 'GetDocumentResult' && result.document && result.document.id) {
-                const id = result.document.id;
-                this._storeDocument(id, result.document);
-                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                  detail: {
-                    operation: { op: 'add', path: `/documents/${id}`, value: result.document },
-                    globalState: this.globalState
-                  }
-                }));
+              if (result && typeof result === 'object' && result.type === 'GetDocumentResult') {
+                if (result.document && result.document.id) {
+                  const id = result.document.id;
+                  this._storeDocument(id, result.document);
+                  window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                    detail: {
+                      operation: { op: 'add', path: `/documents/${id}`, value: result.document },
+                      globalState: this.globalState
+                    }
+                  }));
+                } else if (result.documentId) {
+                  window.dispatchEvent(new CustomEvent('documentLoadFailed', {
+                    detail: {
+                      documentId: String(result.documentId),
+                      message: (result.message && String(result.message)) || 'Document not found.'
+                    }
+                  }));
+                }
               }
               if (result && typeof result === 'object' && result.type === 'ConfirmInventoryHtlcPaymentResult') {
                 window.dispatchEvent(new CustomEvent('inventoryHtlcConfirmResult', { detail: result }));
@@ -3056,6 +3470,16 @@ class Bridge extends React.Component {
                   }));
                 }
               }
+              if (result && typeof result === 'object' && result.type === 'CreateStorageContractFailed') {
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('storageContractBondFailed', {
+                    detail: {
+                      documentId: result.documentId,
+                      message: (result.message && String(result.message)) || 'Create storage contract failed.'
+                    }
+                  }));
+                }
+              }
               if (typeof this.props.responseCapture === 'function') {
                 this.props.responseCapture({
                   type: 'GenericMessage',
@@ -3111,6 +3535,7 @@ class Bridge extends React.Component {
 
             // P2P_PEER_GOSSIP from Fabric P2P (broadcast by Hub)
             if (parsed && parsed.type === P2P_PEER_GOSSIP && Array.isArray(parsed.object && parsed.object.peers)) {
+              this._recordPeerGossipTopology(parsed, null);
               const peers = parsed.object.peers;
               const candidates = peers.map((p) => ({
                 id: p.id || p.peerId,
@@ -3143,19 +3568,26 @@ class Bridge extends React.Component {
               const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
               if (peerId) {
                 this.globalState.peers = this.globalState.peers || {};
-                const existing = this.globalState.peers[peerId] || {};
-                const inventory = existing.inventory || {};
-                const next = {
-                  ...existing,
-                  inventory: {
-                    ...inventory,
-                    documents: items
-                  }
-                };
-                this.globalState.peers[peerId] = next;
+                const keysToTouch = new Set([peerId]);
+                for (const k of Object.keys(this.globalState.peers)) {
+                  const ex = this.globalState.peers[k];
+                  if (ex && ex.id === peerId) keysToTouch.add(k);
+                }
+                for (const k of keysToTouch) {
+                  const existing = this.globalState.peers[k] || {};
+                  const inventory = existing.inventory || {};
+                  const next = {
+                    ...existing,
+                    inventory: {
+                      ...inventory,
+                      documents: items
+                    }
+                  };
+                  this.globalState.peers[k] = next;
+                }
                 window.dispatchEvent(new CustomEvent('globalStateUpdate', {
                   detail: {
-                    operation: { op: 'add', path: `/peers/${peerId}`, value: next },
+                    operation: { op: 'add', path: `/peers/${peerId}`, value: this.globalState.peers[peerId] },
                     globalState: this.globalState
                   }
                 }));
@@ -3181,6 +3613,7 @@ class Bridge extends React.Component {
             }
             if (originalType === P2P_PEER_GOSSIP) {
               const parsed = typeof original === 'string' ? JSON.parse(original) : original;
+              this._recordPeerGossipTopology(parsed, null);
               const peers = Array.isArray(parsed && parsed.object && parsed.object.peers) ? parsed.object.peers : [];
               const candidates = peers.map((p) => ({
                 id: p.id || p.peerId,
@@ -3205,6 +3638,36 @@ class Bridge extends React.Component {
               }
               break;
             }
+            if (originalType === 'INVENTORY_RESPONSE') {
+              const parsed = typeof original === 'string' ? JSON.parse(original) : original;
+              if (parsed && parsed.type === 'INVENTORY_RESPONSE' && parsed.object && parsed.object.kind === 'documents') {
+                const peerId = parsed.actor && parsed.actor.id;
+                const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
+                if (peerId) {
+                  this.globalState.peers = this.globalState.peers || {};
+                  const keysToTouch = new Set([peerId]);
+                  for (const k of Object.keys(this.globalState.peers)) {
+                    const ex = this.globalState.peers[k];
+                    if (ex && ex.id === peerId) keysToTouch.add(k);
+                  }
+                  for (const k of keysToTouch) {
+                    const existing = this.globalState.peers[k] || {};
+                    const inventory = existing.inventory || {};
+                    this.globalState.peers[k] = {
+                      ...existing,
+                      inventory: { ...inventory, documents: items }
+                    };
+                  }
+                  window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+                    detail: {
+                      operation: { op: 'add', path: `/peers/${peerId}`, value: this.globalState.peers[peerId] },
+                      globalState: this.globalState
+                    }
+                  }));
+                }
+              }
+              break;
+            }
             let chat = null;
             if (originalType === 'P2P_CHAT_MESSAGE') {
               chat = typeof original === 'string' ? JSON.parse(original) : original;
@@ -3214,6 +3677,9 @@ class Bridge extends React.Component {
             const proposal = this._parseDistributeProposal(content, chat);
             if (proposal) {
               this._storeDistributeProposal(proposal);
+              break;
+            }
+            if (this._tryDispatchFederationContractInviteFromChat(content, chat)) {
               break;
             }
             const relayOfferPrefix = `[${DOCUMENT_OFFER}] `;
@@ -3256,6 +3722,9 @@ class Bridge extends React.Component {
             const proposal = this._parseDistributeProposal(content, chat);
             if (proposal) {
               this._storeDistributeProposal(proposal);
+              break;
+            }
+            if (this._tryDispatchFederationContractInviteFromChat(content, chat)) {
               break;
             }
 
@@ -3713,10 +4182,18 @@ class Bridge extends React.Component {
     };
 
     try {
-      const res = await fetch('/services/rpc', {
+      const rpcOrigin = typeof window !== 'undefined' && window.location && window.location.origin
+        ? window.location.origin
+        : '';
+      const res = await fetch(`${rpcOrigin}/services/rpc`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ method: 'EmitTombstone', params: [rpcParams] })
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method: 'EmitTombstone',
+          params: [rpcParams]
+        })
       });
       let body = {};
       try {
@@ -3995,6 +4472,32 @@ class Bridge extends React.Component {
     }
   }
 
+  /**
+   * Ask a connected Fabric TCP peer to run a ChainSyncRequest handshake (inventory + BitcoinBlock replay).
+   * @param {string|{id?:string,address?:string}} idOrAddress
+   */
+  sendFabricPeerResyncRequest (idOrAddress) {
+    const resolved = typeof idOrAddress === 'object' && idOrAddress
+      ? (idOrAddress.address || idOrAddress.id)
+      : idOrAddress;
+    if (!resolved) return;
+    try {
+      const payload = {
+        method: 'RequestFabricPeerResync',
+        params: [{ address: resolved, id: resolved }]
+      };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+      setTimeout(() => {
+        try {
+          if (typeof this.sendNetworkStatusRequest === 'function') this.sendNetworkStatusRequest();
+        } catch (e) {}
+      }, 400);
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending RequestFabricPeerResync:', error);
+    }
+  }
+
   sendListDocumentsRequest () {
     try {
       const payload = { method: 'ListDocuments', params: [] };
@@ -4257,6 +4760,10 @@ class Bridge extends React.Component {
         responseDeadline: config.responseDeadline,
         actorId
       };
+      if (config.desiredCopies != null) {
+        const dc = Math.max(1, Math.round(Number(config.desiredCopies)));
+        if (Number.isFinite(dc)) payloadConfig.desiredCopies = dc;
+      }
       if (config.txid) payloadConfig.txid = String(config.txid).trim();
       const payload = { method: 'CreateStorageContract', params: [payloadConfig] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);

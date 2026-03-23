@@ -22,8 +22,13 @@ const {
   Dropdown
 } = require('semantic-ui-react');
 const Invoice = require('./Invoice');
+const GraphDocumentPreview = require('./GraphDocumentPreview');
 const { formatSatsDisplay } = require('../functions/formatSats');
-const { loadUpstreamSettings, fetchTransactionByHash } = require('../functions/bitcoinClient');
+const { loadUpstreamSettings, fetchTransactionByHash, sendBridgePayment } = require('../functions/bitcoinClient');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
 
 const DEFAULT_PUBLISH_PRICE_SATS = '25';
 const TXID_HEX_64 = /^[a-fA-F0-9]{64}$/;
@@ -33,6 +38,18 @@ function shortHexId (value) {
   if (!s) return '—';
   if (s.length <= 20) return s;
   return `${s.slice(0, 10)}…${s.slice(-8)}`;
+}
+
+function getAdminTokenFromProps (props) {
+  const t = props && props.adminToken;
+  if (t && String(t).trim()) return String(t).trim();
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const s = window.localStorage.getItem('fabric.hub.adminToken');
+      if (s && String(s).trim()) return String(s).trim();
+    }
+  } catch (e) {}
+  return '';
 }
 
 function DocumentDetail (props) {
@@ -63,12 +80,14 @@ function DocumentDetail (props) {
   const [distributeTxid, setDistributeTxid] = React.useState('');
   const [distributeSuccessContractId, setDistributeSuccessContractId] = React.useState(null);
   const [distributeTxChain, setDistributeTxChain] = React.useState(null);
+  const [distributeBridgeBusy, setDistributeBridgeBusy] = React.useState(false);
 
   const [publishPriceSats, setPublishPriceSats] = React.useState(DEFAULT_PUBLISH_PRICE_SATS);
   const [purchaseOpen, setPurchaseOpen] = React.useState(false);
   const [purchaseInvoice, setPurchaseInvoice] = React.useState(null);
   const [purchaseTxid, setPurchaseTxid] = React.useState('');
   const [purchaseBusy, setPurchaseBusy] = React.useState(false);
+  const [purchaseBridgeBusy, setPurchaseBridgeBusy] = React.useState(false);
   const [purchaseError, setPurchaseError] = React.useState(null);
   const [purchasedContent, setPurchasedContent] = React.useState(null);
   const [contractPayTx, setContractPayTx] = React.useState(null);
@@ -79,11 +98,41 @@ function DocumentDetail (props) {
   const [tombstoneOpen, setTombstoneOpen] = React.useState(false);
   const [tombstoneBusy, setTombstoneBusy] = React.useState(false);
   const [tombstoneError, setTombstoneError] = React.useState(null);
+  const [loadError, setLoadError] = React.useState(null);
+  const [hubUiTick, setHubUiTick] = React.useState(0);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
+  void hubUiTick;
+  const uf = loadHubUiFeatureFlags();
+
+  React.useEffect(() => {
+    setLoadError(null);
+  }, [id]);
 
   React.useEffect(() => {
     if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const d = e && e.detail;
+      if (!d || d.documentId == null || String(d.documentId) !== String(id)) return;
+      setLoadError(d.message || 'Document not found.');
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('documentLoadFailed', handler);
+      return () => window.removeEventListener('documentLoadFailed', handler);
+    }
+    return undefined;
+  }, [id]);
+
+  React.useEffect(() => {
+    if (!id || doc) return undefined;
+    const t = setTimeout(() => {
+      setLoadError((prev) => prev || 'No response from hub while loading this document. Check your connection or try Refresh.');
+    }, 22000);
+    return () => clearTimeout(t);
+  }, [id, doc]);
 
   React.useEffect(() => {
     setPublishPriceSats(DEFAULT_PUBLISH_PRICE_SATS);
@@ -133,6 +182,20 @@ function DocumentDetail (props) {
     return () => window.removeEventListener('storageContractBonded', handler);
   }, [id, doc, distributeOpen]);
 
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.documentId) return;
+      const docId = detail.documentId;
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (!match || !distributeOpen) return;
+      setDistributeBusy(false);
+      setDistributeError(detail.message || 'Create storage contract failed.');
+    };
+    window.addEventListener('storageContractBondFailed', handler);
+    return () => window.removeEventListener('storageContractBondFailed', handler);
+  }, [id, doc, distributeOpen]);
+
   // Timeout fallback if storageContractBonded never arrives
   React.useEffect(() => {
     if (!distributeBusy || distributeSuccessContractId) return;
@@ -173,6 +236,7 @@ function DocumentDetail (props) {
       if (!gs || !gs.documents) return;
       const candidate = gs.documents[id];
       if (candidate) {
+        setLoadError(null);
         setDoc(candidate);
         setDecryptedContent(null);
         setUnlocked(false);
@@ -201,6 +265,7 @@ function DocumentDetail (props) {
       if (!gs || !gs.documents) return;
       const candidate = gs.documents[id];
       if (candidate) {
+        setLoadError(null);
         setDoc(candidate);
         setDecryptedContent(null);
         setUnlocked(false);
@@ -270,9 +335,13 @@ function DocumentDetail (props) {
   const storageContractId = doc && doc.storageContractId;
   const docPurchasePriceSats = doc && doc.purchasePriceSats;
   const canPurchase = !!(doc && isPublishedInStore && docPurchasePriceSats && docPurchasePriceSats > 0);
+  /** Encrypted body (not HTLC preimage flow) requires an unlocked identity key to publish or decrypt. */
+  const needsIdentityKeyForEncryptedBody = !!(doc && isEncrypted && !isHtlcPendingDecrypt && !props.hasDocumentKey);
   const fabricPeerId = props.bridgeRef?.current?.networkStatus?.fabricPeerId
     || props.bridgeRef?.current?.lastNetworkStatus?.fabricPeerId
     || null;
+  const bridgeForWire = props.bridgeRef && props.bridgeRef.current;
+  const distributeModalNoLocalWire = !!(bridgeForWire && typeof bridgeForWire.hasLocalWireSigningKey === 'function' && !bridgeForWire.hasLocalWireSigningKey());
   const authorDocId = doc && (doc.lineage || doc.id) ? String(doc.lineage || doc.id) : '';
 
   const adminTokenResolved = String(
@@ -333,7 +402,7 @@ function DocumentDetail (props) {
   }
 
   // Basic type helpers
-  const looksText = (mime && mime.startsWith('text/')) || /\.(md|txt|json|js|ts|html|css|log)$/i.test(name || '');
+  const looksText = (mime && mime.startsWith('text/')) || /\.(md|txt|json|js|ts|html|css|log|dot|gv)$/i.test(name || '');
   const looksImage = (mime && mime.startsWith('image/')) || /\.(png|jpe?g|gif|webp|svg)$/i.test(name || '');
 
   // Text preview (only when it looks like text)
@@ -343,6 +412,10 @@ function DocumentDetail (props) {
       text = atob(contentBase64);
     } catch (e) {}
   }
+
+  const showGraphPreview = !!(text != null && props.hasDocumentKey &&
+    typeof GraphDocumentPreview.looksLikeDotSource === 'function' &&
+    GraphDocumentPreview.looksLikeDotSource(text, mime, name));
 
   // Image preview (data URL)
   const imageSrc = (contentBase64 && looksImage) ? `data:${mime};base64,${contentBase64}` : null;
@@ -410,7 +483,15 @@ function DocumentDetail (props) {
           setContractPayTx({
             loading: false,
             txid,
-            error: data.message || 'Transaction not found.'
+            error: data.message || 'Could not load transaction.'
+          });
+          return;
+        }
+        if (!data || typeof data !== 'object') {
+          setContractPayTx({
+            loading: false,
+            txid,
+            error: 'Transaction not found on this hub (or not indexed yet).'
           });
           return;
         }
@@ -494,44 +575,157 @@ function DocumentDetail (props) {
     { key: '60m', value: '60m', text: '60 minutes' }
   ];
 
+  const hubAdminTokenPresent = !!getAdminTokenFromProps(props);
+
+  const handlePayDistributeFromBridge = React.useCallback(async () => {
+    if (!distributeInvoice || !id) return;
+    const token = getAdminTokenFromProps(props);
+    if (!token) {
+      setDistributeError('Admin token required to pay from the hub wallet.');
+      return;
+    }
+    const to = String(distributeInvoice.address || '').trim();
+    const amountSats = Math.round(Number(distributeInvoice.amountSats));
+    if (!to || !Number.isFinite(amountSats) || amountSats <= 0) {
+      setDistributeError('Invalid distribute invoice (address or amount).');
+      return;
+    }
+    setDistributeBridgeBusy(true);
+    setDistributeError(null);
+    try {
+      const upstream = loadUpstreamSettings();
+      const res = await sendBridgePayment(upstream, {
+        to,
+        amountSats,
+        memo: `Distribute ${String(id).slice(0, 16)}`
+      }, token);
+      const txid = res && res.payment && res.payment.txid ? String(res.payment.txid).trim() : '';
+      if (!txid) {
+        throw new Error((res && res.message) || 'Hub wallet did not return a txid.');
+      }
+      setDistributeTxid(txid);
+      if (typeof props.onDistributeDocument !== 'function') {
+        throw new Error('Distribute is not available on this hub.');
+      }
+      setDistributeBusy(true);
+      const config = {
+        amountSats: distributeInvoice.amountSats,
+        durationYears: distributeInvoice.config?.durationYears || distributeDurationYears,
+        challengeCadence: distributeInvoice.config?.challengeCadence || distributeCadence,
+        responseDeadline: distributeInvoice.config?.responseDeadline || distributeDeadline,
+        txid
+      };
+      await Promise.resolve(props.onDistributeDocument(id, config));
+    } catch (err) {
+      setDistributeBusy(false);
+      setDistributeError((err && err.message) ? err.message : String(err));
+    } finally {
+      setDistributeBridgeBusy(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- onDistributeDocument identity is stable enough for hub shell
+  }, [
+    distributeInvoice,
+    id,
+    distributeDurationYears,
+    distributeCadence,
+    distributeDeadline,
+    props.onDistributeDocument,
+    props.adminToken
+  ]);
+
+  const handlePayPurchaseFromBridge = React.useCallback(async () => {
+    if (!purchaseInvoice || !id) return;
+    const token = getAdminTokenFromProps(props);
+    if (!token) {
+      setPurchaseError('Admin token required to pay from the hub wallet.');
+      return;
+    }
+    const to = String(purchaseInvoice.address || '').trim();
+    const amountSats = Math.round(Number(purchaseInvoice.amountSats));
+    if (!to || !Number.isFinite(amountSats) || amountSats <= 0) {
+      setPurchaseError('Invalid purchase invoice (address or amount).');
+      return;
+    }
+    if (typeof props.onClaimPurchase !== 'function') {
+      setPurchaseError('Claim is not available on this hub.');
+      return;
+    }
+    setPurchaseBridgeBusy(true);
+    setPurchaseError(null);
+    try {
+      const upstream = loadUpstreamSettings();
+      const res = await sendBridgePayment(upstream, {
+        to,
+        amountSats,
+        memo: `Purchase ${String(id).slice(0, 16)}`
+      }, token);
+      const txid = res && res.payment && res.payment.txid ? String(res.payment.txid).trim() : '';
+      if (!txid) {
+        throw new Error((res && res.message) || 'Hub wallet did not return a txid.');
+      }
+      setPurchaseTxid(txid);
+      setPurchaseBusy(true);
+      const out = await Promise.resolve(props.onClaimPurchase(id, txid));
+      if (out && out.document) {
+        setPurchasedContent(out.document);
+      } else {
+        setPurchaseError((out && out.error) || 'Claim failed after hub wallet payment.');
+      }
+    } catch (err) {
+      setPurchaseError((err && err.message) ? err.message : String(err));
+    } finally {
+      setPurchaseBusy(false);
+      setPurchaseBridgeBusy(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purchaseInvoice, id, props.onClaimPurchase, props.adminToken]);
+
   return (
     <fabric-document-detail class='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button basic size='small' as={Link} to="/documents" title="Back to documents">
-            <Icon name="arrow left" />
+        <div
+          style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
+          role="banner"
+        >
+          <Button basic size="small" as={Link} to="/documents" aria-label="Back to documents list">
+            <Icon name="arrow left" aria-hidden="true" />
             Back
           </Button>
-          <span>{name}</span>
-          {isEncrypted && (
-            <Label size="small" color="green" title="Encrypted with your key">
-              <Icon name="lock" />
-              Encrypted
-            </Label>
-          )}
-          {doc && isPublishedInStore && (
-            <Label size="small" color="blue" title={publishedAt ? `Published: ${publishedAt}` : 'Published'}>
-              <Icon name="bullhorn" />
-              Published
-            </Label>
-          )}
-          {storageContractId && (
-            <Label
-              size="small"
-              color="purple"
-              title="This document has an active storage contract"
-              style={{ cursor: 'pointer' }}
-              onClick={() => {
-                if (storageContractId) {
-                  navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
-                }
-              }}
-            >
-              <Icon name="cloud" />
-              Distributed
-            </Label>
-          )}
-        </Header>
+          <Header
+            as="h2"
+            style={{ margin: 0, flex: '1 1 10rem', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}
+          >
+            <Header.Content style={{ wordBreak: 'break-word' }}>{name}</Header.Content>
+            {isEncrypted && (
+              <Label size="small" color="green" title="Encrypted with your key">
+                <Icon name="lock" aria-hidden="true" />
+                Encrypted
+              </Label>
+            )}
+            {doc && isPublishedInStore && (
+              <Label size="small" color="blue" title={publishedAt ? `Published: ${publishedAt}` : 'Published'}>
+                <Icon name="bullhorn" aria-hidden="true" />
+                Published
+              </Label>
+            )}
+            {storageContractId && (
+              <Label
+                size="small"
+                color="purple"
+                title="This document has an active storage contract"
+                style={{ cursor: 'pointer' }}
+                onClick={() => {
+                  if (storageContractId) {
+                    navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
+                  }
+                }}
+              >
+                <Icon name="cloud" aria-hidden="true" />
+                Distributed
+              </Label>
+            )}
+          </Header>
+        </div>
 
         <Divider />
 
@@ -595,9 +789,15 @@ function DocumentDetail (props) {
                                   Mempool
                                 </Label>
                                 {' '}
-                                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
-                                  Payment transaction
-                                </Link>
+                                {uf.bitcoinExplorer ? (
+                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
+                                    Payment transaction
+                                  </Link>
+                                ) : (
+                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                    {contractPayTx.txid}
+                                  </code>
+                                )}
                                 <span style={{ color: '#666' }}> — awaiting confirmation</span>
                               </div>
                             )}
@@ -609,16 +809,28 @@ function DocumentDetail (props) {
                                   {contractPayTx.tx.confirmations} confirmation{Number(contractPayTx.tx.confirmations) === 1 ? '' : 's'}
                                 </Label>
                                 {' '}
-                                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
-                                  View payment transaction
-                                </Link>
+                                {uf.bitcoinExplorer ? (
+                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
+                                    View payment transaction
+                                  </Link>
+                                ) : (
+                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                    {contractPayTx.txid}
+                                  </code>
+                                )}
                               </div>
                             )}
                             {!contractPayTx.loading && contractPayTx.error && contractPayTx.txid && (
                               <div style={{ fontSize: '0.92em', color: '#666' }}>
-                                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
-                                  Payment transaction
-                                </Link>
+                                {uf.bitcoinExplorer ? (
+                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
+                                    Payment transaction
+                                  </Link>
+                                ) : (
+                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                    {contractPayTx.txid}
+                                  </code>
+                                )}
                                 <span> — {contractPayTx.error}</span>
                               </div>
                             )}
@@ -652,6 +864,7 @@ function DocumentDetail (props) {
           </Message>
         )}
 
+        {doc && (
         <Card fluid>
           <Card.Content>
             <Card.Header>Document</Card.Header>
@@ -710,6 +923,21 @@ function DocumentDetail (props) {
                   </Button>
                 </div>
               )}
+              {needsIdentityKeyForEncryptedBody && (
+                <Message info size="small" style={{ marginTop: '0.75em' }}>
+                  <Message.Header>Identity key locked</Message.Header>
+                  <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
+                    Use <strong>Locked</strong> in the top bar to unlock your private key before you can publish, download, or preview encrypted content.
+                    A listed <strong>Purchase</strong> can still be paid from an external wallet; &quot;Pay from hub wallet&quot; needs an admin token.
+                  </p>
+                  {typeof props.onRequestUnlock === 'function' && (
+                    <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
+                      <Icon name="key" />
+                      Open identity unlock
+                    </Button>
+                  )}
+                </Message>
+              )}
             </Card.Description>
           </Card.Content>
           <Card.Content extra>
@@ -737,8 +965,12 @@ function DocumentDetail (props) {
                   const price = parseInt(publishPriceSats, 10);
                   props.onPublishDocument(id, price > 0 ? { purchasePriceSats: price } : undefined);
                 }}
-                disabled={!doc || isPublishing || !!isPublishedInStore}
-                title={doc && isPublishedInStore ? 'Document is published' : 'Publish this document ID to the hub global store'}
+                disabled={!doc || isPublishing || !!isPublishedInStore || needsIdentityKeyForEncryptedBody}
+                title={
+                  needsIdentityKeyForEncryptedBody
+                    ? 'Unlock your identity to publish encrypted documents'
+                    : (doc && isPublishedInStore ? 'Document is published' : 'Publish this document ID to the hub global store')
+                }
               >
                 <Icon
                   name={isPublishing ? 'spinner' : (doc && isPublishedInStore ? 'check' : 'bullhorn')}
@@ -754,7 +986,12 @@ function DocumentDetail (props) {
                   value={publishPriceSats}
                   onChange={(e) => setPublishPriceSats(e.target.value)}
                   style={{ width: 110 }}
-                  title={`List price when publishing (default ${DEFAULT_PUBLISH_PRICE_SATS} sats; HTLC purchase)`}
+                  disabled={needsIdentityKeyForEncryptedBody}
+                  title={
+                    needsIdentityKeyForEncryptedBody
+                      ? 'Unlock identity to set purchase price when publishing encrypted content'
+                      : `List price when publishing (default ${DEFAULT_PUBLISH_PRICE_SATS} sats; HTLC purchase)`
+                  }
                 />
               )}
               {canPurchase && (
@@ -842,6 +1079,7 @@ function DocumentDetail (props) {
             </div>
           </Card.Content>
         </Card>
+        )}
 
         <Modal
           size="small"
@@ -929,12 +1167,13 @@ function DocumentDetail (props) {
           size="small"
           open={distributeOpen}
           onClose={() => {
-            if (distributeBusy) return;
+            if (distributeBusy || distributeBridgeBusy) return;
             setDistributeOpen(false);
             setDistributeError(null);
             setDistributeInvoice(null);
             setDistributeTxid('');
             setDistributeSuccessContractId(null);
+            setDistributeBridgeBusy(false);
           }}
         >
           <Header icon="cloud upload" content="Pay to distribute" />
@@ -943,6 +1182,16 @@ function DocumentDetail (props) {
               Pay Bitcoin (L1) to have other nodes store this document under a long-term contract.
               By default, storage is requested for 4 years with periodic random challenges.
             </p>
+            {distributeModalNoLocalWire && (
+              <Message warning size="small" style={{ marginBottom: '1em' }}>
+                <Message.Header>No local signing key in this browser</Message.Header>
+                <p style={{ margin: '0.35em 0 0', color: '#333' }}>
+                  Invoice and contract steps still reach the Hub over your session; pay the distribute address from any wallet you trust.
+                  If you use desktop delegation, confirm prompts in the Hub app and revoke under{' '}
+                  <Link to="/settings/security">Security &amp; delegation</Link> on shared computers.
+                </p>
+              </Message>
+            )}
             {/* Step indicator: 1 Request invoice, 2 Pay, 3 Confirm / Success */}
             <div style={{ display: 'flex', gap: '0.5em', marginBottom: '1em', flexWrap: 'wrap' }}>
               <Label
@@ -1109,6 +1358,26 @@ function DocumentDetail (props) {
                     }
                   }}
                 />
+                {hubAdminTokenPresent && (
+                  <div style={{ marginTop: '1em', display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'center' }}>
+                    <Button
+                      type="button"
+                      color="orange"
+                      loading={distributeBridgeBusy}
+                      disabled={distributeBridgeBusy || distributeBusy || !!distributeSuccessContractId}
+                      onClick={handlePayDistributeFromBridge}
+                      title="POST /services/bitcoin sendpayment — exact invoice amount to the distribute address (admin token)"
+                    >
+                      <Icon name="server" />
+                      Pay from hub wallet & bond
+                    </Button>
+                    <span style={{ color: '#666', fontSize: '0.9em', maxWidth: '28em' }}>
+                      {'One step: spend from this hub\'s bitcoind wallet, then call '}
+                      <code>CreateStorageContract</code>
+                      {' with the returned txid (same as Confirm below). Regtest: mine a block if verification is slow.'}
+                    </span>
+                  </div>
+                )}
                 <Form.Field style={{ marginTop: '1em' }}>
                   <label>Or paste txid (if you paid from an external wallet)</label>
                   <Input
@@ -1119,9 +1388,15 @@ function DocumentDetail (props) {
                 </Form.Field>
                 {TXID_HEX_64.test(String(distributeTxid || '').trim()) && (
                   <div style={{ marginTop: '0.5em', fontSize: '0.9em' }}>
-                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(distributeTxid).trim())}`}>
-                      Open transaction
-                    </Link>
+                    {uf.bitcoinExplorer ? (
+                      <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(distributeTxid).trim())}`}>
+                        Open transaction
+                      </Link>
+                    ) : (
+                      <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                        {String(distributeTxid).trim()}
+                      </code>
+                    )}
                     <span style={{ color: '#666' }}>
                       {' '}— on-chain sends often appear in the mempool first; mine a block on regtest to confirm.
                     </span>
@@ -1143,6 +1418,9 @@ function DocumentDetail (props) {
                         {!distributeTxChain.loading && distributeTxChain.error && (
                           <span style={{ color: '#888' }}>{distributeTxChain.error}</span>
                         )}
+                        {!distributeTxChain.loading && !distributeTxChain.tx && !distributeTxChain.error && (
+                          <span style={{ color: '#888' }}>Not visible on this hub yet — will retry.</span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1154,12 +1432,13 @@ function DocumentDetail (props) {
             <Button
               basic
               onClick={() => {
-                if (distributeBusy) return;
+                if (distributeBusy || distributeBridgeBusy) return;
                 setDistributeOpen(false);
                 setDistributeError(null);
                 setDistributeInvoice(null);
                 setDistributeTxid('');
                 setDistributeSuccessContractId(null);
+                setDistributeBridgeBusy(false);
               }}
             >
               {distributeSuccessContractId ? 'Close' : distributeInvoice ? 'Back' : 'Cancel'}
@@ -1200,7 +1479,7 @@ function DocumentDetail (props) {
               <Button
                 primary
                 loading={distributeBusy}
-                disabled={!distributeTxid.trim() || distributeBusy}
+                disabled={!distributeTxid.trim() || distributeBusy || distributeBridgeBusy}
                 onClick={() => {
                   const tx = distributeTxid.trim();
                   if (!tx || !id || typeof props.onDistributeDocument !== 'function') return;
@@ -1232,12 +1511,13 @@ function DocumentDetail (props) {
           size="small"
           open={purchaseOpen}
           onClose={() => {
-            if (purchaseBusy) return;
+            if (purchaseBusy || purchaseBridgeBusy) return;
             setPurchaseOpen(false);
             setPurchaseInvoice(null);
             setPurchaseTxid('');
             setPurchaseError(null);
             setPurchasedContent(null);
+            setPurchaseBridgeBusy(false);
           }}
         >
           <Header icon="bitcoin" content="Purchase document (HTLC)" />
@@ -1289,6 +1569,24 @@ function DocumentDetail (props) {
                     }
                   }}
                 />
+                {hubAdminTokenPresent && (
+                  <div style={{ marginTop: '1em', display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'center' }}>
+                    <Button
+                      type="button"
+                      color="orange"
+                      loading={purchaseBridgeBusy}
+                      disabled={purchaseBridgeBusy || purchaseBusy || !!purchasedContent}
+                      onClick={handlePayPurchaseFromBridge}
+                      title="POST /services/bitcoin sendpayment — invoice amount to the purchase address (admin token)"
+                    >
+                      <Icon name="server" />
+                      Pay from hub wallet & unlock
+                    </Button>
+                    <span style={{ color: '#666', fontSize: '0.9em', maxWidth: '28em' }}>
+                      {'Spend from this hub\'s bitcoind wallet, then claim with the returned txid. Regtest: mine a block if verification is slow.'}
+                    </span>
+                  </div>
+                )}
                 <Form.Field style={{ marginTop: '1em' }}>
                   <label>Or paste txid (if you paid from an external wallet)</label>
                   <Input
@@ -1302,14 +1600,22 @@ function DocumentDetail (props) {
             )}
           </Modal.Content>
           <Modal.Actions>
-            <Button basic onClick={() => { if (!purchaseBusy) setPurchaseOpen(false); setPurchaseInvoice(null); setPurchaseTxid(''); setPurchaseError(null); setPurchasedContent(null); }}>
+            <Button basic onClick={() => {
+              if (purchaseBusy || purchaseBridgeBusy) return;
+              setPurchaseOpen(false);
+              setPurchaseInvoice(null);
+              setPurchaseTxid('');
+              setPurchaseError(null);
+              setPurchasedContent(null);
+              setPurchaseBridgeBusy(false);
+            }}>
               {purchasedContent ? 'Close' : 'Cancel'}
             </Button>
             {!purchasedContent && purchaseInvoice && (
               <Button
                 primary
                 loading={purchaseBusy}
-                disabled={!purchaseTxid.trim() || purchaseBusy}
+                disabled={!purchaseTxid.trim() || purchaseBusy || purchaseBridgeBusy}
                 onClick={() => {
                   const tx = purchaseTxid.trim();
                   if (!tx || !id || typeof props.onClaimPurchase !== 'function') return;
@@ -1330,7 +1636,28 @@ function DocumentDetail (props) {
           </Modal.Actions>
         </Modal>
 
-        {!doc && (
+        {!doc && loadError && (
+          <Message negative style={{ marginTop: '1em' }}>
+            <Message.Header>Could not load document</Message.Header>
+            <p>{loadError}</p>
+            <Button as={Link} to="/documents" style={{ marginTop: '0.75em' }}>
+              <Icon name="arrow left" />
+              Back to documents
+            </Button>
+            <Button
+              basic
+              style={{ marginTop: '0.75em', marginLeft: '0.5em' }}
+              onClick={() => {
+                setLoadError(null);
+                if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
+              }}
+            >
+              <Icon name="refresh" />
+              Retry
+            </Button>
+          </Message>
+        )}
+        {!doc && !loadError && (
           <Segment
             placeholder
             secondary
@@ -1375,9 +1702,21 @@ function DocumentDetail (props) {
         {doc && text != null && (
           <Segment style={{ marginTop: '1em' }}>
             <Header as="h3">Contents</Header>
-            <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75em', borderRadius: 6, maxHeight: 520, overflow: 'auto' }}>
-              {text}
-            </pre>
+            {showGraphPreview ? (
+              <>
+                <GraphDocumentPreview dotSource={text} hasDocumentKey={props.hasDocumentKey} />
+                <details style={{ marginTop: '0.75rem' }}>
+                  <summary style={{ cursor: 'pointer', color: '#555' }}>DOT source</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75em', borderRadius: 6, maxHeight: 320, overflow: 'auto', marginTop: '0.5rem' }}>
+                    {text}
+                  </pre>
+                </details>
+              </>
+            ) : (
+              <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75em', borderRadius: 6, maxHeight: 520, overflow: 'auto' }}>
+                {text}
+              </pre>
+            )}
           </Segment>
         )}
 

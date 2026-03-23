@@ -301,7 +301,9 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(byId.document.id, docId);
 
     const byName = await methods.GetDocument('browser.min.js');
-    assert.strictEqual(byName.status, 'error');
+    assert.strictEqual(byName.type, 'GetDocumentResult');
+    assert.strictEqual(byName.document, null);
+    assert.strictEqual(byName.documentId, 'browser.min.js');
     assert.ok(/not found/i.test(byName.message));
   });
 

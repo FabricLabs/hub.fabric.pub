@@ -16,6 +16,15 @@ const {
   Segment
 } = require('semantic-ui-react');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const {
+  readUiNotifications,
+  UPDATED_EVENT,
+  STORAGE_KEY
+} = require('../functions/uiNotifications');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
 
 function TopPanel (props) {
   const location = useLocation();
@@ -37,6 +46,7 @@ function TopPanel (props) {
   const localIdentity = props && props.localIdentity ? props.localIdentity : null;
   const bitcoin = props && props.bitcoin;
   const clientBalance = props && props.clientBalance;
+  const clientBalanceLoading = !!(props && props.clientBalanceLoading);
 
   const formatIdentityValue = (value) => {
     if (value == null) return '';
@@ -57,6 +67,12 @@ function TopPanel (props) {
   const isAuthed = hasPrivate;
   const isLockedState = hasLocalIdentity && hasLockedIdentity && !isAuthed;
   const identitySource = localIdentity || auth;
+  /** Browser wallet chip: any loaded identity with an xpub (unlocked, locked, or xpub-only). */
+  const showClientBitcoinBalanceChip = !!(
+    identitySource &&
+    identitySource.xpub &&
+    (hasLocalIdentity || isAuthed)
+  );
   const identityLabel = (() => {
     if (!identitySource) return 'Login';
     if (identitySource.username) return identitySource.username;
@@ -88,6 +104,29 @@ function TopPanel (props) {
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
   }, []);
 
+  const [notifList, setNotifList] = React.useState(() => readUiNotifications());
+  const [uiTick, setUiTick] = React.useState(0);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
+  const uiFlags = loadHubUiFeatureFlags();
+  void uiTick;
+  const balanceChipHref = uiFlags.bitcoinPayments ? '/services/bitcoin/payments' : '/services/bitcoin';
+
+  React.useEffect(() => {
+    const sync = () => setNotifList(readUiNotifications());
+    if (typeof window !== 'undefined') {
+      window.addEventListener(UPDATED_EVENT, sync);
+      const onStorage = (ev) => {
+        if (ev && ev.key === STORAGE_KEY) sync();
+      };
+      window.addEventListener('storage', onStorage);
+      return () => {
+        window.removeEventListener(UPDATED_EVENT, sync);
+        window.removeEventListener('storage', onStorage);
+      };
+    }
+    return undefined;
+  }, []);
+
   return (
     <Segment
       style={{
@@ -112,13 +151,19 @@ function TopPanel (props) {
             <Icon name="home" />
             Home
           </Button>
-          <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')}>
-            <Icon name="sitemap" />
-            Peers
-          </Button>
+          {uiFlags.peers ? (
+            <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')}>
+              <Icon name="sitemap" />
+              Peers
+            </Button>
+          ) : null}
           <Button as={Link} to="/documents" basic={!active('/documents')} primary={active('/documents')}>
             <Icon name="file outline" />
             Documents
+          </Button>
+          <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')}>
+            <Icon name="file contract" />
+            Contracts
           </Button>
         </Button.Group>
         <Dropdown
@@ -132,51 +177,114 @@ function TopPanel (props) {
           pointing="top left"
         >
           <Dropdown.Menu>
-            <Dropdown.Item as={Link} to="/" icon="comments" text="Activity" />
+            {uiFlags.features ? (
+              <Dropdown.Item as={Link} to="/features" icon="info circle" text="Features" />
+            ) : null}
+            {uiFlags.activities ? (
+              <Dropdown.Item
+                as={Link}
+                to="/activities"
+                icon="bell outline"
+                text="Activities"
+                active={pathname === '/activities'}
+              />
+            ) : null}
             <Dropdown.Item as={Link} to="/services/bitcoin" icon="bitcoin" text="Bitcoin" />
-            <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card" text="Payments" />
-            <Dropdown.Item as={Link} to="/services/bitcoin/invoices" icon="file alternate" text="Invoices" />
-            <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Sidechain & demo" />
-            <Dropdown.Item as={Link} to="/contracts" icon="file contract" text="Contracts" />
-            <Dropdown.Item as={Link} to="/settings" icon="setting" text="Settings" />
+            {uiFlags.bitcoinPayments ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card" text="Payments" />
+            ) : null}
+            {uiFlags.bitcoinInvoices ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" icon="file alternate" text="Invoices" />
+            ) : null}
+            {uiFlags.bitcoinLightning ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin#fabric-bitcoin-lightning" icon="bolt" text="Lightning" />
+            ) : null}
+            {uiFlags.bitcoinExplorer ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin#bitcoin-explorer" icon="search" text="Explorer" />
+            ) : null}
+            {uiFlags.bitcoinResources ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin/resources" icon="code" text="Bitcoin HTTP resources" />
+            ) : null}
+            {uiFlags.bitcoinCrowdfund ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin#fabric-bitcoin-crowdfunding" icon="heart outline" text="Crowdfund" />
+            ) : null}
+            {uiFlags.sidechain ? (
+              <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Sidechain & demo" />
+            ) : null}
+            <Dropdown.Item
+              as={Link}
+              to="/settings/admin"
+              icon="settings"
+              text="Admin"
+              active={pathname === '/settings/admin' || pathname.startsWith('/settings/admin/')}
+            />
+            {uiFlags.sidechain ? (
+              <Dropdown.Item
+                as={Link}
+                to="/settings/admin/beacon-federation"
+                icon="star"
+                text="Beacon Federation"
+                active={pathname === '/settings/admin/beacon-federation'}
+              />
+            ) : null}
+            <Dropdown.Item
+              as={Link}
+              to="/settings"
+              icon="setting"
+              text="Settings"
+              active={pathname === '/settings'}
+            />
+            {uiFlags.sidechain ? (
+              <Dropdown.Item as={Link} to="/settings/federation" icon="users" text="Distributed federation" />
+            ) : null}
             <Dropdown.Item as={Link} to="/settings/security" icon="shield" text="Security & delegation" />
+            {uiFlags.sidechain ? (
+              <React.Fragment>
+                <Dropdown.Divider />
+                <Dropdown.Item
+                  as="a"
+                  href="/services/distributed/manifest"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  icon="code"
+                  text="Distributed manifest (JSON)"
+                />
+                <Dropdown.Item
+                  as="a"
+                  href="/services/distributed/vault"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  icon="bitcoin"
+                  text="Federation vault (JSON)"
+                />
+              </React.Fragment>
+            ) : null}
           </Dropdown.Menu>
         </Dropdown>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        {hasLocalIdentity && (
-          <Icon
-            name={isLockedState ? 'lock' : 'unlock'}
-            color={isLockedState ? 'orange' : 'green'}
-            title={isLockedState ? 'Identity locked — click to unlock' : 'Identity unlocked — click to lock'}
-            style={{ marginRight: '0.25em', cursor: 'pointer' }}
-            onClick={() => {
-              if (isLockedState && onUnlockIdentity) {
-                onUnlockIdentity();
-              } else if (!isLockedState && onLockIdentity) {
-                if (typeof window !== 'undefined' && window.confirm('Lock your identity? You will need to enter your password to unlock again.')) {
-                  onLockIdentity();
-                }
-              }
-            }}
-          />
-        )}
-        {isAuthed && (clientBalance != null || (bitcoin && typeof bitcoin.balance === 'number')) && (
+        {showClientBitcoinBalanceChip && (
           <Label
             as={Link}
-            to="/services/bitcoin/payments"
+            to={balanceChipHref}
             size="small"
             basic
-            title="Bitcoin balance — click to open payments"
+            title={
+              clientBalanceLoading && clientBalance == null
+                ? 'Loading your browser wallet balance…'
+                : 'Your browser wallet balance (this identity / session) — click for Bitcoin'
+            }
             style={{ cursor: 'pointer' }}
           >
             <Icon name="bitcoin" color="orange" />
-            {clientBalance != null && Number.isFinite(clientBalance.balanceSats)
-              ? (clientBalance.balanceSats >= 100000000
-                  ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
-                  : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
-              : (bitcoin && typeof bitcoin.balance === 'number' ? String(bitcoin.balance) : '—')}
+            {clientBalanceLoading && clientBalance == null
+              ? '…'
+              : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
+                  ? (clientBalance.balanceSats >= 100000000
+                      ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
+                      : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
+                  : '—')}
           </Label>
         )}
         {bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
@@ -192,6 +300,43 @@ function TopPanel (props) {
             Mempool {bitcoin.mempoolTxCount}
           </Label>
         )}
+        {uiFlags.activities ? (
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <Button
+              as={Link}
+              to="/activities"
+              size="small"
+              title={
+                notifList.length
+                  ? `${notifList.length} in-app notification(s) — open Activities to manage`
+                  : 'Activities — hub log, chat, and in-app notifications'
+              }
+              aria-label="Activities and notifications"
+              primary={active('/activities')}
+              basic={!active('/activities')}
+              style={{
+                border: 'none',
+                boxShadow: 'none',
+                background: 'transparent',
+                padding: '0.45em 0.55em',
+                margin: 0
+              }}
+            >
+              <Icon name="bell outline" />
+            </Button>
+            {notifList.length > 0 && (
+              <Label
+                circular
+                color="red"
+                size="mini"
+                style={{ position: 'absolute', top: -6, right: -6, margin: 0, minWidth: '1.5em' }}
+                title={`${notifList.length} notification(s)`}
+              >
+                {notifList.length > 99 ? '99+' : String(notifList.length)}
+              </Label>
+            )}
+          </div>
+        ) : null}
         {isAuthed ? (
           <div
             onMouseEnter={handleDropdownMouseEnter}
@@ -202,7 +347,8 @@ function TopPanel (props) {
               open={dropdownOpen}
               onClose={() => setDropdownOpen(false)}
               trigger={
-                <Button size="small" primary title="Identity menu">
+                <Button size="small" primary title="Identity — menu or lock">
+                  <Icon name="unlock" style={{ marginRight: '0.15em' }} />
                   <Icon name="user circle" />
                   {identityLabel}
                   <Icon name="dropdown" />
@@ -214,7 +360,24 @@ function TopPanel (props) {
               <Dropdown.Menu>
                 <Dropdown.Item icon="user" text="User profile" onClick={() => { setDropdownOpen(false); onProfile && onProfile(); }} />
                 <Dropdown.Item icon="pencil" text="Sign message" onClick={() => { setDropdownOpen(false); onSignMessage && onSignMessage(); }} />
-                <Dropdown.Item icon="cog" text="Settings" onClick={() => { setDropdownOpen(false); onOpenSettings && onOpenSettings(); }} />
+                <Dropdown.Item
+                  icon="plug"
+                  text="Bridge connection"
+                  onClick={() => { setDropdownOpen(false); onOpenSettings && onOpenSettings(); }}
+                  title="Hub WebSocket URL and bridge options"
+                />
+                <Dropdown.Divider />
+                <Dropdown.Item
+                  icon="lock"
+                  text="Lock identity"
+                  onClick={() => {
+                    setDropdownOpen(false);
+                    if (!onLockIdentity) return;
+                    if (typeof window !== 'undefined' && window.confirm('Lock your identity? You will need to enter your password to unlock again.')) {
+                      onLockIdentity();
+                    }
+                  }}
+                />
                 <Dropdown.Divider />
                 <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { setDropdownOpen(false); onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>

@@ -63,6 +63,10 @@ class PayjoinService extends Service {
       bip: 'BIP77',
       network: this.settings.network,
       endpointBasePath: this.settings.endpointBasePath,
+      acpHubBoost: {
+        description: 'SIGHASH_ALL|ANYONECANPAY payer PSBT + POST .../sessions/:id/acp-hub-boost (admin) appends Hub wallet input; outputs unchanged.',
+        pathTemplate: `${this.settings.endpointBasePath}/sessions/:sessionId/acp-hub-boost`
+      },
       defaults: {
         sessionTTLSeconds: Number(this.settings.defaultSessionTTLSeconds || 1800)
       },

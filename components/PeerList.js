@@ -17,6 +17,63 @@ const {
   Segment,
   Statistic
 } = require('semantic-ui-react');
+const GraphDocumentPreview = require('./GraphDocumentPreview');
+const { peerTopologyToDot } = require('../functions/peerTopologyDot');
+const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const {
+  normalizeFabricPeerAddress,
+  dedupeFabricPeers,
+  fabricPeerPrimaryLabel,
+  buildWebrtcCombinedRows,
+  webrtcRowPrimaryLabel,
+  extractPeerXpub,
+  shortenPublicId
+} = require('../functions/peerIdentity');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
+
+/** Default “primary authority” Fabric TCP peer — long-lived hub, high trust, Bitcoin head reference. */
+const DEFAULT_PRIMARY_FABRIC_HUB = 'hub.fabric.pub:7777';
+const PRIMARY_PEER_STORAGE_KEY = 'fabric.peers.primaryFabricAddress';
+
+function readPrimaryPeerAddress () {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const s = String(window.localStorage.getItem(PRIMARY_PEER_STORAGE_KEY) || '').trim();
+      return s || DEFAULT_PRIMARY_FABRIC_HUB;
+    }
+  } catch (e) {}
+  return DEFAULT_PRIMARY_FABRIC_HUB;
+}
+
+function writePrimaryPeerAddress (addr) {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(PRIMARY_PEER_STORAGE_KEY, String(addr || '').trim());
+    }
+  } catch (e) {}
+}
+
+function sortFabricPeersForAuthority (peers, primaryNorm) {
+  const arr = [...(peers || [])];
+  const pn = String(primaryNorm || '').trim();
+  arr.sort((a, b) => {
+    const aa = normalizeFabricPeerAddress(a && a.address);
+    const ba = normalizeFabricPeerAddress(b && b.address);
+    const ap = pn && (aa === pn || String(a && a.address) === pn);
+    const bp = pn && (ba === pn || String(b && b.address) === pn);
+    if (ap !== bp) return ap ? -1 : 1;
+    const sa = Number(a && a.score);
+    const sb = Number(b && b.score);
+    if (Number.isFinite(sa) && Number.isFinite(sb) && sa !== sb) return sb - sa;
+    if (Number.isFinite(sa) && !Number.isFinite(sb)) return -1;
+    if (!Number.isFinite(sa) && Number.isFinite(sb)) return 1;
+    return String(aa).localeCompare(String(ba));
+  });
+  return arr;
+}
 
 class PeersPage extends React.Component {
   componentDidMount () {
@@ -31,12 +88,22 @@ class PeersPage extends React.Component {
         this.props.onRefreshPeers();
       }
     }, 4000);
+
+    this._onPeerTopologyGossip = (ev) => {
+      const path = ev && ev.detail && ev.detail.operation && ev.detail.operation.path;
+      if (path === '/peerTopologyGossip') this.forceUpdate();
+    };
+    window.addEventListener('globalStateUpdate', this._onPeerTopologyGossip);
   }
 
   componentWillUnmount () {
     if (this._refreshTimer) {
       clearInterval(this._refreshTimer);
       this._refreshTimer = null;
+    }
+    if (this._onPeerTopologyGossip) {
+      window.removeEventListener('globalStateUpdate', this._onPeerTopologyGossip);
+      this._onPeerTopologyGossip = null;
     }
   }
 
@@ -55,15 +122,18 @@ class PeersPage extends React.Component {
       onConnectWebRTCPeer,
       onDisconnectWebRTCPeer,
       onDisconnectAllWebRTCPeers,
-      onSendWebRTCTestPing
+      onSendWebRTCTestPing,
+      onFabricPeerResync
     } = this.props;
+    const uf = loadHubUiFeatureFlags();
     const isLoggedIn = !!(auth && auth.id && auth.xpub);
     const activeBridgeRef = bridgeRef || bridge;
     const current = activeBridgeRef && activeBridgeRef.current;
     const candidate = current && current.networkStatus;
     const fallback = current && current.lastNetworkStatus;
-    const isNetworkStatus = (obj) => !!(obj && typeof obj === 'object' && (obj.network || Array.isArray(obj.peers)));
-    const networkStatus = isNetworkStatus(candidate) ? candidate : (isNetworkStatus(fallback) ? fallback : null);
+    const networkStatus = isHubNetworkStatusShape(candidate)
+      ? candidate
+      : (isHubNetworkStatusShape(fallback) ? fallback : null);
     const network = networkStatus && networkStatus.network;
     const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
     const state = networkStatus && networkStatus.state;
@@ -93,6 +163,9 @@ class PeersPage extends React.Component {
       return true;
     });
 
+    const primaryPeerNorm = normalizeFabricPeerAddress(readPrimaryPeerAddress());
+    const fabricPeersSorted = sortFabricPeersForAuthority(dedupeFabricPeers(fabricPeers), primaryPeerNorm);
+
     // Local browser WebRTC connections (browser-to-browser)
     const localWebrtcPeers = (current && typeof current.localWebrtcPeers !== 'undefined')
       ? current.localWebrtcPeers
@@ -102,6 +175,12 @@ class PeersPage extends React.Component {
     const meshStatus = (current && typeof current.webrtcMeshStatus !== 'undefined')
       ? current.webrtcMeshStatus
       : null;
+
+    const webrtcCombined = buildWebrtcCombinedRows(
+      webrtcPeers,
+      localWebrtcPeers,
+      meshStatus && meshStatus.peerId ? String(meshStatus.peerId) : null
+    );
 
     const bitcoin = networkStatus && networkStatus.bitcoin && typeof networkStatus.bitcoin === 'object'
       ? networkStatus.bitcoin
@@ -121,17 +200,57 @@ class PeersPage extends React.Component {
     return (
       <fabric-hub-peers class='fade-in'>
         <Segment style={{ clear: 'both' }}>
-          <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-            <Button basic size='small' as={Link} to="/" title="Back">
-              <Icon name="arrow left" />
+          <section aria-labelledby="peers-page-heading" aria-describedby="peers-page-summary">
+          <div
+            style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
+            role="banner"
+          >
+            <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+              <Icon name="arrow left" aria-hidden="true" />
               Back
             </Button>
-            <span>Peers</span>
-          </Header>
-          <Header.Subheader style={{ marginTop: '0.35em' }}>
-            Fabric TCP peers, WebRTC mesh, and the hub&apos;s Bitcoin chain head (height / tip) for comparing regtest sync across linked nodes.
-          </Header.Subheader>
+            <div style={{ flex: '1 1 12rem', minWidth: 0 }}>
+              <Header as="h2" id="peers-page-heading" style={{ margin: 0 }}>
+                <Header.Content>Peers</Header.Content>
+              </Header>
+              <p id="peers-page-summary" style={{ margin: '0.35em 0 0', color: '#666', maxWidth: '48rem', lineHeight: 1.45 }}>
+                Fabric TCP peers, WebRTC mesh, and the hub&apos;s Bitcoin chain head (height / tip) for comparing regtest sync across linked nodes.
+              </p>
+            </div>
+          </div>
+          </section>
         </Segment>
+
+        <Message info size="small">
+          <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>
+            Primary authority &amp; Payjoin v2 (BIP 77)
+          </p>
+          <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+            Use a long-lived hub (e.g. <code>hub.fabric.pub</code>) as your <strong>primary authority</strong>: Fabric TCP carries <code>BitcoinBlock</code> gossip and accumulates peer trust scores. Async Payjoin v2 (directory + HPKE + OHTTP) is summarized at{' '}
+            <a href="https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77" target="_blank" rel="noreferrer">payjoin.org — BIP 77</a>.
+            This build still uses BIP77 deposit sessions and BIP78-style <code>pj=</code> where enabled; full v2 directory flows are a future client integration.
+          </p>
+          {isLoggedIn && typeof onAddPeer === 'function' && (
+            <div style={{ marginTop: '0.65em', display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
+              <Button
+                size="small"
+                primary
+                type="button"
+                onClick={() => {
+                  writePrimaryPeerAddress(DEFAULT_PRIMARY_FABRIC_HUB);
+                  onAddPeer({ address: DEFAULT_PRIMARY_FABRIC_HUB });
+                }}
+                title="Remember as primary and call AddPeer for the public Fabric hub"
+              >
+                <Icon name="star" aria-hidden="true" />
+                Add primary hub ({DEFAULT_PRIMARY_FABRIC_HUB})
+              </Button>
+              <span style={{ color: '#666', fontSize: '0.9em' }}>
+                Primary (saved): <code>{readPrimaryPeerAddress()}</code> — sorted first when connected.
+              </span>
+            </div>
+          )}
+        </Message>
 
           {networkStatus ? (
             <>
@@ -144,9 +263,13 @@ class PeersPage extends React.Component {
                 <Statistic>
                   <Statistic.Value text style={{ fontSize: '1rem', fontFamily: 'monospace' }}>
                     {tipFull ? (
-                      <Link to={`/services/bitcoin/blocks/${encodeURIComponent(tipFull)}`} title={tipFull}>
-                        {tipShort}
-                      </Link>
+                      uf.bitcoinExplorer ? (
+                        <Link to={`/services/bitcoin/blocks/${encodeURIComponent(tipFull)}`} title={tipFull}>
+                          {tipShort}
+                        </Link>
+                      ) : (
+                        <span title={`${tipFull} — enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for a block link`}>{tipShort}</span>
+                      )
                     ) : (
                       '—'
                     )}
@@ -162,7 +285,7 @@ class PeersPage extends React.Component {
                   <Statistic.Label>Mempool (tx)</Statistic.Label>
                 </Statistic>
                 <Statistic>
-                  <Statistic.Value>{fabricPeers.length}</Statistic.Value>
+                  <Statistic.Value>{fabricPeersSorted.length}</Statistic.Value>
                   <Statistic.Label>Fabric peers</Statistic.Label>
                 </Statistic>
               </Statistic.Group>
@@ -170,12 +293,41 @@ class PeersPage extends React.Component {
                 <Message warning size='small' style={{ marginTop: '1em' }} content={bitcoin.message} />
               )}
               <Message info size='small' style={{ marginTop: '1em' }}>
-                <Message.Header>Block relay over Fabric</Message.Header>
+                <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Block relay over Fabric</p>
                 <p style={{ margin: '0.35em 0 0' }}>
                   When this hub&apos;s bitcoind advances the tip (ZMQ <code>hashblock</code>), it signs a <code>BitcoinBlock</code> P2P message and peers relay it (same wire bytes; duplicates are ignored). Use height and tip here to confirm your regtest head vs. peers after <code>addnode</code> / long chains.
                 </p>
               </Message>
             </Segment>
+
+            {(() => {
+              const gs = activeBridgeRef && activeBridgeRef.current && typeof activeBridgeRef.current.getGlobalState === 'function'
+                ? activeBridgeRef.current.getGlobalState()
+                : null;
+              const gossip = gs && gs.peerTopologyGossip;
+              const topoDot = peerTopologyToDot({
+                selfId: fabricPeerId,
+                selfLabel: 'This Fabric node',
+                directPeers: fabricPeersSorted,
+                gossip
+              });
+              if (!topoDot) return null;
+              return (
+                <Segment>
+                  <section aria-labelledby="peers-topology-h3" aria-describedby="peers-topology-desc">
+                  <Header as="h3" id="peers-topology-h3">Peer topology</Header>
+                  <p id="peers-topology-desc" style={{ color: '#666', marginBottom: '0.75em' }}>
+                    <strong>Solid</strong> edges: TCP peers in this hub snapshot. <strong>Dotted</strong> edges: Fabric ids that peer reported in <code>P2P_PEER_GOSSIP</code> (second-hand view; client keeps ~20 minutes). Open a connected peer and use <strong>Docs</strong> to send <code>INVENTORY_REQUEST</code> toward a publisher; add TCP peers for ids you want to reach directly.
+                  </p>
+                  <GraphDocumentPreview dotSource={topoDot} skipIdentityGate />
+                  <details style={{ marginTop: '0.75rem' }}>
+                    <summary style={{ cursor: 'pointer', color: '#555' }}>DOT source</summary>
+                    <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.75rem', background: '#f7f7f7', padding: '0.5rem', borderRadius: 4 }}>{topoDot}</pre>
+                  </details>
+                  </section>
+                </Segment>
+              );
+            })()}
 
             <Card fluid>
               <Card.Content>
@@ -256,7 +408,7 @@ class PeersPage extends React.Component {
                       <Label size='tiny' basic color='green' style={{ marginRight: '0.5em' }}>
                         Fabric network
                       </Label>
-                      <strong>Connected list:</strong> {fabricPeers.length}
+                      <strong>Connected list:</strong> {fabricPeersSorted.length}
                     </div>
                     {isLoggedIn && (
                       <Button.Group size='small'>
@@ -282,9 +434,9 @@ class PeersPage extends React.Component {
                     )}
                   </div>
 
-                  {fabricPeers.length > 0 && (
+                  {fabricPeersSorted.length > 0 && (
                     <List size='small' divided relaxed>
-                      {fabricPeers.map((peer, idx) => {
+                      {fabricPeersSorted.map((peer, idx) => {
                         const id = peer && (peer.id || peer.address || peer.pubkey || `peer-${idx}`);
                         const address = peer && (peer.address || peer.host || peer.url);
                         const routeTarget = String((address && address.trim()) || id || `peer-${idx}`);
@@ -292,18 +444,30 @@ class PeersPage extends React.Component {
                         const status = (peer && peer.status) || 'unknown';
                         const isConnected = status === 'connected';
                         const score = peer && (peer.score != null ? peer.score : null);
-                        const alias = peer && peer.alias;
                         const nickname = peer && peer.nickname;
                         const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
-                        const primary = nickname || alias || id;
+                        const addrNorm = normalizeFabricPeerAddress(address);
+                        const isPrimaryRow = primaryPeerNorm && (addrNorm === primaryPeerNorm || String(address) === primaryPeerNorm);
+                        const headline = fabricPeerPrimaryLabel(peer);
+                        const xpubFull = extractPeerXpub(peer);
                         return (
                           <List.Item as={Link} to={`/peers/${encodeURIComponent(routeTarget)}`} key={rowKey}>
                             <List.Content>
                               <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                                {primary}
-                                {(nickname && (alias || id)) ? (
-                                  <span style={{ fontSize: '0.85em', color: '#666' }}>
-                                    {alias ? ` (${alias})` : ` (${id})`}
+                                {headline}
+                                {isPrimaryRow && (
+                                  <Label size="tiny" color="yellow" horizontal title="Node-local primary authority preference">
+                                    <Icon name="star" /> Primary
+                                  </Label>
+                                )}
+                                {nickname && headline !== nickname ? (
+                                  <span style={{ fontSize: '0.85em', color: '#666' }} title="Nickname">
+                                    ({nickname})
+                                  </span>
+                                ) : null}
+                                {nickname && xpubFull ? (
+                                  <span style={{ fontSize: '0.85em', color: '#666' }} title={xpubFull}>
+                                    {shortenPublicId(xpubFull, 16, 12)}
                                   </span>
                                 ) : null}
                                 <Label size='tiny' color={isConnected ? 'green' : 'grey'} horizontal title={status}>
@@ -318,6 +482,23 @@ class PeersPage extends React.Component {
                                     <Icon name='star' /> {score}
                                   </Label>
                                 )}
+                                {isConnected && typeof onFabricPeerResync === 'function' && (
+                                  <Button
+                                    size='mini'
+                                    basic
+                                    title='Request Fabric chain resync: ChainSyncRequest, inventory exchange, and replay of BitcoinBlock messages from this hub log'
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      try {
+                                        onFabricPeerResync(routeTarget);
+                                      } catch (e) {}
+                                    }}
+                                  >
+                                    <Icon name='sync' />
+                                    Resync
+                                  </Button>
+                                )}
                               </List.Header>
                               {address && <List.Description>{address}</List.Description>}
                               {lastSeen && (
@@ -331,9 +512,9 @@ class PeersPage extends React.Component {
                       })}
                     </List>
                   )}
-                  {fabricPeers.length === 0 && (
+                  {fabricPeersSorted.length === 0 && (
                     <p style={{ color: '#666', fontStyle: 'italic', marginTop: '0.75em' }}>
-                      No Fabric network peers in the standard peer list.
+                      No Fabric TCP peers yet. Add <code>{DEFAULT_PRIMARY_FABRIC_HUB}</code> above or use <strong>Add Peer</strong> with <code>host:port</code> (default Fabric port <code>7777</code>). After connect, chain height / tip reflect sync with that peer&apos;s view when gossip is flowing.
                     </p>
                   )}
                 </Card.Description>
@@ -342,20 +523,21 @@ class PeersPage extends React.Component {
             </>
           ) : (
             <Segment basic>
-              <Segment
-                placeholder
-                style={{ minHeight: '30vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75em',
+                  flexWrap: 'wrap',
+                  padding: '0.75em 0',
+                  color: '#555'
+                }}
               >
-                <div>
-                  <Loader active inline="centered" size="large" />
-                  <Header as='h4' style={{ marginTop: '1em', textAlign: 'center' }}>
-                    Loading network status…
-                    <Header.Subheader>
-                      Connecting to hub and fetching peers.
-                    </Header.Subheader>
-                  </Header>
-                </div>
-              </Segment>
+                <Loader active inline size="small" />
+                <span>Connecting to hub and loading Fabric network status (peers, Bitcoin height)…</span>
+              </div>
             </Segment>
           )}
 
@@ -365,12 +547,17 @@ class PeersPage extends React.Component {
               <Card.Header>
                 <Icon name='video' />
                 WebRTC Peers{' '}
-                <Label size='small' color={webrtcPeers.length > 0 ? 'blue' : 'grey'}>
-                  {webrtcPeers.length} via signaling
+                <Label size='small' color={webrtcCombined.length > 0 ? 'blue' : 'grey'}>
+                  {webrtcCombined.length} browser peer{webrtcCombined.length === 1 ? '' : 's'}
                 </Label>
+                {webrtcPeers.length > 0 && (
+                  <Label size='small' basic color='blue' style={{ marginLeft: '0.35em' }} title="Registered with hub signaling (may overlap mesh)">
+                    {webrtcPeers.length} signaling
+                  </Label>
+                )}
                 {localWebrtcPeers.length > 0 && (
-                  <Label size='small' color='teal' style={{ marginLeft: '0.5em' }}>
-                    {localWebrtcPeers.length} mesh
+                  <Label size='small' basic color='teal' style={{ marginLeft: '0.35em' }}>
+                    {localWebrtcPeers.length} mesh link{localWebrtcPeers.length === 1 ? '' : 's'}
                   </Label>
                 )}
               </Card.Header>
@@ -471,125 +658,98 @@ class PeersPage extends React.Component {
                       </Button>
                     )}
                 </div>
-                {webrtcPeers.length === 0 && localWebrtcPeers.length === 0 ? (
+                {webrtcCombined.length === 0 ? (
                   <p style={{ color: '#666', fontStyle: 'italic' }}>
-                    No WebRTC peers connected yet. Peers will appear here when browsers register with hub signaling and establish mesh channels.
+                    No WebRTC peers yet. Browsers register with hub signaling; mesh rows appear when data channels connect. Each logical browser is one row (xpub when shared).
                   </p>
                 ) : (
                   <>
-                    {webrtcPeers.length > 0 && (
-                      <>
-                        <div style={{ marginBottom: '0.5em' }}>
-                          <Label size='tiny' basic color='blue'>
-                            Hub Signaling Peers
-                          </Label>
-                        </div>
-                        <List size='small' divided relaxed>
-                          {webrtcPeers.map((peer, idx) => {
-                            const id = peer && (peer.id || `webrtc-${idx}`);
-                            const status = (peer && peer.status) || 'connected';
-                            const isConnected = status === 'connected';
-                            const connectedAt = peer && peer.connectedAt;
-                            return (
-                              <List.Item as={Link} to={`/peers/${encodeURIComponent(id)}`} key={id}>
-                                <List.Icon name='wifi' color={isConnected ? 'green' : 'grey'} verticalAlign='middle' />
-                                <List.Content>
-                                  <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                                    <code style={{ fontSize: '0.9em' }}>{id}</code>
-                                    <Label size='tiny' color={isConnected ? 'green' : 'grey'} horizontal>
-                                      {isConnected ? (
-                                        <><Icon name='check circle' /> Connected</>
-                                      ) : (
-                                        <><Icon name='minus circle' /> {status}</>
-                                      )}
-                                    </Label>
-                                  </List.Header>
-                                  {connectedAt && (
-                                    <List.Description style={{ fontSize: '0.85em', color: '#666' }}>
-                                      Connected: {new Date(connectedAt).toLocaleString()}
-                                    </List.Description>
-                                  )}
-                                </List.Content>
-                              </List.Item>
-                            );
-                          })}
-                        </List>
-                      </>
-                    )}
-
-                    {localWebrtcPeers.length > 0 && (
-                      <>
-                        <div style={{ marginTop: webrtcPeers.length > 0 ? '1em' : 0, marginBottom: '0.5em' }}>
-                          <Label size='tiny' basic color='teal'>
-                            Local Browser Connections
-                          </Label>
-                        </div>
-                        <List size='small' divided relaxed>
-                          {localWebrtcPeers.map((peer, idx) => {
-                            const id = peer && (peer.id || `local-${idx}`);
-                            const status = (peer && peer.status) || 'unknown';
-                            const isConnected = status === 'connected';
-                            const direction = peer && peer.direction;
-                            const connectedAt = peer && peer.connectedAt;
-                            return (
-                              <List.Item as={Link} to={`/peers/${encodeURIComponent(id)}`} key={id}>
-                                <List.Icon
-                                  name={direction === 'inbound' ? 'arrow down' : 'arrow up'}
-                                  color={isConnected ? 'teal' : 'grey'}
-                                  verticalAlign='middle'
-                                  title={direction === 'inbound' ? 'Inbound connection' : 'Outbound connection'}
-                                />
-                                <List.Content>
-                                  <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                                    <code style={{ fontSize: '0.9em' }}>{id}</code>
-                                    <Label size='tiny' color={isConnected ? 'teal' : 'grey'} horizontal>
-                                      {isConnected ? (
-                                        <><Icon name='check circle' /> Connected</>
-                                      ) : (
-                                        <><Icon name='minus circle' /> {status}</>
-                                      )}
-                                    </Label>
-                                    {direction && (
-                                      <Label size='tiny' basic horizontal title={`${direction} connection`}>
-                                        {direction === 'inbound' ? 'Inbound' : 'Outbound'}
-                                      </Label>
-                                    )}
-                                    {typeof onDisconnectWebRTCPeer === 'function' && (
-                                      <Button
-                                        size='mini'
-                                        basic
-                                        color='red'
-                                        icon
-                                        title='Disconnect this WebRTC peer'
-                                        onClick={(event) => {
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          try {
-                                            onDisconnectWebRTCPeer(id);
-                                          } catch (e) {}
-                                        }}
-                                      >
-                                        <Icon name='unlink' />
-                                      </Button>
-                                    )}
-                                  </List.Header>
-                                  {connectedAt && (
-                                    <List.Description style={{ fontSize: '0.85em', color: '#666' }}>
-                                      Connected: {new Date(connectedAt).toLocaleString()}
-                                    </List.Description>
-                                  )}
-                                  {peer.error && (
-                                    <List.Description style={{ fontSize: '0.85em', color: '#b00' }}>
-                                      Error: {peer.error}
-                                    </List.Description>
-                                  )}
-                                </List.Content>
-                              </List.Item>
-                            );
-                          })}
-                        </List>
-                      </>
-                    )}
+                    <div style={{ marginBottom: '0.5em' }}>
+                      <Label size='tiny' basic color='grey'>
+                        Combined view (signaling + mesh)
+                      </Label>
+                    </div>
+                    <List size='small' divided relaxed>
+                      {webrtcCombined.map((row) => {
+                        const peerId = row.id;
+                        const sig = row.signaling;
+                        const loc = row.local;
+                        const locStatus = loc && loc.status;
+                        const meshConnected = locStatus === 'connected';
+                        const headline = webrtcRowPrimaryLabel(sig, loc);
+                        const meta = sig && sig.metadata && typeof sig.metadata === 'object' ? sig.metadata : {};
+                        const fullXpub = meta.xpub && String(meta.xpub).trim();
+                        const direction = loc && loc.direction;
+                        const connectedAt = (loc && loc.connectedAt) || (sig && sig.connectedAt);
+                        return (
+                          <List.Item as={Link} to={`/peers/${encodeURIComponent(peerId)}`} key={peerId}>
+                            <List.Icon
+                              name={meshConnected ? 'exchange' : 'wifi'}
+                              color={meshConnected ? 'teal' : 'grey'}
+                              verticalAlign='middle'
+                              title={meshConnected ? 'Mesh data channel' : 'Signaling only'}
+                            />
+                            <List.Content>
+                              <List.Header style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+                                <strong title={fullXpub || peerId}>{headline}</strong>
+                                {sig ? (
+                                  <Label size='tiny' basic color='blue' horizontal title="Seen on hub signaling">
+                                    signaling
+                                  </Label>
+                                ) : null}
+                                {loc ? (
+                                  <Label size='tiny' basic color='teal' horizontal title="Local WebRTC mesh">
+                                    mesh{meshConnected ? '' : ` (${locStatus || '—'})`}
+                                  </Label>
+                                ) : null}
+                                {direction && loc ? (
+                                  <Label size='tiny' basic horizontal title={`${direction} mesh connection`}>
+                                    {direction === 'inbound' ? 'Inbound' : 'Outbound'}
+                                  </Label>
+                                ) : null}
+                                {typeof onDisconnectWebRTCPeer === 'function' && loc ? (
+                                  <Button
+                                    size='mini'
+                                    basic
+                                    color='red'
+                                    icon
+                                    title='Disconnect this WebRTC mesh peer'
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      try {
+                                        onDisconnectWebRTCPeer(peerId);
+                                      } catch (e) {}
+                                    }}
+                                  >
+                                    <Icon name='unlink' />
+                                  </Button>
+                                ) : null}
+                              </List.Header>
+                              <List.Description style={{ fontSize: '0.85em', color: '#555', wordBreak: 'break-all' }}>
+                                <code title={peerId}>{peerId}</code>
+                                {meta.fabricPeerId && String(meta.fabricPeerId) !== peerId ? (
+                                  <span style={{ display: 'block', marginTop: '0.25em' }}>
+                                    Fabric id:{' '}
+                                    <code style={{ fontSize: '0.9em' }}>{shortenPublicId(String(meta.fabricPeerId), 18, 12)}</code>
+                                  </span>
+                                ) : null}
+                              </List.Description>
+                              {connectedAt ? (
+                                <List.Description style={{ fontSize: '0.85em', color: '#666' }}>
+                                  {meshConnected ? 'Mesh' : 'Signaling'}: {new Date(connectedAt).toLocaleString()}
+                                </List.Description>
+                              ) : null}
+                              {loc && loc.error ? (
+                                <List.Description style={{ fontSize: '0.85em', color: '#b00' }}>
+                                  Error: {loc.error}
+                                </List.Description>
+                              ) : null}
+                            </List.Content>
+                          </List.Item>
+                        );
+                      })}
+                    </List>
                   </>
                 )}
               </Card.Description>

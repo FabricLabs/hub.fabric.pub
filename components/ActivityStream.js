@@ -1,14 +1,45 @@
 'use strict';
 
 // Dependencies
-const fetch = require('cross-fetch');
 const React = require('react');
+const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { Link } = require('react-router-dom');
 const { Button, Icon, Label } = require('semantic-ui-react');
 const ChatInput = require('./ChatInput');
 const { isDelegationSignatureRequestActivity } = require('../functions/messageTypes');
+const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 
 const MESSAGE_PAGE_SIZE = 10;
+
+/**
+ * @param {object} entry
+ * @returns {'chat'|'bitcoin'|'documents'|'network'|'signing'|null}
+ */
+function getActivityEntryCategory (entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (entry.type === 'CLIENT_NOTICE') return 'bitcoin';
+  if (entry.type === 'P2P_CHAT_MESSAGE') return 'chat';
+  if (isDelegationSignatureRequestActivity(entry)) return 'signing';
+  if (entry.object && entry.object.type === 'BitcoinBlock') return 'bitcoin';
+  if (entry.object && entry.object.type === 'Document') {
+    const mime = String(entry.object.mime || '').toLowerCase();
+    if (entry.object.bitcoinBlock === true || mime === 'application/x-fabric-bitcoin-block+json') return null;
+    return 'documents';
+  }
+  return 'network';
+}
+
+/**
+ * @param {object} entry
+ * @param {string} filter
+ */
+function entryMatchesActivityFilter (entry, filter) {
+  const f = (filter && String(filter).trim()) || 'all';
+  if (f === 'all') return true;
+  const cat = getActivityEntryCategory(entry);
+  if (cat == null) return false;
+  return cat === f;
+}
 
 class ActivityStreamElement extends React.Component {
   constructor (props) {
@@ -59,7 +90,14 @@ class ActivityStreamElement extends React.Component {
 
   componentDidMount () {
     console.debug('[FABRIC:STREAM]', 'Stream mounted!');
-    if (this.props.fetchResource) this.props.fetchResource('/activities');
+    // Optional: parent may pass fetchResource(path) for non-bridge activity sources.
+    if (typeof this.props.fetchResource === 'function') {
+      const preset = this.props.streamPreset || 'default';
+      const uf = loadHubUiFeatureFlags();
+      if (preset !== 'notifications' || uf.activities) {
+        this.props.fetchResource('/activities');
+      }
+    }
     window.addEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
     window.addEventListener('fabric:chatWarning', this._handleChatWarning);
     window.addEventListener('fabric:l1PaymentActivity', this._handleL1PaymentActivity);
@@ -89,6 +127,10 @@ class ActivityStreamElement extends React.Component {
   }
 
   componentWillUnmount () {
+    if (typeof this._hubUiFlagsUnsub === 'function') {
+      this._hubUiFlagsUnsub();
+      this._hubUiFlagsUnsub = null;
+    }
     window.removeEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
     window.removeEventListener('fabric:chatWarning', this._handleChatWarning);
     window.removeEventListener('fabric:l1PaymentActivity', this._handleL1PaymentActivity);
@@ -159,6 +201,7 @@ class ActivityStreamElement extends React.Component {
   };
 
   _renderPurgeButton (entry) {
+    if (entry && entry.object && entry.object.localOnly) return null;
     const adminToken = (this.props && this.props.adminToken) ||
       (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
     if (!adminToken || !entry || !entry.messageKey) return null;
@@ -185,6 +228,20 @@ class ActivityStreamElement extends React.Component {
     );
   }
 
+  _handleL1PaymentActivity = (event) => {
+    try {
+      const d = event && event.detail;
+      if (!d || !d.txid) return;
+      const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
+      const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
+      if (bridgeInstance && typeof bridgeInstance.applyL1InvoicePaymentActivity === 'function') {
+        bridgeInstance.applyL1InvoicePaymentActivity(d);
+      }
+    } catch (e) {
+      console.warn('[FABRIC:STREAM] l1PaymentActivity:', e);
+    }
+  };
+
   _handleGlobalStateUpdate = (event) => {
     try {
       const globalState = event && event.detail && event.detail.globalState;
@@ -204,6 +261,20 @@ class ActivityStreamElement extends React.Component {
           return ta - tb; // oldest first
         });
 
+      const docAddLast = new Map();
+      for (const m of fabricEntries) {
+        if (m && m.type === 'Add' && m.object && m.object.type === 'Document' && m.object.id) {
+          docAddLast.set(String(m.object.id), m);
+        }
+      }
+      const fabricDeduped = fabricEntries.filter((m) => {
+        if (m && m.type === 'Add' && m.object && m.object.type === 'Document' && m.object.id) {
+          const id = String(m.object.id);
+          return docAddLast.get(id) === m;
+        }
+        return true;
+      });
+
       this._shouldScrollToBottom = this._isScrolledToBottom();
       this.setState((s) => {
         const isFirstLoad = s.entries.length === 0;
@@ -216,7 +287,7 @@ class ActivityStreamElement extends React.Component {
           const c = e && e.object && e.object.created;
           return typeof c === 'number' ? c : new Date(c || 0).getTime() || 0;
         };
-        const entries = fabricEntries.concat(prevNotices).sort((a, b) => tNotice(a) - tNotice(b));
+        const entries = fabricDeduped.concat(prevNotices).sort((a, b) => tNotice(a) - tNotice(b));
         return {
           entries,
           displayLimit: isFirstLoad ? MESSAGE_PAGE_SIZE : s.displayLimit
@@ -244,13 +315,6 @@ class ActivityStreamElement extends React.Component {
     }, 6000);
   };
 
-  async fetchResource (path) {
-    // TODO: use Bridge to send `GET_DOCUMENT` request
-    const authority = await fetch(`${this.settings.authority}${path}`);
-    console.debug('authority says:', authority);
-    // TODO: load other sources (local, etc.)
-  }
-
   _handleChatSubmit = (e) => {
     if (e && typeof e.preventDefault === 'function') e.preventDefault();
     const text = (this.state.chatInput || '').trim();
@@ -267,10 +331,14 @@ class ActivityStreamElement extends React.Component {
     const allEntries = Array.isArray(this.state.entries) && this.state.entries.length > 0
       ? this.state.entries
       : apiActivities;
-    const total = allEntries.length;
+    const entryTypeFilter = (this.props.entryTypeFilter && String(this.props.entryTypeFilter).trim()) || 'all';
+    const filteredEntries = entryTypeFilter === 'all'
+      ? allEntries
+      : (Array.isArray(allEntries) ? allEntries.filter((e) => entryMatchesActivityFilter(e, entryTypeFilter)) : []);
+    const total = filteredEntries.length;
     const effectiveLimit = this._userHasLoadedMore ? this.state.displayLimit : MESSAGE_PAGE_SIZE;
     const displayLimit = Math.min(effectiveLimit, total);
-    const entries = allEntries.slice(-displayLimit);
+    const entries = filteredEntries.slice(-displayLimit);
     const hasMore = displayLimit < total;
     const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
     const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
@@ -306,9 +374,10 @@ class ActivityStreamElement extends React.Component {
     ) ? bridgeInstance.hasUnlockedIdentity() : true;
     const chatDisabledReason = canSubmitChat ? null : 'Unlock identity to send chat messages.';
     const streamPreset = this.props.streamPreset || 'default';
+    const uf = loadHubUiFeatureFlags();
     const headerTitle = typeof this.props.headerTitle === 'string' && this.props.headerTitle.trim()
       ? this.props.headerTitle.trim()
-      : (streamPreset === 'notifications' ? 'Notifications' : 'Activity Stream');
+      : (streamPreset === 'notifications' ? 'Delegation & signing' : 'Activity Stream');
     const showChatChrome = streamPreset !== 'notifications';
     return (
       <fabric-activity-stream className='activity-stream'>
@@ -355,12 +424,18 @@ class ActivityStreamElement extends React.Component {
                       {txid && (
                         <>
                           {' '}
-                          <Link
-                            to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid).trim())}`}
-                            style={{ color: '#2185d0' }}
-                          >
-                            Transaction
-                          </Link>
+                          {uf.bitcoinExplorer ? (
+                            <Link
+                              to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid).trim())}`}
+                              style={{ color: '#2185d0' }}
+                            >
+                              Transaction
+                            </Link>
+                          ) : (
+                            <code style={{ fontSize: '0.88em', color: '#666' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">
+                              {String(txid).slice(0, 16)}…
+                            </code>
+                          )}
                         </>
                       )}
                       {this._renderPurgeButton(entry)}
@@ -433,14 +508,21 @@ class ActivityStreamElement extends React.Component {
                     opacity: (isPending || isQueued) ? 0.7 : 1,
                     color: isQueued ? '#888' : undefined
                   };
+                  const actorPeerPath = actorId && !isLikelyBip32ExtendedKey(actorId) && uf.peers
+                    ? `/peers/${encodeURIComponent(actorId)}`
+                    : null;
                   const actorNode = actorId && actorId !== 'unknown'
                     ? (
-                      <Link
-                        to={`/peers/${encodeURIComponent(actorId)}`}
-                        style={{ color: 'inherit', textDecoration: 'none' }}
-                      >
-                        <strong>@{actorId}</strong>
-                      </Link>
+                        actorPeerPath
+                          ? (
+                            <Link
+                              to={actorPeerPath}
+                              style={{ color: 'inherit', textDecoration: 'none' }}
+                            >
+                              <strong>@{actorId}</strong>
+                            </Link>
+                            )
+                          : <strong title={!uf.peers ? 'Peers disabled — enable Peers in Admin → Feature visibility' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
                       )
                     : <strong>@{actorId}</strong>;
                   const isLast = index === entries.length - 1;
@@ -500,12 +582,16 @@ class ActivityStreamElement extends React.Component {
                       {' '}
                       {hash
                         ? (
-                          <Link
-                            to={`/services/bitcoin/blocks/${encodeURIComponent(hash)}`}
-                            style={{ color: '#2185d0' }}
-                          >
-                            {heightLabel}
-                          </Link>
+                          uf.bitcoinExplorer ? (
+                            <Link
+                              to={`/services/bitcoin/blocks/${encodeURIComponent(hash)}`}
+                              style={{ color: '#2185d0' }}
+                            >
+                              {heightLabel}
+                            </Link>
+                          ) : (
+                            <span title="Enable Bitcoin explorer in Admin to open the block viewer">{heightLabel}</span>
+                          )
                           )
                         : <span>{heightLabel}</span>}
                       {hash && (
@@ -523,9 +609,24 @@ class ActivityStreamElement extends React.Component {
                   );
                 }
 
+                if (entry.object && entry.object.type === 'Document') {
+                  const ob = entry.object;
+                  const mime = String(ob.mime || '').toLowerCase();
+                  if (ob.bitcoinBlock === true || mime === 'application/x-fabric-bitcoin-block+json') {
+                    return null;
+                  }
+                }
+
                 const verb = entry.type || 'Activity';
                 const objectType = entry.object && entry.object.type ? entry.object.type : 'Object';
                 const objectName = entry.object && (entry.object.name || entry.object.id);
+                const objectTypeLabel = String(objectType || 'Object').trim();
+                const objectNameLabel = objectName != null && String(objectName).trim()
+                  ? String(objectName).trim()
+                  : '';
+                const objectSummary = objectNameLabel
+                  ? `${objectTypeLabel}: ${objectNameLabel}`
+                  : objectTypeLabel;
 
                 const objectId = entry.object && entry.object.id;
                 let objectHref = null;
@@ -536,8 +637,8 @@ class ActivityStreamElement extends React.Component {
                 }
 
                 let targetHref = null;
-                if (typeof target === 'string' && target) {
-                  targetHref = `/peers/${encodeURIComponent(target)}`;
+                if (typeof target === 'string' && target && !isLikelyBip32ExtendedKey(target)) {
+                  if (uf.peers) targetHref = `/peers/${encodeURIComponent(target)}`;
                 } else if (target && target.type === 'Collection' && target.name === 'documents') {
                   targetHref = '/documents';
                 }
@@ -551,12 +652,16 @@ class ActivityStreamElement extends React.Component {
                   >
                     {actorId && actorId !== 'system'
                       ? (
-                        <Link
-                          to={`/peers/${encodeURIComponent(actorId)}`}
-                          style={{ color: 'inherit', textDecoration: 'none' }}
-                        >
-                          <strong>@{actorId}</strong>
-                        </Link>
+                          !isLikelyBip32ExtendedKey(actorId) && uf.peers
+                            ? (
+                              <Link
+                                to={`/peers/${encodeURIComponent(actorId)}`}
+                                style={{ color: 'inherit', textDecoration: 'none' }}
+                              >
+                                <strong>@{actorId}</strong>
+                              </Link>
+                              )
+                            : <strong title={!uf.peers && !isLikelyBip32ExtendedKey(actorId) ? 'Peers disabled — enable Peers in Admin → Feature visibility' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
                         )
                       : <strong>@{actorId}</strong>}{' '}
                     {verb}{' '}
@@ -566,10 +671,10 @@ class ActivityStreamElement extends React.Component {
                           to={objectHref}
                           style={{ color: 'inherit', textDecoration: 'none' }}
                         >
-                          <strong>{objectType}{objectName ? `:${objectName}` : ''}</strong>
+                          <strong>{objectSummary}</strong>
                         </Link>
                         )
-                      : <strong>{objectType}{objectName ? `:${objectName}` : ''}</strong>}
+                      : <strong>{objectSummary}</strong>}
                     {targetLabel && (
                       <> → {targetHref
                         ? (
@@ -587,6 +692,30 @@ class ActivityStreamElement extends React.Component {
                   </div>
                 );
               })}
+            </div>
+          )}
+          {entries.length === 0 && streamPreset === 'notifications' && (
+            <div style={{ color: '#888', fontSize: '0.9em', padding: '0.35em 0', lineHeight: 1.45 }}>
+              No delegation signature requests in this feed yet.
+              {uf.activities ? (
+                <>
+                  {' '}Wallet, Payjoin, and other short toasts are listed on the{' '}
+                  <Link to="/activities">Activities</Link>
+                  {' '}page (bell in the top bar).
+                </>
+              ) : (
+                <> Enable “Activities” in Admin → Feature visibility to open the full feed and bell toasts.</>
+              )}
+              {' '}Open{' '}
+              <Link to="/settings/security">Security &amp; delegation</Link>
+              {' '}to list or revoke desktop signing sessions.
+            </div>
+          )}
+          {entries.length === 0 && streamPreset !== 'notifications' && (
+            <div style={{ color: '#888', fontSize: '0.9em', padding: '0.35em 0' }}>
+              {entryTypeFilter === 'all'
+                ? 'No activity yet. Chat, document events, and Bitcoin blocks show here when the hub and network are active.'
+                : `No ${entryTypeFilter} activity matches this filter yet.`}
             </div>
           )}
         </div>

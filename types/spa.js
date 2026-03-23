@@ -41,6 +41,9 @@ class SPA extends FabricSPA {
     <script src="/semantic.min.js"></script>
     <!-- <link rel="icon" href="/images/sensemaker-icon.png" /> -->
     <style>
+      html {
+        scroll-padding-top: 6.5rem;
+      }
       body {
         margin: 0;
         padding: 0 1em;
@@ -49,6 +52,7 @@ class SPA extends FabricSPA {
   </head>
   <body>
     <div data-hash="${hash}" id="application-target">${html}</div>
+    <script src="/config.local.js"></script>
     <script src="/bundles/browser.min.js"></script>
   </body>
 </html>`;

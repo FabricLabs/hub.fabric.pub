@@ -78,6 +78,18 @@ try {
         settings.lightning.socketPath = parseVal(setup.LIGHTNING_SOCKET) || setup.LIGHTNING_SOCKET;
       }
     }
+    // LAN / shared HTTP: initial bind only when env does not override (runtime toggles use hub rebind).
+    if (setup.HTTP_SHARED_MODE !== undefined && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
+      const shared = parseVal(setup.HTTP_SHARED_MODE);
+      const bindAll = shared === true || shared === 'true';
+      settings = {
+        ...settings,
+        http: {
+          ...(settings.http || {}),
+          interface: bindAll ? '0.0.0.0' : '127.0.0.1'
+        }
+      };
+    }
   }
 } catch (e) {
   // Ignore; use defaults from local.js
@@ -190,6 +202,12 @@ async function main (input = {}) {
 
 // Start & handle errors
 process.on('unhandledRejection', (reason, promise) => {
+  const msg = reason && (reason.message != null ? String(reason.message) : String(reason));
+  // Managed Lightning can stall (no clightning, slow RPC); @fabric/core rejects with timeout — do not take down Bitcoin/HTTP.
+  if (typeof msg === 'string' && /Lightning RPC timeout/i.test(msg)) {
+    console.warn('[FABRIC:HUB] Transient Lightning RPC timeout (Hub continues):', msg);
+    return;
+  }
   console.error('[FABRIC:HUB] Unhandled Rejection:', reason && reason.stack ? reason.stack : reason);
   logCrashReportHint('[FABRIC:HUB]');
   void exitWithHubStop('unhandledRejection', 1);

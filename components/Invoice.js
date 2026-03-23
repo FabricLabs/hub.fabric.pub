@@ -11,11 +11,16 @@ const {
 } = require('semantic-ui-react');
 const {
   loadUpstreamSettings,
-  getWalletContextFromIdentity,
+  getSpendWalletContext,
   sendPayment,
   verifyL1Payment
 } = require('../functions/bitcoinClient');
 const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSats');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
 
 // BitPay circa 2016: Bitcoin orange accent
 const BITCOIN_ORANGE = '#F7931A';
@@ -38,6 +43,11 @@ const BITCOIN_ORANGE = '#F7931A';
  * @param {boolean} [props.compact] - Use compact layout (e.g. inline in modals)
  */
 function Invoice (props) {
+  const [hubUiTick, setHubUiTick] = React.useState(0);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
+  void hubUiTick;
+  const uf = loadHubUiFeatureFlags();
+
   const {
     invoiceId,
     address,
@@ -49,7 +59,8 @@ function Invoice (props) {
     identity = {},
     onPaid,
     onError,
-    compact = false
+    compact = false,
+    adminToken: adminTokenProp
   } = props;
 
   const [paying, setPaying] = React.useState(false);
@@ -62,7 +73,12 @@ function Invoice (props) {
   const [chainStatus, setChainStatus] = React.useState(null);
 
   const upstream = React.useMemo(() => loadUpstreamSettings(), []);
-  const wallet = React.useMemo(() => getWalletContextFromIdentity(identity), [identity]);
+  const idXpub = identity && identity.xpub ? String(identity.xpub) : '';
+  const idXprv = identity && identity.xprv ? String(identity.xprv) : '';
+  const wallet = React.useMemo(
+    () => getSpendWalletContext(identity),
+    [idXpub, idXprv]
+  );
 
   const refreshChainStatus = React.useCallback(async (txid) => {
     const id = String(txid || '').trim();
@@ -125,17 +141,27 @@ function Invoice (props) {
     setError(null);
     setResult(null);
     setChainStatus(null);
+    const adminToken = readHubAdminTokenFromBrowser(adminTokenProp);
+    if (!adminToken) {
+      setPaying(false);
+      setError('Admin token required to pay from the Hub wallet (setup token in local storage).');
+      return;
+    }
     try {
       const res = await sendPayment(upstream, wallet, {
         to: address,
         amountSats: Number(amountSats),
-        memo: memo || (label ? `Invoice: ${label}` : '')
+        memo: memo || (label ? `Invoice: ${label}` : ''),
+        adminToken
       });
       const txid = res && (res.payment && res.payment.txid) || res.txid;
       if (txid) {
         setResult({ txid, success: true });
         refreshChainStatus(txid);
         if (typeof onPaid === 'function') onPaid(txid);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('clientBalanceUpdate'));
+        }
       } else {
         const errMsg = (res && res.error) || (res && res.message) || 'Payment completed but no txid returned.';
         setError(errMsg);
@@ -148,7 +174,7 @@ function Invoice (props) {
     } finally {
       setPaying(false);
     }
-  }, [address, amountSats, memo, label, upstream, wallet, onPaid, onError, refreshChainStatus]);
+  }, [address, amountSats, memo, label, upstream, wallet, onPaid, onError, refreshChainStatus, adminTokenProp]);
 
   const isMainnet = String(network || '').toLowerCase() === 'mainnet';
 
@@ -363,6 +389,17 @@ function Invoice (props) {
           {address}
         </div>
 
+        {compact && !isPaid && !isMainnet && (
+          <p style={{ fontSize: '0.78em', color: '#666', marginBottom: '0.65em', textAlign: 'left', lineHeight: 1.4 }}>
+            <strong>Second tab:</strong> use the blue <strong>Open payer tab (prefilled)</strong> control for this invoice (same origin, new tab; shown to the right of the card on wide layouts). It opens Payments with <code>payTo</code> and <code>payAmountSats</code>, and scrolls to Make Payment.
+            {uf.bitcoinInvoices ? (
+              <> See the walkthrough at the top of <Link to="/services/bitcoin/invoices#fabric-invoices-tab-demo">Invoices</Link>.</>
+            ) : (
+              <> Enable <strong>Bitcoin — Invoices</strong> in Admin → Feature visibility for a link to the walkthrough.</>
+            )}
+          </p>
+        )}
+
         <div style={{ display: 'flex', gap: '0.5em', justifyContent: 'center', flexWrap: 'wrap' }}>
           <Button
             size="small"
@@ -404,12 +441,21 @@ function Invoice (props) {
               <Input
                 placeholder="abc123… (64 hex characters)"
                 value={externalTxid}
-                onChange={(e, { value }) => setExternalTxid(value)}
+                onChange={(e, { value }) => setExternalTxid(value != null ? String(value) : (e && e.target && e.target.value) || '')}
+                onInput={(e) => {
+                  const v = e && e.target && e.target.value != null ? String(e.target.value) : '';
+                  if (v !== externalTxid) setExternalTxid(v);
+                }}
                 style={{ flex: '1 1 12em', minWidth: '10em' }}
+                input={{
+                  'aria-label': 'Bitcoin transaction id for external L1 payment verification'
+                }}
               />
               <Button
+                type="button"
                 content="Confirm payment"
                 icon="checkmark"
+                aria-label="Confirm payment: verify pasted txid pays this invoice (L1)"
                 loading={verifying}
                 disabled={verifying || paying || !String(externalTxid || '').trim()}
                 onClick={handleVerifyExternal}
@@ -420,10 +466,12 @@ function Invoice (props) {
 
         {!isPaid && !isMainnet && (
           <Button
+            type="button"
             primary
             style={{ marginTop: '1em', background: BITCOIN_ORANGE }}
             icon="bitcoin"
             content="Pay Now"
+            aria-label="Pay invoice via hub Payments API (admin token required)"
             loading={paying}
             disabled={paying || verifying}
             onClick={handlePay}
@@ -447,15 +495,32 @@ function Invoice (props) {
               <p style={{ margin: 0 }}>Checking mempool and block depth…</p>
             ) : isConfirmed ? (
               <p style={{ margin: 0 }}>
-                {Number(chainStatus.confirmations)} confirmation{Number(chainStatus.confirmations) === 1 ? '' : 's'}.
-                {' '}
-                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Open transaction</Link>
+                {(() => {
+                  const rawC = chainStatus && chainStatus.confirmations != null ? Number(chainStatus.confirmations) : 0;
+                  const c = Number.isFinite(rawC) ? rawC : 0;
+                  const label = c === 1 ? '1 confirmation' : `${c} confirmations`;
+                  return (
+                    <>
+                      {label}.
+                      {' '}
+                      {uf.bitcoinExplorer ? (
+                        <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Open transaction</Link>
+                      ) : (
+                        <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{effectiveTxid}</code>
+                      )}
+                    </>
+                  );
+                })()}
               </p>
             ) : chainStatus && chainStatus.verified ? (
               <p style={{ margin: 0 }}>
                 Transaction is in the mempool or has zero confirmations; it will show as settled after the next block.
                 {' '}
-                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>View status</Link>
+                {uf.bitcoinExplorer ? (
+                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>View status</Link>
+                ) : (
+                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{effectiveTxid}</code>
+                )}
                 {chainStatus.matchedSats != null && (
                   <span style={{ display: 'block', marginTop: '0.35em', color: '#666', fontSize: '0.9em' }}>
                     Matched {Number(chainStatus.matchedSats).toLocaleString()} sats to this invoice address.
@@ -468,7 +533,11 @@ function Invoice (props) {
                   ? `Could not verify yet (${chainStatus.error}). Retrying…`
                   : 'Waiting for the node to see this transaction…'}
                 {' '}
-                <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Transaction page</Link>
+                {uf.bitcoinExplorer ? (
+                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Transaction page</Link>
+                ) : (
+                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{effectiveTxid}</code>
+                )}
               </p>
             )}
           </Message>
@@ -480,9 +549,13 @@ function Invoice (props) {
             <div style={{ marginTop: '0.25em' }}>
               {persistedTxids.map((txid) => (
                 <div key={txid} style={{ marginTop: '0.25em' }}>
-                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(txid)}`} style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
-                    {txid}
-                  </Link>
+                  {uf.bitcoinExplorer ? (
+                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(txid)}`} style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
+                      {txid}
+                    </Link>
+                  ) : (
+                    <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{txid}</code>
+                  )}
                 </div>
               ))}
             </div>

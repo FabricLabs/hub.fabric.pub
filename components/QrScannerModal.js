@@ -1,7 +1,7 @@
 'use strict';
 
 const React = require('react');
-const { Modal, Button, Icon } = require('semantic-ui-react');
+const { Modal, Button, Icon, Message } = require('semantic-ui-react');
 
 const Html5Qrcode = require('html5-qrcode').Html5Qrcode;
 
@@ -70,7 +70,9 @@ class QrScannerModal extends React.Component {
         <Modal.Content>
           <div id={this._scannerId} style={{ width: '100%', minHeight: '250px' }} />
           {this.state.error && (
-            <p style={{ color: '#b00', marginTop: '0.5em' }}>{this.state.error}</p>
+            <Message negative size="small" style={{ marginTop: '0.75em' }}>
+              {this.state.error}
+            </Message>
           )}
           <p style={{ color: '#666', fontSize: '0.9em', marginTop: '0.5em' }}>
             Point your camera at a Bitcoin address or Lightning invoice QR code.

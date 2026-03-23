@@ -101,4 +101,26 @@ describe('ActivityStream', function () {
     assert.ok(html.includes('Create') || html.includes('Document'));
     assert.ok(html.includes('test.pdf') || html.includes('doc-1'));
   });
+
+  it('entryTypeFilter chat hides non-chat entries', function () {
+    const activities = [
+      {
+        type: 'P2P_CHAT_MESSAGE',
+        object: { content: 'only-chat', created: '2026-01-01T00:00:00.000Z' },
+        actor: { id: 'peer-chat' }
+      },
+      {
+        type: 'Create',
+        object: { type: 'Document', name: 'hide-me.pdf', id: 'doc-x', created: '2026-01-02T00:00:00.000Z' },
+        actor: { id: 'peer-doc' }
+      }
+    ];
+    const html = renderActivityStream({
+      api: { resource: { activities } },
+      entryTypeFilter: 'chat'
+    });
+    assert.ok(html.includes('only-chat'));
+    assert.ok(html.includes('peer-chat') || html.includes('@'));
+    assert.ok(!html.includes('hide-me.pdf'));
+  });
 });

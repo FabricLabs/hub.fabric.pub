@@ -12,6 +12,7 @@ const {
 const {
   Button,
   Card,
+  Checkbox,
   Divider,
   Header,
   Icon,
@@ -26,6 +27,15 @@ const {
 const ChatInput = require('./ChatInput');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { loadUpstreamSettings, sendBridgePayment } = require('../functions/bitcoinClient');
+const { peerNeighborhoodToDot } = require('../functions/peerTopologyDot');
+const GraphDocumentPreview = require('./GraphDocumentPreview');
+const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
+const { shortenPublicId } = require('../functions/peerIdentity');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
 
 function getAdminTokenFromProps (props) {
   const t = props && props.adminToken;
@@ -37,6 +47,24 @@ function getAdminTokenFromProps (props) {
     }
   } catch (e) {}
   return '';
+}
+
+async function hubJsonRpc (method, params) {
+  const res = await fetch(`${typeof window !== 'undefined' ? window.location.origin : ''}/services/rpc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+  });
+  let body = {};
+  try {
+    body = await res.json();
+  } catch (_) {
+    throw new Error('Hub returned non-JSON');
+  }
+  if (!res.ok || body.error) {
+    throw new Error((body.error && body.error.message) || `HTTP ${res.status}`);
+  }
+  return body.result;
 }
 
 function isNetworkStatus (obj) {
@@ -54,6 +82,27 @@ function formatMaybeDate (value) {
   }
 }
 
+/** Resolve peer row from globalState whether the route id is Fabric pubkey or TCP address. */
+function findPeerInGlobalPeers (peersMap, routeId) {
+  if (!routeId || !peersMap || typeof peersMap !== 'object') return null;
+  if (peersMap[routeId]) return peersMap[routeId];
+  for (const k of Object.keys(peersMap)) {
+    const p = peersMap[k];
+    if (p && (p.id === routeId || p.address === routeId)) return p;
+  }
+  return null;
+}
+
+/** Merge accumulated globalState peer with React detail; ListPeers row wins for live connection fields. */
+function mergePeerSources (gsPeer, detailPeer, listPeer) {
+  const a = gsPeer && typeof gsPeer === 'object' ? gsPeer : {};
+  const b = detailPeer && typeof detailPeer === 'object' ? detailPeer : {};
+  const c = listPeer && typeof listPeer === 'object' ? listPeer : {};
+  const merged = { ...a, ...b, ...c };
+  if (!(merged.id || merged.address)) return null;
+  return merged;
+}
+
 function PeerDetail (props) {
   const navigate = useNavigate();
   const params = useParams();
@@ -69,26 +118,67 @@ function PeerDetail (props) {
   const [htlcFundingCopied, setHtlcFundingCopied] = React.useState(null);
   const [inventoryRelayTarget, setInventoryRelayTarget] = React.useState('');
   const [bridgePaySettlementId, setBridgePaySettlementId] = React.useState(null);
+  const [inventoryDebugOpen, setInventoryDebugOpen] = React.useState(false);
+  const [inventoryRequestMeta, setInventoryRequestMeta] = React.useState(null);
+  const [peerTopologyTick, setPeerTopologyTick] = React.useState(0);
+  const [federationContractId, setFederationContractId] = React.useState('');
+  const [inviteBusy, setInviteBusy] = React.useState(false);
+  const [inviteError, setInviteError] = React.useState(null);
+  const [inviteOk, setInviteOk] = React.useState(null);
+
+  const [hubUiTick, setHubUiTick] = React.useState(0);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
+  void hubUiTick;
+  const uf = loadHubUiFeatureFlags();
 
   const bridge = props.bridge;
   const bridgeRef = props.bridgeRef;
   const current = (bridgeRef && bridgeRef.current) || (bridge && bridge.current);
   const candidate = current && current.networkStatus;
   const fallback = current && current.lastNetworkStatus;
-  const networkStatus = isNetworkStatus(candidate) ? candidate : (isNetworkStatus(fallback) ? fallback : null);
+  const networkStatus = isHubNetworkStatusShape(candidate)
+    ? candidate
+    : (isHubNetworkStatusShape(fallback) ? fallback : null);
   const peers = Array.isArray(networkStatus && networkStatus.peers) ? networkStatus.peers : [];
+  const webrtcFromHub = Array.isArray(networkStatus && networkStatus.webrtcPeers)
+    ? networkStatus.webrtcPeers
+    : [];
+  const webrtcRegistration = webrtcFromHub.find((p) => p && p.id === id) || null;
+  const webrtcMeta = webrtcRegistration && webrtcRegistration.metadata && typeof webrtcRegistration.metadata === 'object'
+    ? webrtcRegistration.metadata
+    : null;
 
   const peerFromStatus = peers.find((p) => p && (p.address === id || p.id === id)) || null;
-  const peer = detail && (detail.id || detail.address) ? detail : peerFromStatus;
+  const mergedFromGs = (() => {
+    const gs = current && typeof current.getGlobalState === 'function' ? current.getGlobalState() : null;
+    return gs ? findPeerInGlobalPeers(gs.peers || {}, id) : null;
+  })();
+  const peer = mergePeerSources(mergedFromGs, detail, peerFromStatus);
+  const hasPeerRow = !!peer;
   const status = peer && peer.status ? peer.status : 'unknown';
   const isConnected = status === 'connected';
   const adminTokenPresent = !!getAdminTokenFromProps(props);
 
   React.useEffect(() => {
+    const bi = props.bridgeRef && props.bridgeRef.current;
+    const gs = bi && typeof bi.getGlobalState === 'function' ? bi.getGlobalState() : null;
+    const seed = gs && gs.peers ? findPeerInGlobalPeers(gs.peers, id) : null;
+    setDetail(seed || null);
+    setPeerChats([]);
+    setInventoryDocs([]);
     if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
     if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  React.useEffect(() => {
+    const onGs = (ev) => {
+      const p = ev && ev.detail && ev.detail.operation && ev.detail.operation.path;
+      if (p === '/peerTopologyGossip') setPeerTopologyTick((t) => t + 1);
+    };
+    window.addEventListener('globalStateUpdate', onGs);
+    return () => window.removeEventListener('globalStateUpdate', onGs);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -139,7 +229,7 @@ function PeerDetail (props) {
       if (!globalState || !globalState.messages) return;
       const messages = globalState.messages || {};
       const peersById = globalState.peers || {};
-      const storedPeer = peersById[id];
+      const storedPeer = findPeerInGlobalPeers(peersById, id);
       const peerId = (storedPeer && storedPeer.id) || (currentDetail && currentDetail.id) || id;
 
       const chats = Object.values(messages)
@@ -176,8 +266,8 @@ function PeerDetail (props) {
 
       setPeerChats(chats);
 
-      // Derive inventory documents for this peer, if available.
-      const invPeer = peersById[peerId] || storedPeer;
+      // Derive inventory documents for this peer, if available (keyed by id or address).
+      const invPeer = findPeerInGlobalPeers(peersById, id) || peersById[peerId] || storedPeer;
       const docs = invPeer && invPeer.inventory && Array.isArray(invPeer.inventory.documents)
         ? invPeer.inventory.documents
         : [];
@@ -189,12 +279,12 @@ function PeerDetail (props) {
         const globalState = event && event.detail && event.detail.globalState;
         if (!globalState) return;
 
-        if (globalState.peers) {
-          const stored = globalState.peers[id];
-          if (stored) setDetail(stored);
-        }
+        const stored = globalState.peers
+          ? findPeerInGlobalPeers(globalState.peers, id)
+          : null;
+        if (stored) setDetail(stored);
 
-        deriveChatsAndInventory(globalState, detail);
+        deriveChatsAndInventory(globalState, stored);
       } catch (e) {}
     };
 
@@ -203,13 +293,37 @@ function PeerDetail (props) {
     const gs = bridgeInstance && typeof bridgeInstance.getGlobalState === 'function'
       ? bridgeInstance.getGlobalState()
       : null;
-    if (gs) deriveChatsAndInventory(gs, detail);
+    if (gs) {
+      const row = gs.peers ? findPeerInGlobalPeers(gs.peers, id) : null;
+      deriveChatsAndInventory(gs, row);
+    }
 
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
-  }, [id, bridge, props.bridgeRef, detail]);
+  }, [id, props.bridgeRef]);
 
-  const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address)) || id || 'Peer';
+  const routeLooksLikeXpub = isLikelyBip32ExtendedKey(id);
+  const xpubOnlyNoPeer = routeLooksLikeXpub && !peer;
+  const [peerResolveSlow, setPeerResolveSlow] = React.useState(false);
+
+  React.useEffect(() => {
+    setPeerResolveSlow(false);
+  }, [id]);
+
+  React.useEffect(() => {
+    if (hasPeerRow || !id || routeLooksLikeXpub) return undefined;
+    const t = setTimeout(() => setPeerResolveSlow(true), 14000);
+    return () => clearTimeout(t);
+  }, [id, hasPeerRow, routeLooksLikeXpub]);
+  const webrtcXpub = webrtcMeta && webrtcMeta.xpub && isLikelyBip32ExtendedKey(String(webrtcMeta.xpub))
+    ? String(webrtcMeta.xpub).trim()
+    : '';
+  const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address))
+    || (webrtcXpub ? shortenPublicId(webrtcXpub, 14, 12) : null)
+    || (routeLooksLikeXpub && id
+      ? (id.length > 40 ? `${id.slice(0, 16)}…${id.slice(-14)}` : id)
+      : id)
+    || 'Peer';
 
   const resolvedAddress = (peer && peer.address) || id || '';
   let host = '';
@@ -227,17 +341,51 @@ function PeerDetail (props) {
     }
   }
 
+  const chatDest = (peer && peer.address) || id;
+  const tcpKeyForFabricResync = (peer && peer.address) || (id && String(id).includes(':') ? id : '');
+  const canRequestFabricResync = !!(
+    isConnected &&
+    tcpKeyForFabricResync &&
+    !String(id).startsWith('fabric-bridge-')
+  );
+  const hasUnlockedIdentity = !!(current && typeof current.hasUnlockedIdentity === 'function' && current.hasUnlockedIdentity());
+  const canSendPeerChat = !!chatDest && hasUnlockedIdentity;
+
   const handleSendPeerChat = (event) => {
     event.preventDefault();
     const text = (outgoingText || '').trim();
-    if (!text) return;
-    if (id && typeof props.onSendPeerMessage === 'function') {
-      props.onSendPeerMessage(id, text);
+    if (!text || !canSendPeerChat) return;
+    if (typeof props.onSendPeerMessage === 'function') {
+      props.onSendPeerMessage(chatDest, text);
       setOutgoingText('');
     }
   };
 
-  const isPeerLoaded = !!peer;
+  const gossipNeighbors = React.useMemo(() => {
+    const gs = current && typeof current.getGlobalState === 'function' ? current.getGlobalState() : null;
+    const g = gs && gs.peerTopologyGossip && gs.peerTopologyGossip.byReporter;
+    if (!peer || !g || typeof g !== 'object') return null;
+    const key = (peer.id && g[peer.id]) ? peer.id : (id && g[id] ? id : (peer.address && g[peer.address] ? peer.address : null));
+    if (!key || !g[key] || !Array.isArray(g[key].neighbors)) return null;
+    return g[key].neighbors;
+  }, [current, peer, id, peerTopologyTick]);
+
+  const neighborDot = React.useMemo(() => {
+    const center = (peer && peer.id) || id;
+    if (!center || !gossipNeighbors || gossipNeighbors.length === 0) return '';
+    try {
+      return peerNeighborhoodToDot(center, gossipNeighbors);
+    } catch (_) {
+      return '';
+    }
+  }, [peer, id, gossipNeighbors]);
+
+  const sendInventoryRequest = (kind, opts) => {
+    const invDest = (peer && peer.address) || id;
+    if (!invDest || !bridgeRef || !bridgeRef.current || typeof bridgeRef.current.sendPeerInventoryRequest !== 'function') return;
+    setInventoryRequestMeta({ at: Date.now(), kind: kind || 'documents', status: 'sent' });
+    bridgeRef.current.sendPeerInventoryRequest(invDest, kind || 'documents', opts || {});
+  };
 
   return (
     <fabric-peer-detail class='fade-in'>
@@ -271,30 +419,65 @@ function PeerDetail (props) {
                   {port && <span>{host ? ':' : ''}{port}</span>}
                 </div>
               )}
-            </div>
-            <Label
-              size='small'
-              color={isConnected ? 'green' : 'grey'}
-              title={status}
-            >
-              {isConnected ? (
-                <><Icon name='check circle' /> Connected</>
-              ) : (
-                <><Icon name='minus circle' /> Disconnected</>
+              {webrtcRegistration && (
+                <div style={{ fontSize: '0.82em', color: '#555', marginTop: '0.35em', maxWidth: '42rem' }}>
+                  <Label size="tiny" basic color="blue" style={{ marginRight: '0.35em' }}>WebRTC signaling</Label>
+                  {webrtcXpub ? (
+                    <div style={{ marginTop: '0.25em' }}>
+                      <Icon name="key" aria-hidden="true" />{' '}
+                      <span title={webrtcXpub}>xpub {shortenPublicId(webrtcXpub, 18, 14)}</span>
+                    </div>
+                  ) : null}
+                  {webrtcMeta && webrtcMeta.fabricPeerId ? (
+                    <div style={{ marginTop: '0.2em', wordBreak: 'break-all' }}>
+                      Fabric id: <code style={{ fontSize: '0.92em' }}>{String(webrtcMeta.fabricPeerId)}</code>
+                    </div>
+                  ) : null}
+                </div>
               )}
-            </Label>
+            </div>
+            {xpubOnlyNoPeer ? (
+              <Label size="small" color="blue" title="BIP32 extended public key (not a TCP peer socket)">
+                <Icon name="key" /> Identity reference
+              </Label>
+            ) : !hasPeerRow && webrtcRegistration ? (
+              <Label size="small" color="blue" title="Registered for WebRTC signaling; TCP peer row not loaded yet">
+                <Icon name="wifi" /> WebRTC
+              </Label>
+            ) : !hasPeerRow ? (
+              <Label size="small" color="grey" title="Waiting for ListPeers / GetPeer data from the hub">
+                <Icon name="clock outline" /> Resolving…
+              </Label>
+            ) : (
+              <Label
+                size='small'
+                color={isConnected ? 'green' : 'grey'}
+                title={status}
+              >
+                {isConnected ? (
+                  <><Icon name='check circle' /> Connected</>
+                ) : (
+                  <><Icon name='minus circle' /> Disconnected</>
+                )}
+              </Label>
+            )}
           </div>
           <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            {!xpubOnlyNoPeer && (
+            <>
             <Button
               size="small"
               icon
               title="Refresh peer info"
               basic
-              onClick={() => typeof props.onRefreshPeers === 'function' && props.onRefreshPeers()}
+              onClick={() => {
+                if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
+                if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
+              }}
             >
               <Icon name="refresh" />
             </Button>
-            {id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
+            {hasPeerRow && id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
               <Button
                 size="small"
                 basic
@@ -305,7 +488,7 @@ function PeerDetail (props) {
                 Reconnect
               </Button>
             )}
-            {id && isConnected && typeof props.onDisconnectPeer === 'function' && (
+            {hasPeerRow && id && isConnected && typeof props.onDisconnectPeer === 'function' && (
               <Button
                 size="small"
                 basic
@@ -317,7 +500,18 @@ function PeerDetail (props) {
                 Disconnect
               </Button>
             )}
-            {id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
+            {hasPeerRow && canRequestFabricResync && typeof props.onFabricPeerResync === 'function' && (
+              <Button
+                size="small"
+                basic
+                title="Fabric ChainSyncRequest: exchange document inventories and replay BitcoinBlock messages from the peer hub"
+                onClick={() => props.onFabricPeerResync(tcpKeyForFabricResync)}
+              >
+                <Icon name="sync" />
+                Resync
+              </Button>
+            )}
+            {hasPeerRow && id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
               <>
                 <Input
                   size="small"
@@ -333,7 +527,7 @@ function PeerDetail (props) {
                   onClick={() => {
                     const t = (inventoryRelayTarget || '').trim();
                     const opts = t ? { inventoryTarget: t } : {};
-                    bridgeRef.current.sendPeerInventoryRequest(id, 'documents', opts);
+                    sendInventoryRequest('documents', opts);
                   }}
                   title="Request document inventory from this peer"
                 >
@@ -349,7 +543,7 @@ function PeerDetail (props) {
                       const t = (inventoryRelayTarget || '').trim();
                       const opts = { buyerRefundPublicKey: refundPk };
                       if (t) opts.inventoryTarget = t;
-                      bridgeRef.current.sendPeerInventoryRequest(id, 'documents', opts);
+                      sendInventoryRequest('documents', opts);
                     }}
                     title="Inventory with P2TR HTLC on priced items (your identity pubkey = refund path)"
                   >
@@ -359,7 +553,7 @@ function PeerDetail (props) {
                 )}
               </>
             )}
-            {id && typeof props.onSetPeerNickname === 'function' && (
+            {hasPeerRow && id && typeof props.onSetPeerNickname === 'function' && (
               <Button
                 size="small"
                 basic
@@ -375,16 +569,124 @@ function PeerDetail (props) {
                 Nick
               </Button>
             )}
+            {adminTokenPresent && hasPeerRow && id && isConnected && (
+              <>
+                <Input
+                  size="small"
+                  placeholder="Execution contract id (optional)"
+                  value={federationContractId}
+                  onChange={(e, { value }) => setFederationContractId(value)}
+                  style={{ minWidth: '12em', maxWidth: '18em' }}
+                  title="Optional execution contract id included in the invite (see Contracts)"
+                />
+                <Button
+                  size="small"
+                  basic
+                  primary
+                  loading={inviteBusy}
+                  disabled={inviteBusy}
+                  title="Admin only: send a federation / execution-contract invite as structured P2P chat (Fabric message log on this hub)"
+                  onClick={async () => {
+                    const token = getAdminTokenFromProps(props);
+                    if (!token || !id) return;
+                    const notePrompt = typeof window !== 'undefined' ? window.prompt('Optional message for the invitee:', '') : '';
+                    const note = notePrompt && String(notePrompt).trim()
+                      ? String(notePrompt).trim().slice(0, 500)
+                      : '';
+                    setInviteBusy(true);
+                    setInviteError(null);
+                    setInviteOk(null);
+                    try {
+                      const cid = (federationContractId || '').trim();
+                      const r = await hubJsonRpc('InvitePeerToFederationContract', [{
+                        peerId: id,
+                        contractId: cid || undefined,
+                        note: note || undefined,
+                        adminToken: token
+                      }]);
+                      if (r && r.status === 'error') {
+                        setInviteError(r.message || 'Invite failed');
+                        return;
+                      }
+                      if (r && r.status === 'success' && r.inviteId) {
+                        setInviteOk(`Invite sent (${r.inviteId.slice(0, 16)}…)`);
+                      } else {
+                        setInviteOk('Invite sent');
+                      }
+                    } catch (e) {
+                      setInviteError(e && e.message ? e.message : String(e));
+                    } finally {
+                      setInviteBusy(false);
+                    }
+                  }}
+                >
+                  <Icon name="users" />
+                  Invite to contract
+                </Button>
+              </>
+            )}
+            </>
+            )}
           </div>
         </Header>
 
+        {inviteError ? (
+          <Message negative size="small" onDismiss={() => setInviteError(null)} style={{ marginTop: '0.5em' }}>
+            {inviteError}
+          </Message>
+        ) : null}
+        {inviteOk ? (
+          <Message success size="small" onDismiss={() => setInviteOk(null)} style={{ marginTop: '0.5em' }}>
+            {inviteOk}
+          </Message>
+        ) : null}
+
         <Divider />
+
+        {peer && neighborDot ? (
+          <Segment style={{ marginBottom: '1em' }}>
+            <Header as="h3">Gossip neighborhood</Header>
+            <p style={{ color: '#666', marginBottom: '0.75em' }}>
+              Fabric ids this peer last advertised in <code>P2P_PEER_GOSSIP</code> (from Bridge cache). Use <strong>Docs</strong> above to request <code>INVENTORY_REQUEST</code> through this TCP link; open a row below to pre-fill the relay field on that peer&apos;s page when you need a hop.
+            </p>
+            <GraphDocumentPreview dotSource={neighborDot} skipIdentityGate />
+            <List relaxed size="small" style={{ marginTop: '0.75em' }}>
+              {gossipNeighbors.map((nid) => {
+                const n = String(nid || '').trim();
+                if (!n) return null;
+                return (
+                  <List.Item key={n}>
+                    <List.Content>
+                      <Link to={`/peers/${encodeURIComponent(n)}`} title="Open peer detail (may require Add Peer if not in snapshot)">
+                        <code style={{ fontSize: '0.88em' }}>{n.length > 36 ? `${n.slice(0, 14)}…${n.slice(-10)}` : n}</code>
+                      </Link>
+                      <Button
+                        size="mini"
+                        basic
+                        style={{ marginLeft: '0.5em' }}
+                        type="button"
+                        title="Copy Fabric id into relay field for inventory via this peer"
+                        onClick={() => setInventoryRelayTarget(n)}
+                      >
+                        Set relay →
+                      </Button>
+                    </List.Content>
+                  </List.Item>
+                );
+              })}
+            </List>
+            <details style={{ marginTop: '0.75rem' }}>
+              <summary style={{ cursor: 'pointer', color: '#555' }}>DOT source</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.75rem', background: '#f7f7f7', padding: '0.5rem', borderRadius: 4 }}>{neighborDot}</pre>
+            </details>
+          </Segment>
+        ) : null}
 
         <Card fluid>
           <Card.Content>
             <Card.Header>Peer Details</Card.Header>
             <Card.Description>
-              {isPeerLoaded ? (
+              {peer ? (
                 <List divided relaxed size="small">
                   <List.Item>
                     <List.Content>
@@ -453,21 +755,34 @@ function PeerDetail (props) {
                     </List.Item>
                   )}
                 </List>
+              ) : routeLooksLikeXpub ? (
+                <Message info style={{ margin: 0 }}>
+                  <Message.Header>Extended public key (BIP32)</Message.Header>
+                  <p style={{ margin: '0.35em 0 0' }}>
+                    This URL uses an <code>xpub</code>/<code>tpub</code>-style identifier — often the display form of an
+                    activity sender — not a Fabric TCP peer. Peer chat and inventory use a connected node
+                    (<code>host:port</code> or Fabric id from <Link to="/peers">Peers</Link>).
+                  </p>
+                </Message>
               ) : (
-                <Segment
-                  placeholder
-                  basic
-                  style={{ minHeight: '20vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <div>
-                    <Loader active inline="centered" />
-                    <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
-                      Loading peer details…
-                      <Header.Subheader>
-                        Fetching latest status from hub.
-                      </Header.Subheader>
-                    </Header>
-                  </div>
+                <Segment placeholder basic style={{ padding: '1.25em' }}>
+                  <Header as="h4">
+                    Waiting for peer record…
+                  </Header>
+                  <p style={{ color: '#666', margin: '0.35em 0 0.75em' }}>
+                    No matching entry in the current hub snapshot yet. Use <strong>Refresh</strong> above, or open{' '}
+                    <Link to="/peers">Peers</Link> and add <code>host:port</code> (e.g. <code>127.0.0.1:7777</code>). After{' '}
+                    <code>GetPeer</code> returns, details fill in here.
+                  </p>
+                  <Loader active inline="centered" />
+                  {peerResolveSlow && (
+                    <Message warning style={{ marginTop: '1em', textAlign: 'left' }}>
+                      <Message.Header>Taking longer than expected</Message.Header>
+                      <p style={{ margin: '0.35em 0 0' }}>
+                        Check that the Bridge is connected to the hub. If this id was typed manually, add the peer from the list page, then open this link again.
+                      </p>
+                    </Message>
+                  )}
                 </Segment>
               )}
             </Card.Description>
@@ -485,17 +800,20 @@ function PeerDetail (props) {
           </Card.Content>
         </Card>
 
-        {!peer && (
-          <Segment secondary style={{ marginTop: '1em' }}>
-            <Header as="h4">Peer not found</Header>
-            <p>
-              This peer isn’t in the current `knownPeers` list yet. Try refreshing, or add it by address.
-            </p>
-          </Segment>
-        )}
         {peer && (
           <Segment style={{ marginTop: '1em' }}>
             <Header as="h3">Chat</Header>
+            {!hasUnlockedIdentity && (
+              <Message warning size="small" style={{ marginBottom: '0.75em' }}>
+                <Message.Header>Identity locked</Message.Header>
+                Unlock your identity (local signing material) to send Fabric peer chat. Received messages still appear here.
+              </Message>
+            )}
+            {hasUnlockedIdentity && !isConnected && (
+              <Message info size="small" style={{ marginBottom: '0.75em' }}>
+                Peer is offline — messages are <strong>queued</strong> and sent when the connection is up (same hub <code>SendPeerMessage</code> path).
+              </Message>
+            )}
             {peerChats.length > 0 ? (
               <List divided relaxed size="small">
                 {peerChats.map((chat, index) => {
@@ -540,18 +858,19 @@ function PeerDetail (props) {
             ) : (
               <p style={{ color: '#666' }}>No chat messages yet for this peer.</p>
             )}
-            {id && typeof props.onSendPeerMessage === 'function' && (
+            {chatDest && typeof props.onSendPeerMessage === 'function' && (
               <ChatInput
                 value={outgoingText}
                 onChange={setOutgoingText}
                 onSubmit={(text) => {
-                  if (id && typeof props.onSendPeerMessage === 'function') {
-                    props.onSendPeerMessage(id, text);
+                  if (canSendPeerChat && typeof props.onSendPeerMessage === 'function') {
+                    props.onSendPeerMessage(chatDest, text);
                     setOutgoingText('');
                   }
                 }}
-                placeholder="Type a message…"
-                title={`Send message to ${id} (queued if offline)`}
+                placeholder={hasUnlockedIdentity ? 'Type a message…' : 'Unlock identity to send…'}
+                title={`Send to ${chatDest} via hub (P2P_CHAT_MESSAGE / SendPeerMessage)`}
+                disabled={!canSendPeerChat}
               />
             )}
           </Segment>
@@ -563,8 +882,31 @@ function PeerDetail (props) {
             <p style={{ color: '#666', marginBottom: '0.75em' }}>
               Documents offered by this <strong>publisher</strong>
               {id ? <> (Fabric peer <code style={{ fontSize: '0.9em' }}>{id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-8)}` : id}</code>)</> : ''}.
-              <strong> Author</strong> is the creator&apos;s document id when known (lineage).
+              <strong> Author</strong> is the creator&apos;s document id when known (lineage). Use <strong>Docs</strong> while connected to send <code>INVENTORY_REQUEST</code>; responses are merged under this peer&apos;s Fabric id and TCP address keys.
             </p>
+            {inventoryRequestMeta && (
+              <p style={{ fontSize: '0.85em', color: '#666', marginBottom: '0.65em' }}>
+                Last inventory request: {formatMaybeDate(inventoryRequestMeta.at)}
+                {inventoryRequestMeta.kind ? ` (${inventoryRequestMeta.kind})` : ''}
+                {' — '}
+                {inventoryDocs.length > 0 ? `${inventoryDocs.length} item(s) in client state.` : 'no items yet (wait for response or check relay target).'}
+              </p>
+            )}
+            <div style={{ marginBottom: '0.75em' }}>
+              <Checkbox
+                toggle
+                label="Debug: show raw inventory JSON"
+                checked={inventoryDebugOpen}
+                onChange={(_e, data) => setInventoryDebugOpen(!!(data && data.checked))}
+              />
+            </div>
+            {inventoryDebugOpen && (
+              <Segment secondary style={{ marginBottom: '0.75em', overflow: 'auto', maxHeight: '40vh' }}>
+                <pre style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                  {JSON.stringify(inventoryDocs, null, 2)}
+                </pre>
+              </Segment>
+            )}
             {htlcConfirmFeedback && (
               <Message
                 positive={htlcConfirmFeedback.status === 'success'}
@@ -586,9 +928,13 @@ function PeerDetail (props) {
                 {htlcConfirmFeedback.txid && (
                   <p style={{ fontSize: '0.9em' }}>
                     Txid{' '}
-                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcConfirmFeedback.txid).trim())}`}>
-                      <code>{htlcConfirmFeedback.txid}</code>
-                    </Link>
+                    {uf.bitcoinExplorer ? (
+                      <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcConfirmFeedback.txid).trim())}`}>
+                        <code>{htlcConfirmFeedback.txid}</code>
+                      </Link>
+                    ) : (
+                      <code title="Enable Bitcoin explorer in Admin for the tx viewer">{htlcConfirmFeedback.txid}</code>
+                    )}
                     <span style={{ color: '#666' }}> — mempool until confirmed on-chain</span>
                   </p>
                 )}
@@ -734,12 +1080,18 @@ function PeerDetail (props) {
                               Confirm HTLC &amp; receive
                             </Button>
                             {/^[a-fA-F0-9]{64}$/.test(String(htlcTxids[doc.htlc.settlementId] || '').trim()) && (
-                              <Link
-                                style={{ fontSize: '0.85em', alignSelf: 'center' }}
-                                to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcTxids[doc.htlc.settlementId]).trim())}`}
-                              >
-                                View funding tx
-                              </Link>
+                              uf.bitcoinExplorer ? (
+                                <Link
+                                  style={{ fontSize: '0.85em', alignSelf: 'center' }}
+                                  to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcTxids[doc.htlc.settlementId]).trim())}`}
+                                >
+                                  View funding tx
+                                </Link>
+                              ) : (
+                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                  {String(htlcTxids[doc.htlc.settlementId]).trim()}
+                                </code>
+                              )
                             )}
                           </div>
                         </div>
@@ -749,7 +1101,7 @@ function PeerDetail (props) {
                 ))}
               </List>
             ) : (
-              <p style={{ color: '#666' }}>No remote document inventory yet. Use "Fetch documents" to request it.</p>
+              <p style={{ color: '#666' }}>No remote document inventory yet. Use <strong>Docs</strong> (when connected) to send <code>INVENTORY_REQUEST</code>.</p>
             )}
           </Segment>
         )}

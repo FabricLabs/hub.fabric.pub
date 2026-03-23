@@ -75,6 +75,10 @@ const inventoryRelay = require('../functions/inventoryRelay');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
 const sidechainState = require('../functions/sidechainState');
 const documentOfferEscrow = require('../functions/documentOfferEscrow');
+const federationContractInvite = require('../functions/federationContractInvite');
+const federationVault = require('../functions/federationVault');
+const federationRegistry = require('../functions/federationRegistry');
+const crowdfundingTaproot = require('../functions/crowdfundingTaproot');
 
 // Hub Services
 const Fabric = require('../services/fabric');
@@ -279,8 +283,12 @@ class Hub extends Service {
     this._bitcoinCacheTTL = 15000;
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
     this._lastBitcoinBlockActivityTip = null;
+    /** Fabric P2P `ChainSyncRequest` handler: one resync burst per TCP peer at a time. */
+    this._fabricPeerResyncInFlight = new Map();
     // Pending pay-to-distribute requests: documentId -> { address, amountSats, config, createdAt }
     this._distributeRequests = {};
+    // Pending execution registry invoices: programDigest (64 hex) -> { address, amountSats, program, name?, createdAt }
+    this._executionRegistryRequests = {};
     // Pending HTLC purchase requests: documentId -> { address, amountSats, contentHash, createdAt }
     this._purchaseRequests = {};
 
@@ -295,9 +303,17 @@ class Hub extends Service {
           p2pAddNodesAllowMainnet: !!(this.settings.bitcoin && this.settings.bitcoin.p2pAddNodesAllowMainnet),
           debug: this.settings.bitcoin.debug !== undefined ? this.settings.bitcoin.debug : !!this.settings.debug,
           key: { xprv: this._rootKey.xprv },
-          // Regtest: no P2P listening, no DNS seeds (avoids ip_resolver / "Operation not permitted" in restricted envs)
+          // Regtest: default no P2P listen (sandbox-friendly). Set `bitcoin.listen: true` for a local seed node
+          // (multi-hub regtest mesh / playnet); still disable DNS seeds unless extras override.
           ...(this.settings.bitcoin.network === 'regtest' && this.settings.bitcoin.managed
-            ? { listen: false, bitcoinExtraParams: ['-dnsseed=0'] }
+            ? {
+              listen: this.settings.bitcoin.listen === true,
+              bitcoinExtraParams: ['-dnsseed=0'].concat(
+                Array.isArray(this.settings.bitcoin.bitcoinExtraParams)
+                  ? this.settings.bitcoin.bitcoinExtraParams
+                  : []
+              )
+            }
             : {}),
           // ZMQ for real-time block/tx notifications (bitcoind started with -zmqpubhashblock etc. on this port)
           ...(this.settings.bitcoin.managed ? { zmq: { host: '127.0.0.1', port: zmqPort } } : {})
@@ -386,6 +402,10 @@ class Hub extends Service {
     /** Inventory L1 HTLC settlement state (seller-side). */
     /** @type {Map<string, Object>} */
     this._inventoryHtlcById = new Map();
+    /** Taproot crowdfunding campaigns (persisted under bitcoin/crowdfunding.json). */
+    /** @type {Map<string, Object>} */
+    this._crowdfundingCampaigns = new Map();
+    this._crowdfundingLoaded = false;
     /** Pending browser ↔ Fabric Hub desktop login sessions (see functions/fabricDesktopAuth.js). */
     /** @type {Map<string, Object>} */
     this._desktopAuthSessions = new Map();
@@ -393,7 +413,7 @@ class Hub extends Service {
     this._delegationRegistry = new Map();
     /** @type {Map<string, Object>} */
     this._delegationSignatureMessages = new Map();
-    /** Set only during `POST /services/rpc` dispatch; used for loopback-only RPC (delegation resolve). */
+    /** Set during `POST /services/rpc` dispatch from `req.socket.remoteAddress` (loopback vs LAN). Reserved for policy; not currently read. */
     this._rpcHttpIsLocal = false;
     this.changes = new Logger({
       name: 'hub.fabric.pub',
@@ -708,6 +728,101 @@ class Hub extends Service {
     return Object.values(this._getCollectionMap('messages'))
       .filter((item) => item && typeof item === 'object')
       .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+  }
+
+  /**
+   * Local document rows for {@link INVENTORY_RESPONSE} / Fabric resync (no HTLC enrichment).
+   * @returns {object[]}
+   */
+  _collectLocalDocumentInventoryItems () {
+    const docs = this._state.documents || {};
+    const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+    return Object.values(docs).map((meta) => {
+      if (!meta || !meta.id) return null;
+      const id = meta.id;
+      const c = collections[id];
+      const published = !!(c && c.published);
+      const purchasePriceSats = c && Number(c.purchasePriceSats) > 0
+        ? Math.round(Number(c.purchasePriceSats))
+        : undefined;
+      return {
+        id,
+        sha256: meta.sha256 || id,
+        name: meta.name,
+        mime: meta.mime || 'application/octet-stream',
+        size: meta.size,
+        created: meta.created,
+        published,
+        ...(purchasePriceSats ? { purchasePriceSats } : {})
+      };
+    }).filter(Boolean);
+  }
+
+  /**
+   * Respond to a Fabric {@link P2P_CHAIN_SYNC_REQUEST}: push document inventory, request peer inventory,
+   * and replay recent `BitcoinBlock` Fabric log payloads over P2P (throttled).
+   * @param {string} originConn host:port
+   * @param {object} [object] parsed ChainSyncRequest JSON body
+   */
+  async _fabricPeerResyncRespondToRequest (originConn, object = {}) {
+    const myId = this.agent && this.agent.identity && this.agent.identity.id;
+    if (!myId || !originConn) return;
+    const requesterFromBody = object && object.requester != null ? String(object.requester).trim() : '';
+    const mapped = this.agent._addressToId && this.agent._addressToId[originConn]
+      ? String(this.agent._addressToId[originConn]).trim()
+      : '';
+    const targetId = requesterFromBody || mapped;
+
+    if (this._fabricPeerResyncInFlight.get(originConn)) {
+      console.warn('[HUB] Fabric resync already in flight for', originConn);
+      return;
+    }
+    this._fabricPeerResyncInFlight.set(originConn, Date.now());
+    try {
+      const items = this._collectLocalDocumentInventoryItems();
+      const responsePayload = {
+        type: 'INVENTORY_RESPONSE',
+        actor: { id: myId },
+        object: {
+          kind: 'documents',
+          items,
+          created: Date.now(),
+          fabricResync: true
+        },
+        ...(targetId ? { target: targetId } : {})
+      };
+      this._sendVectorToPeer(originConn, ['INVENTORY_RESPONSE', JSON.stringify(responsePayload)]);
+      try {
+        const wsMsg = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]);
+        if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
+        if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
+      } catch (_) {}
+
+      const invReq = {
+        type: 'INVENTORY_REQUEST',
+        actor: { id: myId },
+        object: { kind: 'documents', fabricResync: true }
+      };
+      this._sendVectorToPeer(originConn, ['INVENTORY_REQUEST', JSON.stringify(invReq)]);
+
+      const MAX_BLOCKS = 500;
+      const delayMs = 25;
+      const blocks = this._getFabricMessages()
+        .filter((e) => e && e.type === 'BitcoinBlock' && e.payload && typeof e.payload === 'object')
+        .slice(-MAX_BLOCKS);
+      for (let i = 0; i < blocks.length; i++) {
+        await new Promise((r) => setTimeout(r, delayMs));
+        try {
+          this._sendVectorToPeer(originConn, ['BitcoinBlock', JSON.stringify(blocks[i].payload)]);
+        } catch (sendErr) {
+          console.warn('[HUB] Fabric resync BitcoinBlock send failed:', sendErr && sendErr.message ? sendErr.message : sendErr);
+          break;
+        }
+      }
+      console.debug('[HUB] Fabric peer resync completed for', originConn, 'bitcoinBlocks:', blocks.length);
+    } finally {
+      this._fabricPeerResyncInFlight.delete(originConn);
+    }
   }
 
   async _ensureGenesisMessage () {
@@ -1104,6 +1219,13 @@ class Hub extends Service {
         if (s) out.push(s);
       }
     }
+    const skipPlaynet = process.env.FABRIC_BITCOIN_SKIP_PLAYNET_PEER === '1'
+      || process.env.FABRIC_BITCOIN_SKIP_PLAYNET_PEER === 'true';
+    const network = this.settings.bitcoin && this.settings.bitcoin.network;
+    if (!skipPlaynet && network === 'regtest') {
+      const playnet = String(process.env.FABRIC_BITCOIN_PLAYNET_PEER || 'hub.fabric.pub:18444').trim();
+      if (playnet) out.push(playnet);
+    }
     return [...new Set(out)];
   }
 
@@ -1124,7 +1246,125 @@ class Hub extends Service {
   }
 
   /**
-   * Federation validator pubkeys (hex) for Beacon epoch witnesses — comma-separated env or settings.
+   * Persisted federation policy from `stores/hub/settings.json` key `DISTRIBUTED_FEDERATION`, when present.
+   * @returns {{ validators: string[], threshold?: number }|undefined}
+   */
+  _distributedFederationPersisted () {
+    if (!this.setup || typeof this.setup.getSetting !== 'function') return undefined;
+    const p = this.setup.getSetting('DISTRIBUTED_FEDERATION');
+    if (p == null || typeof p !== 'object') return undefined;
+    return p;
+  }
+
+  _distributedFederationPolicySource () {
+    const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
+    if (env && String(env).trim()) return 'env';
+    if (this._distributedFederationPersisted() != null) return 'persisted';
+    return 'default';
+  }
+
+  /**
+   * Chain scan for `fabfed` OP_RETURN federation announcements (regtest default on).
+   */
+  _federationRegistryScanEnabled () {
+    const env = process.env.FABRIC_FEDERATION_CHAIN_SCAN;
+    if (env === '0' || env === 'false') return false;
+    if (env === '1' || env === 'true') return true;
+    const cfg = this.settings.bitcoin && this.settings.bitcoin.federationRegistryScan;
+    if (cfg && cfg.enable === false) return false;
+    if (cfg && cfg.enable === true) return true;
+    const btc = this._getBitcoinService();
+    return !!(btc && btc.network === 'regtest');
+  }
+
+  /**
+   * When setup has no `DISTRIBUTED_FEDERATION` JSON, restore from Fabric `federations/POLICY_SNAPSHOT`.
+   */
+  async _hydrateDistributedFederationFromFsSnapshot () {
+    const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
+    if (env && String(env).trim()) return;
+    const persisted = this._distributedFederationPersisted();
+    if (persisted && Array.isArray(persisted.validators) && persisted.validators.length) return;
+    const snap = federationRegistry.loadPolicySnapshot(this.fs);
+    if (!snap || !Array.isArray(snap.validators) || !snap.validators.length) return;
+    const validators = snap.validators.map((v) => String(v || '').trim()).filter(Boolean);
+    if (!validators.length) return;
+    let threshold = snap.threshold != null ? Number(snap.threshold) : 1;
+    if (!Number.isFinite(threshold) || threshold < 1) threshold = 1;
+    if (validators.length && threshold > validators.length) threshold = validators.length;
+    try {
+      await this.setup.setSetting('DISTRIBUTED_FEDERATION', { validators: validators.slice(), threshold });
+    } catch (e) {
+      console.warn('[HUB:FEDERATION] hydrate from Fabric snapshot failed:', e && e.message ? e.message : e);
+      return;
+    }
+    if (!this.settings.distributed) this.settings.distributed = {};
+    if (!this.settings.distributed.federation) this.settings.distributed.federation = {};
+    this.settings.distributed.federation.validators = validators.slice();
+    this.settings.distributed.federation.threshold = threshold;
+    console.log('[HUB:FEDERATION] Restored distributed federation policy from Fabric filesystem (federations/POLICY_SNAPSHOT).');
+  }
+
+  /**
+   * Seed `federations/REGISTRY`, hydrate policy from snapshot, mirror current setup policy to disk.
+   */
+  async _bootstrapFederationFilesystem () {
+    if (!this.fs) return;
+    try {
+      await this._hydrateDistributedFederationFromFsSnapshot();
+      const fed = this.settings && Array.isArray(this.settings.federations) ? this.settings.federations : [];
+      await federationRegistry.seedRegistryFromSettings(this.fs, fed);
+      const snap = this._distributedFederationPersisted();
+      if (snap && Array.isArray(snap.validators)) {
+        await federationRegistry.persistPolicySnapshot(this.fs, {
+          validators: snap.validators,
+          threshold: snap.threshold != null ? Number(snap.threshold) : this._distributedFederationThresholdEffective(),
+          source: this._distributedFederationPolicySource()
+        });
+      }
+    } catch (e) {
+      console.warn('[HUB:FEDERATION] bootstrap filesystem:', e && e.message ? e.message : e);
+    }
+  }
+
+  async _maybeScanFederationRegistryBlock (blockHash, height) {
+    if (!this._federationRegistryScanEnabled() || !blockHash) return;
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') return;
+    try {
+      const block = await bitcoin._makeRPCRequest('getblock', [blockHash, 2]);
+      if (!block) return;
+      const anns = federationRegistry.extractFederationAnnouncementsFromBlock(
+        block,
+        Number.isFinite(Number(height)) ? Number(height) : -1
+      );
+      await federationRegistry.mergeAnnouncementsIntoRegistry(
+        this.fs,
+        anns,
+        Number.isFinite(Number(height)) ? Number(height) : null
+      );
+      if (anns.length && this.settings.debug) {
+        console.log('[HUB:FEDERATION:SCAN]', `height ${height}`, anns.length, 'fabfed announcement(s)');
+      }
+    } catch (e) {
+      console.warn('[HUB:FEDERATION:SCAN]', e && e.message ? e.message : e);
+    }
+  }
+
+  _handleDistributedFederationRegistryRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const reg = federationRegistry.loadRegistry(this.fs);
+      res.status(200).json({
+        type: 'FederationRegistry',
+        path: federationRegistry.REGISTRY_PATH,
+        policySnapshotPath: federationRegistry.POLICY_SNAPSHOT_PATH,
+        ...reg
+      });
+    });
+  }
+
+  /**
+   * Federation validator pubkeys (hex) for Beacon epoch witnesses — env, then persisted setting, then in-memory defaults.
    * @returns {string[]}
    */
   _distributedFederationValidatorsFromEnv () {
@@ -1132,8 +1372,66 @@ class Hub extends Service {
     if (env && String(env).trim()) {
       return String(env).split(',').map((s) => s.trim()).filter(Boolean);
     }
+    const persisted = this._distributedFederationPersisted();
+    if (persisted && Array.isArray(persisted.validators)) {
+      return persisted.validators.filter((v) => typeof v === 'string' && v.trim()).map((s) => s.trim());
+    }
     const v = this.settings.distributed && this.settings.distributed.federation && this.settings.distributed.federation.validators;
     return Array.isArray(v) ? v.slice() : [];
+  }
+
+  /**
+   * M-of-N threshold aligned with {@link #_distributedFederationValidatorsFromEnv} source order.
+   * @returns {number}
+   */
+  _distributedFederationThresholdEffective () {
+    const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
+    if (env && String(env).trim()) {
+      return Math.max(1, Number(process.env.FABRIC_DISTRIBUTED_FEDERATION_THRESHOLD) || 1);
+    }
+    const persisted = this._distributedFederationPersisted();
+    if (persisted && Array.isArray(persisted.validators)) {
+      const t = persisted.threshold != null ? Number(persisted.threshold) : NaN;
+      if (Number.isFinite(t) && t >= 1) return t;
+      return 1;
+    }
+    return Math.max(1, Number(
+      (this.settings.distributed && this.settings.distributed.federation && this.settings.distributed.federation.threshold) ||
+        process.env.FABRIC_DISTRIBUTED_FEDERATION_THRESHOLD || 1
+    ));
+  }
+
+  _reapplyBeaconFederationPolicy () {
+    if (!this.beacon || typeof this.beacon.attach !== 'function') return;
+    try {
+      const validators = this._distributedFederationValidatorsFromEnv();
+      const thresholdRaw = this._distributedFederationThresholdEffective();
+      const federationThreshold = validators.length ? thresholdRaw : Math.max(1, thresholdRaw);
+      this.beacon.attach({
+        fs: this.fs,
+        key: this._rootKey,
+        federationValidators: validators,
+        federationThreshold,
+        getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon()
+      });
+    } catch (e) {
+      console.warn('[HUB:FEDERATION] beacon.attach reapply failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /**
+   * Same validator list + threshold as {@link #_submitSidechainStatePatch} (env + persisted + settings).
+   * Used for `/services/distributed/manifest` and epoch JSON so operators see what the hub enforces even when
+   * the Beacon has not called {@link Beacon#attach} yet (e.g. Bitcoin RPC not ready).
+   * @returns {{ validators: string[], threshold: number }}
+   */
+  _getEffectiveFederationPolicyForDistributedHttp () {
+    const validators = this._distributedFederationValidatorsFromEnv();
+    const threshold = this._distributedFederationThresholdEffective();
+    return {
+      validators,
+      threshold: validators.length ? threshold : 1
+    };
   }
 
   _getDistributedManifestJson () {
@@ -1147,14 +1445,39 @@ class Hub extends Service {
       allowedMessageTypes: ['BEACON_EPOCH', 'SIDECHAIN_STATE_PATCH', 'P2P_CHAT_MESSAGE', 'P2P_FILE_SEND', 'JSONCall'],
       federation: null
     };
-    const fp = this.beacon && typeof this.beacon.getFederationPolicy === 'function'
-      ? this.beacon.getFederationPolicy()
-      : { validators: [], threshold: 1 };
+    const fp = this._getEffectiveFederationPolicyForDistributedHttp();
     if (fp.validators.length) {
       manifest.federation = { validators: fp.validators, threshold: fp.threshold };
     }
     const parsed = DistributedExecution.parseDistributedManifestV1(manifest);
-    return parsed.ok ? parsed.manifest : manifest;
+    const out = parsed.ok ? { ...parsed.manifest } : { ...manifest };
+    try {
+      let hubId = (this.agent && this.agent.id) ? String(this.agent.id).trim() : '';
+      if (!hubId && this._rootKey && this._rootKey.pubkey) {
+        hubId = String(this._rootKey.pubkey).trim();
+      }
+      out.hubFabricPeerId = hubId || null;
+    } catch (_) {
+      out.hubFabricPeerId = null;
+    }
+    try {
+      const vs = this._buildFederationVaultSummary();
+      if (vs && vs.status === 'ok' && vs.address) {
+        out.federationVault = {
+          address: vs.address,
+          depositMaturityBlocks: vs.policy && vs.policy.depositMaturityBlocks,
+          scheme: vs.policy && vs.policy.scheme,
+          endpoints: vs.endpoints || null
+        };
+      } else if (vs && vs.status === 'no_validators') {
+        out.federationVault = { status: 'no_validators', message: vs.message || null };
+      } else if (vs && vs.status === 'error') {
+        out.federationVault = { status: 'error', message: vs.message || null };
+      }
+    } catch (_) {
+      out.federationVault = null;
+    }
+    return out;
   }
 
   /**
@@ -1184,10 +1507,7 @@ class Hub extends Service {
     const adminToken = req.adminToken || req.token;
 
     const validators = this._distributedFederationValidatorsFromEnv();
-    const threshold = Math.max(1, Number(
-      (this.settings.distributed && this.settings.distributed.federation && this.settings.distributed.federation.threshold) ||
-        process.env.FABRIC_DISTRIBUTED_FEDERATION_THRESHOLD || 1
-    ));
+    const threshold = this._distributedFederationThresholdEffective();
 
     if (!Array.isArray(patches) || !patches.length) {
       return { status: 'error', message: 'patches required' };
@@ -1334,9 +1654,183 @@ class Hub extends Service {
         epochCount: summary.length,
         lastCommitmentDigest: lastDigest,
         last: summary.last,
-        federation: typeof b.getFederationPolicy === 'function' ? b.getFederationPolicy() : null
+        federation: this._getEffectiveFederationPolicyForDistributedHttp()
       }
     };
+  }
+
+  /**
+   * L1 Taproot vault derived from federation validator list + threshold (deterministic).
+   * @returns {object}
+   */
+  _buildFederationVaultSummary () {
+    const fp = this._getEffectiveFederationPolicyForDistributedHttp();
+    const validators = (fp.validators || []).map((v) => String(v).trim().toLowerCase()).filter(Boolean).sort();
+    const bitcoin = this._getBitcoinService();
+    const networkName = (bitcoin && bitcoin.network) ? String(bitcoin.network) : 'mainnet';
+    if (!validators.length) {
+      return {
+        type: 'FederationVaultSummary',
+        status: 'no_validators',
+        message: 'Configure federation validator pubkeys (Settings → Distributed federation or env) to derive a vault address.',
+        network: networkName,
+        address: null,
+        policy: null
+      };
+    }
+    const threshold = Math.max(1, Math.min(Number(fp.threshold) || 1, validators.length));
+    try {
+      const built = federationVault.buildFederationVaultFromPolicy({
+        validatorPubkeysHex: validators,
+        threshold,
+        networkName
+      });
+      return {
+        type: 'FederationVaultSummary',
+        status: 'ok',
+        network: networkName,
+        address: built.address,
+        scriptPubKeyHex: built.output.toString('hex'),
+        tapscriptHex: built.multisigScript.toString('hex'),
+        policy: {
+          threshold: built.threshold,
+          validatorsSortedHex: built.validatorsSortedHex,
+          depositMaturityBlocks: built.depositMaturityBlocks,
+          internalKeyHex: built.internalPubkeyHex,
+          scheme: 'taproot-tapscript-k-of-n-v1'
+        },
+        endpoints: {
+          vault: '/services/distributed/vault',
+          utxos: '/services/distributed/vault/utxos'
+        },
+        rpc: {
+          prepareWithdrawalPsbt: 'PrepareFederationVaultWithdrawalPsbt'
+        }
+      };
+    } catch (e) {
+      return {
+        type: 'FederationVaultSummary',
+        status: 'error',
+        message: e && e.message ? e.message : String(e),
+        network: networkName,
+        address: null,
+        policy: null
+      };
+    }
+  }
+
+  _handleDistributedVaultRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const body = this._buildFederationVaultSummary();
+      res.status(200).json(body);
+    });
+  }
+
+  _handleDistributedVaultUtxosRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) {
+        return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      }
+      const summary = this._buildFederationVaultSummary();
+      if (!summary.address) {
+        return res.status(200).json({
+          type: 'FederationVaultUtxos',
+          status: summary.status || 'no_address',
+          message: summary.message || 'No vault address',
+          address: null,
+          network: bitcoin.network,
+          totalSats: 0,
+          utxos: []
+        });
+      }
+      const scanObj = `addr(${summary.address})`;
+      let result;
+      try {
+        result = await bitcoin._makeRPCRequest('scantxoutset', ['start', [scanObj]]);
+      } catch (err) {
+        return res.status(500).json({
+          status: 'error',
+          message: 'scantxoutset failed (txindex / node readiness)',
+          details: err && err.message ? err.message : String(err)
+        });
+      }
+      let tipHeight = null;
+      try {
+        const ch = await bitcoin._makeRPCRequest('getblockchaininfo', []);
+        tipHeight = ch && Number.isFinite(Number(ch.blocks)) ? Number(ch.blocks) : null;
+      } catch (_) {}
+      const mat = federationVault.DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS;
+      const raw = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+      const utxos = raw.map((u) => {
+        const height = u.height != null ? Number(u.height) : null;
+        const confs = tipHeight != null && height != null ? Math.max(0, tipHeight - height + 1) : null;
+        return {
+          txid: u.txid,
+          vout: u.vout,
+          amount: u.amount,
+          amountSats: Math.round(Number(u.amount || 0) * 100000000),
+          height,
+          confirmations: confs,
+          maturedForWithdrawalPolicy: confs != null ? confs >= mat : null,
+          depositMaturityBlocks: mat
+        };
+      });
+      const totalBTC = result && typeof result.total_amount === 'number' ? result.total_amount : 0;
+      return res.json({
+        type: 'FederationVaultUtxos',
+        address: summary.address,
+        network: bitcoin.network,
+        depositMaturityBlocks: mat,
+        totalSats: Math.round(totalBTC * 100000000),
+        utxos
+      });
+    });
+  }
+
+  _rpcPrepareFederationVaultWithdrawalPsbt (body = {}) {
+    const token = String(body.adminToken || body.token || '').trim();
+    if (!this.setup.verifyAdminToken(token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) return { status: 'error', message: 'Bitcoin service unavailable' };
+    const validators = this._distributedFederationValidatorsFromEnv();
+    if (!validators.length) {
+      return { status: 'error', message: 'No federation validators configured' };
+    }
+    const threshold = this._distributedFederationThresholdEffective();
+    let built;
+    try {
+      built = federationVault.buildFederationVaultFromPolicy({
+        validatorPubkeysHex: validators,
+        threshold,
+        networkName: bitcoin.network || 'mainnet'
+      });
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : String(e) };
+    }
+    const vaultAddress = String(body.vaultAddress || built.address).trim();
+    if (vaultAddress !== built.address) {
+      return { status: 'error', message: 'vaultAddress does not match hub federation policy vault' };
+    }
+    const fundedTxHex = String(body.fundedTxHex || body.txHex || '').trim();
+    if (!fundedTxHex) {
+      return { status: 'error', message: 'fundedTxHex is required (full raw tx hex paying the vault)' };
+    }
+    try {
+      const r = federationVault.prepareVaultWithdrawalPsbt({
+        networkName: bitcoin.network || 'mainnet',
+        fundedTxHex,
+        vaultAddress,
+        multisigScript: built.multisigScript,
+        destinationAddress: body.destinationAddress || body.toAddress,
+        feeSats: body.feeSats
+      });
+      return { type: 'PrepareFederationVaultWithdrawalPsbtResult', ...r };
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : String(e) };
+    }
   }
 
   /**
@@ -2451,6 +2945,14 @@ class Hub extends Service {
    * Returns minimal public Bitcoin status for global state / GetNetworkStatus.
    * Excludes balance, beacon, blockchain, networkInfo, mempoolInfo, recentBlocks, recentTransactions.
    */
+  _normBitcoinChainHeight (heightRaw, blockchain) {
+    let n = heightRaw != null && heightRaw !== '' ? Number(heightRaw) : NaN;
+    if (!Number.isFinite(n) && blockchain && typeof blockchain === 'object' && blockchain.blocks != null) {
+      n = Number(blockchain.blocks);
+    }
+    return Number.isFinite(n) ? Math.round(n) : undefined;
+  }
+
   _sanitizeBitcoinStatusForPublic (full) {
     if (!full || typeof full !== 'object') return { available: false, status: 'UNKNOWN', message: 'No status.' };
     const mempoolInfo = full.mempoolInfo && typeof full.mempoolInfo === 'object' ? full.mempoolInfo : null;
@@ -2459,15 +2961,20 @@ class Hub extends Service {
     const bestBlockHash = full.bestHash != null && String(full.bestHash).trim()
       ? String(full.bestHash).trim()
       : undefined;
+    const heightNorm = this._normBitcoinChainHeight(full.height, full.blockchain);
+    const p2pTargets = full.p2pAddNodeTargets;
     return {
       available: !!full.available,
       status: full.status || (full.available ? 'ONLINE' : 'UNAVAILABLE'),
       network: full.network || null,
-      height: typeof full.height === 'number' ? full.height : undefined,
+      ...(heightNorm != null ? { height: heightNorm } : {}),
       ...(bestBlockHash ? { bestBlockHash } : {}),
       message: full.message || undefined,
       ...(mempoolTxCount != null && Number.isFinite(mempoolTxCount) ? { mempoolTxCount } : {}),
-      ...(mempoolBytes != null && Number.isFinite(mempoolBytes) ? { mempoolBytes } : {})
+      ...(mempoolBytes != null && Number.isFinite(mempoolBytes) ? { mempoolBytes } : {}),
+      ...(Array.isArray(p2pTargets) && p2pTargets.length
+        ? { p2pAddNodeTargets: p2pTargets.slice(0, 16) }
+        : {})
     };
   }
 
@@ -2509,9 +3016,12 @@ class Hub extends Service {
         bitcoin._makeRPCRequest('getmempoolinfo', []).catch(() => null)
       ]);
 
+      const heightNorm = this._normBitcoinChainHeight(height, blockchain);
+      const chainHeight = heightNorm != null ? heightNorm : 0;
+
       const maxRecent = 6;
       const recentBlocks = [];
-      for (let h = height; h >= 0 && recentBlocks.length < maxRecent; h--) {
+      for (let h = chainHeight; h >= 0 && recentBlocks.length < maxRecent; h--) {
         try {
           const hash = await bitcoin._makeRPCRequest('getblockhash', [h]);
           const block = await bitcoin._makeRPCRequest('getblock', [hash, 1]);
@@ -2580,7 +3090,7 @@ class Hub extends Service {
         blockchain,
         networkInfo,
         bestHash,
-        height,
+        height: chainHeight,
         mempoolInfo: mempoolInfo || {},
         mempoolTxCount: mempoolTxCountFull,
         mempoolFeeSats,
@@ -2588,7 +3098,8 @@ class Hub extends Service {
         recentBlocks,
         recentTransactions: mempoolTxs,
         balance: trusted,
-        beacon: beacon || undefined
+        beacon: beacon || undefined,
+        p2pAddNodeTargets: this._bitcoinP2pAddNodesList()
       };
 
       this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic(summary);
@@ -2647,6 +3158,39 @@ class Hub extends Service {
    * Called when the Bitcoin service receives a new block (ZMQ hashblock).
    * Updates global state, Fabric chain, Activity stream, and broadcasts status to clients.
    */
+  /**
+   * When a BitcoinBlock arrives over Fabric P2P (e.g. peer resync replay), append to the hub Fabric
+   * message log if this tip is not already recorded — keeps two hubs' Fabric views closer without
+   * replacing L1 IBD (still use bitcoind addnode / RPC for chain data).
+   * @param {object} payload
+   * @param {string} [originName] TCP peer host:port
+   */
+  async _ingestP2pBitcoinBlockForFabricLog (payload = {}, originName) {
+    try {
+      const tip = String(payload.tip || '').trim();
+      if (!tip || !/^[0-9a-fA-F]{64}$/.test(tip)) return;
+      const cached = this._bitcoinStatusCache && this._bitcoinStatusCache.value;
+      if (cached && String(cached.bestHash || '') === tip) return;
+      const msgs = this._getFabricMessages();
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m && m.type === 'BitcoinBlock' && m.payload && String(m.payload.tip) === tip) return;
+      }
+      const height = payload.height != null ? Number(payload.height) : undefined;
+      await this._appendFabricMessage('BitcoinBlock', {
+        tip,
+        ...(Number.isFinite(height) ? { height } : {}),
+        network: payload.network,
+        supply: payload.supply,
+        at: payload.at || new Date().toISOString(),
+        source: 'p2p-gossip',
+        ...(originName ? { p2pOrigin: originName } : {})
+      });
+    } catch (e) {
+      console.warn('[HUB] _ingestP2pBitcoinBlockForFabricLog:', e && e.message ? e.message : e);
+    }
+  }
+
   async _handleBitcoinBlockUpdate (payload = {}) {
     try {
       this._bitcoinStatusCache = { value: null, updatedAt: 0 };
@@ -2718,6 +3262,7 @@ class Hub extends Service {
       }
 
       await this._maybeScanSidechainBlock(tip, Number.isFinite(height) ? height : null);
+      await this._maybeScanFederationRegistryBlock(tip, Number.isFinite(height) ? height : null);
     } catch (err) {
       console.error('[HUB] _handleBitcoinBlockUpdate error:', err && err.message ? err.message : err);
     }
@@ -2787,20 +3332,7 @@ class Hub extends Service {
       }
       this._state.documents[id] = { ...meta };
       this._refreshChainState('bitcoin-block-document');
-      try {
-        this.recordActivity({
-          type: 'Create',
-          object: {
-            type: 'Document',
-            id,
-            name,
-            mime,
-            size: buffer.length,
-            sha256: id,
-            bitcoinBlock: true
-          }
-        });
-      } catch (_) { /* optional */ }
+      // Single activity: `Add` to the documents collection below (avoids paired Create+Add rows).
       parsed = meta;
     } else {
       try {
@@ -2999,8 +3531,70 @@ class Hub extends Service {
       const value = body.value !== undefined ? body.value : body;
       if (value === undefined || value === null) return res.status(400).json({ error: 'Setting value is required' });
       await this.setup.setSetting(name, value);
+
+      const settingName = String(name).trim();
+      if (settingName === 'HTTP_SHARED_MODE') {
+        const envIf = process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE;
+        if (envIf && String(envIf).trim()) {
+          return res.status(200).json({
+            success: true,
+            setting: name,
+            value,
+            httpRebind: 'skipped',
+            httpRebindReason: 'FABRIC_HUB_INTERFACE or INTERFACE is set; restart the hub to change bind address.'
+          });
+        }
+        res.status(200).json({
+          success: true,
+          setting: name,
+          value,
+          httpRebind: 'scheduled',
+          message: 'HTTP listener will rebind shortly; WebSocket clients will disconnect and reconnect.'
+        });
+        if (!this._httpRebindLock) this._httpRebindLock = Promise.resolve();
+        this._httpRebindLock = this._httpRebindLock
+          .then(() => this._rebindHttpForSharedModeIfChanged())
+          .catch((err) => {
+            console.error('[HUB] HTTP_SHARED_MODE rebind failed:', err && err.message ? err.message : err);
+          });
+        return;
+      }
+
       return res.status(200).json({ success: true, setting: name, value });
     });
+  }
+
+  /**
+   * Apply HTTP bind interface from persisted HTTP_SHARED_MODE (127.0.0.1 vs 0.0.0.0).
+   * No-op when FABRIC_HUB_INTERFACE / INTERFACE env overrides (handled at process start).
+   */
+  async _rebindHttpForSharedModeIfChanged () {
+    const envIf = process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE;
+    if (envIf && String(envIf).trim()) return;
+
+    const raw = this.setup.getSetting('HTTP_SHARED_MODE');
+    const shared = raw === true || raw === 'true' || raw === 1 || String(raw).toLowerCase() === 'true';
+    const nextIf = shared ? '0.0.0.0' : '127.0.0.1';
+
+    const cur = String(
+      this.http.settings.interface != null && this.http.settings.interface !== ''
+        ? this.http.settings.interface
+        : (this.http.settings.host || '0.0.0.0')
+    );
+    if (cur === nextIf) {
+      if (this.settings && this.settings.http) this.settings.http.interface = nextIf;
+      return;
+    }
+
+    this.http.settings.interface = nextIf;
+    if (this.settings && this.settings.http) {
+      this.settings.http.interface = nextIf;
+    }
+
+    const { rebindFabricHttpListen } = require('../functions/fabricHttpRebind');
+    console.log('[FABRIC:HUB] Rebinding HTTP from %s to %s (port %s)', cur, nextIf, this.http.settings.port);
+    await rebindFabricHttpListen(this.http);
+    console.log('[FABRIC:HUB] HTTP listener active on %s:%s', nextIf, this.http.settings.port);
   }
 
   _handleSettingsRefreshRequest (req, res) {
@@ -3120,6 +3714,437 @@ class Hub extends Service {
           message: error && error.message ? error.message : String(error)
         });
       });
+  }
+
+  _loadCrowdfundingCampaignsIfNeeded () {
+    if (this._crowdfundingLoaded) return;
+    this._crowdfundingLoaded = true;
+    try {
+      if (!this.fs || typeof this.fs.readFile !== 'function') return;
+      const raw = this.fs.readFile('bitcoin/crowdfunding.json');
+      if (!raw) return;
+      const j = JSON.parse(raw);
+      const c = j && j.campaigns && typeof j.campaigns === 'object' ? j.campaigns : {};
+      for (const [k, v] of Object.entries(c)) {
+        if (v && typeof v === 'object') this._crowdfundingCampaigns.set(k, v);
+      }
+    } catch (_) {
+      /* missing or invalid file */
+    }
+  }
+
+  _persistCrowdfundingCampaigns () {
+    try {
+      if (!this.fs || typeof this.fs.publish !== 'function') return;
+      const campaigns = Object.fromEntries(this._crowdfundingCampaigns);
+      this.fs.publish('bitcoin/crowdfunding.json', { campaigns, updatedAt: Date.now() });
+    } catch (e) {
+      console.warn('[HUB] bitcoin/crowdfunding.json persist failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  _hubIdentityPriv32 () {
+    const key = this.agent && this.agent.key;
+    const priv = key && key.keypair && typeof key.keypair.getPrivate === 'function'
+      ? key.keypair.getPrivate('bytes')
+      : null;
+    if (!priv || !Buffer.isBuffer(priv) || priv.length !== 32) return null;
+    return priv;
+  }
+
+  _publicCrowdfundingView (c) {
+    if (!c || typeof c !== 'object') return null;
+    return {
+      campaignId: c.campaignId,
+      title: c.title || '',
+      address: c.address,
+      networkName: c.networkName,
+      goalSats: c.goalSats,
+      minContributionSats: c.minContributionSats,
+      refundLocktimeHeight: c.refundLocktimeHeight,
+      beneficiaryPubkeyHex: c.beneficiaryPubkeyHex,
+      arbiterPubkeyHex: c.arbiterPubkeyHex,
+      payoutScriptHex: c.payoutScriptHex,
+      refundScriptHex: c.refundScriptHex,
+      outputScriptHex: c.outputScriptHex,
+      createdAt: c.createdAt,
+      scheme: 'taproot-crowdfund-v1',
+      notes: 'Payout requires beneficiary + Hub arbiter Schnorr signatures (2-of-2). Goal/min are committed in the payout tapleaf; aggregate ≥ goal is enforced before unsigned PSBT is returned. Each UTXO must be ≥ minContributionSats. Bitcoin cannot sum separate UTXOs inside Script; refund path is arbiter-only after CLTV.'
+    };
+  }
+
+  async _crowdfundingScanInputs (bitcoin, campaign) {
+    const scanObj = `addr(${campaign.address})`;
+    const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', [scanObj]]);
+    const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+    const inputs = [];
+    let totalSats = 0;
+    for (const u of unspents) {
+      const sats = Math.round(Number(u.amount || 0) * 100000000);
+      if (!Number.isFinite(sats) || sats <= 0) continue;
+      if (sats < Number(campaign.minContributionSats || 0)) {
+        const err = new Error(
+          `UTXO ${u.txid}:${u.vout} pays ${sats} sats; minContributionSats is ${campaign.minContributionSats}.`
+        );
+        err.code = 'MIN_CONTRIBUTION';
+        throw err;
+      }
+      totalSats += sats;
+      const rawHex = await bitcoin._makeRPCRequest('getrawtransaction', [u.txid, false]);
+      inputs.push({ txHex: rawHex, vout: u.vout });
+    }
+    return { inputs, totalSats, unspents };
+  }
+
+  _handleBitcoinCrowdfundingListRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      this._loadCrowdfundingCampaignsIfNeeded();
+      const rows = Array.from(this._crowdfundingCampaigns.values())
+        .map((c) => this._publicCrowdfundingView(c))
+        .filter(Boolean);
+      return res.json({ campaigns: rows, count: rows.length });
+    });
+  }
+
+  _handleBitcoinCrowdfundingCreateRequest (req, res) {
+    const token = SetupService.extractBearerToken(req);
+    if (!this.setup.verifyAdminToken(token)) {
+      return res.status(401).json({ status: 'error', message: 'Admin token required to create crowdfunding campaigns.' });
+    }
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+    const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+    const beneficiaryHex = String(body.beneficiaryPubkeyHex || body.beneficiaryPubkey || '').trim().toLowerCase();
+    const title = String(body.title || 'Crowdfund').trim().slice(0, 200);
+    const goalSats = Math.round(Number(body.goalSats || 0));
+    const minContributionSats = Math.round(Number(body.minContributionSats || body.minSats || 0));
+    let refundAfterBlocks = Math.round(Number(body.refundAfterBlocks || 1008));
+    if (!Number.isFinite(refundAfterBlocks) || refundAfterBlocks < 48) refundAfterBlocks = 1008;
+    if (!Number.isFinite(goalSats) || goalSats < 1000) {
+      return res.status(400).json({ status: 'error', message: 'goalSats must be at least 1000.' });
+    }
+    if (!Number.isFinite(minContributionSats) || minContributionSats < 546) {
+      return res.status(400).json({ status: 'error', message: 'minContributionSats must be at least 546 (dust).' });
+    }
+    if (minContributionSats > goalSats) {
+      return res.status(400).json({ status: 'error', message: 'minContributionSats cannot exceed goalSats.' });
+    }
+    const arbBuf = this._sellerHtlcPubkeyCompressed();
+    if (!arbBuf) {
+      return res.status(503).json({ status: 'error', message: 'Hub identity pubkey unavailable for arbiter role.' });
+    }
+    let benBuf;
+    try {
+      benBuf = crowdfundingTaproot.parseCompressedPubkey33(beneficiaryHex);
+    } catch (e) {
+      return res.status(400).json({ status: 'error', message: e && e.message ? e.message : 'Invalid beneficiary pubkey.' });
+    }
+    return Promise.resolve()
+      .then(async () => {
+        const height = await bitcoin._makeRPCRequest('getblockcount', []);
+        const refundLocktimeHeight = height + refundAfterBlocks;
+        const built = crowdfundingTaproot.buildCrowdfundP2tr({
+          networkName: bitcoin.network || 'regtest',
+          beneficiaryPubkeyCompressed: benBuf,
+          arbiterPubkeyCompressed: arbBuf,
+          goalSats,
+          minContributionSats,
+          refundLocktimeHeight
+        });
+        const campaignId = crypto.randomBytes(12).toString('hex');
+        const campaign = {
+          campaignId,
+          title,
+          address: built.address,
+          networkName: bitcoin.network || 'regtest',
+          goalSats: built.goalSats,
+          minContributionSats: built.minContributionSats,
+          refundLocktimeHeight: built.refundLocktimeHeight,
+          beneficiaryPubkeyHex: benBuf.toString('hex'),
+          arbiterPubkeyHex: arbBuf.toString('hex'),
+          payoutScriptHex: built.payoutScript.toString('hex'),
+          refundScriptHex: built.refundScript.toString('hex'),
+          outputScriptHex: built.output.toString('hex'),
+          createdAt: Date.now()
+        };
+        this._loadCrowdfundingCampaignsIfNeeded();
+        this._crowdfundingCampaigns.set(campaignId, campaign);
+        this._persistCrowdfundingCampaigns();
+        return res.json({ status: 'success', campaign: this._publicCrowdfundingView(campaign) });
+      })
+      .catch((err) => res.status(400).json({
+        status: 'error',
+        message: err && err.message ? err.message : String(err)
+      }));
+  }
+
+  /**
+   * GET .../campaigns/:id/acp-donation-psbt?amountSats=
+   * Outputs-only PSBT: one output to the campaign vault; donors add inputs with SIGHASH_ALL|ANYONECANPAY.
+   */
+  _handleBitcoinCrowdfundingAcpDonationPsbtRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      this._loadCrowdfundingCampaignsIfNeeded();
+      const id = String((req.params && req.params.campaignId) || '').trim();
+      const c = this._crowdfundingCampaigns.get(id);
+      if (!c) return res.status(404).json({ status: 'error', message: 'Unknown campaign.' });
+      const amountSats = Math.round(Number((req.query && req.query.amountSats) || 0));
+      const minC = Math.round(Number(c.minContributionSats || 546));
+      if (!Number.isFinite(amountSats) || amountSats < minC) {
+        return res.status(400).json({
+          status: 'error',
+          message: `amountSats must be >= campaign minContributionSats (${minC}).`
+        });
+      }
+      const crowdfundingAcp = require('../functions/crowdfundingAcpTemplate');
+      let built;
+      try {
+        built = crowdfundingAcp.buildAcpCrowdfundDonationPsbt({
+          networkName: c.networkName || 'regtest',
+          campaignAddress: c.address,
+          donationOutputSats: amountSats
+        });
+      } catch (e) {
+        return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+      }
+      return res.json({
+        status: 'success',
+        campaignId: id,
+        psbtBase64: built.psbtBase64,
+        donationOutputSats: built.donationOutputSats,
+        campaignAddress: built.campaignAddress,
+        note: 'Add donor inputs and sign each with SIGHASH_ALL|ANYONECANPAY (0x81); merge PSBTs until fee is covered, then finalize and broadcast.'
+      });
+    });
+  }
+
+  _handleBitcoinCrowdfundingGetRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      this._loadCrowdfundingCampaignsIfNeeded();
+      const id = String((req.params && req.params.campaignId) || '').trim();
+      const c = this._crowdfundingCampaigns.get(id);
+      if (!c) return res.status(404).json({ status: 'error', message: 'Unknown campaign.' });
+      const bitcoin = this._getBitcoinService();
+      let balanceSats = 0;
+      let unspentCount = 0;
+      let vaultUtxos = [];
+      if (bitcoin) {
+        try {
+          const scanObj = `addr(${c.address})`;
+          const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', [scanObj]]);
+          const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+          unspentCount = unspents.length;
+          for (const u of unspents) {
+            const amt = Math.round(Number(u.amount || 0) * 100000000);
+            balanceSats += Number.isFinite(amt) ? amt : 0;
+            if (u && u.txid) {
+              vaultUtxos.push({
+                txid: String(u.txid),
+                vout: u.vout != null ? Number(u.vout) : 0,
+                amountSats: Number.isFinite(amt) ? amt : 0
+              });
+            }
+          }
+        } catch (_) { /* optional */ }
+      }
+      const view = this._publicCrowdfundingView(c);
+      return res.json({
+        ...view,
+        balanceSats,
+        unspentCount,
+        vaultUtxos,
+        goalMet: balanceSats >= Number(c.goalSats || 0)
+      });
+    });
+  }
+
+  _handleBitcoinCrowdfundingPayoutPsbtRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      this._loadCrowdfundingCampaignsIfNeeded();
+      const id = String((req.params && req.params.campaignId) || '').trim();
+      const c = this._crowdfundingCampaigns.get(id);
+      if (!c) return res.status(404).json({ status: 'error', message: 'Unknown campaign.' });
+      const dest = String((req.query && req.query.destination) || (req.query && req.query.to) || '').trim();
+      const feeSats = Math.max(1, Math.round(Number((req.query && req.query.feeSats) || 1000)));
+      if (!dest) return res.status(400).json({ status: 'error', message: 'Query destination (or to) — bech32 payout address — is required.' });
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      let scan;
+      try {
+        scan = await this._crowdfundingScanInputs(bitcoin, c);
+      } catch (e) {
+        const status = e && e.code === 'MIN_CONTRIBUTION' ? 400 : 500;
+        return res.status(status).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+      }
+      if (scan.totalSats < c.goalSats) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Raised ${scan.totalSats} sats; goal is ${c.goalSats} sats.`,
+          balanceSats: scan.totalSats,
+          goalSats: c.goalSats
+        });
+      }
+      if (scan.inputs.length === 0) {
+        return res.status(400).json({ status: 'error', message: 'No UTXOs at campaign address.' });
+      }
+      let prep;
+      try {
+        prep = crowdfundingTaproot.prepareCrowdfundPayoutPsbt({
+          networkName: c.networkName || bitcoin.network || 'regtest',
+          inputs: scan.inputs,
+          paymentAddress: c.address,
+          payoutScript: Buffer.from(c.payoutScriptHex, 'hex'),
+          refundScript: Buffer.from(c.refundScriptHex, 'hex'),
+          destinationAddress: dest,
+          feeSats,
+          goalSats: c.goalSats
+        });
+      } catch (e) {
+        return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+      }
+      return res.json({
+        status: 'success',
+        campaignId: c.campaignId,
+        psbtBase64: prep.psbtBase64,
+        totalInputSats: prep.totalInputSats,
+        destSats: prep.destSats,
+        feeSats: prep.feeSats,
+        inputCount: prep.inputCount,
+        next: 'Beneficiary signs the PSBT, then POST .../payout-sign-arbiter with adminToken, or merge signatures offline and POST .../payout-broadcast.'
+      });
+    });
+  }
+
+  _handleBitcoinCrowdfundingPayoutSignArbiterRequest (req, res) {
+    const token = SetupService.extractBearerToken(req);
+    if (!this.setup.verifyAdminToken(token)) {
+      return res.status(401).json({ status: 'error', message: 'Admin token required.' });
+    }
+    this._loadCrowdfundingCampaignsIfNeeded();
+    const id = String((req.params && req.params.campaignId) || '').trim();
+    const c = this._crowdfundingCampaigns.get(id);
+    if (!c) return res.status(404).json({ status: 'error', message: 'Unknown campaign.' });
+    const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+    const psbtB64 = String(body.psbtBase64 || body.psbt || '').trim();
+    if (!psbtB64) return res.status(400).json({ status: 'error', message: 'psbtBase64 is required.' });
+    const priv = this._hubIdentityPriv32();
+    if (!priv) return res.status(503).json({ status: 'error', message: 'Hub cannot sign (no identity private key).' });
+    const arb = this._sellerHtlcPubkeyCompressed();
+    if (!arb || arb.toString('hex') !== c.arbiterPubkeyHex) {
+      return res.status(503).json({ status: 'error', message: 'Hub key does not match campaign arbiter.' });
+    }
+    try {
+      const bitcoin = require('bitcoinjs-lib');
+      const { Psbt } = bitcoin;
+      const psbt = Psbt.fromBase64(psbtB64, { network: crowdfundingTaproot.networkForFabricName(c.networkName) });
+      crowdfundingTaproot.signAllInputsWithKey(psbt, priv);
+      return res.json({ status: 'success', campaignId: id, psbtBase64: psbt.toBase64() });
+    } catch (e) {
+      return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+    }
+  }
+
+  _handleBitcoinCrowdfundingPayoutBroadcastRequest (req, res) {
+    this._loadCrowdfundingCampaignsIfNeeded();
+    const id = String((req.params && req.params.campaignId) || '').trim();
+    const c = this._crowdfundingCampaigns.get(id);
+    if (!c) return res.status(404).json({ status: 'error', message: 'Unknown campaign.' });
+    const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+    const psbtB64 = String(body.psbtBase64 || body.psbt || '').trim();
+    if (!psbtB64) return res.status(400).json({ status: 'error', message: 'psbtBase64 is required.' });
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+    const wantOut = Buffer.from(c.outputScriptHex, 'hex');
+    let psbt;
+    try {
+      const bitcoinjs = require('bitcoinjs-lib');
+      const { Psbt } = bitcoinjs;
+      psbt = Psbt.fromBase64(psbtB64, { network: crowdfundingTaproot.networkForFabricName(c.networkName) });
+      for (let i = 0; i < psbt.inputCount; i++) {
+        const inp = psbt.data.inputs[i];
+        const wu = inp && inp.witnessUtxo;
+        if (!wu || !Buffer.isBuffer(wu.script) || !wu.script.equals(wantOut)) {
+          return res.status(400).json({ status: 'error', message: `Input ${i} is not a UTXO for this campaign address.` });
+        }
+      }
+      crowdfundingTaproot.finalizeCrowdfundPayoutPsbt(psbt);
+    } catch (e) {
+      return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+    }
+    const { txHex } = crowdfundingTaproot.extractPsbtTransaction(psbt);
+    return Promise.resolve()
+      .then(() => bitcoin._makeRPCRequest('sendrawtransaction', [txHex]))
+      .then((sent) => {
+        try {
+          this._mergePersistedTxLabel(sent, 'crowdfunding_payout', { campaignId: id });
+        } catch (_) {}
+        return res.json({ status: 'success', txid: sent, campaignId: id });
+      })
+      .catch((e) => res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) }));
+  }
+
+  _handleBitcoinCrowdfundingRefundPrepareRequest (req, res) {
+    const token = SetupService.extractBearerToken(req);
+    if (!this.setup.verifyAdminToken(token)) {
+      return res.status(401).json({ status: 'error', message: 'Admin token required.' });
+    }
+    this._loadCrowdfundingCampaignsIfNeeded();
+    const id = String((req.params && req.params.campaignId) || '').trim();
+    const c = this._crowdfundingCampaigns.get(id);
+    if (!c) return res.status(404).json({ status: 'error', message: 'Unknown campaign.' });
+    const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+    const dest = String(body.destinationAddress || body.toAddress || '').trim();
+    const fundedTxid = String(body.fundedTxid || body.txid || '').trim();
+    const feeSats = Math.max(1, Math.round(Number(body.feeSats || 1000)));
+    let vout = body.vout != null ? Number(body.vout) : null;
+    if (!dest || !fundedTxid) {
+      return res.status(400).json({ status: 'error', message: 'destinationAddress and fundedTxid are required.' });
+    }
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+    return Promise.resolve()
+      .then(async () => {
+        const height = await bitcoin._makeRPCRequest('getblockcount', []);
+        if (height < c.refundLocktimeHeight) {
+          const wait = c.refundLocktimeHeight - height;
+          return res.status(400).json({
+            status: 'error',
+            message: `Refund path unlocks at block height ${c.refundLocktimeHeight}; current tip is ${height}. Wait ${wait} more block${wait === 1 ? '' : 's'}.`
+          });
+        }
+        const rawHex = await bitcoin._makeRPCRequest('getrawtransaction', [fundedTxid, false]);
+        const tx = require('bitcoinjs-lib').Transaction.fromHex(rawHex);
+        if (vout == null || !Number.isFinite(vout)) {
+          vout = crowdfundingTaproot.findP2trVoutForAddress(tx, c.address, crowdfundingTaproot.networkForFabricName(c.networkName));
+        }
+        if (vout < 0) {
+          return res.status(400).json({ status: 'error', message: 'Funding tx has no output paying the campaign P2TR address.' });
+        }
+        const prep = crowdfundingTaproot.prepareCrowdfundRefundPsbt({
+          networkName: c.networkName || bitcoin.network || 'regtest',
+          fundedTxHex: rawHex,
+          paymentAddress: c.address,
+          payoutScript: Buffer.from(c.payoutScriptHex, 'hex'),
+          refundScript: Buffer.from(c.refundScriptHex, 'hex'),
+          refundLocktimeHeight: c.refundLocktimeHeight,
+          destinationAddress: dest,
+          feeSats
+        });
+        const priv = this._hubIdentityPriv32();
+        if (!priv) return res.status(503).json({ status: 'error', message: 'Hub cannot sign refund.' });
+        crowdfundingTaproot.signAllInputsWithKey(prep.psbt, priv);
+        crowdfundingTaproot.finalizeCrowdfundRefundPsbt(prep.psbt);
+        const { txHex, txid } = crowdfundingTaproot.extractPsbtTransaction(prep.psbt);
+        return res.json({
+          status: 'success',
+          campaignId: id,
+          txHex,
+          txid,
+          locktime: prep.locktime,
+          message: 'Signed refund tx (arbiter). Broadcast via POST /services/bitcoin/broadcast with admin token or sendrawtransaction.'
+        });
+      })
+      .catch((e) => res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) }));
   }
 
   _handleBitcoinBlockByHeightRequest (req, res) {
@@ -3471,9 +4496,67 @@ class Hub extends Service {
     return this._jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+
+      const walletId = (req.params && req.params.walletId) || (req.query && req.query.walletId) || bitcoin.walletName;
+      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const isHubWallet = walletId && String(walletId) === String(bitcoin.walletName);
+      const isClientWallet = !isHubWallet && xpub;
+
+      if (isClientWallet) {
+        try {
+          const network = bitcoin.network || 'regtest';
+          const normalizedXpub = this._normalizeXpubForNetwork(xpub, network);
+          const receiveDesc = `wpkh(${normalizedXpub}/0/*)`;
+          const changeDesc = `wpkh(${normalizedXpub}/1/*)`;
+
+          const [receiveInfo, changeInfo] = await Promise.all([
+            bitcoin._makeRPCRequest('getdescriptorinfo', [receiveDesc]).catch(() => ({ descriptor: receiveDesc })),
+            bitcoin._makeRPCRequest('getdescriptorinfo', [changeDesc]).catch(() => ({ descriptor: changeDesc }))
+          ]);
+
+          const scanObjects = [
+            { desc: receiveInfo.descriptor || receiveDesc, range: [0, 999] },
+            { desc: changeInfo.descriptor || changeDesc, range: [0, 999] }
+          ];
+
+          const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+          const raw = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+          const utxos = raw.map((u) => ({
+            txid: u.txid,
+            vout: u.vout,
+            amount: u.amount,
+            amountSats: Math.round(Number(u.amount || 0) * 100000000),
+            desc: u.desc,
+            scriptPubKey: u.scriptPubKey,
+            height: u.height
+          }));
+
+          return res.json({
+            walletId,
+            network,
+            utxos,
+            keysHeldByServer: false
+          });
+        } catch (err) {
+          if (this.settings.debug) console.error('[HUB] scantxoutset for client wallet UTXOs:', err && err.message);
+          return res.status(500).json({
+            status: 'error',
+            message: 'Failed to list UTXOs for xpub. Ensure txindex is enabled.',
+            details: err && err.message ? err.message : String(err)
+          });
+        }
+      }
+
+      if (!isHubWallet && !xpub) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'xpub required for non-Hub wallet UTXOs. The Hub does not hold your keys; pass ?xpub= for watch-only scan.'
+        });
+      }
+
       const utxos = await bitcoin._listUnspent();
       return res.json({
-        walletId: (req.params && req.params.walletId) || (req.query && req.query.walletId) || bitcoin.walletName,
+        walletId: String(walletId || bitcoin.walletName),
         network: bitcoin.network,
         utxos: Array.isArray(utxos) ? utxos : []
       });
@@ -3629,10 +4712,18 @@ class Hub extends Service {
 
   _handleBitcoinWalletSendRequest (req, res) {
     return this._jsonOrShell(req, res, async () => {
+      const body = req.body || {};
+      const rpcToken = body.adminToken || body.token;
+      if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(rpcToken)) {
+        return res.status(403).json({
+          status: 'error',
+          message: 'Admin token required to spend from the Hub wallet (same as sendpayment RPC).'
+        });
+      }
+
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
-      const body = req.body || {};
       const to = String(body.to || body.address || '').trim();
       const amountSats = Number(body.amountSats || 0);
       const amountBTC = Number((amountSats / 100000000).toFixed(8));
@@ -3911,6 +5002,69 @@ class Hub extends Service {
         }
       } catch (_) {}
       return res.json(result);
+    });
+  }
+
+  /**
+   * POST /services/payjoin/sessions/:sessionId/acp-hub-boost
+   * Payer PSBT must use SIGHASH_ALL|ANYONECANPAY on their input(s) so Hub can append + sign a wallet UTXO
+   * without changing outputs (extra sats increase miner fee). Admin token required.
+   */
+  _handlePayjoinAcpHubBoostRequest (req, res) {
+    const token = SetupService.extractBearerToken(req);
+    if (!this.setup.verifyAdminToken(token)) {
+      return res.status(401).json({
+        status: 'error',
+        message: 'Admin token required. The Hub wallet co-signs an additional input (regtest / ops).'
+      });
+    }
+    return this._jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      const sessionId = req && req.params ? req.params.sessionId : null;
+      if (!sessionId) return res.status(400).json({ status: 'error', message: 'sessionId is required.' });
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+      const psbtOverride = String(body.psbt || body.psbtBase64 || '').trim();
+      const id = String(sessionId).trim();
+      const session = payjoin._payjoinState && payjoin._payjoinState.sessions
+        ? payjoin._payjoinState.sessions[id]
+        : null;
+      if (!session) return res.status(404).json({ status: 'error', message: 'Payjoin session not found.' });
+      const proposals = Object.values(session.proposals || {})
+        .filter((p) => p && p.psbt)
+        .sort((a, b) => new Date(a.created || 0).getTime() - new Date(b.created || 0).getTime());
+      const last = proposals.length ? proposals[proposals.length - 1] : null;
+      const sourcePsbt = psbtOverride || (last && last.psbt) || '';
+      if (!sourcePsbt) {
+        return res.status(400).json({ status: 'error', message: 'No PSBT on session; submit a proposal first or pass psbt in the body.' });
+      }
+      const payjoinAcpBoost = require('../functions/payjoinAcpBoost');
+      let out;
+      try {
+        out = await payjoinAcpBoost.addHubWalletInputAndSign({
+          psbtBase64: sourcePsbt,
+          bitcoin,
+          networkName: bitcoin.network || 'regtest'
+        });
+      } catch (e) {
+        return res.status(400).json({
+          status: 'error',
+          message: e && e.message ? e.message : String(e)
+        });
+      }
+      return res.json({
+        status: 'success',
+        type: 'PayjoinAcpHubBoost',
+        sessionId: id,
+        proposalId: last ? last.id : null,
+        psbtBase64: out.psbtBase64,
+        addedOutpoint: out.addedOutpoint,
+        addedValueSats: out.addedValueSats,
+        walletProcessPsbtComplete: out.complete,
+        note: 'Outputs were not modified; payer ANYONECANPAY signatures remain valid. Finalize + broadcast when all inputs are signed.'
+      });
     });
   }
 
@@ -4612,14 +5766,13 @@ class Hub extends Service {
     }
 
     this.beacon.bitcoin = bitcoin;
+    const _fedVals = this._distributedFederationValidatorsFromEnv();
+    const _fedThrRaw = this._distributedFederationThresholdEffective();
     this.beacon.attach({
       fs: this.fs,
       key: this._rootKey,
-      federationValidators: this._distributedFederationValidatorsFromEnv(),
-      federationThreshold: Math.max(1, Number(
-        (this.settings.distributed && this.settings.distributed.federation && this.settings.distributed.federation.threshold) ||
-          process.env.FABRIC_DISTRIBUTED_FEDERATION_THRESHOLD || 1
-      )),
+      federationValidators: _fedVals,
+      federationThreshold: _fedVals.length ? _fedThrRaw : Math.max(1, _fedThrRaw),
       getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon()
     });
 
@@ -4817,6 +5970,7 @@ class Hub extends Service {
         console.error('[HUB:HTTP:ERROR]', err && err.stack ? err.stack : err);
       });
       await this.fs.start();
+      await this._bootstrapFederationFilesystem();
       if (this.chain && typeof this.chain.start === 'function') {
         await this.chain.start();
       }
@@ -4989,6 +6143,35 @@ class Hub extends Service {
         this.applicationString = '<html><body><h1>hub.fabric.pub</h1><p>Application shell unavailable.</p></body></html>';
       }
 
+      // Dev-only: embed hub mnemonic into the HTML shell so the browser can mirror node FABRIC_SEED / FABRIC_MNEMONIC.
+      // Requires explicit FABRIC_DEV_PUSH_BROWSER_IDENTITY=1|true|force — never enable on an exposed host.
+      const pushBrowserId = process.env.FABRIC_DEV_PUSH_BROWSER_IDENTITY;
+      if (pushBrowserId === '1' || pushBrowserId === 'true' || pushBrowserId === 'force') {
+        const envPhrase = process.env.FABRIC_SEED || process.env.FABRIC_MNEMONIC || '';
+        const keyCfg = this.settings && this.settings.key ? this.settings.key : {};
+        const settingsPhrase = keyCfg.seed || keyCfg.mnemonic || '';
+        const phrase = String(envPhrase || settingsPhrase || '').trim();
+        const passRaw = process.env.FABRIC_PASSPHRASE || process.env.FABRIC_DEV_BROWSER_PASSPHRASE || keyCfg.passphrase || '';
+        const pass = String(passRaw || '').trim();
+        if (phrase) {
+          const forceFlag = pushBrowserId === 'force' ? 'window.FABRIC_DEV_BROWSER_IDENTITY="force";' : '';
+          const passJs = pass
+            ? `window.FABRIC_DEV_BROWSER_PASSPHRASE=${JSON.stringify(pass)};`
+            : '';
+          const inj = `<script>(function(){window.FABRIC_DEV_BROWSER_SEED=${JSON.stringify(phrase)};${passJs}${forceFlag}})();</script>`;
+          const needle = '<script src="/bundles/browser.min.js"></script>';
+          if (this.applicationString.includes(needle)) {
+            this.applicationString = this.applicationString.replace(needle, `${inj}${needle}`);
+            console.warn(
+              '[HUB] FABRIC_DEV_PUSH_BROWSER_IDENTITY: mnemonic embedded in HTML shell. ' +
+              'Local development only — do not expose this process to untrusted networks; prefer config.local.js or Identity import.'
+            );
+          }
+        } else {
+          console.warn('[HUB] FABRIC_DEV_PUSH_BROWSER_IDENTITY set but no FABRIC_SEED / FABRIC_MNEMONIC / settings.key mnemonic.');
+        }
+      }
+
       // Load DEVELOPERS.md into buffer
       const devMdPath = path.resolve(__dirname, '../DEVELOPERS.md');
       try {
@@ -5041,13 +6224,23 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/bitcoin/payments', this._handleBitcoinPaymentsListRequest.bind(this));
       this.http._addRoute('POST', '/services/bitcoin/payments', this._handleBitcoinWalletSendRequest.bind(this));
       this.http._addRoute('POST', '/services/bitcoin/faucet', this._handleBitcoinFaucetRequest.bind(this));
+      /* Taproot crowdfunding (2-of-2 payout + CLTV arbiter refund); see functions/crowdfundingTaproot.js */
+      this.http._addRoute('GET', '/services/bitcoin/crowdfunding/campaigns/:campaignId/acp-donation-psbt', this._handleBitcoinCrowdfundingAcpDonationPsbtRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/crowdfunding/campaigns/:campaignId/payout-psbt', this._handleBitcoinCrowdfundingPayoutPsbtRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/crowdfunding/campaigns/:campaignId/payout-sign-arbiter', this._handleBitcoinCrowdfundingPayoutSignArbiterRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/crowdfunding/campaigns/:campaignId/payout-broadcast', this._handleBitcoinCrowdfundingPayoutBroadcastRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/crowdfunding/campaigns/:campaignId/refund-prepare', this._handleBitcoinCrowdfundingRefundPrepareRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/crowdfunding/campaigns/:campaignId', this._handleBitcoinCrowdfundingGetRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/crowdfunding/campaigns', this._handleBitcoinCrowdfundingListRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/crowdfunding/campaigns', this._handleBitcoinCrowdfundingCreateRequest.bind(this));
       /* Payjoin: GET capabilities; sessions collection (GET list, POST create); session item GET; proposals sub-collection POST */
       const payjoinRoutes = [
         ['GET', '/services/payjoin', this._handlePayjoinStatusRequest.bind(this)],
         ['GET', '/services/payjoin/sessions', this._handlePayjoinSessionsListRequest.bind(this)],
         ['POST', '/services/payjoin/sessions', this._handlePayjoinDepositRequest.bind(this)],
         ['GET', '/services/payjoin/sessions/:sessionId', this._handlePayjoinSessionViewRequest.bind(this)],
-        ['POST', '/services/payjoin/sessions/:sessionId/proposals', this._handlePayjoinProposalSubmitRequest.bind(this)]
+        ['POST', '/services/payjoin/sessions/:sessionId/proposals', this._handlePayjoinProposalSubmitRequest.bind(this)],
+        ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinAcpHubBoostRequest.bind(this)]
       ];
       for (const [method, route, handler] of payjoinRoutes) {
         this.http._addRoute(method, route, handler);
@@ -5063,7 +6256,10 @@ class Hub extends Service {
       /* Distributed execution: manifest + beacon epoch status (@fabric/core + @fabric/http) */
       if (this.settings.distributed && this.settings.distributed.enable !== false && this.distributedHttp) {
         this.distributedHttp.bind(this.http);
+        this.http._addRoute('GET', '/services/distributed/vault', this._handleDistributedVaultRequest.bind(this));
+        this.http._addRoute('GET', '/services/distributed/vault/utxos', this._handleDistributedVaultUtxosRequest.bind(this));
       }
+      this.http._addRoute('GET', '/services/distributed/federation-registry', this._handleDistributedFederationRegistryRequest.bind(this));
       /* Lightning: GET status / collections; POST create; DELETE channel by id */
       this.http._addRoute('GET', '/services/lightning', this._handleLightningStatusRequest.bind(this));
       this.http._addRoute('GET', '/services/lightning/channels', this._handleLightningCollectionRequest.bind(this));
@@ -5336,6 +6532,31 @@ class Hub extends Service {
         if (!idOrAddress) return { status: 'error', message: 'id or address required' };
         const ok = this._disconnectPeer(idOrAddress);
         return ok ? { status: 'success' } : { status: 'error', message: 'peer not connected' };
+      });
+
+      // Fabric P2P: send ChainSyncRequest so a compatible peer pushes inventory + replays BitcoinBlock log.
+      this.http._registerMethod('RequestFabricPeerResync', (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const input = req.address || req.id || params[0];
+        if (!input) return { status: 'error', message: 'id or address required' };
+        const address = this._resolvePeerAddress(input);
+        if (!address || !this.agent.connections[address]) {
+          return { status: 'error', message: 'peer not connected' };
+        }
+        const myId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
+        const body = JSON.stringify({
+          v: 1,
+          reason: 'hub-request-fabric-resync',
+          requester: myId,
+          at: new Date().toISOString()
+        });
+        try {
+          this._sendVectorToPeer(address, ['ChainSyncRequest', body]);
+          return { status: 'success', address };
+        } catch (err) {
+          console.error('[HUB] RequestFabricPeerResync error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'send failed' };
+        }
       });
 
       this.http._registerMethod('SendPeerMessage', (...params) => {
@@ -5664,10 +6885,14 @@ class Hub extends Service {
       // Get a document (metadata + base64 content)
       this.http._registerMethod('GetDocument', async (...params) => {
         const id = this._normalizeDocumentId(params[0] && (params[0].id || params[0]));
-        if (!id) return { status: 'error', message: 'id required' };
+        if (!id) {
+          return { type: 'GetDocumentResult', document: null, documentId: null, message: 'id required' };
+        }
         try {
           const raw = this.fs.readFile(`documents/${id}.json`);
-          if (!raw) return { status: 'error', message: 'document not found' };
+          if (!raw) {
+            return { type: 'GetDocumentResult', document: null, documentId: id, message: 'document not found' };
+          }
           const parsed = JSON.parse(raw);
 
           // Decorate with published + storageContractId from hub state, if present
@@ -5691,7 +6916,12 @@ class Hub extends Service {
           return { type: 'GetDocumentResult', document: parsed };
         } catch (err) {
           console.error('[HUB] GetDocument error:', err);
-          return { status: 'error', message: err && err.message ? err.message : 'get failed' };
+          return {
+            type: 'GetDocumentResult',
+            document: null,
+            documentId: id,
+            message: err && err.message ? err.message : 'get failed'
+          };
         }
       });
 
@@ -6197,23 +7427,35 @@ class Hub extends Service {
         const documentId = config.documentId || config.id;
         const txid = config.txid ? String(config.txid).trim() : null;
 
-        if (!documentId) return { status: 'error', message: 'documentId required' };
+        const fail = (message) => ({
+          type: 'CreateStorageContractFailed',
+          status: 'error',
+          message,
+          ...(documentId ? { documentId } : {})
+        });
+
+        if (!documentId) return fail('documentId required');
 
         const amountSats = Number(config.amountSats || 0);
         if (!Number.isFinite(amountSats) || amountSats <= 0) {
-          return { status: 'error', message: 'positive amountSats required' };
+          return fail('positive amountSats required');
         }
 
         const bitcoin = this._getBitcoinService();
         const pending = this._distributeRequests[documentId];
+        let verifiedInvoiceMeta = null;
 
         if (bitcoin && pending) {
-          if (!txid) return { status: 'error', message: 'Payment required. Call CreateDistributeInvoice first, pay to the returned address, then pass txid to CreateStorageContract.' };
+          if (!txid) return fail('Payment required. Call CreateDistributeInvoice first, pay to the returned address, then pass txid to CreateStorageContract.');
           const verified = await this._verifyL1Payment(bitcoin, txid, pending.address, pending.amountSats);
-          if (!verified) return { status: 'error', message: 'Payment verification failed. Ensure the transaction pays to the invoice address with at least the required amount.' };
+          if (!verified) return fail('Payment verification failed. Ensure the transaction pays to the invoice address with at least the required amount.');
+          verifiedInvoiceMeta = {
+            invoiceAddress: pending.address,
+            invoiceAmountSats: pending.amountSats
+          };
           delete this._distributeRequests[documentId];
         } else if (bitcoin && !pending) {
-          return { status: 'error', message: 'Payment required. Call CreateDistributeInvoice first with documentId and amountSats.' };
+          return fail('Payment required. Call CreateDistributeInvoice first with documentId and amountSats.');
         }
 
         const durationYears = Number(config.durationYears || 4);
@@ -6236,7 +7478,13 @@ class Hub extends Service {
             responseDeadline,
             desiredCopies,
             created: new Date().toISOString(),
-            ...(txid ? { txid } : {})
+            ...(txid ? { txid } : {}),
+            ...(verifiedInvoiceMeta && verifiedInvoiceMeta.invoiceAddress
+              ? {
+                invoiceAddress: verifiedInvoiceMeta.invoiceAddress,
+                invoiceAmountSats: verifiedInvoiceMeta.invoiceAmountSats
+              }
+              : {})
           };
 
           const contract = new Actor({ content: descriptor });
@@ -6296,12 +7544,64 @@ class Hub extends Service {
           };
         } catch (err) {
           console.error('[HUB] CreateStorageContract error:', err);
-          return { status: 'error', message: err && err.message ? err.message : 'create storage contract failed' };
+          return fail(err && err.message ? err.message : 'create storage contract failed');
         }
       });
 
-      // Local-only execution contract: validated sequence of Fabric opcode metadata + stack ops (sandboxed machine).
-      // Params: ({ name?: string, program: { version?: number, steps: [...] }, actorId?: string })
+      // L1 pay-to-register for execution contracts (when Bitcoin service is enabled).
+      // Params: ({ program, amountSats, name? }) — same program bytes must be submitted to CreateExecutionContract with txid.
+      this.http._registerMethod('CreateExecutionRegistryInvoice', async (...params) => {
+        const config = params[0] || {};
+        const program = config.program;
+        if (!program || typeof program !== 'object') {
+          return { status: 'error', message: 'program object required' };
+        }
+        const validation = runExecutionProgram(program);
+        if (!validation.ok) {
+          return { status: 'error', message: validation.error || 'program validation failed' };
+        }
+        const bitcoin = this._getBitcoinService();
+        if (!bitcoin) {
+          return { status: 'error', message: 'Bitcoin service unavailable; cannot create execution registry invoice.' };
+        }
+        const amountSats = Number(config.amountSats || 0);
+        if (!Number.isFinite(amountSats) || amountSats <= 0) {
+          return { status: 'error', message: 'positive amountSats required' };
+        }
+        const safeProg = DistributedExecution.jsonSafe(program);
+        const digest = crypto.createHash('sha256')
+          .update(Buffer.from(DistributedExecution.stableStringify(safeProg), 'utf8'))
+          .digest('hex');
+        const name = config.name ? String(config.name).trim() : '';
+        try {
+          const address = await bitcoin.getUnusedAddress();
+          const now = new Date().toISOString();
+          this._executionRegistryRequests[digest] = {
+            address,
+            amountSats,
+            program: safeProg,
+            name: name || undefined,
+            createdAt: now
+          };
+          const netRaw = bitcoin.network != null ? String(bitcoin.network) : 'regtest';
+          return {
+            type: 'CreateExecutionRegistryInvoiceResult',
+            programDigest: digest,
+            address,
+            amountSats,
+            network: netRaw.trim() || 'regtest',
+            name: name || undefined,
+            expiresAt: now
+          };
+        } catch (err) {
+          console.error('[HUB] CreateExecutionRegistryInvoice error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'registry invoice failed' };
+        }
+      });
+
+      // Execution contract registry: validated sandboxed program. When Bitcoin is enabled, requires
+      // CreateExecutionRegistryInvoice + L1 txid; otherwise free create (dev / no bitcoind).
+      // Params: ({ name?: string, program, txid?, programDigest?, actorId?: string })
       this.http._registerMethod('CreateExecutionContract', async (...params) => {
         const config = params[0] || {};
         const program = config.program;
@@ -6315,6 +7615,47 @@ class Hub extends Service {
           return { status: 'error', message: validation.error || 'program validation failed' };
         }
 
+        const bitcoin = this._getBitcoinService();
+        const txid = config.txid ? String(config.txid).trim() : null;
+        const clientDigest = config.programDigest ? String(config.programDigest).trim().toLowerCase() : '';
+
+        const safeProg = DistributedExecution.jsonSafe(program);
+        const computedDigest = crypto.createHash('sha256')
+          .update(Buffer.from(DistributedExecution.stableStringify(safeProg), 'utf8'))
+          .digest('hex');
+
+        let verifiedInvoiceMeta = null;
+
+        if (bitcoin) {
+          if (!clientDigest || clientDigest !== computedDigest) {
+            return {
+              status: 'error',
+              message: clientDigest && clientDigest !== computedDigest
+                ? 'programDigest does not match canonical hash of program'
+                : 'Bitcoin is enabled: call CreateExecutionRegistryInvoice, pay the invoice on-chain, then pass programDigest and txid with the same program.'
+            };
+          }
+          const pending = this._executionRegistryRequests[clientDigest];
+          if (!pending) {
+            return { status: 'error', message: 'No pending registry invoice for this program digest. Call CreateExecutionRegistryInvoice first.' };
+          }
+          if (DistributedExecution.stableStringify(safeProg) !== DistributedExecution.stableStringify(pending.program)) {
+            return { status: 'error', message: 'Program does not match pending registry invoice.' };
+          }
+          if (!txid) {
+            return { status: 'error', message: 'txid required after paying the registry invoice.' };
+          }
+          const verified = await this._verifyL1Payment(bitcoin, txid, pending.address, pending.amountSats);
+          if (!verified) {
+            return { status: 'error', message: 'L1 payment verification failed for registry invoice.' };
+          }
+          verifiedInvoiceMeta = {
+            invoiceAddress: pending.address,
+            invoiceAmountSats: pending.amountSats
+          };
+          delete this._executionRegistryRequests[clientDigest];
+        }
+
         const ownerId = config.actorId || (this.agent && this.agent.identity && this.agent.identity.id) || null;
 
         try {
@@ -6324,9 +7665,17 @@ class Hub extends Service {
             type: 'ExecutionContract',
             version: 1,
             name: name || undefined,
-            program,
+            program: safeProg,
+            programDigest: computedDigest,
             created: new Date().toISOString(),
-            validatedSteps: validation.stepsExecuted
+            validatedSteps: validation.stepsExecuted,
+            ...(txid ? { txid } : {}),
+            ...(verifiedInvoiceMeta && verifiedInvoiceMeta.invoiceAddress
+              ? {
+                invoiceAddress: verifiedInvoiceMeta.invoiceAddress,
+                invoiceAmountSats: verifiedInvoiceMeta.invoiceAmountSats
+              }
+              : {})
           };
 
           const contract = new Actor({ content: descriptor });
@@ -6341,10 +7690,17 @@ class Hub extends Service {
 
           try {
             await this.fs.publish(`contracts/${contractId}.json`, this._state.content.collections.contracts[contractId]);
+            if (txid) {
+              try {
+                this._mergePersistedTxLabel(txid, 'execution_registry', { contractId, programDigest: computedDigest });
+              } catch (_) {}
+            }
             await this._appendFabricMessage('CreateExecutionContract', {
               id: contractId,
               validatedSteps: validation.stepsExecuted,
-              ...(name ? { name } : {})
+              programDigest: computedDigest,
+              ...(name ? { name } : {}),
+              ...(txid ? { txid } : {})
             });
             this._refreshChainState('create-execution-contract');
             this.commit();
@@ -6483,6 +7839,224 @@ class Hub extends Service {
       this.http._registerMethod('SubmitSidechainStatePatch', async (...params) => {
         const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
         return this._submitSidechainStatePatch(req);
+      });
+
+      this.http._registerMethod('GetDistributedFederationPolicy', (...params) => {
+        void params;
+        const fp = this._getEffectiveFederationPolicyForDistributedHttp();
+        const reg = federationRegistry.loadRegistry(this.fs);
+        return {
+          type: 'DistributedFederationPolicy',
+          source: this._distributedFederationPolicySource(),
+          validators: fp.validators,
+          threshold: fp.threshold,
+          filesystem: {
+            registryDocument: federationRegistry.REGISTRY_PATH,
+            policySnapshotDocument: federationRegistry.POLICY_SNAPSHOT_PATH,
+            registryEntryCount: Array.isArray(reg.entries) ? reg.entries.length : 0,
+            lastScannedHeight: reg.lastScannedHeight != null ? reg.lastScannedHeight : null
+          }
+        };
+      });
+
+      this.http._registerMethod('GetFederationRegistry', (...params) => {
+        void params;
+        const reg = federationRegistry.loadRegistry(this.fs);
+        return {
+          type: 'FederationRegistry',
+          path: federationRegistry.REGISTRY_PATH,
+          ...reg
+        };
+      });
+
+      // Params: { fundedTxHex, destinationAddress|toAddress, feeSats?, vaultAddress?, adminToken|token }
+      this.http._registerMethod('PrepareFederationVaultWithdrawalPsbt', async (...params) => {
+        const body = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._rpcPrepareFederationVaultWithdrawalPsbt(body);
+      });
+
+      // Params: { validators: string[], threshold?: number, adminToken|token } — blocked when env validators override.
+      this.http._registerMethod('SetDistributedFederationPolicy', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { status: 'error', message: 'adminToken required' };
+        }
+        const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
+        if (env && String(env).trim()) {
+          return {
+            status: 'error',
+            message: 'Clear FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS on the Hub process to manage federation from the UI.'
+          };
+        }
+        let validators = req.validators;
+        if (!Array.isArray(validators)) {
+          return { status: 'error', message: 'validators array required' };
+        }
+        validators = validators.map((v) => String(v || '').trim()).filter(Boolean);
+        let threshold = req.threshold != null ? Number(req.threshold) : 1;
+        if (!Number.isFinite(threshold) || threshold < 1) threshold = 1;
+        if (validators.length && threshold > validators.length) threshold = validators.length;
+        if (!this.settings.distributed) this.settings.distributed = {};
+        if (!this.settings.distributed.federation) this.settings.distributed.federation = {};
+        this.settings.distributed.federation.validators = validators.slice();
+        this.settings.distributed.federation.threshold = threshold;
+        try {
+          await this.setup.setSetting('DISTRIBUTED_FEDERATION', {
+            validators: validators.slice(),
+            threshold
+          });
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+        try {
+          await federationRegistry.persistPolicySnapshot(this.fs, {
+            validators: validators.slice(),
+            threshold,
+            source: 'persisted'
+          });
+        } catch (e) {
+          console.warn('[HUB:FEDERATION] policy snapshot publish failed:', e && e.message ? e.message : e);
+        }
+        this._reapplyBeaconFederationPolicy();
+        try {
+          await this._appendFabricMessage('DistributedFederationPolicy', {
+            validators: validators.slice(),
+            threshold
+          });
+        } catch (e) {
+          console.warn('[HUB:FEDERATION] log append failed:', e && e.message ? e.message : e);
+        }
+        return {
+          type: 'SetDistributedFederationPolicyResult',
+          status: 'success',
+          validators: validators.slice(),
+          threshold
+        };
+      });
+
+      // Params: { pubkey|responderPubkey, adminToken|token }
+      this.http._registerMethod('AddDistributedFederationMember', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { status: 'error', message: 'adminToken required' };
+        }
+        const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
+        if (env && String(env).trim()) {
+          return {
+            status: 'error',
+            message: 'Clear FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS on the Hub process to add members from the UI.'
+          };
+        }
+        const pk = String(req.pubkey || req.responderPubkey || '').trim();
+        if (!pk) return { status: 'error', message: 'pubkey required' };
+        const cur = this._distributedFederationValidatorsFromEnv().slice();
+        if (cur.includes(pk)) {
+          return {
+            type: 'AddDistributedFederationMemberResult',
+            status: 'success',
+            validators: cur,
+            threshold: this._distributedFederationThresholdEffective(),
+            alreadyMember: true
+          };
+        }
+        cur.push(pk);
+        let threshold = this._distributedFederationThresholdEffective();
+        if (!Number.isFinite(threshold) || threshold < 1) threshold = 1;
+        if (cur.length && threshold > cur.length) threshold = cur.length;
+        if (!this.settings.distributed) this.settings.distributed = {};
+        if (!this.settings.distributed.federation) this.settings.distributed.federation = {};
+        this.settings.distributed.federation.validators = cur;
+        this.settings.distributed.federation.threshold = threshold;
+        try {
+          await this.setup.setSetting('DISTRIBUTED_FEDERATION', { validators: cur, threshold });
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+        try {
+          await federationRegistry.persistPolicySnapshot(this.fs, {
+            validators: cur,
+            threshold,
+            source: 'persisted'
+          });
+        } catch (e) {
+          console.warn('[HUB:FEDERATION] policy snapshot publish failed:', e && e.message ? e.message : e);
+        }
+        this._reapplyBeaconFederationPolicy();
+        try {
+          await this._appendFabricMessage('DistributedFederationMemberAdded', { pubkey: pk });
+        } catch (e) {
+          console.warn('[HUB:FEDERATION] log append failed:', e && e.message ? e.message : e);
+        }
+        return {
+          type: 'AddDistributedFederationMemberResult',
+          status: 'success',
+          validators: cur,
+          threshold
+        };
+      });
+
+      // Params: { peerId|address|id, contractId?, note?, adminToken|token }
+      this.http._registerMethod('InvitePeerToFederationContract', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { status: 'error', message: 'adminToken required' };
+        }
+        const idOrAddress = req.peerId || req.address || req.id;
+        if (!idOrAddress) return { status: 'error', message: 'peer id or address required' };
+        const contractId = req.contractId != null ? String(req.contractId).trim() : '';
+        const note = req.note != null ? String(req.note).trim().slice(0, 2000) : '';
+        const address = this._resolvePeerAddress(idOrAddress);
+        if (!address || !this.agent.connections[address]) {
+          return { status: 'error', message: 'peer not connected' };
+        }
+        const targetValue = String(idOrAddress);
+        const inviteId = crypto.randomBytes(16).toString('hex');
+        if (!this.agent || !this.agent.identity || !this.agent.identity.id) {
+          return { status: 'error', message: 'hub identity unavailable' };
+        }
+        const inviterHubId = String(this.agent.identity.id);
+        const content = federationContractInvite.buildFederationContractInviteJson({
+          inviteId,
+          inviterHubId,
+          contractId: contractId || null,
+          note: note || null,
+          invitedAt: Date.now()
+        });
+        const actorId = this.agent.identity.id;
+        const chatPayload = {
+          type: 'P2P_CHAT_MESSAGE',
+          actor: { id: actorId },
+          object: { content, created: Date.now() },
+          target: targetValue
+        };
+        try {
+          this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)]);
+          try {
+            this.agent.emit('chat', chatPayload);
+          } catch (echoErr) {
+            console.warn('[HUB] Failed to locally echo peer chat message:', echoErr);
+          }
+          try {
+            await this._appendFabricMessage('FederationContractInvite', {
+              inviteId,
+              targetPeer: targetValue,
+              contractId: contractId || null,
+              note: note || null
+            });
+          } catch (logErr) {
+            console.warn('[HUB:FEDERATION] log append failed:', logErr && logErr.message ? logErr.message : logErr);
+          }
+          return {
+            type: 'InvitePeerToFederationContractResult',
+            status: 'success',
+            inviteId
+          };
+        } catch (err) {
+          return { status: 'error', message: err && err.message ? err.message : String(err) };
+        }
       });
 
       const buildNetworkStatus = () => {
@@ -6830,7 +8404,8 @@ class Hub extends Service {
 
       // Relay messages received via WebRTC data channel to WebSocket clients (and Fabric P2P).
       // Wraps in P2P_RELAY envelope to preserve original message + signature for onion routing.
-      const RELAYABLE_ORIGINAL_TYPES = ['P2P_CHAT_MESSAGE', P2P_PEER_GOSSIP, P2P_PEERING_OFFER, 'fabric-message'];
+      // Include BitcoinBlock so browser mesh can forward chain-head summaries to Fabric P2P via the hub (same shape as ZMQ-driven gossip).
+      const RELAYABLE_ORIGINAL_TYPES = ['P2P_CHAT_MESSAGE', P2P_PEER_GOSSIP, P2P_PEERING_OFFER, 'fabric-message', 'BitcoinBlock'];
       this.http._registerMethod('RelayFromWebRTC', (...params) => {
         const body = params[0] || params;
         const fromPeerId = body && body.fromPeerId ? String(body.fromPeerId) : null;
@@ -6961,19 +8536,32 @@ class Hub extends Service {
 
       // BitcoinBlock gossip is relayed peer-to-peer in @fabric/core Peer; no WebSocket fan-out unless we add a subscription later.
       this.agent.on('bitcoinBlock', ({ message, origin }) => {
-        if (this.settings && this.settings.debug) {
-          const from = origin && origin.name ? origin.name : '?';
-          let parsed = null;
-          try {
-            const raw = message && message.data != null
-              ? (typeof message.data === 'string' ? message.data : String(message.data))
-              : '';
-            parsed = raw ? JSON.parse(raw) : null;
-          } catch (e) {
-            parsed = null;
-          }
-          console.debug('[HUB:P2P] BitcoinBlock from', from, parsed || (message && message.data));
+        const from = origin && origin.name ? origin.name : '';
+        let parsed = null;
+        try {
+          const raw = message && message.data != null
+            ? (typeof message.data === 'string' ? message.data : String(message.data))
+            : '';
+          parsed = raw ? JSON.parse(raw) : null;
+        } catch (e) {
+          parsed = null;
         }
+        if (this.settings && this.settings.debug) {
+          console.debug('[HUB:P2P] BitcoinBlock from', from || '?', parsed || (message && message.data));
+        }
+        if (parsed && typeof parsed === 'object' && parsed.tip) {
+          this._ingestP2pBitcoinBlockForFabricLog(parsed, from).catch(() => {});
+        }
+      });
+
+      // Fabric P2P ChainSyncRequest: inventory exchange + replay BitcoinBlock messages from this hub's log.
+      this.agent.on('chainSyncRequest', (ev) => {
+        const originConn = ev && ev.origin && ev.origin.name;
+        const object = ev && ev.object && typeof ev.object === 'object' ? ev.object : {};
+        if (!originConn) return;
+        this._fabricPeerResyncRespondToRequest(originConn, object).catch((err) => {
+          console.error('[HUB] chainSyncRequest handler error:', err && err.stack ? err.stack : err);
+        });
       });
 
       // Broadcast P2P_PEER_GOSSIP and P2P_PEERING_OFFER from Fabric P2P to WebSocket clients.
@@ -7142,29 +8730,7 @@ class Hub extends Service {
 
           const targetId = message.actor && message.actor.id;
 
-          // Build a lightweight document inventory: id/sha256/size/mime/created/published.
-          const docs = this._state.documents || {};
-          const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
-
-          let items = Object.values(docs).map((meta) => {
-            if (!meta || !meta.id) return null;
-            const id = meta.id;
-            const c = collections[id];
-            const published = !!(c && c.published);
-            const purchasePriceSats = c && Number(c.purchasePriceSats) > 0
-              ? Math.round(Number(c.purchasePriceSats))
-              : undefined;
-            return {
-              id,
-              sha256: meta.sha256 || id,
-              name: meta.name,
-              mime: meta.mime || 'application/octet-stream',
-              size: meta.size,
-              created: meta.created,
-              published,
-              ...(purchasePriceSats ? { purchasePriceSats } : {})
-            };
-          }).filter(Boolean);
+          let items = this._collectLocalDocumentInventoryItems();
 
           const originConn = origin && (origin.name || origin.address || origin.id);
           const requesterFabricId = message.actor && message.actor.id;

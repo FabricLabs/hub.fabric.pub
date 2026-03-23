@@ -6,6 +6,15 @@ const {
   BROWSER_DATABASE_NAME,
   BROWSER_DATABASE_TOKEN_TABLE
 } = require('../constants');
+const {
+  DELEGATION_STORAGE_KEY,
+  notifyDelegationStorageChanged,
+  hasExternalSigningDelegation
+} = require('../functions/fabricDelegationLocal');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
 
 // Dependencies
 const React = require('react');
@@ -16,7 +25,11 @@ const {
   Routes,
   Route,
   Navigate,
-  useNavigate
+  Link,
+  useNavigate,
+  useLocation,
+  useSearchParams,
+  useParams
 } = require('react-router-dom');
 
 // Fabric Types
@@ -29,43 +42,253 @@ const BitcoinHome = require('./BitcoinHome');
 const Onboarding = require('./Onboarding');
 const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
+
+function BitcoinPaymentsHomeRoute (props) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  React.useEffect(() => {
+    try {
+      if (!searchParams.has('bip44Account')) return;
+      const sp = new URLSearchParams(searchParams);
+      sp.delete('bip44Account');
+      setSearchParams(sp, { replace: true });
+    } catch (_) { /* ignore */ }
+  }, [searchParams, setSearchParams]);
+  const payjoinSessionFromQuery = String(searchParams.get('payjoinSession') || '').trim();
+  const payToFromQuery = String(searchParams.get('payTo') || '').trim();
+  const payAmountSatsFromQuery = searchParams.get('payAmountSats');
+  const bitcoinUriFromQuery = String(searchParams.get('bitcoinUri') || '').trim();
+  return (
+    <BitcoinPaymentsHome
+      {...props}
+      paymentsSetSearchParams={setSearchParams}
+      payjoinSessionFromQuery={payjoinSessionFromQuery}
+      payToFromQuery={payToFromQuery}
+      payAmountSatsFromQuery={payAmountSatsFromQuery}
+      bitcoinUriFromQuery={bitcoinUriFromQuery}
+    />
+  );
+}
+
+/** Legacy singular `/document/...` → plural canonical `/documents/...`. */
+function NavigateDocumentsDetailAlias () {
+  const { id } = useParams();
+  const raw = id != null ? String(id).trim() : '';
+  if (!raw) return <Navigate to="/documents" replace />;
+  return <Navigate to={`/documents/${encodeURIComponent(raw)}`} replace />;
+}
+
+/** Legacy singular `/peer/...` → plural canonical `/peers/...`. */
+function NavigatePeerDetailAlias () {
+  const f = loadHubUiFeatureFlags();
+  if (!f.peers) return <Navigate to="/" replace />;
+  const { id } = useParams();
+  const raw = id != null ? String(id).trim() : '';
+  if (!raw) return <Navigate to="/peers" replace />;
+  return <Navigate to={`/peers/${encodeURIComponent(raw)}`} replace />;
+}
+
+function NavigatePeerRootAlias () {
+  const f = loadHubUiFeatureFlags();
+  if (!f.peers) return <Navigate to="/" replace />;
+  return <Navigate to="/peers" replace />;
+}
+
+function NavigateActivityToActivities () {
+  const f = loadHubUiFeatureFlags();
+  if (!f.activities) return <Navigate to="/" replace />;
+  return <Navigate to="/activities" replace />;
+}
+
+function UiFlagRoute ({ flag, children }) {
+  const f = loadHubUiFeatureFlags();
+  if (!f[flag]) return <Navigate to="/" replace />;
+  return children;
+}
+
+/** Legacy `/tx/...` bookmark → canonical Bitcoin transaction view. */
+function NavigateLegacyBitcoinTxAlias () {
+  const f = loadHubUiFeatureFlags();
+  if (!f.bitcoinExplorer) return <Navigate to="/" replace />;
+  const { txhash } = useParams();
+  const raw = txhash != null ? String(txhash).trim() : '';
+  if (!raw) return <Navigate to="/services/bitcoin" replace />;
+  return <Navigate to={`/services/bitcoin/transactions/${encodeURIComponent(raw)}`} replace />;
+}
+
+/** Legacy `/block/...` bookmark → canonical Bitcoin block view. */
+function NavigateLegacyBitcoinBlockAlias () {
+  const f = loadHubUiFeatureFlags();
+  if (!f.bitcoinExplorer) return <Navigate to="/" replace />;
+  const { blockhash } = useParams();
+  const raw = blockhash != null ? String(blockhash).trim() : '';
+  if (!raw) {
+    return <Navigate to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} replace />;
+  }
+  return <Navigate to={`/services/bitcoin/blocks/${encodeURIComponent(raw)}`} replace />;
+}
+
+function UnknownRouteShell () {
+  const { pathname, search } = useLocation();
+  const full = `${pathname || ''}${search || ''}` || '/';
+  const [hubUiTick, setHubUiTick] = React.useState(0);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
+  void hubUiTick;
+  const uf = loadHubUiFeatureFlags();
+  return (
+    <Segment style={{ marginTop: '2em' }}>
+      <Header as="h3">Page not found</Header>
+      <p style={{ color: '#666', marginBottom: '1em' }}>
+        No hub UI for{' '}
+        <code style={{ wordBreak: 'break-all' }}>{full}</code>
+        . Use the nav above or open Home.
+        {uf.activities ? ' The activity feed and in-app toasts are under the bell (top bar).' : ''}
+        {!uf.features ? ' Enable “Features” in Admin → Feature visibility for the full product tour at /features.' : ''}
+      </p>
+      <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }} role="navigation" aria-label="Suggested pages">
+        <Button as={Link} to="/" primary aria-label="Home">
+          <Icon name="home" />
+          Home
+        </Button>
+        <Button as={Link} to="/documents" basic aria-label="Documents">
+          <Icon name="folder open" />
+          Documents
+        </Button>
+        <Button as={Link} to="/contracts" basic aria-label="Contracts">
+          <Icon name="file contract" />
+          Contracts
+        </Button>
+        {uf.peers ? (
+          <Button as={Link} to="/peers" basic aria-label="Peers">
+            <Icon name="sitemap" />
+            Peers
+          </Button>
+        ) : null}
+        {uf.activities ? (
+          <Button as={Link} to="/activities" basic aria-label="Activities">
+            <Icon name="bell outline" />
+            Activities
+          </Button>
+        ) : null}
+        {uf.features ? (
+          <Button as={Link} to="/features" basic aria-label="Features">
+            <Icon name="info circle" />
+            Features
+          </Button>
+        ) : null}
+        {uf.sidechain ? (
+          <Button as={Link} to="/sidechains" basic aria-label="Sidechain and demo">
+            <Icon name="random" />
+            Sidechain
+          </Button>
+        ) : null}
+        <Button as={Link} to="/services/bitcoin" basic aria-label="Bitcoin">
+          <Icon name="bitcoin" />
+          Bitcoin
+        </Button>
+        {uf.bitcoinResources ? (
+          <Button as={Link} to="/services/bitcoin/resources" basic aria-label="Bitcoin HTTP resources">
+            <Icon name="code" />
+            Bitcoin resources
+          </Button>
+        ) : null}
+        {uf.bitcoinPayments ? (
+          <Button as={Link} to="/services/bitcoin/payments" basic aria-label="Payments">
+            <Icon name="credit card outline" />
+            Payments
+          </Button>
+        ) : null}
+        {uf.bitcoinInvoices ? (
+          <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic aria-label="Invoices">
+            <Icon name="file alternate outline" />
+            Invoices
+          </Button>
+        ) : null}
+        <Button as={Link} to="/settings" basic aria-label="Settings">
+          <Icon name="setting" />
+          Settings
+        </Button>
+        <Button as={Link} to="/settings/admin" basic aria-label="Admin">
+          <Icon name="settings" />
+          Admin
+        </Button>
+        {uf.sidechain ? (
+          <React.Fragment>
+            <Button as={Link} to="/settings/admin/beacon-federation" basic aria-label="Beacon Federation">
+              <Icon name="star" />
+              Beacon Federation
+            </Button>
+            <Button as={Link} to="/settings/federation" basic aria-label="Distributed federation">
+              <Icon name="sliders horizontal" />
+              Federation
+            </Button>
+          </React.Fragment>
+        ) : null}
+        <Button as={Link} to="/settings/security" basic aria-label="Security and delegation">
+          <Icon name="shield" />
+          Security & delegation
+        </Button>
+      </div>
+    </Segment>
+  );
+}
+
 const BitcoinResourcesHome = require('./BitcoinResourcesHome');
 const BitcoinTransactionView = require('./BitcoinTransactionView');
 const ChannelView = require('./ChannelView');
 const InvoiceListHome = require('./InvoiceListHome');
+
+function InvoiceListHomeRoute (props) {
+  return <InvoiceListHome {...props} />;
+}
+
 const BottomPanel = require('./BottomPanel');
 const ContractList = require('./ContractList');
 const ContractView = require('./ContractView');
 const DocumentList = require('./DocumentList');
 const DocumentView = require('./DocumentView');
 const Home = require('./Home');
+const ActivitiesHome = require('./ActivitiesHome');
 const IdentityManager = require('./IdentityManager');
 const PeerList = require('./PeerList');
 const PeerView = require('./PeerView');
 const TopPanel = require('./TopPanel');
 const {
-  getWalletContextFromIdentity,
+  getSpendWalletContext,
   fetchWalletSummaryWithCache,
-  loadUpstreamSettings
+  loadUpstreamSettings,
+  saveSpendXpubWatchForIdentity,
+  clearSpendXpubWatch
 } = require('../functions/bitcoinClient');
 const { ToastContainer, toast: toastify, Slide } = require('react-toastify');
 const { toast } = require('../functions/toast');
 const SecurityHome = require('./SecurityHome');
 const SecuritySessionHome = require('./SecuritySessionHome');
 const SettingsHome = require('./SettingsHome');
+const SettingsFederationHome = require('./SettingsFederationHome');
+const SettingsBitcoinWallet = require('./SettingsBitcoinWallet');
+const FederationContractInviteModal = require('./FederationContractInviteModal');
+const FeaturesPage = require('./FeaturesPage');
 const SidechainHome = require('./SidechainHome');
 const DelegationSigningModal = require('./DelegationSigningModal');
+const AdminHome = require('./AdminHome');
+const BeaconFederationHome = require('./BeaconFederationHome');
 
-function hasExternalSigningDelegation () {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return false;
-    const raw = window.localStorage.getItem('fabric.delegation');
-    if (!raw) return false;
-    const d = JSON.parse(raw);
-    return !!(d && d.token && d.externalSigning);
-  } catch (e) {
-    return false;
+/**
+ * Wallet-safe Bitcoin snapshot from GetNetworkStatus / pushNetworkStatus.
+ * The hub puts it on the top-level `bitcoin` key; a copy may also exist under `state.services.bitcoin`.
+ * @param {object|null|undefined} networkStatus
+ * @returns {object|null}
+ */
+function resolveBitcoinFromNetworkStatus (networkStatus) {
+  if (!networkStatus || typeof networkStatus !== 'object') return null;
+  const top = networkStatus.bitcoin;
+  if (top && typeof top === 'object' && !Array.isArray(top)) {
+    return top;
   }
+  const svc = networkStatus.state && networkStatus.state.services && networkStatus.state.services.bitcoin;
+  if (!svc || typeof svc !== 'object') return null;
+  if (svc.status && typeof svc.status === 'object') return svc.status;
+  return svc;
 }
 
 // Semantic UI
@@ -83,6 +306,18 @@ const {
 
 function BitcoinHomeWithNav (props) {
   const navigate = useNavigate();
+  const location = useLocation();
+  React.useLayoutEffect(() => {
+    const raw = location.hash || '';
+    const h = raw.startsWith('#') ? raw.slice(1) : raw;
+    if (!h) return;
+    const el = document.getElementById(h);
+    if (el && typeof el.scrollIntoView === 'function') {
+      window.requestAnimationFrame(() => {
+        el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    }
+  }, [location.pathname, location.hash]);
   return <BitcoinHome {...props} navigate={navigate} />;
 }
 
@@ -145,6 +380,36 @@ class HubInterface extends React.Component {
     let initialHasLockedIdentity = false;
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
+        // Dev-only: window.FABRIC_DEV_BROWSER_SEED (+ optional FABRIC_DEV_BROWSER_PASSPHRASE) from
+        // assets/config.local.js or hub HTML injection (FABRIC_DEV_PUSH_BROWSER_IDENTITY). Sharing the
+        // node mnemonic with the browser is discouraged except for local regtest.
+        const devPhraseRaw = window.FABRIC_DEV_BROWSER_SEED || window.FABRIC_DEV_BROWSER_MNEMONIC;
+        const devPhrase = devPhraseRaw ? String(devPhraseRaw).trim() : '';
+        const devPassRaw = window.FABRIC_DEV_BROWSER_PASSPHRASE || window.FABRIC_DEV_PASSPHRASE;
+        const devPass = devPassRaw != null && String(devPassRaw).trim() !== '' ? String(devPassRaw) : undefined;
+        const devForce = window.FABRIC_DEV_BROWSER_IDENTITY === 'force';
+        if (devPhrase) {
+          try {
+            const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
+            const r = storeUnlockedIdentityFromMnemonic({
+              seed: devPhrase,
+              passphrase: devPass,
+              force: devForce
+            });
+            if (r.ok && typeof console !== 'undefined' && console.warn) {
+              console.warn(
+                '[HUB] Stored local identity from FABRIC_DEV_BROWSER_* (development only; prefer a separate browser key when possible).'
+              );
+            } else if (!r.ok && devForce && typeof console !== 'undefined' && console.warn) {
+              console.warn('[HUB] FABRIC_DEV_BROWSER_* bootstrap failed:', r.error);
+            }
+          } catch (e) {
+            if (typeof console !== 'undefined' && console.warn) {
+              console.warn('[HUB] FABRIC_DEV_BROWSER_* ignored:', e && e.message ? e.message : e);
+            }
+          }
+        }
+
         let unlockedSession = null;
         try {
           if (window.sessionStorage) {
@@ -236,9 +501,12 @@ class HubInterface extends React.Component {
       uiVerifyResult: null,
       uiDestroyIdentityConfirmOpen: false,
       clientBalance: null,
+      clientBalanceLoading: false,
       uiLocalIdentity: initialLocalIdentity,
       uiHasLockedIdentity: initialHasLockedIdentity,
-      webrtcChatOnly: false
+      webrtcChatOnly: false,
+      federationInviteModalOpen: false,
+      federationInviteDetail: null
     };
 
     this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
@@ -350,6 +618,91 @@ class HubInterface extends React.Component {
     this.setState({ uiIdentityOpen: true });
   }
 
+  _handleFederationInviteResponse (d) {
+    if (!d || typeof d.accept !== 'boolean') return;
+    if (!d.accept) {
+      toastify.info('A peer declined your federation contract invite.', { transition: Slide });
+      return;
+    }
+    const admin = this.state.adminToken || (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    const pk = d.responderPubkey;
+    if (!pk) {
+      toastify.warning('Federation invite accepted but no responder pubkey was included.', { transition: Slide });
+      return;
+    }
+    if (!admin) {
+      toastify.info(`Peer accepted federation invite (pubkey ${pk.slice(0, 10)}…). Use an admin session to add them under Settings → Federation.`, { transition: Slide, autoClose: 8000 });
+      return;
+    }
+    const self = this;
+    const token = String(admin).trim();
+    toastify.info(
+      ({ closeToast }) => (
+        <div>
+          <p style={{ margin: '0 0 0.6em', fontSize: '0.95rem' }}>Federation invite accepted.</p>
+          <button
+            type="button"
+            style={{
+              marginRight: '0.5em',
+              padding: '0.45em 0.75em',
+              borderRadius: 4,
+              border: '1px solid #2185d0',
+              background: '#2185d0',
+              color: '#fff',
+              cursor: 'pointer'
+            }}
+            onClick={() => {
+              void self._addFederationMemberFromInvite(pk, token, closeToast);
+            }}
+          >
+            Add to validators
+          </button>
+          <button
+            type="button"
+            style={{
+              padding: '0.45em 0.75em',
+              borderRadius: 4,
+              border: '1px solid #ccc',
+              background: '#f4f4f4',
+              cursor: 'pointer'
+            }}
+            onClick={() => (typeof closeToast === 'function' ? closeToast() : null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ),
+      { autoClose: false, closeOnClick: false, transition: Slide }
+    );
+  }
+
+  async _addFederationMemberFromInvite (pubkey, adminToken, closeToast) {
+    try {
+      const base = typeof window !== 'undefined' && window.location
+        ? `${window.location.protocol}//${window.location.host}`
+        : '';
+      const res = await fetch(`${base}/services/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'AddDistributedFederationMember',
+          params: [{ pubkey, adminToken }]
+        })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (body.error || !res.ok) {
+        toastify.error((body.error && body.error.message) || 'Add member failed', { transition: Slide });
+        return;
+      }
+      toastify.success('Validator added to federation policy.', { transition: Slide });
+      if (typeof closeToast === 'function') closeToast();
+    } catch (e) {
+      toastify.error(e && e.message ? e.message : String(e), { transition: Slide });
+    }
+  }
+
   componentDidMount () {
     console.debug('[HUB]', 'Component mounted!');
     this._checkSetupStatus();
@@ -357,16 +710,34 @@ class HubInterface extends React.Component {
     this._refreshClientBalance();
     this._onGlobalStateUpdate = (e) => {
       const d = e && e.detail;
-      if (d && d.operation && d.operation.path === '/bitcoin' && this.state.uiLocalIdentity && this.state.uiLocalIdentity.xpub) {
-        this._refreshClientBalance();
+      if (d && d.operation && d.operation.path === '/bitcoin') {
+        const idn = this.state.uiLocalIdentity || this.props.auth || null;
+        if (idn && idn.xpub) this._refreshClientBalance();
       }
     };
     this._onClientBalanceUpdate = () => {
-      if (this.state.uiLocalIdentity && this.state.uiLocalIdentity.xpub) this._refreshClientBalance();
+      const idn = this.state.uiLocalIdentity || this.props.auth || null;
+      if (idn && idn.xpub) this._refreshClientBalance();
     };
     if (typeof window !== 'undefined') {
       window.addEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
+      this._onFabricHubAdminTokenSaved = () => {
+        try {
+          const t = window.localStorage && window.localStorage.getItem('fabric.hub.adminToken');
+          if (t) this.setState({ adminToken: t });
+        } catch (e) {}
+      };
+      window.addEventListener('fabricHubAdminTokenSaved', this._onFabricHubAdminTokenSaved);
+      this._fabricFedInvite = (ev) => {
+        const d = ev && ev.detail;
+        if (d && d.inviteId) this.setState({ federationInviteModalOpen: true, federationInviteDetail: d });
+      };
+      this._fabricFedResp = (ev) => {
+        this._handleFederationInviteResponse(ev && ev.detail);
+      };
+      window.addEventListener('fabric:federationContractInvite', this._fabricFedInvite);
+      window.addEventListener('fabric:federationContractInviteResponse', this._fabricFedResp);
       this._adminTokenRefreshInterval = setInterval(() => this._refreshAdminTokenIfNeeded(), 24 * 60 * 60 * 1000);
     }
     this._toastUnsub = toast.addListener((t) => {
@@ -377,14 +748,23 @@ class HubInterface extends React.Component {
       else if (t.type === 'warning') toastify.warning(msg, opts);
       else toastify.info(msg, opts);
     });
+    if (typeof window !== 'undefined') {
+      this._hubUiUnsub = subscribeHubUiFeatureFlags(() => this.forceUpdate());
+    }
   }
 
   componentWillUnmount () {
     console.debug('[HUB]', 'Cleaning up...');
+    if (typeof this._hubUiUnsub === 'function') this._hubUiUnsub();
     if (typeof this._toastUnsub === 'function') this._toastUnsub();
     if (typeof window !== 'undefined') {
       if (this._onGlobalStateUpdate) window.removeEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       if (this._onClientBalanceUpdate) window.removeEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
+      if (this._onFabricHubAdminTokenSaved) {
+        window.removeEventListener('fabricHubAdminTokenSaved', this._onFabricHubAdminTokenSaved);
+      }
+      if (this._fabricFedInvite) window.removeEventListener('fabric:federationContractInvite', this._fabricFedInvite);
+      if (this._fabricFedResp) window.removeEventListener('fabric:federationContractInviteResponse', this._fabricFedResp);
       if (this._adminTokenRefreshInterval) clearInterval(this._adminTokenRefreshInterval);
     }
   }
@@ -397,33 +777,64 @@ class HubInterface extends React.Component {
 
   async _refreshClientBalance (forceRefresh = false) {
     const identity = this.state.uiLocalIdentity || this.props.auth || null;
-    const wallet = getWalletContextFromIdentity(identity || {});
+    const wallet = getSpendWalletContext(identity || {});
     if (!wallet.walletId || !wallet.xpub) {
-      this.setState({ clientBalance: null });
+      this.setState({ clientBalance: null, clientBalanceLoading: false });
       return;
     }
+    const prevRow = this.state.clientBalance;
+    const prevWid = prevRow && prevRow.walletId ? String(prevRow.walletId) : '';
+    const nextWid = String(wallet.walletId || '');
+    if (prevWid && nextWid && prevWid !== nextWid) {
+      this.setState({ clientBalance: null });
+    }
+    this.setState({ clientBalanceLoading: true });
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
     const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus);
-    const bitcoin = networkStatus && networkStatus.state && networkStatus.state.services && networkStatus.state.services.bitcoin;
+    const bitcoin = resolveBitcoinFromNetworkStatus(networkStatus);
     const network = (bitcoin && bitcoin.network) ? String(bitcoin.network).toLowerCase() : 'regtest';
     try {
       const upstream = loadUpstreamSettings();
       const summary = await fetchWalletSummaryWithCache(upstream, wallet, { bypassCache: forceRefresh, network });
       const balanceSats = Number(summary.balanceSats ?? summary.balance ?? 0);
       if (Number.isFinite(balanceSats)) {
-        this.setState({
-          clientBalance: {
-            balanceSats,
-            confirmedSats: Number(summary.confirmedSats ?? balanceSats),
-            unconfirmedSats: Number(summary.unconfirmedSats ?? 0),
-            fromCache: !!summary._fromCache
-          }
-        });
+        const confirmedSats = Number(summary.confirmedSats ?? balanceSats);
+        const unconfirmedSats = Number(summary.unconfirmedSats ?? 0);
+        const nextClient = {
+          walletId: wallet.walletId,
+          balanceSats,
+          confirmedSats,
+          unconfirmedSats,
+          fromCache: !!summary._fromCache
+        };
+        const prev = this.state.clientBalance;
+        const changed = !prev ||
+          String(prev.walletId || '') !== String(nextClient.walletId || '') ||
+          Math.round(prev.balanceSats) !== Math.round(balanceSats) ||
+          Math.round(prev.confirmedSats) !== Math.round(confirmedSats) ||
+          Math.round(prev.unconfirmedSats) !== Math.round(unconfirmedSats);
+        this.setState({ clientBalance: nextClient, clientBalanceLoading: false });
+        if (identity && String(identity.xprv || '').trim()) {
+          try { saveSpendXpubWatchForIdentity(identity, wallet); } catch (_) {}
+        }
+        if (changed && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('clientBalanceUpdate', {
+            detail: {
+              walletId: wallet.walletId,
+              balanceSats,
+              confirmedSats,
+              unconfirmedSats
+            }
+          }));
+        }
       } else {
-        this.setState({ clientBalance: null });
+        this.setState({ clientBalance: null, clientBalanceLoading: false });
       }
     } catch (e) {
-      this.setState((prev) => ({ clientBalance: prev.clientBalance }));
+      this.setState((prev) => ({
+        clientBalance: prev.clientBalance,
+        clientBalanceLoading: false
+      }));
     }
   }
 
@@ -504,7 +915,7 @@ class HubInterface extends React.Component {
     const nodePubkey = (bridgeInstance && typeof bridgeInstance.getNodePubkey === 'function' && bridgeInstance.getNodePubkey());
     const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus || null);
     const services = networkStatus && networkStatus.state && networkStatus.state.services;
-    const bitcoin = services && services.bitcoin;
+    const bitcoin = resolveBitcoinFromNetworkStatus(networkStatus);
 
     // Auth: prefer in-session local identity (with id/xpub) so button shows identity after login
     const local = this.state.uiLocalIdentity;
@@ -523,6 +934,23 @@ class HubInterface extends React.Component {
 
             .fade-in {
               animation: hub-fade-in 220ms ease-out;
+            }
+
+            /* Flex main: grows so BottomPanel sits at viewport bottom when content is short; flows after content when long. */
+            .hub-app-shell {
+              min-height: 100vh;
+              display: flex;
+              flex-direction: column;
+              box-sizing: border-box;
+              width: 100%;
+            }
+
+            .hub-main-with-fixed-footer {
+              flex: 1 1 auto;
+              min-height: 0;
+              width: 100%;
+              padding-bottom: 1rem;
+              box-sizing: border-box;
             }
 
             @keyframes hub-fade-in {
@@ -549,6 +977,19 @@ class HubInterface extends React.Component {
               responseCapture={this.responseCapture}
             />
             <DelegationSigningModal bridgeRef={this.bridgeRef} />
+            <FederationContractInviteModal
+              open={this.state.federationInviteModalOpen}
+              detail={this.state.federationInviteDetail}
+              onClose={() => this.setState({ federationInviteModalOpen: false, federationInviteDetail: null })}
+              getResponderPubkey={() => {
+                const b = this.bridgeRef && this.bridgeRef.current;
+                return (b && typeof b.getNodePubkey === 'function' && b.getNodePubkey()) || '';
+              }}
+              onSendPeerMessage={(toPeerId, text) => {
+                const b = this.bridgeRef && this.bridgeRef.current;
+                if (b && typeof b.sendPeerMessageRequest === 'function') b.sendPeerMessageRequest(toPeerId, text);
+              }}
+            />
             {(this.props.auth && this.props.auth.loading) ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <Loader active inline="centered" size='huge' />
@@ -581,7 +1022,16 @@ class HubInterface extends React.Component {
               />
             ) : (
               <BrowserRouter style={{ marginTop: 0 }}>
-                <ToastContainer position="bottom-center" newestOnTop closeOnClick pauseOnFocusLoss draggable pauseOnHover />
+                <ToastContainer
+                  position="bottom-center"
+                  newestOnTop
+                  closeOnClick
+                  pauseOnFocusLoss
+                  draggable
+                  pauseOnHover
+                  style={{ bottom: 'max(4.5rem, calc(3rem + env(safe-area-inset-bottom, 0px)))' }}
+                />
+                <div className="hub-app-shell">
                 <TopPanel
                   hubAddress={this.state.uiHubAddress}
                   auth={effectiveAuth}
@@ -590,6 +1040,7 @@ class HubInterface extends React.Component {
                   hasLockedIdentity={effectiveHasLockedIdentity}
                   bitcoin={bitcoin}
                   clientBalance={this.state.clientBalance}
+                  clientBalanceLoading={this.state.clientBalanceLoading}
                   onRefreshBalance={() => this._refreshClientBalance(true)}
                   onUnlockIdentity={() => {
                     this.setState({ uiIdentityOpen: true });
@@ -609,6 +1060,7 @@ class HubInterface extends React.Component {
                   }}
                 />
 
+                <div className="hub-main-with-fixed-footer">
                 <Modal
                   size="large"
                   open={!!this.state.uiIdentityOpen}
@@ -621,7 +1073,13 @@ class HubInterface extends React.Component {
                       onLocalIdentityChange={(info) => {
                         this.setState((prev) => {
                           if (!info) {
-                            return { uiLocalIdentity: null, uiHasLockedIdentity: false };
+                            try { clearSpendXpubWatch(); } catch (_) {}
+                            return {
+                              uiLocalIdentity: null,
+                              uiHasLockedIdentity: false,
+                              clientBalance: null,
+                              clientBalanceLoading: false
+                            };
                           }
                           // Never replace an unlocked identity (have xprv) with a locked one from the modal
                           if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv && !info.xprv) {
@@ -670,6 +1128,13 @@ class HubInterface extends React.Component {
                         }
                       }}
                       onForgetIdentity={() => {
+                        try { clearSpendXpubWatch(); } catch (_) {}
+                        this.setState({
+                          uiLocalIdentity: null,
+                          uiHasLockedIdentity: false,
+                          clientBalance: null,
+                          clientBalanceLoading: false
+                        });
                         if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
                           this.bridgeRef.current.clearAllDocuments();
                         }
@@ -705,9 +1170,9 @@ class HubInterface extends React.Component {
                           This updates the WebSocket endpoint used by the UI.
                         </div>
                         {this.state.uiHubAddressError ? (
-                          <div style={{ marginTop: '0.5em', color: '#b00' }}>
+                          <Message negative size="small" style={{ marginTop: '0.75em' }}>
                             {this.state.uiHubAddressError}
-                          </div>
+                          </Message>
                         ) : null}
                       </Form.Field>
                     </Form>
@@ -950,7 +1415,10 @@ class HubInterface extends React.Component {
                         try {
                           if (typeof window !== 'undefined') {
                             if (window.localStorage) window.localStorage.removeItem('fabric.identity.local');
-                            if (window.localStorage) window.localStorage.removeItem('fabric.delegation');
+                            if (window.localStorage) {
+                              window.localStorage.removeItem(DELEGATION_STORAGE_KEY);
+                              notifyDelegationStorageChanged();
+                            }
                             if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
                             if (window.localStorage) window.localStorage.removeItem('fabric:documents');
                           }
@@ -1031,10 +1499,40 @@ class HubInterface extends React.Component {
                         onRequireUnlock={() => {
                           this.setState({ uiIdentityOpen: true });
                         }}
+                        onRefreshNetworkStatus={() => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendNetworkStatusRequest === 'function') {
+                            bridgeInstance.sendNetworkStatusRequest();
+                          }
+                        }}
                         webrtcChatOnly={this.state.webrtcChatOnly}
                         {...this.props}
                         adminToken={this.state.adminToken}
                       />
+                    )}
+                  />
+                  <Route
+                    path="/features"
+                    element={(
+                      <UiFlagRoute flag="features">
+                        <FeaturesPage />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/activities"
+                    element={(
+                      <UiFlagRoute flag="activities">
+                        <ActivitiesHome
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          onRequireUnlock={() => {
+                            this.setState({ uiIdentityOpen: true });
+                          }}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
@@ -1051,98 +1549,144 @@ class HubInterface extends React.Component {
                     )}
                   />
                   <Route
+                    path="/services/bitcoin/blocks"
+                    element={(
+                      <UiFlagRoute flag="bitcoinExplorer">
+                        <Navigate to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/transactions"
+                    element={(
+                      <UiFlagRoute flag="bitcoinExplorer">
+                        <Navigate to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
                     path="/services/bitcoin/blocks/:blockhash"
                     element={(
-                      <BitcoinBlockView
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="bitcoinExplorer">
+                        <BitcoinBlockView
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/services/bitcoin/resources"
                     element={(
-                      <BitcoinResourcesHome
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="bitcoinResources">
+                        <BitcoinResourcesHome
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/services/bitcoin/payments"
                     element={(
-                      <BitcoinPaymentsHome
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bitcoin={bitcoin}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="bitcoinPayments">
+                        <BitcoinPaymentsHomeRoute
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/services/bitcoin/invoices"
                     element={(
-                      <InvoiceListHome
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bitcoin={bitcoin}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="bitcoinInvoices">
+                        <InvoiceListHomeRoute
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/services/bitcoin/transactions/:txhash"
                     element={(
-                      <BitcoinTransactionView
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="bitcoinExplorer">
+                        <BitcoinTransactionView
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/services/bitcoin/channels/:id"
                     element={(
-                      <ChannelView
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="bitcoinLightning">
+                        <ChannelView
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/services/sidechain"
-                    element={<Navigate to="/sidechains" replace />}
+                    element={(
+                      <UiFlagRoute flag="sidechain">
+                        <Navigate to="/sidechains" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/sidechain"
+                    element={(
+                      <UiFlagRoute flag="sidechain">
+                        <Navigate to="/sidechains" replace />
+                      </UiFlagRoute>
+                    )}
                   />
                   <Route
                     path="/sidechains"
                     element={(
-                      <SidechainHome
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        adminToken={this.state.adminToken}
-                        {...this.props}
-                      />
+                      <UiFlagRoute flag="sidechain">
+                        <SidechainHome
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/peers"
                     element={(
-                      <PeerList
+                      <UiFlagRoute flag="peers">
+                        <PeerList
                         auth={effectiveAuth}
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
@@ -1175,6 +1719,13 @@ class HubInterface extends React.Component {
                           const bridgeInstance = this.bridgeRef.current;
                           if (typeof bridgeInstance.sendPeerMessageRequest === 'function') {
                             bridgeInstance.sendPeerMessageRequest(address, text);
+                          }
+                        }}
+                        onFabricPeerResync={(idOrAddress) => {
+                          if (!idOrAddress || !this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendFabricPeerResyncRequest === 'function') {
+                            bridgeInstance.sendFabricPeerResyncRequest(idOrAddress);
                           }
                         }}
                         onSetPeerNickname={(address, nickname) => {
@@ -1233,13 +1784,16 @@ class HubInterface extends React.Component {
                         }}
                         {...this.props}
                       />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
                     path="/peers/:id"
                     element={(
-                      <PeerView
+                      <UiFlagRoute flag="peers">
+                        <PeerView
                         auth={effectiveAuth}
+                        identity={local || effectiveAuth}
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
                         onAddPeer={(peer) => {
@@ -1273,6 +1827,13 @@ class HubInterface extends React.Component {
                             bridgeInstance.sendPeerMessageRequest(address, text);
                           }
                         }}
+                        onFabricPeerResync={(idOrAddress) => {
+                          if (!idOrAddress || !this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendFabricPeerResyncRequest === 'function') {
+                            bridgeInstance.sendFabricPeerResyncRequest(idOrAddress);
+                          }
+                        }}
                         onSetPeerNickname={(address, nickname) => {
                           if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
@@ -1290,6 +1851,7 @@ class HubInterface extends React.Component {
                         {...this.props}
                         adminToken={this.state.adminToken}
                       />
+                      </UiFlagRoute>
                     )}
                   />
                   <Route
@@ -1412,12 +1974,48 @@ class HubInterface extends React.Component {
                     )}
                   />
                   <Route
-                    path="/settings"
-                    element={<SettingsHome />}
+                    path="/settings/admin/beacon-federation"
+                    element={(
+                      <UiFlagRoute flag="sidechain">
+                        <BeaconFederationHome />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/settings/admin"
+                    element={<AdminHome adminToken={this.state.adminToken} />}
+                  />
+                  <Route
+                    path="/settings/federation"
+                    element={(
+                      <UiFlagRoute flag="sidechain">
+                        <SettingsFederationHome adminToken={this.state.adminToken} />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/settings/bitcoin-wallet"
+                    element={<SettingsBitcoinWallet identity={local || effectiveAuth} />}
                   />
                   <Route
                     path="/settings/security"
                     element={<SecurityHome />}
+                  />
+                  <Route
+                    path="/admin/beacon-federation"
+                    element={(
+                      <UiFlagRoute flag="sidechain">
+                        <Navigate to="/settings/admin/beacon-federation" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/admin"
+                    element={<Navigate to="/settings/admin" replace />}
+                  />
+                  <Route
+                    path="/settings"
+                    element={<SettingsHome />}
                   />
                   <Route
                     path="/sessions/:sessionId"
@@ -1432,9 +2030,77 @@ class HubInterface extends React.Component {
                     element={<Navigate to="/settings/security" replace />}
                   />
                   <Route
+                    path="/activity"
+                    element={<NavigateActivityToActivities />}
+                  />
+                  <Route
+                    path="/peer"
+                    element={<NavigatePeerRootAlias />}
+                  />
+                  <Route
+                    path="/peer/:id"
+                    element={<NavigatePeerDetailAlias />}
+                  />
+                  <Route
+                    path="/home"
+                    element={<Navigate to="/" replace />}
+                  />
+                  <Route
+                    path="/wallet"
+                    element={(
+                      <UiFlagRoute flag="bitcoinPayments">
+                        <Navigate to="/services/bitcoin/payments" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/bitcoin"
+                    element={<Navigate to="/services/bitcoin" replace />}
+                  />
+                  <Route
+                    path="/payments"
+                    element={(
+                      <UiFlagRoute flag="bitcoinPayments">
+                        <Navigate to="/services/bitcoin/payments" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/invoices"
+                    element={(
+                      <UiFlagRoute flag="bitcoinInvoices">
+                        <Navigate to="/services/bitcoin/invoices#fabric-invoices-tab-demo" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/resources"
+                    element={(
+                      <UiFlagRoute flag="bitcoinResources">
+                        <Navigate to="/services/bitcoin/resources" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/tx/:txhash"
+                    element={<NavigateLegacyBitcoinTxAlias />}
+                  />
+                  <Route
+                    path="/block/:blockhash"
+                    element={<NavigateLegacyBitcoinBlockAlias />}
+                  />
+                  <Route
+                    path="/document/:id"
+                    element={<NavigateDocumentsDetailAlias />}
+                  />
+                  <Route
+                    path="/document"
+                    element={<Navigate to="/documents" replace />}
+                  />
+                  <Route
                     path="/contracts"
                     element={(
-                      <ContractList {...this.props} bridgeRef={this.bridgeRef} />
+                      <ContractList {...this.props} />
                     )}
                   />
                   <Route
@@ -1443,8 +2109,11 @@ class HubInterface extends React.Component {
                       <ContractView {...this.props} adminToken={this.state.adminToken} />
                     )}
                   />
+                  <Route path="*" element={<UnknownRouteShell />} />
                 </Routes>
+                </div>
                 <BottomPanel pubkey={nodePubkey} />
+                </div>
               </BrowserRouter>
             )}
           </fabric-react-component>

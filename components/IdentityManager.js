@@ -26,6 +26,11 @@ const {
   Segment
 } = require('semantic-ui-react');
 
+const {
+  DELEGATION_STORAGE_KEY,
+  notifyDelegationStorageChanged
+} = require('../functions/fabricDelegationLocal');
+
 const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
 
 function readLinkedDevices () {
@@ -135,7 +140,10 @@ function IdentityManager (props) {
   const [isGenerating, setIsGenerating] = React.useState(false);
   const [showSeedPhrase, setShowSeedPhrase] = React.useState(false);
   const [showBackupKey, setShowBackupKey] = React.useState(false);
-  const [loginMethod, setLoginMethod] = React.useState(null); // 'existing' | 'generate' | null
+  const [loginMethod, setLoginMethod] = React.useState(null); // 'existing' | 'generate' | 'import' | 'mnemonicDev' | null
+  const [devMnemonicText, setDevMnemonicText] = React.useState('');
+  const [devBip39Passphrase, setDevBip39Passphrase] = React.useState('');
+  const [devMnemonicReplace, setDevMnemonicReplace] = React.useState(false);
 
   const resetSeedState = () => {
     setPendingSeed(null);
@@ -146,6 +154,9 @@ function IdentityManager (props) {
     setShowSeedPhrase(false);
     setShowBackupKey(false);
     setUnlockPassword('');
+    setDevMnemonicText('');
+    setDevBip39Passphrase('');
+    setDevMnemonicReplace(false);
     setLoginMethod(null);
   };
 
@@ -311,8 +322,9 @@ function IdentityManager (props) {
     try {
       const res = await fetch(`${origin}/sessions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ origin })
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ origin }),
+        cache: 'no-store'
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok || !data.sessionId) {
@@ -333,20 +345,31 @@ function IdentityManager (props) {
         void (async () => {
           try {
             const r = await fetch(`${origin}/sessions/${encodeURIComponent(sessionId)}`, {
-              headers: { Accept: 'application/json' }
+              headers: { Accept: 'application/json' },
+              cache: 'no-store'
             });
             const j = await r.json().catch(() => ({}));
+            if (r.status === 403) {
+              if (desktopPollIntervalRef.current) {
+                clearInterval(desktopPollIntervalRef.current);
+                desktopPollIntervalRef.current = null;
+              }
+              setBusy(false);
+              setError((j && j.error) ? String(j.error) : 'Hub rejected this login session (check origin / proxy headers).');
+              return;
+            }
             if (!j.ok || j.status !== 'signed' || !j.identity) return;
             if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
             desktopPollIntervalRef.current = null;
             if (j.delegationToken) {
               try {
-                window.localStorage.setItem('fabric.delegation', JSON.stringify({
+                window.localStorage.setItem(DELEGATION_STORAGE_KEY, JSON.stringify({
                   token: j.delegationToken,
                   externalSigning: true,
                   hubOrigin: origin,
                   linkedAt: new Date().toISOString()
                 }));
+                notifyDelegationStorageChanged();
               } catch (e) {}
             }
             const xpub = j.identity.xpub;
@@ -1138,6 +1161,19 @@ function IdentityManager (props) {
                 <Icon name="download" />
                 Import Backup
               </Button>
+              <Button
+                fluid
+                icon
+                labelPosition="left"
+                onClick={() => {
+                  setLoginMethod('mnemonicDev');
+                  setError(null);
+                }}
+                title="For local development: paste a BIP39 mnemonic (same as hub FABRIC_SEED when you accept that risk)"
+              >
+                <Icon name="paste" />
+                Import mnemonic (advanced)
+              </Button>
             </div>
           </>
         ) : loginMethod === 'existing' ? (
@@ -1363,6 +1399,120 @@ function IdentityManager (props) {
               }}
             />
           </>
+        ) : loginMethod === 'mnemonicDev' ? (
+          <>
+            <Button
+              basic
+              size="small"
+              icon
+              labelPosition="left"
+              style={{ marginBottom: '1em' }}
+              onClick={() => {
+                setLoginMethod(null);
+                setError(null);
+                setDevMnemonicText('');
+                setDevBip39Passphrase('');
+                setDevMnemonicReplace(false);
+              }}
+            >
+              <Icon name="arrow left" />
+              Back
+            </Button>
+            <Header as="h4" size="small">
+              <Icon name="paste" />
+              <Header.Content>Import mnemonic (advanced)</Header.Content>
+            </Header>
+            <Message warning>
+              <Message.Header>Development use</Message.Header>
+              <p style={{ margin: '0.5em 0 0' }}>
+                Reusing the hub node mnemonic in the browser is convenient for regtest but weakens separation of keys.
+                Prefer a dedicated browser identity or xpub-only login when possible. The field below is the optional
+                BIP39 extension passphrase (sometimes called a 25th word)—not the UI encryption password used elsewhere.
+              </p>
+            </Message>
+            <Form>
+              <Form.Field>
+                <label>BIP39 mnemonic</label>
+                <Form.TextArea
+                  rows={3}
+                  style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace', wordBreak: 'break-all' }}
+                  placeholder="Paste recovery phrase…"
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  value={devMnemonicText}
+                  onChange={(e) => setDevMnemonicText(e.target.value)}
+                />
+              </Form.Field>
+              <Form.Field>
+                <label>BIP39 extension passphrase (optional)</label>
+                <Form.Input
+                  type="password"
+                  placeholder="Only if your wallet used a passphrase with the mnemonic"
+                  autoComplete="off"
+                  value={devBip39Passphrase}
+                  onChange={(e) => setDevBip39Passphrase(e.target.value)}
+                />
+              </Form.Field>
+              <Form.Checkbox
+                label="Replace existing identity stored in this browser"
+                checked={devMnemonicReplace}
+                onChange={(e, d) => setDevMnemonicReplace(!!(d && d.checked))}
+              />
+            </Form>
+            <Button
+              primary
+              size="small"
+              icon
+              labelPosition="left"
+              style={{ marginTop: '0.75em' }}
+              loading={busy}
+              disabled={busy || !String(devMnemonicText || '').trim()}
+              onClick={() => {
+                setError(null);
+                setBusy(true);
+                try {
+                  const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
+                  const r = storeUnlockedIdentityFromMnemonic({
+                    seed: devMnemonicText,
+                    passphrase: devBip39Passphrase || undefined,
+                    force: devMnemonicReplace
+                  });
+                  if (!r.ok || !r.identity) {
+                    setError(r.error || 'Import failed');
+                    return;
+                  }
+                  const nextIdentity = {
+                    id: r.identity.id,
+                    xpub: r.identity.xpub,
+                    xprv: r.identity.xprv,
+                    passwordProtected: false
+                  };
+                  setLocalIdentity(nextIdentity);
+                  if (typeof props.onLocalIdentityChange === 'function') {
+                    props.onLocalIdentityChange(nextIdentity);
+                  }
+                  if (typeof props.onUnlockSuccess === 'function') {
+                    props.onUnlockSuccess({
+                      id: String(r.identity.id),
+                      xpub: String(r.identity.xpub),
+                      xprv: String(r.identity.xprv),
+                      passwordProtected: false
+                    });
+                  }
+                  resetSeedState();
+                } catch (e) {
+                  console.error('[IDENTITY]', 'Mnemonic import failed:', e);
+                  setError((e && e.message) ? e.message : String(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              <Icon name="sign-in" />
+              Store and unlock
+            </Button>
+          </>
         ) : loginMethod === 'generate' ? (
           <>
             <Button
@@ -1430,10 +1580,12 @@ function IdentityManager (props) {
           </>
         ) : null}
         {error && (
-          <div style={{ marginTop: '0.75em', color: '#b00' }}>
-            <p style={{ margin: 0 }}><strong>Error:</strong></p>
-            <pre style={{ marginTop: '0.5em', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{error}</pre>
-          </div>
+          <Message negative style={{ marginTop: '0.75em' }}>
+            <Message.Header>Error</Message.Header>
+            <pre style={{ margin: '0.5em 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '0.85em' }}>
+              {error}
+            </pre>
+          </Message>
         )}
       </div>
     </Segment>

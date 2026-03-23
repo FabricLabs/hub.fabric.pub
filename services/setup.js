@@ -26,7 +26,9 @@ const GLOBAL_SETTINGS = [
   'LIGHTNING_MANAGED',
   'LIGHTNING_SOCKET',
   'DISK_ALLOCATION_MB',
-  'COST_PER_BYTE_SATS'
+  'COST_PER_BYTE_SATS',
+  /** When true, hub HTTP binds 0.0.0.0; when false, 127.0.0.1 (unless FABRIC_HUB_INTERFACE / INTERFACE is set). Changing via PUT rebinds the listener at runtime when env does not override. */
+  'HTTP_SHARED_MODE'
 ];
 
 /**

@@ -43,6 +43,88 @@ function isLocalRequest (req) {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 }
 
+function isLoopbackHostname (h) {
+  if (typeof h !== 'string') return false;
+  const x = h.toLowerCase();
+  return x === 'localhost' || x === '127.0.0.1' || x === '[::1]' || x === '::1';
+}
+
+/**
+ * Whether a browser Origin (or Referer-derived origin, or pseudo-origin from Host) matches
+ * the session's declared origin. For loopback hosts, `localhost` and `127.0.0.1` (same port)
+ * are equivalent so Electron (`http://127.0.0.1:…`) and a browser tab (`http://localhost:…`)
+ * can complete the same login session. Non-loopback origins require an exact host match.
+ */
+function originsMatchForDesktopSession (clientOriginLike, sessionOrigin) {
+  if (!clientOriginLike || !sessionOrigin) return false;
+  if (clientOriginLike === sessionOrigin) return true;
+  let clientUrl;
+  let sessionUrl;
+  try {
+    clientUrl = new URL(clientOriginLike);
+    sessionUrl = new URL(sessionOrigin);
+  } catch (_) {
+    return false;
+  }
+  if (clientUrl.protocol !== sessionUrl.protocol) return false;
+  const cLoop = isLoopbackHostname(clientUrl.hostname);
+  const sLoop = isLoopbackHostname(sessionUrl.hostname);
+  if (cLoop && sLoop) {
+    const cPort = clientUrl.port || (clientUrl.protocol === 'https:' ? '443' : '80');
+    const sPort = sessionUrl.port || (sessionUrl.protocol === 'https:' ? '443' : '80');
+    return cPort === sPort;
+  }
+  return clientUrl.host === sessionUrl.host;
+}
+
+function refererOriginMatchesSession (referer, sessionOrigin) {
+  if (typeof referer !== 'string' || !referer) return false;
+  try {
+    const u = new URL(referer);
+    return originsMatchForDesktopSession(`${u.protocol}//${u.host}`, sessionOrigin);
+  } catch (_) {
+    return false;
+  }
+}
+
+function hostHeaderMatchesSessionOrigin (requestHost, sessionOrigin) {
+  if (!requestHost || !sessionOrigin) return false;
+  try {
+    const sessionUrl = new URL(sessionOrigin);
+    if (requestHost === sessionUrl.host) return true;
+    const pseudo = `${sessionUrl.protocol}//${requestHost}`;
+    return originsMatchForDesktopSession(pseudo, sessionOrigin);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * For desktop-login polling (`GET /sessions/:id`), require Origin/Referer (or same-site
+ * `Sec-Fetch-Site` + matching `Host`) when the client is not loopback so a leaked
+ * ephemeral `sessionId` is not trivially replayed from an arbitrary host.
+ */
+function clientMayPollDesktopSession (req, sessionOrigin) {
+  if (isLocalRequest(req)) return true;
+  if (!sessionOrigin || typeof sessionOrigin !== 'string') return false;
+  try {
+    // eslint-disable-next-line no-new
+    new URL(sessionOrigin);
+  } catch (_) {
+    return false;
+  }
+  const hdrOrigin = req.headers && req.headers.origin;
+  if (typeof hdrOrigin === 'string' && originsMatchForDesktopSession(hdrOrigin, sessionOrigin)) return true;
+  const ref = req.headers && req.headers.referer;
+  if (refererOriginMatchesSession(ref, sessionOrigin)) return true;
+  const sfs = req.headers && String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (sfs === 'same-origin' || sfs === 'same-site') {
+    const host = req.headers && req.headers.host;
+    if (host && hostHeaderMatchesSessionOrigin(host, sessionOrigin)) return true;
+  }
+  return false;
+}
+
 function sendJson (res, status, obj) {
   res.setHeader('Content-Type', 'application/json');
   res.status(status).send(JSON.stringify(obj));
@@ -82,6 +164,14 @@ function handleSessionCreate (hub, req, res) {
       return;
     }
 
+    if (!isLocalRequest(req) && !clientMayPollDesktopSession(req, origin)) {
+      sendJson(res, 403, {
+        ok: false,
+        error: 'declared origin does not match this request (Origin, Referer, or same-site Host)'
+      });
+      return;
+    }
+
     const sessionId = randomSessionId();
     const nonce = randomNonce();
     const message = buildLoginMessage(sessionId, origin, nonce);
@@ -109,11 +199,6 @@ function handleSessionCreate (hub, req, res) {
 
 function handleDesktopSign (hub, req, res) {
   try {
-    if (!isLocalRequest(req)) {
-      sendJson(res, 403, { ok: false, error: 'POST .../signatures is only allowed from loopback' });
-      return;
-    }
-
     const sessionId = req && req.params && req.params.sessionId
       ? String(req.params.sessionId).trim()
       : '';
@@ -126,6 +211,14 @@ function handleDesktopSign (hub, req, res) {
     const session = hub._desktopAuthSessions.get(sessionId);
     if (!session || session.status !== 'pending') {
       sendJson(res, 404, { ok: false, error: 'unknown or expired session' });
+      return;
+    }
+
+    if (!isLocalRequest(req) && !clientMayPollDesktopSession(req, session.origin)) {
+      sendJson(res, 403, {
+        ok: false,
+        error: 'POST .../signatures requires loopback or client Origin/Referer matching session origin'
+      });
       return;
     }
 
@@ -197,10 +290,27 @@ function handleSessionGet (hub, req, res) {
       }
       const delegationView = getDelegationSessionById(hub, sessionId);
       if (delegationView) {
-        sendJson(res, 200, delegationView);
+        const row = delegationRow || hub._delegationRegistry.get(sessionId);
+        sendJson(res, 200, {
+          ...delegationView,
+          session: row
+            ? {
+              origin: row.origin,
+              linkedAt: row.linkedAt,
+              label: row.label || 'browser',
+              identityId: row.identityId != null ? String(row.identityId) : null,
+              externalSigning: true
+            }
+            : null
+        });
         return;
       }
       sendJson(res, 404, { ok: false, error: 'unknown or expired session' });
+      return;
+    }
+
+    if (!clientMayPollDesktopSession(req, session.origin)) {
+      sendJson(res, 403, { ok: false, error: 'origin does not match this session' });
       return;
     }
 
@@ -233,7 +343,7 @@ function handleSessionGet (hub, req, res) {
           sessionId
         });
       }
-      sendJson(res, 200, {
+      const payload = {
         ok: true,
         status: 'signed',
         identity: session.identity,
@@ -241,7 +351,9 @@ function handleSessionGet (hub, req, res) {
         signature: session.signature,
         pubkeyHex: session.pubkeyHex,
         message: session.message
-      });
+      };
+      hub._desktopAuthSessions.delete(sessionId);
+      sendJson(res, 200, payload);
       return;
     }
 
@@ -265,5 +377,6 @@ module.exports = {
   buildLoginMessage,
   randomNonce,
   randomSessionId,
+  originsMatchForDesktopSession,
   mountFabricDesktopAuthHttp
 };

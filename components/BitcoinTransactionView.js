@@ -49,13 +49,13 @@ function BitcoinTransactionView () {
     fetchTransactionByHash(upstream, hash)
       .then((data) => {
         if (data && data.status === 'error') {
-          setError(data.message || 'Transaction not found.');
+          setError(data.message || 'Could not load transaction.');
           setTx(null);
           return;
         }
         if (!data || typeof data !== 'object') {
-          setError('Invalid response from server.');
           setTx(null);
+          setError(null);
           return;
         }
         setTx(data);
@@ -80,32 +80,49 @@ function BitcoinTransactionView () {
   return (
     <div className='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button as={Link} to="/services/bitcoin" basic size='small'>
-            <Icon name='arrow left' />
-            Back
-          </Button>
-          {TXHASH_REGEX.test(hash) && (
-            <Button as={Link} to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`} basic size='small' title='Open L1 payment verification for this txid'>
-              <Icon name='check circle outline' />
-              L1 verify
+        <div
+          style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.25em' }}
+          role="banner"
+        >
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
+            <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin home">
+              <Icon name="arrow left" aria-hidden="true" />
+              Back
             </Button>
-          )}
-          <Icon name='exchange' />
-          <Header.Content>Transaction</Header.Content>
-          {isMempool && tx && (
-            <Label color="orange" size="small">
-              <Icon name="clock" />
-              Unconfirmed
-            </Label>
-          )}
-          {confirmations != null && confirmations > 0 && (
-            <Label color="green" size="small">
-              <Icon name="check" />
-              {confirmations} confirmations
-            </Label>
-          )}
-        </Header>
+            {TXHASH_REGEX.test(hash) && (
+              <Button
+                as={Link}
+                to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`}
+                basic
+                size="small"
+                title="Open L1 payment verification for this txid"
+              >
+                <Icon name="check circle outline" aria-hidden="true" />
+                L1 verify
+              </Button>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
+            <Header as="h2" style={{ margin: 0 }}>
+              <Icon name="exchange" aria-hidden="true" />
+              <Header.Content>Transaction</Header.Content>
+            </Header>
+            <span style={{ display: 'inline-flex', gap: '0.35em', flexWrap: 'wrap', alignItems: 'center' }} aria-hidden="true">
+              {isMempool && tx && (
+                <Label color="orange" size="small">
+                  <Icon name="clock" aria-hidden="true" />
+                  Unconfirmed
+                </Label>
+              )}
+              {confirmations != null && confirmations > 0 && (
+                <Label color="green" size="small">
+                  <Icon name="check" aria-hidden="true" />
+                  {confirmations} confirmations
+                </Label>
+              )}
+            </span>
+          </div>
+        </div>
       </Segment>
 
       {!hash && (
@@ -115,23 +132,52 @@ function BitcoinTransactionView () {
         </Message>
       )}
 
-      {loading && (
+      {!!hash && TXHASH_REGEX.test(hash) && loading && (
         <Segment>
           <Loader active inline="centered" />
           <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>Loading transaction…</p>
         </Segment>
       )}
 
-      {error && !loading && (
+      {!!hash && error && !loading && (
         <Message negative>
-          <Message.Header>Error</Message.Header>
+          <Message.Header>Failed to load transaction</Message.Header>
           <p>{error}</p>
-          {hash && TXHASH_REGEX.test(hash) && (
-            <Button size="small" onClick={loadTx} style={{ marginTop: '0.5em' }}>
+          {TXHASH_REGEX.test(hash) ? (
+            <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+              <Button type="button" size="small" onClick={() => void loadTx()}>
+                <Icon name="refresh" />
+                Retry
+              </Button>
+              <Button as={Link} to="/services/bitcoin" size="small" basic>
+                <Icon name="list" />
+                Explorer
+              </Button>
+            </div>
+          ) : null}
+        </Message>
+      )}
+
+      {!!hash && TXHASH_REGEX.test(hash) && !loading && !error && !tx && (
+        <Message warning>
+          <Message.Header>Transaction not found</Message.Header>
+          <p>
+            This hub&apos;s Bitcoin node does not have this tx in the mempool or chain (wrong network, pruning, or txindex).
+          </p>
+          <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            <Button type="button" size="small" onClick={() => void loadTx()}>
               <Icon name="refresh" />
               Retry
             </Button>
-          )}
+            <Button as={Link} to="/services/bitcoin" size="small" basic>
+              <Icon name="list" />
+              Explorer
+            </Button>
+            <Button as={Link} to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`} size="small" basic>
+              <Icon name="check circle outline" />
+              L1 verify
+            </Button>
+          </div>
         </Message>
       )}
 

@@ -18,22 +18,23 @@ const {
 } = require('semantic-ui-react');
 const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const { hubJsonRpc } = require('../functions/sidechainHubClient');
+const { describeHubRpcFailure } = require('../functions/hubRpcHints');
+const DistributedFederationPanel = require('./DistributedFederationPanel');
+const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
 
 const FILTER_ALL = 'all';
 const FILTER_NEW = 'new';
 const FILTER_PARTIAL = 'partial';
 const FILTER_COMPLETE = 'complete';
 
-const DEFAULT_EXEC_PROGRAM = JSON.stringify({
-  version: 1,
-  steps: [
-    { op: 'FabricOpcode', fabricType: 'ChatMessage' },
-    { op: 'FabricOpcode', fabricType: 'JSONCall' },
-    { op: 'Push', value: { demo: true } },
-    { op: 'Dup' },
-    { op: 'Pop' }
-  ]
-}, null, 2);
+/** Minimal valid program — replace `steps` with your real execution contract. */
+const DEFAULT_EMPTY_EXEC_PROGRAM = JSON.stringify({ version: 1, steps: [] }, null, 2);
+
+const DEFAULT_REGISTRY_FEE_SATS = 1000;
 
 function trimHash (value = '', left = 8, right = 8) {
   const text = String(value || '');
@@ -41,42 +42,88 @@ function trimHash (value = '', left = 8, right = 8) {
   return `${text.slice(0, left)}…${text.slice(-right)}`;
 }
 
-function ContractList (props) {
+function ContractList () {
   const navigate = useNavigate();
+  const [, setUiTick] = React.useState(0);
+  React.useEffect(() => {
+    return subscribeHubUiFeatureFlags(() => setUiTick((t) => t + 1));
+  }, []);
+  const uf = loadHubUiFeatureFlags();
   const [contracts, setContracts] = React.useState([]);
   const [lightningChannels, setLightningChannels] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [filter, setFilter] = React.useState(FILTER_ALL);
   const [execName, setExecName] = React.useState('');
-  const [execJson, setExecJson] = React.useState(DEFAULT_EXEC_PROGRAM);
+  const [execJson, setExecJson] = React.useState(DEFAULT_EMPTY_EXEC_PROGRAM);
   const [execBusy, setExecBusy] = React.useState(false);
   const [execFeedback, setExecFeedback] = React.useState(null);
+  const [execBitcoinOn, setExecBitcoinOn] = React.useState(false);
+  const [execBitcoinLoading, setExecBitcoinLoading] = React.useState(true);
+  const [execAmountSats, setExecAmountSats] = React.useState(String(DEFAULT_REGISTRY_FEE_SATS));
+  const [execRegistryInvoice, setExecRegistryInvoice] = React.useState(null);
+  const [execTxid, setExecTxid] = React.useState('');
+  const [execInvoiceBusy, setExecInvoiceBusy] = React.useState(false);
+  const [registryAddressCopied, setRegistryAddressCopied] = React.useState(false);
 
-  const loadContracts = React.useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const copyRegistryInvoiceAddress = React.useCallback(() => {
+    const a = execRegistryInvoice && execRegistryInvoice.address;
+    if (!a) return;
+    if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return;
+    setRegistryAddressCopied(false);
+    navigator.clipboard.writeText(String(a)).then(() => {
+      setRegistryAddressCopied(true);
+      if (typeof window !== 'undefined') {
+        window.setTimeout(() => setRegistryAddressCopied(false), 2000);
+      }
+    }).catch(() => {});
+  }, [execRegistryInvoice]);
+
+  const loadContracts = React.useCallback(async (opts = {}) => {
+    const background = !!opts.background;
+    if (!background) {
+      setLoading(true);
+      setError(null);
+    }
     try {
-      const [contractsRes, lightningRes] = await Promise.all([
+      const [contractsSettled, lightningSettled] = await Promise.allSettled([
         fetch('/contracts', { method: 'GET' }),
-        fetchLightningChannels(loadUpstreamSettings()).catch(() => ({ channels: [] }))
+        fetchLightningChannels(loadUpstreamSettings()).catch(() => ({ channels: [], outputs: [] }))
       ]);
 
-      const body = await contractsRes.json();
-      if (!contractsRes.ok || !body || body.status === 'error') {
-        setError((body && body.message) || 'Failed to load contracts.');
-        setContracts([]);
+      if (lightningSettled.status === 'fulfilled') {
+        const lightningRes = lightningSettled.value;
+        const channels = lightningRes && Array.isArray(lightningRes.channels) ? lightningRes.channels : [];
+        setLightningChannels(channels);
       } else {
-        const list = Array.isArray(body.contracts) ? body.contracts : (body.result || []);
-        setContracts(list || []);
+        setLightningChannels([]);
       }
 
-      const channels = lightningRes && Array.isArray(lightningRes.channels) ? lightningRes.channels : [];
-      setLightningChannels(channels);
+      if (contractsSettled.status !== 'fulfilled') {
+        const reason = contractsSettled.reason;
+        setError(reason && reason.message ? reason.message : 'Failed to load contracts.');
+        setContracts([]);
+      } else {
+        const contractsRes = contractsSettled.value;
+        try {
+          const body = await contractsRes.json();
+          if (!contractsRes.ok || !body || body.status === 'error') {
+            setError((body && body.message) || 'Failed to load contracts.');
+            setContracts([]);
+          } else {
+            const list = Array.isArray(body.contracts) ? body.contracts : (body.result || []);
+            setContracts(list || []);
+            if (background) setError(null);
+          }
+        } catch (parseErr) {
+          setError(parseErr && parseErr.message ? parseErr.message : 'Invalid contracts response.');
+          setContracts([]);
+        }
+      }
     } catch (e) {
       setError(e && e.message ? e.message : 'Failed to load contracts.');
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, []);
 
@@ -85,9 +132,55 @@ function ContractList (props) {
   }, [loadContracts]);
 
   React.useEffect(() => {
+    let cancelled = false;
+    const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    let timeoutId;
+    if (typeof window !== 'undefined' && ac) {
+      timeoutId = window.setTimeout(() => {
+        try {
+          ac.abort();
+        } catch (_) {}
+      }, 15000);
+    }
+    setExecBitcoinLoading(true);
+    fetch('/services/bitcoin', {
+      headers: { Accept: 'application/json' },
+      ...(ac ? { signal: ac.signal } : {})
+    })
+      .then((r) => r.json().catch(() => ({})))
+      .then((body) => {
+        if (cancelled) return;
+        const available = !!(body && body.available !== false && body.status !== 'error');
+        setExecBitcoinOn(available);
+        setExecBitcoinLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setExecBitcoinOn(false);
+          setExecBitcoinLoading(false);
+        }
+      })
+      .finally(() => {
+        if (typeof window !== 'undefined' && timeoutId != null) {
+          window.clearTimeout(timeoutId);
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (ac) {
+        try {
+          ac.abort();
+        } catch (_) {}
+      }
+      if (typeof window !== 'undefined' && timeoutId != null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
     const onCreated = () => {
-      setExecFeedback({ positive: true, content: 'Execution contract created.' });
-      loadContracts();
+      void loadContracts({ background: true });
     };
     if (typeof window !== 'undefined') {
       window.addEventListener('executionContractCreated', onCreated);
@@ -106,7 +199,15 @@ function ContractList (props) {
   }, [contracts]);
 
   const executionContracts = React.useMemo(() => {
-    return contracts.filter((c) => c && c.type === 'ExecutionContract');
+    const list = contracts.filter((c) => c && c.type === 'ExecutionContract');
+    return list.slice().sort((a, b) => {
+      const ta = a && a.created ? Date.parse(a.created) : NaN;
+      const tb = b && b.created ? Date.parse(b.created) : NaN;
+      if (Number.isFinite(tb) && Number.isFinite(ta) && tb !== ta) return tb - ta;
+      if (Number.isFinite(tb) && !Number.isFinite(ta)) return 1;
+      if (!Number.isFinite(tb) && Number.isFinite(ta)) return -1;
+      return String((b && b.id) || '').localeCompare(String((a && a.id) || ''));
+    });
   }, [contracts]);
 
   // Group storage contracts by document to compute accepted count vs desired
@@ -135,42 +236,202 @@ function ContractList (props) {
     });
   }, [storageContracts, contractsByDoc, filter]);
 
-  const submitExecutionContract = React.useCallback(() => {
+  const requestExecutionRegistryInvoice = React.useCallback(async () => {
+    setExecFeedback(null);
+    if (execBitcoinLoading) {
+      setExecFeedback({ negative: true, content: 'Still checking Bitcoin service; try again in a moment.' });
+      return;
+    }
+    let program;
+    try {
+      program = JSON.parse(execJson);
+    } catch (e) {
+      setExecFeedback({
+        negative: true,
+        content: 'Program must be valid JSON. Fix the text or use Reset program template.'
+      });
+      return;
+    }
+    const amountSats = Number(execAmountSats);
+    if (!Number.isFinite(amountSats) || amountSats <= 0) {
+      setExecFeedback({ negative: true, content: 'Enter a positive registry fee in sats.' });
+      return;
+    }
+    const nameOpt = execName.trim() || undefined;
+    setExecInvoiceBusy(true);
+    try {
+      const out = await hubJsonRpc('CreateExecutionRegistryInvoice', [{ program, amountSats, name: nameOpt }]);
+      if (!out.ok) {
+        setExecFeedback({
+          negative: true,
+          content: describeHubRpcFailure(out.error, 'Check hub reachability and Bitcoin status.')
+        });
+        return;
+      }
+      const r = out.result;
+      if (r && r.status === 'error') {
+        setExecFeedback({ negative: true, content: r.message || 'Hub rejected the registry invoice request.' });
+        return;
+      }
+      if (r && r.type === 'CreateExecutionRegistryInvoiceResult' && r.programDigest && r.address) {
+        setExecRegistryInvoice({
+          programDigest: r.programDigest,
+          address: r.address,
+          amountSats: r.amountSats,
+          network: r.network != null ? String(r.network).trim() : undefined
+        });
+        setExecTxid('');
+        setRegistryAddressCopied(false);
+        setExecFeedback(null);
+        return;
+      }
+      setExecFeedback({ negative: true, content: 'Unexpected response from hub for registry invoice.' });
+    } catch (e) {
+      setExecFeedback({ negative: true, content: e && e.message ? e.message : String(e) });
+    } finally {
+      setExecInvoiceBusy(false);
+    }
+  }, [execJson, execAmountSats, execName, execBitcoinLoading]);
+
+  const submitExecutionContract = React.useCallback(async () => {
     setExecFeedback(null);
     let program;
     try {
       program = JSON.parse(execJson);
     } catch (e) {
-      setExecFeedback({ negative: true, content: 'Program must be valid JSON.' });
+      setExecFeedback({
+        negative: true,
+        content: 'Program must be valid JSON. Fix the text or use Reset program template.'
+      });
       return;
     }
-    const bridge = props.bridgeRef && props.bridgeRef.current;
-    if (!bridge || typeof bridge.sendCreateExecutionContractRequest !== 'function') {
-      setExecFeedback({ negative: true, content: 'Connect to the hub (bridge) to create an execution contract.' });
+    if (execBitcoinLoading) {
+      setExecFeedback({
+        negative: true,
+        content: 'Still checking Bitcoin service; wait a moment before publishing.'
+      });
       return;
     }
+    const nameOpt = execName.trim() || undefined;
+    if (execBitcoinOn) {
+      if (!execRegistryInvoice || !execRegistryInvoice.programDigest) {
+        setExecFeedback({
+          negative: true,
+          content: 'Request a registry invoice first (step 1), pay it on-chain, then enter the txid.'
+        });
+        return;
+      }
+      const tid = String(execTxid || '').trim();
+      if (!tid) {
+        setExecFeedback({
+          negative: true,
+          content: 'Enter the Bitcoin transaction id that pays the registry invoice.'
+        });
+        return;
+      }
+    }
+
+    const payload = execBitcoinOn
+      ? {
+        name: nameOpt,
+        program,
+        txid: String(execTxid || '').trim(),
+        programDigest: execRegistryInvoice.programDigest
+      }
+      : { name: nameOpt, program };
+
     setExecBusy(true);
     try {
-      bridge.sendCreateExecutionContractRequest({
-        name: execName.trim() || undefined,
-        program
-      });
-      setExecFeedback({ info: true, content: 'Create request sent. The list refreshes when the hub confirms.' });
+      const out = await hubJsonRpc('CreateExecutionContract', [payload]);
+      if (!out.ok) {
+        setExecFeedback({
+          negative: true,
+          content: describeHubRpcFailure(out.error, 'Check that this origin can reach the hub and try again.')
+        });
+        return;
+      }
+      const r = out.result;
+      if (r && r.status === 'error') {
+        const msg = r.message || 'Hub rejected publish.';
+        const needsPayHelp = /bitcoin is enabled|l1 payment verification failed|registry invoice|pay the invoice/i.test(msg);
+        const payHint = loadHubUiFeatureFlags().bitcoinPayments ? (
+          <span>
+            Pay from <Link to="/services/bitcoin/payments">Payments</Link> (regtest + admin token) or another wallet, then paste the funding txid and publish again.
+          </span>
+        ) : (
+          <span>
+            Pay from another wallet, or enable <strong>Bitcoin — Payments</strong> in Admin → Feature visibility and use Payments (regtest + admin token), then paste the funding txid and publish again.
+          </span>
+        );
+        setExecFeedback({
+          negative: true,
+          content: needsPayHelp ? (
+            <span>
+              {msg}{' '}
+              {payHint}
+            </span>
+          ) : (
+            <span>
+              {msg}{' '}
+              If you requested a registry invoice and edited the program JSON afterward, request a new invoice so the digest matches.
+            </span>
+          )
+        });
+        return;
+      }
+      if (r && r.type === 'CreateExecutionContractResult' && (r.contract || r.id)) {
+        const cid = r.id || (r.contract && r.contract.id);
+        setExecName('');
+        setExecRegistryInvoice(null);
+        setExecTxid('');
+        setRegistryAddressCopied(false);
+        setExecFeedback({
+          positive: true,
+          content: (
+            <span>
+              Execution contract published to the hub registry.
+              {cid ? (
+                <>
+                  {' '}
+                  <Link to={`/contracts/${encodeURIComponent(cid)}`}>Open detail</Link>
+                  {' '}to run on the hub.
+                </>
+              ) : null}
+            </span>
+          )
+        });
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('executionContractCreated', {
+            detail: { contract: r.contract || null, id: cid }
+          }));
+        }
+      } else {
+        setExecFeedback({ negative: true, content: 'Unexpected response from hub.' });
+      }
+    } catch (e) {
+      setExecFeedback({ negative: true, content: e && e.message ? e.message : String(e) });
     } finally {
       setExecBusy(false);
     }
-  }, [execJson, execName, props.bridgeRef]);
+  }, [execJson, execName, execBitcoinOn, execBitcoinLoading, execRegistryInvoice, execTxid]);
 
   return (
     <fabric-contracts class='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button basic size='small' as={Link} to="/" title="Back">
-            <Icon name="arrow left" />
+        <section aria-labelledby="contracts-page-heading">
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
+          role="banner"
+        >
+          <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+            <Icon name="arrow left" aria-hidden="true" />
             Back
           </Button>
-          <span>Contracts</span>
-        </Header>
+          <Header as="h2" id="contracts-page-heading" style={{ margin: 0 }}>
+            <Header.Content>Contracts</Header.Content>
+          </Header>
+        </div>
+        </section>
 
         <Segment>
           {loading && (
@@ -179,24 +440,45 @@ function ContractList (props) {
             </div>
           )}
           {!loading && error && (
-            <div style={{ color: '#b00' }}>{error}</div>
+            <Message negative>
+              <Message.Header>Could not load contracts</Message.Header>
+              <p style={{ margin: '0.35em 0 0' }}>{error}</p>
+              <div style={{ marginTop: '0.85em' }}>
+                <Button size="small" type="button" onClick={() => void loadContracts()}>
+                  <Icon name="refresh" />
+                  Retry
+                </Button>
+              </div>
+            </Message>
           )}
           {!loading && !error && (
             <>
-              <Header as='h4'>
-                <Icon name='cloud' />
+              <section aria-labelledby="contracts-storage-h4" aria-describedby="contracts-storage-intro">
+              <Header as="h4" id="contracts-storage-h4">
+                <Icon name="cloud" aria-hidden="true" />
                 Storage Contracts
               </Header>
+              <div id="contracts-storage-intro">
+              <Message info size="small" style={{ marginBottom: '1em' }}>
+                <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>L1 bond vs execution anchor</p>
+                <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                  Storage contracts are created after a verified payment to the distribute invoice (<code>CreateDistributeInvoice</code> → pay → <code>CreateStorageContract</code>).
+                  Execution contracts use an L1 registry fee when Bitcoin is enabled (see below); after publish you can run on the hub and on regtest anchor the run commitment (OP_RETURN) with an admin token from the contract detail page.
+                </p>
+              </Message>
+              </div>
               <div style={{ marginBottom: '1em', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
                 <span style={{ color: '#666', fontSize: '0.9em' }}>Filter:</span>
                 <ButtonGroup size="small">
                   <Button
+                    type="button"
                     active={filter === FILTER_ALL}
                     onClick={() => setFilter(FILTER_ALL)}
                   >
                     All
                   </Button>
                   <Button
+                    type="button"
                     active={filter === FILTER_NEW}
                     onClick={() => setFilter(FILTER_NEW)}
                     title="First copy bonded"
@@ -204,6 +486,7 @@ function ContractList (props) {
                     New
                   </Button>
                   <Button
+                    type="button"
                     active={filter === FILTER_PARTIAL}
                     onClick={() => setFilter(FILTER_PARTIAL)}
                     title="Some copies bonded, not all"
@@ -211,6 +494,7 @@ function ContractList (props) {
                     Partial
                   </Button>
                   <Button
+                    type="button"
                     active={filter === FILTER_COMPLETE}
                     onClick={() => setFilter(FILTER_COMPLETE)}
                     title="All desired copies bonded"
@@ -254,10 +538,14 @@ function ContractList (props) {
                         {created ? ` — ${created}` : ''}
                         {c.txid && (
                           <span style={{ marginLeft: '0.5em' }}>
-                            <Button size="mini" as={Link} to={`/services/bitcoin/transactions/${encodeURIComponent(c.txid)}`} basic>
-                              <Icon name="bitcoin" />
-                              Tx
-                            </Button>
+                            {uf.bitcoinExplorer ? (
+                              <Button size="mini" as={Link} to={`/services/bitcoin/transactions/${encodeURIComponent(c.txid)}`} basic>
+                                <Icon name="bitcoin" />
+                                Tx
+                              </Button>
+                            ) : (
+                              <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{c.txid}</code>
+                            )}
                           </span>
                         )}
                       </List.Description>
@@ -277,14 +565,57 @@ function ContractList (props) {
                 </List.Item>
               )}
             </List>
+              </section>
 
-              <Header as='h4' dividing style={{ marginTop: '1.5em' }}>
-                <Icon name='microchip' />
+              <section aria-labelledby="contracts-execution-h4" aria-describedby="contracts-execution-desc">
+              <Header as="h4" dividing id="contracts-execution-h4" style={{ marginTop: '1.5em' }}>
+                <Icon name="microchip" aria-hidden="true" />
                 Execution contracts
               </Header>
-              <p style={{ color: '#666', marginBottom: '0.75em' }}>
-                Programs are lists of Fabric opcode descriptors and stack operations. They run in a sandboxed machine (no arbitrary code) — locally in the browser on the detail page, or validated when you create them on the hub.
+              <p id="contracts-execution-desc" style={{ color: '#666', marginBottom: '0.75em' }}>
+                <strong>Registry:</strong> execution contracts are listed hub-wide. When this hub&apos;s Bitcoin service is available, publishing requires a real L1 payment: request a <code>CreateExecutionRegistryInvoice</code> address, pay at least the quoted sats, then submit the funding <code>txid</code> with <code>CreateExecutionContract</code> (same <code>POST /services/rpc</code> surface as <strong>Run on hub</strong> on the detail page).
+                Without Bitcoin (local dev), the hub still accepts free registration so you can iterate on programs.
               </p>
+              <Message info size="small" style={{ marginBottom: '1em' }}>
+                <Message.Header>L1, deterministic runs, and network state</Message.Header>
+                <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                  <strong>Registry</strong> ties a <code>programDigest</code> to an on-chain payment when Bitcoin is enabled.
+                  <strong> Runs</strong> produce a <code>runCommitmentHex</code> anyone can re-check (browser vs hub); regtest can <strong>OP_RETURN</strong>-anchor that digest.
+                  The hub <strong>Beacon</strong> records epochs against Bitcoin block hash/height; <strong>sidechain</strong> state can advance via patches and follow L1 reorgs.
+                  Reproducible epoch witnesses, <strong>Beacon Federation</strong> docs, and live manifest / epoch JSON links are in the federation panel below (avoid duplicating the same shortcuts here).
+                </p>
+              </Message>
+              {uf.sidechain ? <DistributedFederationPanel /> : null}
+              {execBitcoinLoading && (
+                <Message info size="small" style={{ marginBottom: '1em' }}>
+                  <Message.Header>Checking Bitcoin</Message.Header>
+                  <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                    Waiting for <code>/services/bitcoin</code> so we know whether registry publish requires an L1 invoice and txid.
+                  </p>
+                </Message>
+              )}
+              {!execBitcoinLoading && execBitcoinOn && (
+                <Message info size="small" style={{ marginBottom: '1em' }}>
+                  <Message.Header>L1-backed registry active</Message.Header>
+                  <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                    Use <strong>Request registry invoice</strong>, pay on-chain (e.g. from{' '}
+                    {uf.bitcoinPayments ? (
+                      <Link to="/services/bitcoin/payments">Payments</Link>
+                    ) : (
+                      <span>Payments (enable Bitcoin — Payments in Admin → Feature visibility)</span>
+                    )}
+                    {' '}with admin token on regtest), then paste the txid and <strong>Publish to registry</strong>.
+                  </p>
+                </Message>
+              )}
+              {!execBitcoinLoading && !execBitcoinOn && (
+                <Message warning size="small" style={{ marginBottom: '1em' }}>
+                  <Message.Header>No Bitcoin service</Message.Header>
+                  <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                    Publishing skips L1 verification until the hub exposes a working <code>/services/bitcoin</code> connection.
+                  </p>
+                </Message>
+              )}
               {execFeedback && (
                 <Message
                   positive={!!execFeedback.positive}
@@ -295,55 +626,183 @@ function ContractList (props) {
                   style={{ marginBottom: '1em' }}
                 />
               )}
-              <Form style={{ marginBottom: '1.25em' }}>
+              <Form
+                style={{ marginBottom: '1.25em' }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void submitExecutionContract();
+                }}
+              >
                 <Form.Field>
-                  <label>Name (optional)</label>
+                  <label htmlFor="fabric-exec-name">Name (optional)</label>
                   <Form.Input
+                    id="fabric-exec-name"
                     value={execName}
                     onChange={(e, d) => setExecName(d.value)}
                     placeholder="e.g. Ping demo"
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Program (JSON)</label>
+                  <label htmlFor="fabric-exec-program-json">Program (JSON)</label>
                   <TextArea
+                    id="fabric-exec-program-json"
                     value={execJson}
                     onChange={(e, d) => setExecJson(d.value)}
-                    rows={12}
+                    rows={14}
                     style={{ fontFamily: 'monospace', fontSize: '0.85em' }}
                   />
                 </Form.Field>
-                <Button
-                  primary
-                  type="button"
-                  loading={execBusy}
-                  disabled={execBusy}
-                  onClick={submitExecutionContract}
-                >
-                  <Icon name="plus" />
-                  Create execution contract
-                </Button>
+                {execBitcoinOn && (
+                  <Form.Field>
+                    <label>Registry fee (sats)</label>
+                    <Form.Input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={execAmountSats}
+                      onChange={(e, d) => setExecAmountSats(d.value)}
+                      placeholder={String(DEFAULT_REGISTRY_FEE_SATS)}
+                    />
+                  </Form.Field>
+                )}
+                {execBitcoinOn && execRegistryInvoice && (
+                  <Message size="small" style={{ marginBottom: '1em' }}>
+                    <Message.Header>Pending registry invoice</Message.Header>
+                    <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                      Pay at least the quoted sats to the hub address below, then paste the funding transaction id.
+                    </p>
+                    <p style={{ margin: '0.5em 0 0', wordBreak: 'break-all' }}>
+                      <strong>Pay ≥</strong> {formatSatsDisplay(execRegistryInvoice.amountSats)} sats to{' '}
+                      <code>{execRegistryInvoice.address}</code>
+                      {' '}(network: {String(execRegistryInvoice.network || '—').trim() || '—'}).
+                    </p>
+                    <div style={{ marginTop: '0.5em', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5em' }}>
+                      <Button
+                        type="button"
+                        size="small"
+                        basic
+                        icon
+                        onClick={copyRegistryInvoiceAddress}
+                        title="Copy payment address"
+                        aria-label="Copy registry invoice payment address"
+                      >
+                        <Icon name="copy outline" />
+                      </Button>
+                      {registryAddressCopied && (
+                        <span style={{ fontSize: '0.85em', color: '#276749' }}>Copied</span>
+                      )}
+                    </div>
+                    <p style={{ margin: '0.75em 0 0', fontSize: '0.85em', color: '#555' }}>
+                      Program digest: <code style={{ wordBreak: 'break-all' }}>{execRegistryInvoice.programDigest}</code>
+                    </p>
+                    <p style={{ margin: '0.5em 0 0', fontSize: '0.8em', color: '#777' }}>
+                      If you edit the program JSON after this invoice, request a new invoice so the digest still matches.
+                    </p>
+                  </Message>
+                )}
+                {execBitcoinOn && (
+                  <Form.Field>
+                    <label htmlFor="fabric-exec-registry-txid">Funding txid (after you pay the invoice)</label>
+                    <Form.Input
+                      id="fabric-exec-registry-txid"
+                      value={execTxid}
+                      onChange={(e, d) => setExecTxid(d.value)}
+                      placeholder="64-character transaction id"
+                    />
+                  </Form.Field>
+                )}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
+                  {execBitcoinOn && (
+                    <Button
+                      type="button"
+                      color="blue"
+                      loading={execInvoiceBusy}
+                      disabled={execInvoiceBusy || execBusy || execBitcoinLoading}
+                      title={execBitcoinLoading ? 'Wait until Bitcoin status is known' : undefined}
+                      onClick={() => void requestExecutionRegistryInvoice()}
+                    >
+                      <Icon name="bitcoin" />
+                      Request registry invoice
+                    </Button>
+                  )}
+                  <Button
+                    primary
+                    type="submit"
+                    loading={execBusy}
+                    disabled={execBusy || execInvoiceBusy || execBitcoinLoading}
+                    title={execBitcoinLoading ? 'Wait until Bitcoin status is known' : undefined}
+                  >
+                    <Icon name="plus" />
+                    {execBitcoinOn ? 'Publish to registry' : 'Publish to registry (no L1)'}
+                  </Button>
+                  <Button
+                    type="button"
+                    basic
+                    disabled={execBusy || execInvoiceBusy}
+                    onClick={() => {
+                      setExecJson(DEFAULT_EMPTY_EXEC_PROGRAM);
+                      setExecFeedback(null);
+                      setExecRegistryInvoice(null);
+                      setExecTxid('');
+                      setRegistryAddressCopied(false);
+                    }}
+                  >
+                    <Icon name="undo" />
+                    Reset program template
+                  </Button>
+                </div>
               </Form>
               <List divided relaxed>
                 {executionContracts.map((c) => {
                   if (!c || !c.id) return null;
                   const created = c.created ? new Date(c.created).toLocaleString() : '';
-                  const steps = c.program && Array.isArray(c.program.steps) ? c.program.steps.length : 0;
+                  const stepCount = c.program && Array.isArray(c.program.steps) ? c.program.steps.length : null;
+                  const stepSummary = stepCount != null
+                    ? `${stepCount} step${stepCount === 1 ? '' : 's'}`
+                    : 'Program';
                   return (
                     <List.Item key={c.id}>
                       <List.Content>
-                        <List.Header>
+                        <List.Header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.35em' }}>
                           <Link to={`/contracts/${encodeURIComponent(c.id)}`}>
                             {c.name || c.id}
                           </Link>
-                          <Label size="mini" color="teal" style={{ marginLeft: '0.5em' }}>
+                          <Label size="mini" color="teal" style={{ marginLeft: '0.15em' }}>
                             <Icon name="code" />
                             Execution
                           </Label>
+                          <Button
+                            size="mini"
+                            basic
+                            as={Link}
+                            to={`/contracts/${encodeURIComponent(c.id)}`}
+                            title="Open detail — run locally or on hub"
+                          >
+                            <Icon name="angle double right" />
+                            Open
+                          </Button>
                         </List.Header>
                         <List.Description style={{ color: '#666' }}>
-                          {steps ? `${steps} step${steps === 1 ? '' : 's'}` : 'Program'}
+                          {stepSummary}
                           {created ? ` — ${created}` : ''}
+                          {c.txid && (
+                            <span style={{ marginLeft: '0.5em' }}>
+                              {uf.bitcoinExplorer ? (
+                                <Button
+                                  size="mini"
+                                  as={Link}
+                                  to={`/services/bitcoin/transactions/${encodeURIComponent(c.txid)}`}
+                                  basic
+                                  title="Open registry funding transaction on this hub"
+                                >
+                                  <Icon name="bitcoin" />
+                                  Tx
+                                </Button>
+                              ) : (
+                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{c.txid}</code>
+                              )}
+                            </span>
+                          )}
                         </List.Description>
                       </List.Content>
                     </List.Item>
@@ -353,22 +812,38 @@ function ContractList (props) {
                   <List.Item>
                     <List.Content>
                       <List.Description style={{ color: '#666' }}>
-                        No execution contracts yet. Create one above.
+                        No execution contracts on this hub yet. Publish from the form above
+                        {execBitcoinOn ? ' (registry invoice + funding txid when Bitcoin is on)' : ''}.
                       </List.Description>
                     </List.Content>
                   </List.Item>
                 )}
               </List>
-
-              <Header as='h4' dividing style={{ marginTop: '1.5em' }}>
-                <Icon name='bolt' color='yellow' />
-                <Link to="/services/bitcoin" style={{ color: 'inherit' }}>
-                  Lightning Channels
-                </Link>
-                <Button as={Link} to="/services/bitcoin" basic size="small" style={{ marginLeft: '0.5em' }}>
+              </section>
+            </>
+          )}
+          {!loading && uf.bitcoinLightning ? (
+              <section aria-labelledby="contracts-lightning-h4">
+              <div
+                style={{
+                  marginTop: '1.5em',
+                  paddingTop: '1em',
+                  borderTop: '1px solid rgba(34, 36, 38, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '0.5em'
+                }}
+              >
+                <Header as="h4" id="contracts-lightning-h4" style={{ margin: 0 }}>
+                  <Icon name="bolt" color="yellow" aria-hidden="true" />
+                  <Header.Content>Lightning Channels</Header.Content>
+                </Header>
+                <Button as={Link} to="/services/bitcoin" basic size="small" title="Open Bitcoin / Lightning dashboard">
                   Manage
                 </Button>
-              </Header>
+              </div>
               {lightningChannels.length === 0 ? (
                 <p style={{ color: '#666' }}>No Lightning channels. Open a channel from the Bitcoin page.</p>
               ) : (
@@ -389,8 +864,8 @@ function ContractList (props) {
                       return (
                         <Table.Row
                           key={chId}
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => navigate(toUrl)}
+                          style={{ cursor: uf.bitcoinLightning ? 'pointer' : 'default' }}
+                          onClick={() => { if (uf.bitcoinLightning) navigate(toUrl); }}
                         >
                           <Table.Cell>
                             <code style={{ fontSize: '0.85em' }}>{trimHash(ch.peer_id || ch.funding_txid || '')}</code>
@@ -411,8 +886,8 @@ function ContractList (props) {
                   </Table.Body>
                 </Table>
               )}
-            </>
-          )}
+              </section>
+          ) : null}
         </Segment>
       </Segment>
     </fabric-contracts>

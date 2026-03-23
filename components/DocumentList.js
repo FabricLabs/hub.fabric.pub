@@ -15,6 +15,7 @@ const {
   Label,
   List,
   Loader,
+  Message,
   Segment
 } = require('semantic-ui-react');
 
@@ -74,7 +75,12 @@ function DocumentsPage (props) {
   const current = bridgeRef && bridgeRef.current;
   const hasEncryptionKey = !!(current && typeof current.hasDocumentEncryptionKey === 'function' && current.hasDocumentEncryptionKey());
   const networkStatus = current && (current.networkStatus || current.lastNetworkStatus);
-  const indexed = networkStatus && networkStatus.publishedDocuments ? networkStatus.publishedDocuments : null;
+  // Full GetNetworkStatus payloads include `network`; use that so we stop "loading" even if `publishedDocuments` is absent (empty catalog).
+  const hasNetworkSnapshot = !!(networkStatus && typeof networkStatus === 'object' && networkStatus.network);
+  const publishedRaw = networkStatus && networkStatus.publishedDocuments;
+  const indexed = !hasNetworkSnapshot
+    ? null
+    : (publishedRaw && typeof publishedRaw === 'object' ? publishedRaw : {});
   const fabricPeerId = networkStatus && networkStatus.fabricPeerId ? String(networkStatus.fabricPeerId) : null;
 
   const [docsState, setDocsState] = React.useState({});
@@ -232,16 +238,64 @@ function DocumentsPage (props) {
   return (
     <fabric-documents class='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button basic size='small' as={Link} to="/" title="Back">
-            <Icon name="arrow left" />
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
+          role="banner"
+        >
+          <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+            <Icon name="arrow left" aria-hidden="true" />
             Back
           </Button>
-          <span>Documents</span>
-          <Label size="small" title="Documents in this hub node">{docs.length}</Label>
-        </Header>
+          <div
+            style={{
+              position: 'relative',
+              margin: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5em',
+              flexWrap: 'wrap'
+            }}
+          >
+            <Header as="h2" id="documents-page-heading" style={{ margin: 0 }}>
+              Documents
+            </Header>
+            <span
+              style={{
+                position: 'absolute',
+                width: 1,
+                height: 1,
+                padding: 0,
+                margin: -1,
+                overflow: 'hidden',
+                clip: 'rect(0, 0, 0, 0)',
+                whiteSpace: 'nowrap',
+                border: 0
+              }}
+            >
+              {docs.length} documents in this hub node
+            </span>
+            <Label
+              size="small"
+              title="Documents in this hub node"
+              style={{ verticalAlign: 'middle' }}
+              aria-hidden="true"
+            >
+              {docs.length}
+            </Label>
+          </div>
+        </div>
 
         <Divider />
+
+        {!hasEncryptionKey && (
+          <Message info style={{ marginBottom: '1em' }}>
+            <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Identity is locked</p>
+            <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+              Use <strong>Locked</strong> in the top bar, enter your decryption password, and choose <strong>Unlock private key</strong> to create or upload documents in this browser.
+              For local dev use the same phrase as the hub (<code>FABRIC_SEED</code> if set, else <code>FABRIC_MNEMONIC</code>): <code>window.FABRIC_DEV_BROWSER_SEED</code> in <code>assets/config.local.js</code>, optional <code>window.FABRIC_DEV_BROWSER_PASSPHRASE</code> for BIP39 extension, or hub <code>FABRIC_DEV_PUSH_BROWSER_IDENTITY=1</code> (never on exposed hosts). For RPC-only automation see <code>npm run test:e2e-document-purchase</code>.
+            </p>
+          </Message>
+        )}
 
         {hasEncryptionKey && (
           <Segment loading={busy}>
@@ -298,9 +352,14 @@ function DocumentsPage (props) {
               />
             </div>
             {error && (
-              <Segment color="red" inverted style={{ marginTop: '1em' }}>
-                <strong>Error:</strong> {error}
-              </Segment>
+              <Message
+                negative
+                style={{ marginTop: '1em' }}
+                onDismiss={() => setError(null)}
+              >
+                <Message.Header>Could not add document</Message.Header>
+                <p style={{ margin: '0.35em 0 0' }}>{error}</p>
+              </Message>
             )}
           </Segment>
         )}
@@ -316,6 +375,7 @@ function DocumentsPage (props) {
         <Segment>
           <Header as="h3">Documents</Header>
           <Button
+            type="button"
             size="small"
             icon
             labelPosition="left"
@@ -326,7 +386,7 @@ function DocumentsPage (props) {
             <Icon name="refresh" />
             Refresh
           </Button>
-          {(!indexed && allDocs.length === 0) ? (
+          {(!hasNetworkSnapshot && allDocs.length === 0) ? (
             <Segment
               placeholder
               style={{ marginTop: '1em', minHeight: '20vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -336,7 +396,9 @@ function DocumentsPage (props) {
                 <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
                   Loading documents…
                   <Header.Subheader>
-                    Fetching document index from hub.
+                    {current
+                      ? 'Waiting for network status from the hub (published catalog).'
+                      : 'Connecting to the hub (WebSocket bridge)…'}
                   </Header.Subheader>
                 </Header>
               </div>

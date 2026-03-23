@@ -24,6 +24,7 @@ function DistributeProposalsList (props) {
   const [txidByProposal, setTxidByProposal] = React.useState({});
   const [invoiceByProposal, setInvoiceByProposal] = React.useState({});
   const [contractByProposal, setContractByProposal] = React.useState({});
+  const [bondFail, setBondFail] = React.useState(null);
   const pendingAcceptRef = React.useRef({});
 
   React.useEffect(() => {
@@ -68,6 +69,25 @@ function DistributeProposalsList (props) {
     window.addEventListener('storageContractBonded', handler);
     return () => window.removeEventListener('storageContractBonded', handler);
   }, []);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.documentId) return;
+      const docId = detail.documentId;
+      const gs = bridgeRef && bridgeRef.current && bridgeRef.current.globalState;
+      const map = (gs && gs.distributeProposals) || {};
+      const pid = Object.keys(map).find((id) => {
+        const p = map[id];
+        if (!p) return false;
+        return p.documentId === docId ||
+          (p.document && (p.document.sha256 === docId || p.document.id === docId));
+      });
+      if (pid) setBondFail({ proposalId: pid, message: detail.message || 'Contract creation failed.' });
+    };
+    window.addEventListener('storageContractBondFailed', handler);
+    return () => window.removeEventListener('storageContractBondFailed', handler);
+  }, [bridgeRef]);
 
   // Listen for distributeInvoiceReady when we accept a proposal (host flow)
   React.useEffect(() => {
@@ -142,8 +162,13 @@ function DistributeProposalsList (props) {
     if (typeof bridgeInstance.sendDistributeDocumentRequest !== 'function') return;
     const docId = proposal.documentId;
     const invoice = invoiceByProposal[proposal.id];
+    setBondFail((prev) => (prev && prev.proposalId === proposal.id ? null : prev));
     bridgeInstance.sendDistributeDocumentRequest(docId, {
       amountSats: invoice ? invoice.amountSats : proposal.amountSats,
+      durationYears: proposal.durationYears,
+      challengeCadence: proposal.challengeCadence,
+      responseDeadline: proposal.responseDeadline,
+      desiredCopies: proposal.desiredCopies,
       txid: txid.trim()
     });
     setTxidByProposal((prev) => {
@@ -164,22 +189,48 @@ function DistributeProposalsList (props) {
   };
 
   const hasProposals = pendingProposals.length > 0 || bondedProposals.length > 0;
+  const bridge = bridgeRef && bridgeRef.current;
+  const wireLocal = !!(bridge && typeof bridge.hasLocalWireSigningKey === 'function' && bridge.hasLocalWireSigningKey());
 
   return (
     <Segment basic={!!props.embedded} style={props.embedded ? { padding: 0 } : undefined}>
-      <Header as="h3">
-        <Icon name="handshake" />
-        Hosting proposals
-        {pendingProposals.length > 0 && (
-          <Label size="small" color="orange">{pendingProposals.length} pending</Label>
+      <section aria-labelledby="distribute-hosting-heading" aria-describedby="distribute-hosting-summary">
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '0.5em',
+            marginBottom: '0.35em'
+          }}
+        >
+          <Header as="h3" id="distribute-hosting-heading" style={{ margin: 0 }}>
+            <Icon name="handshake" aria-hidden="true" />
+            Hosting proposals
+          </Header>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '0.35em' }} aria-hidden="true">
+            {pendingProposals.length > 0 && (
+              <Label size="small" color="orange">{pendingProposals.length} pending</Label>
+            )}
+            {bondedProposals.length > 0 && (
+              <Label size="small" color="green">{bondedProposals.length} bonded</Label>
+            )}
+          </span>
+        </div>
+        <p id="distribute-hosting-summary" style={{ color: '#666', marginBottom: '1em' }}>
+          Peers want to pay you to host their files. Accept to create a payment invoice and begin receiving payments.
+        </p>
+        {bridge && !wireLocal && (
+          <Message warning size="small" style={{ marginBottom: '1em' }} id="distribute-hosting-external-signing">
+            <Message.Header>External signing mode</Message.Header>
+            <p style={{ margin: '0.35em 0 0', color: '#333' }}>
+              This browser has no local Fabric private key, so storage-contract requests go to the Hub without a client Schnorr signature on the wire envelope.
+              Approve any delegation prompts in the desktop app or shell. When you are done on a shared machine, end the session under{' '}
+              <Link to="/settings/security">Security &amp; delegation</Link>.
+            </p>
+          </Message>
         )}
-        {bondedProposals.length > 0 && (
-          <Label size="small" color="green">{bondedProposals.length} bonded</Label>
-        )}
-      </Header>
-      <p style={{ color: '#666', marginBottom: '1em' }}>
-        Peers want to pay you to host their files. Accept to create a payment invoice and begin receiving payments.
-      </p>
+      </section>
       <List divided relaxed>
         {pendingProposals.map((proposal) => {
           const invoice = invoiceByProposal[proposal.id];
@@ -221,6 +272,15 @@ function DistributeProposalsList (props) {
                 ) : (
                   <Message size="small" style={{ marginTop: '0.5em' }}>
                     <Message.Header>Invoice sent to proposer</Message.Header>
+                    {bondFail && bondFail.proposalId === proposal.id && (
+                      <Message
+                        negative
+                        size="small"
+                        style={{ marginBottom: '0.75em' }}
+                        onDismiss={() => setBondFail((prev) => (prev && prev.proposalId === proposal.id ? null : prev))}
+                        content={bondFail.message}
+                      />
+                    )}
                     <p>
                       Address: <code>{invoice.address}</code><br />
                       Amount: {formatSatsDisplay(invoice.amountSats)} sats
@@ -250,14 +310,19 @@ function DistributeProposalsList (props) {
 
       {bondedProposals.length > 0 && (
         <>
-          <Header as="h4" style={{ marginTop: '1.5em' }}>
-            <Icon name="check circle" color="green" />
-            Bonded (payment confirmed)
-          </Header>
-          <p style={{ color: '#666', marginBottom: '0.75em', fontSize: '0.9em' }}>
-            These offers have been paid. Storage contracts are active.
-          </p>
-          <List divided relaxed>
+          <section
+            aria-labelledby="distribute-bonded-heading"
+            aria-describedby="distribute-bonded-summary"
+            style={{ marginTop: '1.5em' }}
+          >
+            <Header as="h4" id="distribute-bonded-heading" style={{ marginTop: 0 }}>
+              <Icon name="check circle" color="green" aria-hidden="true" />
+              Bonded (payment confirmed)
+            </Header>
+            <p id="distribute-bonded-summary" style={{ color: '#666', marginBottom: '0.75em', fontSize: '0.9em' }}>
+              These offers have been paid. Storage contracts are active.
+            </p>
+          <List divided relaxed aria-label="Bonded hosting proposals">
             {bondedProposals.map((proposal) => {
               const contractId = contractByProposal[proposal.id];
               return (
@@ -292,6 +357,7 @@ function DistributeProposalsList (props) {
               );
             })}
           </List>
+          </section>
         </>
       )}
 

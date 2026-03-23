@@ -1,12 +1,16 @@
 'use strict';
 
 const defaults = require('./default');
+const beaconFederationRef = require('../contracts/beaconFederation');
+const liquidFederation = require('../contracts/liquid');
 
 module.exports = Object.assign({}, defaults, {
   alias: '@fabric/hub',
   created: '2017-11-11:00:00.000Z',
   debug: process.env.FABRIC_HUB_DEBUG === 'true' || process.env.FABRIC_HUB_DEBUG === '1',
   mode: process.env.NODE_ENV || 'production',
+  /** Reference / operator federation entries (not the live validator list). See `contracts/`. */
+  federations: [beaconFederationRef, liquidFederation],
   bitcoin: {
     network: process.env.FABRIC_BITCOIN_NETWORK || 'regtest',
     managed: process.env.FABRIC_BITCOIN_MANAGED ? process.env.FABRIC_BITCOIN_MANAGED !== 'false' : true,
@@ -22,6 +26,13 @@ module.exports = Object.assign({}, defaults, {
       opReturnMagicHex: process.env.FABRIC_SIDECHAIN_OP_RETURN_MAGIC || 'fab100',
       watchAddresses: [],
       recordTimelocks: true
+    },
+    federationRegistryScan: {
+      enable: process.env.FABRIC_FEDERATION_CHAIN_SCAN === '0' || process.env.FABRIC_FEDERATION_CHAIN_SCAN === 'false'
+        ? false
+        : process.env.FABRIC_FEDERATION_CHAIN_SCAN === '1' || process.env.FABRIC_FEDERATION_CHAIN_SCAN === 'true'
+          ? true
+          : undefined
     },
     documentBlocks: process.env.FABRIC_BITCOIN_DOCUMENT_BLOCKS === '0' || process.env.FABRIC_BITCOIN_DOCUMENT_BLOCKS === 'false'
       ? false

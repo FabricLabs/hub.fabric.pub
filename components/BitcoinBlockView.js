@@ -11,9 +11,12 @@ const {
   Segment,
   Table,
   Message,
-  Label
+  Label,
+  Loader
 } = require('semantic-ui-react');
 const { fetchBlockByHash, loadUpstreamSettings } = require('../functions/bitcoinClient');
+
+const BLOCK_HASH_REGEX = /^[a-fA-F0-9]{64}$/;
 
 function shortHash (h) {
   const s = String(h || '').trim();
@@ -59,35 +62,47 @@ function MetaRow ({ label, children }) {
 }
 
 function BitcoinBlockView () {
-  const { blockhash } = useParams();
-  const [loading, setLoading] = React.useState(true);
+  const { blockhash: blockhashParam } = useParams();
+  const rawHash = (blockhashParam || '').trim();
+  const [loading, setLoading] = React.useState(!!rawHash);
   const [error, setError] = React.useState(null);
   const [block, setBlock] = React.useState(null);
 
-  React.useEffect(() => {
-    let alive = true;
-    const upstream = loadUpstreamSettings();
+  const loadBlock = React.useCallback(() => {
+    if (!rawHash) {
+      setLoading(false);
+      setError(null);
+      setBlock(null);
+      return;
+    }
+    if (!BLOCK_HASH_REGEX.test(rawHash)) {
+      setLoading(false);
+      setError('Invalid block hash. Must be 64 hex characters.');
+      setBlock(null);
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    const upstream = loadUpstreamSettings();
 
-    fetchBlockByHash(upstream, blockhash)
+    fetchBlockByHash(upstream, rawHash)
       .then((data) => {
-        if (!alive) return;
         setBlock(data || null);
       })
       .catch((err) => {
-        if (!alive) return;
+        setBlock(null);
         setError(err && err.message ? err.message : String(err));
       })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
+      .finally(() => setLoading(false));
+  }, [rawHash]);
 
-    return () => { alive = false; };
-  }, [blockhash]);
+  React.useEffect(() => {
+    loadBlock();
+  }, [loadBlock]);
 
   const txs = Array.isArray(block && block.tx) ? block.tx : [];
-  const hash = (block && block.hash) || blockhash;
+  const hash = (block && block.hash) || rawHash;
   const prev = block && block.previousblockhash ? String(block.previousblockhash).trim() : '';
   const next = block && block.nextblockhash ? String(block.nextblockhash).trim() : '';
   const prevPath = prev ? blockLink(prev) : null;
@@ -100,30 +115,35 @@ function BitcoinBlockView () {
   return (
     <div className='fade-in'>
       <Segment>
-        <Header as='h2' style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
-          <Button as={Link} to="/services/bitcoin" basic size='small'>
-            <Icon name='arrow left' />
+        <div
+          style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
+          role="banner"
+        >
+          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
+            <Icon name="arrow left" aria-hidden="true" />
             Explorer
           </Button>
-          <Icon name='cube' />
-          <Header.Content>
-            Block {height != null && Number.isFinite(Number(height))
-              ? `#${fmtInt(height)}`
-              : (hash ? shortHash(hash) : '')}
-            <Header.Subheader style={{ marginTop: '0.35em' }}>
-              {timeSec != null && Number.isFinite(timeSec) ? (
-                <span title={`Unix ${timeSec}`}>{new Date(timeSec * 1000).toLocaleString()}</span>
-              ) : (
-                '—'
-              )}
-              {medianSec != null && Number.isFinite(medianSec) && medianSec !== timeSec && (
-                <span style={{ marginLeft: '0.75em', color: '#888' }}>
-                  (median {new Date(medianSec * 1000).toLocaleString()})
-                </span>
-              )}
-            </Header.Subheader>
-          </Header.Content>
-        </Header>
+          <Header as="h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em', flexWrap: 'wrap' }}>
+            <Icon name="cube" aria-hidden="true" />
+            <Header.Content>
+              Block {height != null && Number.isFinite(Number(height))
+                ? `#${fmtInt(height)}`
+                : (hash ? shortHash(hash) : '')}
+              <Header.Subheader style={{ marginTop: '0.35em' }}>
+                {timeSec != null && Number.isFinite(timeSec) ? (
+                  <span title={`Unix ${timeSec}`}>{new Date(timeSec * 1000).toLocaleString()}</span>
+                ) : (
+                  '—'
+                )}
+                {medianSec != null && Number.isFinite(medianSec) && medianSec !== timeSec && (
+                  <span style={{ marginLeft: '0.75em', color: '#888' }}>
+                    (median {new Date(medianSec * 1000).toLocaleString()})
+                  </span>
+                )}
+              </Header.Subheader>
+            </Header.Content>
+          </Header>
+        </div>
 
         {!loading && !error && block && (prevPath || nextPath) && (
           <div style={{ marginTop: '1rem' }}>
@@ -155,22 +175,59 @@ function BitcoinBlockView () {
         )}
       </Segment>
 
-      {loading && (
-        <Message info>
-          <Message.Header>Loading block...</Message.Header>
+      {!rawHash && (
+        <Message warning>
+          <Message.Header>Missing block hash</Message.Header>
+          <p>Open a block from the Bitcoin explorer so the URL includes a 64-character hex block id.</p>
+          <Button as={Link} to="/services/bitcoin" primary style={{ marginTop: '0.75em' }}>
+            <Icon name="bitcoin" />
+            Bitcoin / explorer
+          </Button>
         </Message>
       )}
 
-      {error && (
+      {!!rawHash && loading && (
+        <Segment>
+          <Loader active inline="centered" />
+          <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>Loading block…</p>
+        </Segment>
+      )}
+
+      {!!rawHash && error && !loading && (
         <Message negative>
           <Message.Header>Failed to load block</Message.Header>
           <p>{error}</p>
+          {BLOCK_HASH_REGEX.test(rawHash) ? (
+            <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+              <Button type="button" size="small" onClick={() => void loadBlock()}>
+                <Icon name="refresh" />
+                Retry
+              </Button>
+              <Button as={Link} to="/services/bitcoin" size="small" basic>
+                <Icon name="list" />
+                Explorer
+              </Button>
+            </div>
+          ) : null}
         </Message>
       )}
 
-      {!loading && !error && !block && (
+      {!!rawHash && !loading && !error && !block && (
         <Message warning>
           <Message.Header>Block not found</Message.Header>
+          <p>This node does not have that block, or the hash is unknown on this network.</p>
+          {BLOCK_HASH_REGEX.test(rawHash) ? (
+            <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+              <Button type="button" size="small" onClick={() => void loadBlock()}>
+                <Icon name="refresh" />
+                Retry
+              </Button>
+              <Button as={Link} to="/services/bitcoin" size="small" basic>
+                <Icon name="list" />
+                Explorer
+              </Button>
+            </div>
+          ) : null}
         </Message>
       )}
 

@@ -3,6 +3,10 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 const {
+  loadHubUiFeatureFlags,
+  subscribeHubUiFeatureFlags
+} = require('../functions/hubUiFeatureFlags');
+const {
   Segment,
   Icon
 } = require('semantic-ui-react');
@@ -12,10 +16,12 @@ class BottomPanel extends React.Component {
     super(props);
 
     this.state = {
-      now: new Date()
+      now: new Date(),
+      hubUiTick: 0
     };
 
     this._timer = null;
+    this._hubUiUnsub = null;
 
     return this;
   }
@@ -24,6 +30,9 @@ class BottomPanel extends React.Component {
     this._timer = setInterval(() => {
       this.setState({ now: new Date() });
     }, 1000);
+    this._hubUiUnsub = subscribeHubUiFeatureFlags(() => {
+      this.setState((s) => ({ hubUiTick: (s.hubUiTick || 0) + 1 }));
+    });
   }
 
   componentWillUnmount () {
@@ -31,10 +40,16 @@ class BottomPanel extends React.Component {
       clearInterval(this._timer);
       this._timer = null;
     }
+    if (typeof this._hubUiUnsub === 'function') {
+      this._hubUiUnsub();
+      this._hubUiUnsub = null;
+    }
   }
 
   render () {
-    const { now } = this.state;
+    const { now, hubUiTick } = this.state;
+    void hubUiTick;
+    const uf = loadHubUiFeatureFlags();
     const timeText = now.toLocaleTimeString();
     const iso = now.toISOString();
 
@@ -52,25 +67,46 @@ class BottomPanel extends React.Component {
 
     return (
       <Segment
+        role="contentinfo"
+        aria-label="Hub status footer"
         style={{
+          flexShrink: 0,
+          marginTop: 0,
+          marginBottom: 0,
+          marginLeft: 0,
+          marginRight: 0,
+          zIndex: 15,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: '0.75em',
           flexWrap: 'wrap',
-          marginTop: '1em',
-          borderTop: '1px solid rgba(0,0,0,0.05)'
+          borderTop: '1px solid rgba(0, 0, 0, 0.08)',
+          background: 'rgba(255, 255, 255, 0.97)',
+          backdropFilter: 'blur(10px)',
+          WebkitBackdropFilter: 'blur(10px)',
+          boxShadow: '0 -2px 12px rgba(0, 0, 0, 0.06)',
+          paddingTop: '0.65em',
+          paddingBottom: 'max(0.65em, env(safe-area-inset-bottom, 0px))',
+          paddingLeft: 'max(1em, env(safe-area-inset-left, 0px))',
+          paddingRight: 'max(1em, env(safe-area-inset-right, 0px))'
         }}
       >
         <div style={{ flex: '1 1 auto', minWidth: 0, color: '#666' }}>
           {pubkeyText ? (
             <span title={rawPubkey}>
-              <Link
-                to={`/peers/${encodeURIComponent(rawPubkey)}`}
-                style={{ color: 'inherit', textDecoration: 'none' }}
-              >
-                <code>{pubkeyText}</code>
-              </Link>
+              {uf.peers ? (
+                <Link
+                  to={`/peers/${encodeURIComponent(rawPubkey)}`}
+                  style={{ color: 'inherit', textDecoration: 'none' }}
+                >
+                  <code>{pubkeyText}</code>
+                </Link>
+              ) : (
+                <code title="Enable Peers in Admin → Feature visibility to open your node on the peer detail route">
+                  {pubkeyText}
+                </code>
+              )}
             </span>
           ) : (
             <code>hub.fabric.pub</code>

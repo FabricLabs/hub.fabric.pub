@@ -53,16 +53,25 @@ class FrontPage extends React.Component {
             </p>
             <Button.Group size='huge'>
               <Button color='blue' as={Link} to='/settings/security' icon labelPosition='left'>
-                <Icon name='user' />Log In
+                <Icon name='user' aria-hidden="true" />
+                Log In
               </Button>
-              <Button color='green' as={Link} to='/features' icon labelPosition='right'>
-                Learn More<Icon name='right chevron' />
+              <Button
+                color='green'
+                as='a'
+                href='#front-page-features'
+                icon
+                labelPosition='right'
+                title="Scroll to the feature overview on this page"
+              >
+                Learn More
+                <Icon name='right chevron' aria-hidden="true" />
               </Button>
             </Button.Group>
           </Container>
         </div>
-        {/* Features Section */}
-        <div className='ui vertical stripe segment'>
+        {/* Features Section — in-app anchor for Learn More (Splash router has no /features route). */}
+        <div className='ui vertical stripe segment' id='front-page-features'>
           <Container text>
             <Header as='h2' style={{ fontSize: '2em', textAlign: 'center' }}>
               {PITCH_CTA_TEXT}
@@ -71,33 +80,33 @@ class FrontPage extends React.Component {
               <div className='column'>
                 <div className='ui segment'>
                   <Header as='h3' style={{ textAlign: 'center' }}>
-                    <Icon name='shield' size='large' />
+                    <Icon name='shield' size='large' aria-hidden="true" />
                     <Header.Content>Security</Header.Content>
                   </Header>
                   <p style={{ textAlign: 'center' }}>
-                    Enterprise-grade security with end-to-end encryption
+                    Portable browser wallet: secp256k1 / BIP32-style keys, unlock, encrypted documents, optional desktop delegation.
                   </p>
                 </div>
               </div>
               <div className='column'>
                 <div className='ui segment'>
                   <Header as='h3' style={{ textAlign: 'center' }}>
-                    <Icon name='users' size='large' />
+                    <Icon name='users' size='large' aria-hidden="true" />
                     <Header.Content>Collaboration</Header.Content>
                   </Header>
                   <p style={{ textAlign: 'center' }}>
-                    Real-time collaboration tools for your team
+                    Fabric peers, WebRTC mesh, chat; publish, distribute, and encrypted storage. Contracts cover storage and deterministic execution.
                   </p>
                 </div>
               </div>
               <div className='column'>
                 <div className='ui segment'>
                   <Header as='h3' style={{ textAlign: 'center' }}>
-                    <Icon name='chart line' size='large' />
-                    <Header.Content>Analytics</Header.Content>
+                    <Icon name='bitcoin' size='large' aria-hidden="true" />
+                    <Header.Content>Bitcoin</Header.Content>
                   </Header>
                   <p style={{ textAlign: 'center' }}>
-                    Powerful insights and analytics dashboard
+                    Regtest tooling, invoices, Payjoin-oriented payments, Lightning when enabled; beacon epochs and L1-backed execution registry when configured.
                   </p>
                 </div>
               </div>

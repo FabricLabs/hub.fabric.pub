@@ -225,12 +225,17 @@ describe('Browser Interface', function () {
       assert.strictEqual(pathname, '/documents', `Expected /documents, got ${pathname}`);
     });
 
-    it('should navigate to Activity via More dropdown', async function () {
-      const clicked = await openMoreDropdownAndClick(sandbox.browser, 'Activity');
+    it('should navigate to Activities via bell', async function () {
+      const clicked = await sandbox.browser.evaluate(() => {
+        const a = document.querySelector('a[href="/activities"][aria-label="Activities and notifications"]');
+        if (!a) return false;
+        a.click();
+        return true;
+      });
       if (!clicked) return this.skip();
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
-      assert.strictEqual(pathname, '/', 'Activity route is /');
+      assert.strictEqual(pathname, '/activities', 'Activities route is /activities');
     });
 
     it('should navigate to Bitcoin via More dropdown', async function () {
@@ -257,13 +262,22 @@ describe('Browser Interface', function () {
     });
 
     it('should render Peers page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, peers: true }));
+        } catch (e) {}
+      });
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'networkidle0', timeout: 10000 });
       await sleep(500);
-      const hasContent = await sandbox.browser.evaluate(() => {
-        const body = document.body && document.body.innerText ? document.body.innerText : '';
-        return body.length > 0 && !/error|crash/i.test(body);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/peers', `Expected /peers, got ${pathname}`);
+      const hasHeading = await sandbox.browser.evaluate(() => {
+        const el = document.getElementById('peers-page-heading');
+        return !!(el && String(el.textContent || '').includes('Peer'));
       });
-      assert.ok(hasContent, 'Peers page should render');
+      assert.ok(hasHeading, 'Peers page should render peers heading');
     });
 
     it('should render Documents page without crashing', async function () {
@@ -286,6 +300,44 @@ describe('Browser Interface', function () {
       assert.ok(hasContent, 'Contracts page should render');
     });
 
+    it('should render Activities page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, activities: true }));
+        } catch (e) {}
+      });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/activities`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/activities', `Expected /activities, got ${pathname}`);
+      const hasHeading = await sandbox.browser.evaluate(() => {
+        const el = document.getElementById('activities-page-heading');
+        return !!(el && String(el.textContent || '').includes('Activities'));
+      });
+      assert.ok(hasHeading, 'Activities page should render activities heading');
+    });
+
+    it('should render Features page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, features: true }));
+        } catch (e) {}
+      });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/features`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/features', `Expected /features, got ${pathname}`);
+      const hasHeading = await sandbox.browser.evaluate(() => {
+        const el = document.getElementById('features-page-heading');
+        return !!(el && String(el.textContent || '').includes('Features'));
+      });
+      assert.ok(hasHeading, 'Features page should render features heading');
+    });
+
     it('should render Bitcoin page without crashing', async function () {
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin`, { waitUntil: 'networkidle0', timeout: 10000 });
       await sleep(500);
@@ -294,6 +346,112 @@ describe('Browser Interface', function () {
         return body.length > 0 && !/error|crash/i.test(body);
       });
       assert.ok(hasContent, 'Bitcoin page should render');
+    });
+
+    it('should render Bitcoin Invoices page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
+            ...cur,
+            bitcoinInvoices: true
+          }));
+        } catch (e) {}
+      });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin/invoices`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Invoices page should render');
+    });
+
+    it('should render Bitcoin Payments page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
+            ...cur,
+            bitcoinPayments: true
+          }));
+        } catch (e) {}
+      });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin/payments`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Payments page should render');
+    });
+
+    it('should render Settings → Bitcoin wallet page without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/bitcoin-wallet`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Settings bitcoin-wallet page should render');
+    });
+
+    it('should render Admin page at /settings/admin without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const hasContent = await sandbox.browser.evaluate(() => {
+        const body = document.body && document.body.innerText ? document.body.innerText : '';
+        return body.length > 0 && !/error|crash/i.test(body);
+      });
+      assert.ok(hasContent, 'Admin page should render');
+    });
+
+    it('should redirect legacy /admin to /settings/admin', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/settings/admin', `Expected redirect to /settings/admin, got ${pathname}`);
+    });
+
+    it('should render Beacon Federation page at /settings/admin/beacon-federation without crashing', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
+            ...cur,
+            sidechain: true
+          }));
+        } catch (e) {}
+      });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin/beacon-federation`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/settings/admin/beacon-federation', `Expected Beacon Federation route, got ${pathname}`);
+      const hasHeading = await sandbox.browser.evaluate(() => {
+        const el = document.getElementById('beacon-federation-heading');
+        return !!(el && String(el.textContent || '').includes('Beacon Federation'));
+      });
+      assert.ok(hasHeading, 'Beacon Federation page should render federation heading');
+    });
+
+    it('should redirect legacy /admin/beacon-federation to /settings/admin/beacon-federation', async function () {
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.evaluate(() => {
+        try {
+          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
+          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
+            ...cur,
+            sidechain: true
+          }));
+        } catch (e) {}
+      });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin/beacon-federation`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/settings/admin/beacon-federation', `Expected redirect, got ${pathname}`);
     });
   });
 });

@@ -23,7 +23,8 @@
     "build:desktop:dir": "npm run build:browser && electron-builder --dir",
     "link:fabric": "bash scripts/link-fabric.sh",
     "predesktop": "node scripts/ensure-fabric-linked.js",
-    "desktop": "npm run build:browser && electron electron/main.js",
+    "desktop": "npm run build:browser && env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron electron/main.js",
+    "desktop:debug": "npm run build:browser && env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron --inspect=9229 electron/main.js",
     "build:extension": "node scripts/build-extension.js",
     "build:semantic": "cd libraries/semantic && npx gulp build && cd ../..",
     "ci": "npm run build && npm run test:unit",
@@ -50,9 +51,18 @@
     "test:browser": "mocha tests/browser.interface.test.js --exit --timeout 60000",
     "test:e2e-browser": "HUB_E2E=1 mocha tests/browser.interface.test.js --exit --timeout 90000",
     "test:e2e-payjoin": "node scripts/verify-payjoin-e2e.js",
+    "test:e2e-storage-contract": "node scripts/verify-storage-contract-e2e.js",
+    "test:e2e-document-purchase": "node scripts/verify-document-purchase-e2e.js",
     "test:lightning": "mocha tests/lightning.hub.http.test.js tests/lightning.bitcoinClient.test.js --exit",
     "test:smoke-mainnet-rpc": "node scripts/verify-mainnet-rpc-smoke.js",
     "bitcoin:addnode": "node scripts/bitcoin-addnode.js",
+    "test:playnet-mesh": "FABRIC_PLAYNET_MESH=1 mocha tests/playnet.market.integration.js --exit --timeout 600000",
+    "test:playnet-mesh-l1": "FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1 FABRIC_PLAYNET_MESH_L1=1 mocha tests/playnet.market.integration.js --exit --timeout 600000",
+    "test:playnet-mesh-l1-browser-deep": "FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1 FABRIC_PLAYNET_MESH_L1=1 FABRIC_PLAYNET_BROWSER_DEEP_TX=1 FABRIC_PLAYNET_BROWSER_DEEP_BLOCK=1 mocha tests/playnet.market.integration.js --exit --timeout 600000",
+    "test:playnet-mesh-l1-desktop-star": "FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1 FABRIC_PLAYNET_MESH_L1=1 FABRIC_PLAYNET_DESKTOP_STAR=1 FABRIC_PLAYNET_BROWSER_DEEP_TX=1 FABRIC_PLAYNET_BROWSER_DEEP_BLOCK=1 mocha tests/playnet.market.integration.js --exit --timeout 600000",
+    "test:playnet-beacon": "FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1 FABRIC_PLAYNET_BEACON=1 mocha tests/playnet.beacon.federation.integration.js --exit --timeout 400000",
+    "playnet:mesh": "node scripts/playnet-regtest-mesh-launch.js",
+    "playnet:mesh:open": "node scripts/playnet-regtest-mesh-launch.js --open",
     "test:e2e-webrtc": "node scripts/verify-webrtc-chat-e2e.js",
     "test:hub-webrtc": "mocha tests/hub.webrtc.rpc.test.js",
     "test:webrtc": "npm run test:bridge && npm run test:hub-webrtc",
@@ -76,10 +86,10 @@
   },
   "homepage": "https://github.com/FabricLabs/hub.fabric.pub#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#feature/cli-refresh",
     "@babel/preset-env": "=7.26.7",
     "@babel/preset-react": "=7.26.3",
     "@babel/register": "=7.25.9",
+    "@fabric/core": "FabricLabs/fabric#feature/cli-refresh",
     "@fabric/http": "FabricLabs/fabric-http#feature/v0.1.0-RC1",
     "@noble/curves": "=1.6.0",
     "@noble/hashes": "=1.5.0",
@@ -87,6 +97,7 @@
     "bs58check": "=3.0.1",
     "cross-fetch": "=4.1.0",
     "fast-json-patch": "=3.1.1",
+    "graphviz-wasm": "^3.0.2",
     "html5-qrcode": "=2.3.8",
     "jquery": "=3.7.1",
     "jsdoc-to-markdown": "=8.0.0",
@@ -171,6 +182,12 @@
         "name": "Fabric Hub",
         "schemes": [
           "fabric"
+        ]
+      },
+      {
+        "name": "Fabric Hub Bitcoin",
+        "schemes": [
+          "bitcoin"
         ]
       }
     ],
