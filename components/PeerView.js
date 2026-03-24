@@ -14,12 +14,14 @@ const {
   Card,
   Checkbox,
   Divider,
+  Form,
   Header,
   Icon,
   Input,
   Label,
   List,
   Message,
+  Modal,
   Segment,
   Loader
 } = require('semantic-ui-react');
@@ -125,6 +127,10 @@ function PeerDetail (props) {
   const [inviteBusy, setInviteBusy] = React.useState(false);
   const [inviteError, setInviteError] = React.useState(null);
   const [inviteOk, setInviteOk] = React.useState(null);
+  const [nickModalOpen, setNickModalOpen] = React.useState(false);
+  const [nickDraft, setNickDraft] = React.useState('');
+  const [inviteNoteModalOpen, setInviteNoteModalOpen] = React.useState(false);
+  const [inviteNoteDraft, setInviteNoteDraft] = React.useState('');
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -394,6 +400,59 @@ function PeerDetail (props) {
     bridgeRef.current.sendPeerInventoryRequest(invDest, kind || 'documents', opts || {});
   };
 
+  const openNicknameModal = React.useCallback(() => {
+    setNickDraft((peer && peer.nickname) ? String(peer.nickname) : '');
+    setNickModalOpen(true);
+  }, [peer]);
+
+  const submitNickname = React.useCallback(() => {
+    if (typeof props.onSetPeerNickname !== 'function' || !id) {
+      setNickModalOpen(false);
+      return;
+    }
+    props.onSetPeerNickname(id, nickDraft);
+    setNickModalOpen(false);
+  }, [props, id, nickDraft]);
+
+  const launchInviteNoteModal = React.useCallback(() => {
+    setInviteNoteDraft('');
+    setInviteNoteModalOpen(true);
+  }, []);
+
+  const submitInviteToContract = React.useCallback(async () => {
+    const token = getAdminTokenFromProps(props);
+    if (!token || !id) return;
+    const note = inviteNoteDraft && String(inviteNoteDraft).trim()
+      ? String(inviteNoteDraft).trim().slice(0, 500)
+      : '';
+    setInviteBusy(true);
+    setInviteError(null);
+    setInviteOk(null);
+    try {
+      const cid = (federationContractId || '').trim();
+      const r = await hubJsonRpc('InvitePeerToFederationContract', [{
+        peerId: id,
+        contractId: cid || undefined,
+        note: note || undefined,
+        adminToken: token
+      }]);
+      if (r && r.status === 'error') {
+        setInviteError(r.message || 'Invite failed');
+        return;
+      }
+      if (r && r.status === 'success' && r.inviteId) {
+        setInviteOk(`Invite sent (${r.inviteId.slice(0, 16)}…)`);
+      } else {
+        setInviteOk('Invite sent');
+      }
+      setInviteNoteModalOpen(false);
+    } catch (e) {
+      setInviteError(e && e.message ? e.message : String(e));
+    } finally {
+      setInviteBusy(false);
+    }
+  }, [props, id, inviteNoteDraft, federationContractId]);
+
   return (
     <fabric-peer-detail class='fade-in'>
       <Segment>
@@ -565,12 +624,7 @@ function PeerDetail (props) {
               <Button
                 size="small"
                 basic
-                onClick={() => {
-                  const currentNick = (peer && peer.nickname) || '';
-                  const value = window.prompt(`Node-local nickname for ${id}:`, currentNick);
-                  if (value == null) return;
-                  props.onSetPeerNickname(id, value);
-                }}
+                onClick={openNicknameModal}
                 title={`Set node-local nickname for ${id}`}
               >
                 <Icon name="tag" />
@@ -594,39 +648,7 @@ function PeerDetail (props) {
                   loading={inviteBusy}
                   disabled={inviteBusy}
                   title="Admin only: send a federation / execution-contract invite as structured P2P chat (Fabric message log on this hub)"
-                  onClick={async () => {
-                    const token = getAdminTokenFromProps(props);
-                    if (!token || !id) return;
-                    const notePrompt = typeof window !== 'undefined' ? window.prompt('Optional message for the invitee:', '') : '';
-                    const note = notePrompt && String(notePrompt).trim()
-                      ? String(notePrompt).trim().slice(0, 500)
-                      : '';
-                    setInviteBusy(true);
-                    setInviteError(null);
-                    setInviteOk(null);
-                    try {
-                      const cid = (federationContractId || '').trim();
-                      const r = await hubJsonRpc('InvitePeerToFederationContract', [{
-                        peerId: id,
-                        contractId: cid || undefined,
-                        note: note || undefined,
-                        adminToken: token
-                      }]);
-                      if (r && r.status === 'error') {
-                        setInviteError(r.message || 'Invite failed');
-                        return;
-                      }
-                      if (r && r.status === 'success' && r.inviteId) {
-                        setInviteOk(`Invite sent (${r.inviteId.slice(0, 16)}…)`);
-                      } else {
-                        setInviteOk('Invite sent');
-                      }
-                    } catch (e) {
-                      setInviteError(e && e.message ? e.message : String(e));
-                    } finally {
-                      setInviteBusy(false);
-                    }
-                  }}
+                  onClick={launchInviteNoteModal}
                 >
                   <Icon name="users" />
                   Invite to contract
@@ -1116,6 +1138,77 @@ function PeerDetail (props) {
             )}
           </Segment>
         )}
+        <Modal
+          open={nickModalOpen}
+          size="tiny"
+          onClose={() => setNickModalOpen(false)}
+          closeOnDimmerClick
+          closeOnEscape
+        >
+          <Modal.Header>Set peer nickname</Modal.Header>
+          <Modal.Content>
+            <Form
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitNickname();
+              }}
+            >
+              <Form.Field>
+                <label htmlFor="peer-nickname-input">Nickname (node-local)</label>
+                <Input
+                  id="peer-nickname-input"
+                  value={nickDraft}
+                  onChange={(e) => setNickDraft(e.target.value)}
+                  placeholder={`Nickname for ${id}`}
+                  maxLength={128}
+                />
+              </Form.Field>
+            </Form>
+          </Modal.Content>
+          <Modal.Actions>
+            <Button type="button" onClick={() => setNickModalOpen(false)}>Cancel</Button>
+            <Button type="button" primary onClick={submitNickname}>
+              <Icon name="tag" />
+              Save nickname
+            </Button>
+          </Modal.Actions>
+        </Modal>
+        <Modal
+          open={inviteNoteModalOpen}
+          size="small"
+          onClose={() => setInviteNoteModalOpen(false)}
+          closeOnDimmerClick
+          closeOnEscape
+        >
+          <Modal.Header>Invite peer to contract</Modal.Header>
+          <Modal.Content>
+            <Form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                await submitInviteToContract();
+              }}
+            >
+              <Form.Field>
+                <label htmlFor="peer-invite-note-input">Optional message for invitee</label>
+                <Form.TextArea
+                  id="peer-invite-note-input"
+                  value={inviteNoteDraft}
+                  onChange={(e) => setInviteNoteDraft(e.target.value)}
+                  placeholder="Optional note..."
+                  rows={4}
+                  maxLength={500}
+                />
+              </Form.Field>
+            </Form>
+          </Modal.Content>
+          <Modal.Actions>
+            <Button type="button" onClick={() => setInviteNoteModalOpen(false)}>Cancel</Button>
+            <Button type="button" primary loading={inviteBusy} disabled={inviteBusy} onClick={submitInviteToContract}>
+              <Icon name="users" />
+              Send invite
+            </Button>
+          </Modal.Actions>
+        </Modal>
       </Segment>
     </fabric-peer-detail>
   );

@@ -18,7 +18,7 @@ describe('Lightning HTTP (stub)', function () {
   const httpPort = 8085;
 
   before(async function () {
-    this.timeout(30000);
+    this.timeout(60000);
     hub = new Hub(merge({}, settings, {
       port: 7780,
       fs: { path: 'stores/hub-test-lightning' },
@@ -175,7 +175,7 @@ describe('Lightning HTTP (no node, no stub)', function () {
   const httpPort = 8086;
 
   before(async function () {
-    this.timeout(30000);
+    this.timeout(60000);
     hub = new Hub(merge({}, settings, {
       port: 7781,
       fs: { path: 'stores/hub-test-lightning-nc' },

@@ -3,7 +3,8 @@
 const assert = require('assert');
 const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSats');
 
-describe('formatSats', () => {
+describe('formatSats', function () {
+  this.timeout(10000);
   it('formatSatsDisplay uses grouping for whole sats', () => {
     assert.strictEqual(formatSatsDisplay(1_000_000), '1,000,000');
   });

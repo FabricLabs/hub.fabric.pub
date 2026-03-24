@@ -16,7 +16,7 @@ const {
   TextArea,
   Message
 } = require('semantic-ui-react');
-const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { fetchLightningChannels, loadUpstreamSettings, fetchCrowdfundingCampaigns } = require('../functions/bitcoinClient');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { hubJsonRpc } = require('../functions/sidechainHubClient');
 const { describeHubRpcFailure } = require('../functions/hubRpcHints');
@@ -25,6 +25,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 const FILTER_ALL = 'all';
 const FILTER_NEW = 'new';
@@ -35,11 +36,22 @@ const FILTER_COMPLETE = 'complete';
 const DEFAULT_EMPTY_EXEC_PROGRAM = JSON.stringify({ version: 1, steps: [] }, null, 2);
 
 const DEFAULT_REGISTRY_FEE_SATS = 1000;
+const EXEC_REGISTRY_DRAFT_STORAGE_KEY = 'fabric.execRegistryDraft.v1';
 
 function trimHash (value = '', left = 8, right = 8) {
   const text = String(value || '');
   if (text.length <= left + right + 1) return text;
   return `${text.slice(0, left)}…${text.slice(-right)}`;
+}
+
+function normalizeOptionalInputText (value) {
+  const text = String(value == null ? '' : value);
+  // Defensive cleanup for historical drafts/UI states that serialized "undefined".
+  if (text === 'undefined') return '';
+  if (text.startsWith('undefined') && text.length > 'undefined'.length) {
+    return text.slice('undefined'.length);
+  }
+  return text;
 }
 
 function ContractList () {
@@ -49,7 +61,9 @@ function ContractList () {
     return subscribeHubUiFeatureFlags(() => setUiTick((t) => t + 1));
   }, []);
   const uf = loadHubUiFeatureFlags();
+  const hasAdmin = !!readHubAdminTokenFromBrowser();
   const [contracts, setContracts] = React.useState([]);
+  const [crowdfundCampaigns, setCrowdfundCampaigns] = React.useState([]);
   const [lightningChannels, setLightningChannels] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(null);
@@ -65,6 +79,59 @@ function ContractList () {
   const [execTxid, setExecTxid] = React.useState('');
   const [execInvoiceBusy, setExecInvoiceBusy] = React.useState(false);
   const [registryAddressCopied, setRegistryAddressCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    try {
+      const raw = window.sessionStorage.getItem(EXEC_REGISTRY_DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (!draft || typeof draft !== 'object') return;
+      if (typeof draft.execName === 'string') setExecName(normalizeOptionalInputText(draft.execName));
+      if (typeof draft.execJson === 'string' && draft.execJson.trim()) setExecJson(draft.execJson);
+      if (draft.execAmountSats != null) setExecAmountSats(String(draft.execAmountSats));
+      if (typeof draft.execTxid === 'string') setExecTxid(draft.execTxid);
+      if (
+        draft.execRegistryInvoice &&
+        typeof draft.execRegistryInvoice === 'object' &&
+        draft.execRegistryInvoice.programDigest &&
+        draft.execRegistryInvoice.address
+      ) {
+        setExecRegistryInvoice({
+          programDigest: String(draft.execRegistryInvoice.programDigest),
+          address: String(draft.execRegistryInvoice.address),
+          amountSats: Number(draft.execRegistryInvoice.amountSats) || DEFAULT_REGISTRY_FEE_SATS,
+          network: draft.execRegistryInvoice.network != null
+            ? String(draft.execRegistryInvoice.network).trim()
+            : undefined
+        });
+      }
+    } catch (_) {}
+  }, []);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    try {
+      const draft = {
+        execName: normalizeOptionalInputText(execName),
+        execJson: String(execJson || ''),
+        execAmountSats: String(execAmountSats || ''),
+        execTxid: String(execTxid || ''),
+        execRegistryInvoice: execRegistryInvoice || null
+      };
+      const hasContent = !!(
+        draft.execName.trim() ||
+        draft.execTxid.trim() ||
+        (draft.execJson && draft.execJson !== DEFAULT_EMPTY_EXEC_PROGRAM) ||
+        draft.execRegistryInvoice
+      );
+      if (!hasContent) {
+        window.sessionStorage.removeItem(EXEC_REGISTRY_DRAFT_STORAGE_KEY);
+        return;
+      }
+      window.sessionStorage.setItem(EXEC_REGISTRY_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch (_) {}
+  }, [execName, execJson, execAmountSats, execTxid, execRegistryInvoice]);
 
   const copyRegistryInvoiceAddress = React.useCallback(() => {
     const a = execRegistryInvoice && execRegistryInvoice.address;
@@ -86,9 +153,11 @@ function ContractList () {
       setError(null);
     }
     try {
-      const [contractsSettled, lightningSettled] = await Promise.allSettled([
+      const upstream = loadUpstreamSettings();
+      const [contractsSettled, lightningSettled, crowdfundSettled] = await Promise.allSettled([
         fetch('/contracts', { method: 'GET' }),
-        fetchLightningChannels(loadUpstreamSettings()).catch(() => ({ channels: [], outputs: [] }))
+        fetchLightningChannels(upstream).catch(() => ({ channels: [], outputs: [] })),
+        fetchCrowdfundingCampaigns(upstream).catch(() => [])
       ]);
 
       if (lightningSettled.status === 'fulfilled') {
@@ -97,6 +166,14 @@ function ContractList () {
         setLightningChannels(channels);
       } else {
         setLightningChannels([]);
+      }
+
+      if (crowdfundSettled.status === 'fulfilled') {
+        const raw = crowdfundSettled.value;
+        const list = Array.isArray(raw) ? raw : [];
+        setCrowdfundCampaigns(list);
+      } else {
+        setCrowdfundCampaigns([]);
       }
 
       if (contractsSettled.status !== 'fulfilled') {
@@ -384,6 +461,11 @@ function ContractList () {
         setExecName('');
         setExecRegistryInvoice(null);
         setExecTxid('');
+        if (typeof window !== 'undefined' && window.sessionStorage) {
+          try {
+            window.sessionStorage.removeItem(EXEC_REGISTRY_DRAFT_STORAGE_KEY);
+          } catch (_) {}
+        }
         setRegistryAddressCopied(false);
         setExecFeedback({
           positive: true,
@@ -453,6 +535,78 @@ function ContractList () {
           )}
           {!loading && !error && (
             <>
+              <section aria-labelledby="contracts-crowdfund-h4" aria-describedby="contracts-crowdfund-intro">
+              <Header as="h4" id="contracts-crowdfund-h4">
+                <Icon name="heart outline" color="red" aria-hidden="true" />
+                Taproot crowdfunds (this hub)
+              </Header>
+              <div id="contracts-crowdfund-intro">
+                <Message info size="small" style={{ marginBottom: '1em' }}>
+                  <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Hub-local vault campaigns</p>
+                  <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                    Crowdfunds use Taproot scripts on this node&apos;s Bitcoin connection; they are listed here for visibility alongside storage and execution contracts.
+                    Manage campaigns, ACP PSBT, Payjoin, payout, and refund from{' '}
+                    {uf.bitcoinCrowdfund ? (
+                      <Link to="/services/bitcoin/crowdfunds">Crowdfunds</Link>
+                    ) : (
+                      <span>Crowdfunds (enable <strong>Bitcoin — Crowdfund</strong> in Admin → Feature visibility)</span>
+                    )}.
+                  </p>
+                </Message>
+              </div>
+              <List divided relaxed style={{ marginBottom: '1.25em' }}>
+                {crowdfundCampaigns.map((row) => {
+                  if (!row) return null;
+                  const cid = String(row.campaignId || '').trim();
+                  const title = row.title || cid || 'Campaign';
+                  return (
+                    <List.Item key={cid || title}>
+                      <List.Content>
+                        <List.Header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.35em' }}>
+                          {uf.bitcoinCrowdfund ? (
+                            <Link to="/services/bitcoin/crowdfunds">{title}</Link>
+                          ) : (
+                            <span>{title}</span>
+                          )}
+                          <Label size="mini" color="red" style={{ marginLeft: '0.15em' }}>
+                            <Icon name="heart" />
+                            Crowdfunds
+                          </Label>
+                          {cid ? (
+                            <code style={{ fontSize: '0.8em', color: '#666' }} title="Campaign id">{cid}</code>
+                          ) : null}
+                        </List.Header>
+                        <List.Description style={{ color: '#666' }}>
+                          {row.address ? (
+                            <span style={{ wordBreak: 'break-all' }}>Vault <code>{row.address}</code></span>
+                          ) : (
+                            'Vault address pending'
+                          )}
+                          {row.goalSats != null ? (
+                            <span style={{ marginLeft: '0.5em' }}>· goal {formatSatsDisplay(row.goalSats)} sats</span>
+                          ) : null}
+                        </List.Description>
+                      </List.Content>
+                    </List.Item>
+                  );
+                })}
+                {crowdfundCampaigns.length === 0 && (
+                  <List.Item>
+                    <List.Content>
+                      <List.Description style={{ color: '#666' }}>
+                        No Taproot crowdfund campaigns on this hub yet.
+                        {uf.bitcoinCrowdfund ? (
+                          <> Open <Link to="/services/bitcoin/crowdfunds">Crowdfunds</Link> to create one.</>
+                        ) : (
+                          <> Enable <strong>Bitcoin — Crowdfund</strong> in Admin → Feature visibility to add campaigns.</>
+                        )}
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                )}
+              </List>
+              </section>
+
               <section aria-labelledby="contracts-storage-h4" aria-describedby="contracts-storage-intro">
               <Header as="h4" id="contracts-storage-h4">
                 <Icon name="cloud" aria-hidden="true" />
@@ -557,7 +711,7 @@ function ContractList () {
                 <List.Item>
                   <List.Content>
                     <List.Description style={{ color: '#666' }}>
-                      {storageContracts.length === 0 && executionContracts.length === 0
+                      {storageContracts.length === 0 && executionContracts.length === 0 && crowdfundCampaigns.length === 0
                         ? 'No contracts yet.'
                         : `No storage contracts match "${filter}".`}
                     </List.Description>
@@ -606,6 +760,12 @@ function ContractList () {
                     )}
                     {' '}with admin token on regtest), then paste the txid and <strong>Publish to registry</strong>.
                   </p>
+                  {!hasAdmin ? (
+                    <p style={{ margin: '0.5em 0 0', color: '#444' }}>
+                      This browser is currently in non-admin mode, so Hub-wallet funding steps are blocked.
+                      Keep using invoice + txid flow with an operator wallet, or load the setup token first.
+                    </p>
+                  ) : null}
                 </Message>
               )}
               {!execBitcoinLoading && !execBitcoinOn && (
@@ -637,8 +797,8 @@ function ContractList () {
                   <label htmlFor="fabric-exec-name">Name (optional)</label>
                   <Form.Input
                     id="fabric-exec-name"
-                    value={execName}
-                    onChange={(e, d) => setExecName(d.value)}
+                    value={normalizeOptionalInputText(execName)}
+                    onChange={(e, d) => setExecName(normalizeOptionalInputText(d && d.value))}
                     placeholder="e.g. Ping demo"
                   />
                 </Form.Field>

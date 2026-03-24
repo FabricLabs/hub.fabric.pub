@@ -31,12 +31,10 @@ class AccountCreator extends React.Component {
   }
 
   handleUsernameChange = (event) => {
-    console.log('username change:', event.target.value);
     this.setState({ username: event.target.value });
   };
 
   handlePasswordChange = (event) => {
-    console.log('password change:', '(' + event.target.value.length + ' chars)');
     this.setState({ password: event.target.value });
   };
 

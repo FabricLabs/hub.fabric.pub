@@ -11,9 +11,11 @@ const {
   notifyDelegationStorageChanged,
   hasExternalSigningDelegation
 } = require('../functions/fabricDelegationLocal');
+const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const {
   loadHubUiFeatureFlags,
-  subscribeHubUiFeatureFlags
+  subscribeHubUiFeatureFlags,
+  fetchPersistedHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
@@ -40,9 +42,13 @@ const Identity = require('@fabric/core/types/identity');
 // Components
 const Bridge = require('./Bridge');
 const BitcoinHome = require('./BitcoinHome');
+const LightningHome = require('./LightningHome');
+const BitcoinBlockList = require('./BitcoinBlockList');
+const FaucetHome = require('./FaucetHome');
 const Onboarding = require('./Onboarding');
 const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
+const BitcoinTransactionsHome = require('./BitcoinTransactionsHome');
 
 function BitcoinPaymentsHomeRoute (props) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -264,7 +270,7 @@ function UnknownRouteShell () {
           Documents
         </Button>
         <Button as={Link} to="/contracts" basic aria-label="Contracts">
-          <Icon name="file contract" />
+          <Icon name="file code" />
           Contracts
         </Button>
         {uf.features ? (
@@ -314,17 +320,21 @@ function UnknownRouteShell () {
           </Button>
         ) : null}
         {uf.bitcoinLightning ? (
-          <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-lightning' }} basic aria-label="Lightning">
+          <Button as={Link} to="/services/lightning" basic aria-label="Lightning">
             <Icon name="bolt" />
             Lightning
           </Button>
         ) : null}
         {uf.bitcoinExplorer ? (
-          <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} basic aria-label="Explorer">
+          <Button as={Link} to="/services/bitcoin/blocks" basic aria-label="Explorer">
             <Icon name="search" />
             Explorer
           </Button>
         ) : null}
+        <Button as={Link} to="/services/bitcoin/faucet" basic aria-label="Faucet">
+          <Icon name="tint" />
+          Faucet
+        </Button>
         {uf.bitcoinResources ? (
           <Button as={Link} to="/services/bitcoin/resources" basic aria-label="Bitcoin HTTP resources">
             <Icon name="code" />
@@ -332,9 +342,9 @@ function UnknownRouteShell () {
           </Button>
         ) : null}
         {uf.bitcoinCrowdfund ? (
-          <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-crowdfunding' }} basic aria-label="Crowdfund">
+          <Button as={Link} to="/services/bitcoin/crowdfunds" basic aria-label="Crowdfunds">
             <Icon name="heart outline" />
-            Crowdfund
+            Crowdfunds
           </Button>
         ) : null}
         <Button as={Link} to="/settings/admin" basic aria-label="Admin">
@@ -431,6 +441,27 @@ function BitcoinHomeWithNav (props) {
   const location = useLocation();
   React.useLayoutEffect(() => {
     const raw = location.hash || '';
+    const hashTarget = raw.startsWith('#') ? raw.slice(1) : raw;
+    const routeTarget = props && typeof props.targetHash === 'string' ? props.targetHash.trim() : '';
+    const h = hashTarget || routeTarget;
+    if (!h) return;
+    const el = document.getElementById(h);
+    if (el && typeof el.scrollIntoView === 'function') {
+      window.requestAnimationFrame(() => {
+        el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    }
+  }, [location.pathname, location.hash, props && props.targetHash]);
+  return <BitcoinHome {...props} navigate={navigate} />;
+}
+
+const CrowdfundingHome = require('./CrowdfundingHome');
+
+function CrowdfundingHomeWithNav (props) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  React.useLayoutEffect(() => {
+    const raw = location.hash || '';
     const h = raw.startsWith('#') ? raw.slice(1) : raw;
     if (!h) return;
     const el = document.getElementById(h);
@@ -440,7 +471,7 @@ function BitcoinHomeWithNav (props) {
       });
     }
   }, [location.pathname, location.hash]);
-  return <BitcoinHome {...props} navigate={navigate} />;
+  return <CrowdfundingHome {...props} navigate={navigate} />;
 }
 
 /**
@@ -528,11 +559,11 @@ class HubInterface extends React.Component {
                 '[HUB] Stored local identity from FABRIC_DEV_BROWSER_* (development only; prefer a separate browser key when possible).'
               );
             } else if (!r.ok && devForce && typeof console !== 'undefined' && console.warn) {
-              console.warn('[HUB] FABRIC_DEV_BROWSER_* bootstrap failed:', r.error);
+              console.warn('[HUB] FABRIC_DEV_BROWSER_* bootstrap failed:', safeIdentityErr(r.error));
             }
           } catch (e) {
             if (typeof console !== 'undefined' && console.warn) {
-              console.warn('[HUB] FABRIC_DEV_BROWSER_* ignored:', e && e.message ? e.message : e);
+              console.warn('[HUB] FABRIC_DEV_BROWSER_* ignored:', safeIdentityErr(e));
             }
           }
         }
@@ -881,6 +912,7 @@ class HubInterface extends React.Component {
     });
     if (typeof window !== 'undefined') {
       this._hubUiUnsub = subscribeHubUiFeatureFlags(() => this.forceUpdate());
+      fetchPersistedHubUiFeatureFlags().then(() => this.forceUpdate()).catch(() => {});
     }
   }
 
@@ -991,7 +1023,7 @@ class HubInterface extends React.Component {
         uiHasLockedIdentity: true
       });
     } catch (e) {
-      console.error('[HUB]', 'Error locking identity:', e);
+      console.error('[HUB]', 'Error locking identity:', safeIdentityErr(e));
     }
   }
 
@@ -1039,7 +1071,7 @@ class HubInterface extends React.Component {
         }
       }
     } catch (error) {
-      console.error('[HUB]', 'Error handling bridge response:', error);
+      console.error('[HUB]', 'Error handling bridge response:', safeIdentityErr(error));
     }
   }
 
@@ -1068,23 +1100,6 @@ class HubInterface extends React.Component {
 
             .fade-in {
               animation: hub-fade-in 220ms ease-out;
-            }
-
-            /* Flex main: grows so BottomPanel sits at viewport bottom when content is short; flows after content when long. */
-            .hub-app-shell {
-              min-height: 100vh;
-              display: flex;
-              flex-direction: column;
-              box-sizing: border-box;
-              width: 100%;
-            }
-
-            .hub-main-with-fixed-footer {
-              flex: 1 1 auto;
-              min-height: 0;
-              width: 100%;
-              padding-bottom: 1rem;
-              box-sizing: border-box;
             }
 
             @keyframes hub-fade-in {
@@ -1163,9 +1178,7 @@ class HubInterface extends React.Component {
                   pauseOnFocusLoss
                   draggable
                   pauseOnHover
-                  style={{ bottom: 'max(4.5rem, calc(3rem + env(safe-area-inset-bottom, 0px)))' }}
                 />
-                <div className="hub-app-shell">
                 <TopPanel
                   hubAddress={this.state.uiHubAddress}
                   auth={effectiveAuth}
@@ -1195,7 +1208,6 @@ class HubInterface extends React.Component {
                   }}
                 />
 
-                <div className="hub-main-with-fixed-footer">
                 <Modal
                   size="large"
                   open={!!this.state.uiIdentityOpen}
@@ -1475,7 +1487,7 @@ class HubInterface extends React.Component {
                             try {
                               result = await bridge.signArbitraryTextDelegated(text);
                             } catch (e) {
-                              console.error('[HUB]', 'Delegated sign failed:', e);
+                              console.error('[HUB]', 'Delegated sign failed:', safeIdentityErr(e));
                             }
                             this.setState({
                               uiSignMessageBusy: false,
@@ -1679,6 +1691,7 @@ class HubInterface extends React.Component {
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
                         adminToken={this.state.adminToken}
+                        bitcoinPage="dashboard"
                         {...this.props}
                       />
                     )}
@@ -1687,16 +1700,44 @@ class HubInterface extends React.Component {
                     path="/services/bitcoin/blocks"
                     element={(
                       <UiFlagRoute flag="bitcoinExplorer">
-                        <Navigate to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} replace />
+                        <BitcoinBlockList
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          {...this.props}
+                        />
                       </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/faucet"
+                    element={(
+                      <FaucetHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bitcoin={bitcoin}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        adminToken={this.state.adminToken}
+                        {...this.props}
+                      />
                     )}
                   />
                   <Route
                     path="/services/bitcoin/transactions"
                     element={(
-                      <UiFlagRoute flag="bitcoinExplorer">
-                        <Navigate to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} replace />
-                      </UiFlagRoute>
+                      <BitcoinTransactionsHome
+                        auth={effectiveAuth}
+                        identity={local || effectiveAuth}
+                        bitcoin={bitcoin}
+                        bridge={this.props.bridge}
+                        bridgeRef={this.bridgeRef}
+                        adminToken={this.state.adminToken}
+                        {...this.props}
+                      />
                     )}
                   />
                   <Route
@@ -1745,10 +1786,59 @@ class HubInterface extends React.Component {
                     )}
                   />
                   <Route
+                    path="/services/bitcoin/crowdfunds"
+                    element={(
+                      <UiFlagRoute flag="bitcoinCrowdfund">
+                        <CrowdfundingHome
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          onRequireUnlock={() => this.setState({ uiIdentityOpen: true })}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
                     path="/services/bitcoin/invoices"
                     element={(
                       <UiFlagRoute flag="bitcoinInvoices">
                         <InvoiceListHomeRoute
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/services/bitcoin/lightning"
+                    element={(
+                      <UiFlagRoute flag="bitcoinLightning">
+                        <LightningHome
+                          auth={effectiveAuth}
+                          identity={local || effectiveAuth}
+                          bitcoin={bitcoin}
+                          bridge={this.props.bridge}
+                          bridgeRef={this.bridgeRef}
+                          adminToken={this.state.adminToken}
+                          {...this.props}
+                        />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/services/lightning"
+                    element={(
+                      <UiFlagRoute flag="bitcoinLightning">
+                        <LightningHome
                           auth={effectiveAuth}
                           identity={local || effectiveAuth}
                           bitcoin={bitcoin}
@@ -2189,11 +2279,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/wallet"
-                    element={(
-                      <UiFlagRoute flag="bitcoinPayments">
-                        <Navigate to="/services/bitcoin/payments" replace />
-                      </UiFlagRoute>
-                    )}
+                    element={<Navigate to="/services/bitcoin/transactions" replace />}
                   />
                   <Route
                     path="/bitcoin"
@@ -2204,6 +2290,14 @@ class HubInterface extends React.Component {
                     element={(
                       <UiFlagRoute flag="bitcoinPayments">
                         <Navigate to="/services/bitcoin/payments" replace />
+                      </UiFlagRoute>
+                    )}
+                  />
+                  <Route
+                    path="/crowdfunds"
+                    element={(
+                      <UiFlagRoute flag="bitcoinCrowdfund">
+                        <Navigate to="/services/bitcoin/crowdfunds" replace />
                       </UiFlagRoute>
                     )}
                   />
@@ -2253,9 +2347,7 @@ class HubInterface extends React.Component {
                   />
                   <Route path="*" element={<UnknownRouteShell />} />
                 </Routes>
-                </div>
                 <BottomPanel pubkey={nodePubkey} adminToken={this.state.adminToken} />
-                </div>
               </BrowserRouter>
             )}
           </fabric-react-component>

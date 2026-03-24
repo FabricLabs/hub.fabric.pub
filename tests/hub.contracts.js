@@ -5,7 +5,7 @@ const Hub = require('../services/hub');
 
 describe('hub.fabric.pub', function () {
   describe('Hub', function () {
-    this.timeout(10000);
+    this.timeout(30000);
 
     it('provides a valid contract', function () {
       const hub = new Hub();

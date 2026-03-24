@@ -19,11 +19,14 @@ function scrollToHashElement (hash) {
 const {
   Button,
   Card,
+  Form,
   Header,
   Icon,
+  Input,
   Label,
   List,
   Loader,
+  Modal,
   Segment
 } = require('semantic-ui-react');
 
@@ -33,6 +36,30 @@ const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 class Home extends React.Component {
+  constructor (props) {
+    super(props);
+    this.state = {
+      connectModalOpen: false,
+      connectPeerIdDraft: ''
+    };
+  }
+
+  _openConnectModal = () => {
+    this.setState({ connectModalOpen: true, connectPeerIdDraft: '' });
+  };
+
+  _closeConnectModal = () => {
+    this.setState({ connectModalOpen: false, connectPeerIdDraft: '' });
+  };
+
+  _submitConnectPeerId = () => {
+    const { onConnectWebRTCPeer } = this.props;
+    const value = String(this.state.connectPeerIdDraft || '').trim();
+    if (!value || typeof onConnectWebRTCPeer !== 'function') return;
+    onConnectWebRTCPeer(value);
+    this.setState({ connectModalOpen: false, connectPeerIdDraft: '' });
+  };
+
   render () {
     const {
       bridge,
@@ -221,14 +248,7 @@ class Home extends React.Component {
                       <Button
                         size='small'
                         basic
-                        onClick={() => {
-                          try {
-                            const input = window.prompt('Enter WebRTC peer ID to connect:');
-                            const value = (input || '').trim();
-                            if (!value) return;
-                            onConnectWebRTCPeer(value);
-                          } catch (e) {}
-                        }}
+                        onClick={() => this._openConnectModal()}
                         title='Manually connect to a specific WebRTC peer by ID'
                       >
                         <Icon name='plug' />
@@ -354,7 +374,7 @@ class Home extends React.Component {
                 style={{ margin: '0.15em' }}
                 title="L1-bound beacon epochs, manifest, federation witnesses"
               >
-                Beacon Fed.
+                Beacon Federation
               </Button>
             ) : null}
             {uf.sidechain ? (
@@ -370,6 +390,21 @@ class Home extends React.Component {
               </Button>
             ) : null}
             <Button as={Link} to="/services/bitcoin" size="tiny" basic style={{ margin: '0.15em' }}>Bitcoin</Button>
+            {(uf.bitcoinPayments || uf.bitcoinLightning) ? (
+              <Button
+                as={Link}
+                to={{
+                  pathname: '/services/bitcoin',
+                  hash: uf.bitcoinPayments ? 'fabric-bitcoin-payjoin' : 'fabric-bitcoin-lightning'
+                }}
+                size="tiny"
+                basic
+                style={{ margin: '0.15em' }}
+                title="Hub deposits: Payjoin (BIP77) when Payments are on; Lightning section when L2 is on"
+              >
+                Treasury
+              </Button>
+            ) : null}
             {uf.bitcoinPayments ? (
               <Button as={Link} to="/services/bitcoin/payments" size="tiny" basic style={{ margin: '0.15em' }}>Payments</Button>
             ) : null}
@@ -377,20 +412,23 @@ class Home extends React.Component {
               <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" size="tiny" basic style={{ margin: '0.15em' }}>Invoices</Button>
             ) : null}
             {uf.bitcoinLightning ? (
-              <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-lightning' }} size="tiny" basic style={{ margin: '0.15em' }}>Lightning</Button>
+              <Button as={Link} to="/services/lightning" size="tiny" basic style={{ margin: '0.15em' }}>Lightning</Button>
             ) : null}
             {uf.bitcoinExplorer ? (
-              <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} size="tiny" basic style={{ margin: '0.15em' }}>Explorer</Button>
+              <Button as={Link} to="/services/bitcoin/blocks" size="tiny" basic style={{ margin: '0.15em' }}>Explorer</Button>
             ) : null}
+            <Button as={Link} to="/services/bitcoin/faucet" size="tiny" basic style={{ margin: '0.15em' }}>Faucet</Button>
             {uf.bitcoinResources ? (
               <Button as={Link} to="/services/bitcoin/resources" size="tiny" basic style={{ margin: '0.15em' }}>Resources</Button>
             ) : null}
             {uf.bitcoinCrowdfund ? (
-              <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-crowdfunding' }} size="tiny" basic style={{ margin: '0.15em' }}>Crowdfund</Button>
+              <Button as={Link} to="/services/bitcoin/crowdfunds" size="tiny" basic style={{ margin: '0.15em' }}>Crowdfunds</Button>
             ) : null}
-            <Button as={Link} to="/settings/admin" size="tiny" basic style={{ margin: '0.15em' }}>Admin</Button>
+            {hasHubAdminForPeers ? (
+              <Button as={Link} to="/settings/admin" size="tiny" basic style={{ margin: '0.15em' }}>Admin</Button>
+            ) : null}
             <Button as={Link} to="/settings" size="tiny" basic style={{ margin: '0.15em' }}>Settings</Button>
-            <Button as={Link} to="/settings/security" size="tiny" basic style={{ margin: '0.15em' }}>Security</Button>
+            <Button as={Link} to="/settings/security" size="tiny" basic style={{ margin: '0.15em' }}>Security &amp; delegation</Button>
           </Segment>
         </nav>
         <Segment>
@@ -444,7 +482,7 @@ class Home extends React.Component {
                   <Link to="/activities">Activities</Link> (bell in the top bar).
                 </>
               ) : (
-                <> Use <Link to="/settings/security">Security</Link> for sessions and delegation.</>
+                <> Use <Link to="/settings/security">Security &amp; delegation</Link> for sessions and delegation.</>
               )}
             </p>
             <NotificationsStream
@@ -477,6 +515,29 @@ class Home extends React.Component {
           </section>
         </Segment>
         ) : null}
+        <Modal open={this.state.connectModalOpen} size="tiny" onClose={this._closeConnectModal} closeOnEscape closeOnDimmerClick>
+          <Modal.Header>Connect to WebRTC peer</Modal.Header>
+          <Modal.Content>
+            <Form onSubmit={(e) => { e.preventDefault(); this._submitConnectPeerId(); }}>
+              <Form.Field>
+                <label htmlFor="home-webrtc-peer-id">Peer ID</label>
+                <Input
+                  id="home-webrtc-peer-id"
+                  placeholder="fabric-bridge-…"
+                  value={this.state.connectPeerIdDraft}
+                  onChange={(e) => this.setState({ connectPeerIdDraft: e.target.value })}
+                />
+              </Form.Field>
+            </Form>
+          </Modal.Content>
+          <Modal.Actions>
+            <Button type="button" onClick={this._closeConnectModal}>Cancel</Button>
+            <Button type="button" primary onClick={this._submitConnectPeerId}>
+              <Icon name="plug" />
+              Connect
+            </Button>
+          </Modal.Actions>
+        </Modal>
       </fabric-hub-home>
     );
   }

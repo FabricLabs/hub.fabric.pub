@@ -5,6 +5,9 @@ const merge = require('lodash.merge');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
+const net = require('net');
+const dns = require('dns').promises;
 
 /** Read-only app bundle root (Electron sets FABRIC_HUB_APP_ROOT to app.getAppPath() for asar-safe assets). */
 function hubAppRoot () {
@@ -32,6 +35,7 @@ const Message = require('@fabric/core/types/message');
 const Peer = require('@fabric/core/types/peer');
 const Service = require('@fabric/core/types/service');
 const Token = require('@fabric/core/types/token'); // fabric tokens
+const Worker = require('@fabric/core/types/worker');
 const Actor = require('@fabric/core/types/actor');
 const Entity = require('@fabric/core/types/entity');
 const Tree = require('@fabric/core/types/tree');
@@ -69,6 +73,7 @@ const INVENTORY_FILE_RELAY_TTL = 8;
 const WEBRTC_RELAY_MAX_HOPS = Number(process.env.FABRIC_WEBRTC_RELAY_MAX_HOPS || 32);
 /** Per WebRTC peer id: max RelayFromWebRTC fan-outs per second (DoS guard). */
 const WEBRTC_RELAY_MAX_PER_SEC = Number(process.env.FABRIC_WEBRTC_RELAY_MAX_PER_SEC || 48);
+const WORK_QUEUE_STRATEGIES = new Set(['highest_value_first', 'fifo', 'oldest_high_value_first']);
 const inventoryHtlc = require('../functions/inventoryHtlc');
 const txContractLabels = require('../functions/txContractLabels');
 const psbtFabric = require('../functions/psbtFabric');
@@ -85,6 +90,7 @@ const federationContractInvite = require('../functions/federationContractInvite'
 const federationVault = require('../functions/federationVault');
 const federationRegistry = require('../functions/federationRegistry');
 const crowdfundingTaproot = require('../functions/crowdfundingTaproot');
+const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 
 // Hub Services
 const Fabric = require('../services/fabric');
@@ -247,6 +253,14 @@ class Hub extends Service {
       distributeFeeSats: DEFAULT_DISTRIBUTE_FEE_SATS,
     }, settings);
 
+    // Test stability: avoid default outbound Fabric dials unless a test explicitly
+    // opts in by passing `settings.peers` or setting FABRIC_TEST_ALLOW_DEFAULT_PEERS=1.
+    const runningUnderMocha = Array.isArray(process.argv) && process.argv.some((arg) => /mocha/i.test(String(arg)));
+    if ((process.env.NODE_ENV === 'test' || runningUnderMocha) && process.env.FABRIC_TEST_ALLOW_DEFAULT_PEERS !== '1') {
+      const hasExplicitPeers = !!(settings && Object.prototype.hasOwnProperty.call(settings, 'peers'));
+      if (!hasExplicitPeers) this.settings.peers = [];
+    }
+
     // Regtest runs in one autonomous mode: managed local bitcoind, unless setup chose external.
     const inputBitcoin = settings && settings.bitcoin ? settings.bitcoin : {};
     const rpcportProvided = Object.prototype.hasOwnProperty.call(inputBitcoin, 'rpcport');
@@ -292,6 +306,10 @@ class Hub extends Service {
     this._bitcoinCacheTTL = 15000;
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
     this._lastBitcoinBlockActivityTip = null;
+    /** Per-peer cooldown for requesting mainchain inventory over Fabric. */
+    this._mainchainInventoryRequestCooldown = new Map();
+    /** Dedupe in-flight block-sync requests by `peer|hash`. */
+    this._pendingMainchainBlockSyncRequests = new Set();
     // Pending pay-to-distribute requests: documentId -> { address, amountSats, config, createdAt }
     this._distributeRequests = {};
     // Pending execution registry invoices: programDigest (64 hex) -> { address, amountSats, program, name?, createdAt }
@@ -406,9 +424,17 @@ class Hub extends Service {
     // Internals
     this.agents = {};
     this.healths = {};
+    this._operatorHealthSamples = [];
+    this._operatorCpuSample = null;
+    this._workQueueStrategy = 'highest_value_first';
     this.services = {};
     this.sources = {};
     this.workers = [];
+    this.worker = null;
+    this._workQueue = [];
+    this._workQueueById = new Set();
+    this._workQueueBusy = false;
+    this._workQueueTimer = null;
     this._stopPromise = null;
     /** Inventory L1 HTLC settlement state (seller-side). */
     /** @type {Map<string, Object>} */
@@ -1401,6 +1427,316 @@ class Hub extends Service {
     return this.bitcoin || null;
   }
 
+  _ensureWorker () {
+    if (this.worker) return this.worker;
+    try {
+      this.worker = new Worker(() => {});
+      this.workers.push(this.worker);
+      this.worker.on('error', (err) => {
+        console.error('[HUB:WORKER] error:', err && err.message ? err.message : err);
+      });
+    } catch (e) {
+      console.warn('[HUB:WORKER] init failed:', e && e.message ? e.message : e);
+      this.worker = null;
+    }
+    return this.worker;
+  }
+
+  _parseDocumentOfferEnvelopeFromContent (content) {
+    const text = String(content || '').trim();
+    if (!text) return null;
+    const parseJson = (s) => {
+      try { return JSON.parse(s); } catch (_) { return null; }
+    };
+    const direct = parseJson(text);
+    if (direct && direct.type === DOCUMENT_OFFER) return direct;
+    const prefixed = /^\[DOCUMENT_OFFER\]\s*/i.test(text)
+      ? parseJson(text.replace(/^\[DOCUMENT_OFFER\]\s*/i, ''))
+      : null;
+    if (prefixed && prefixed.type === DOCUMENT_OFFER) return prefixed;
+    return null;
+  }
+
+  _offerValueSats (offer) {
+    if (!offer || typeof offer !== 'object') return 0;
+    const object = offer.object && typeof offer.object === 'object' ? offer.object : {};
+    const sats = Number(object.rewardSats || object.valueSats || object.amountSats || 0);
+    return Number.isFinite(sats) && sats > 0 ? Math.round(sats) : 0;
+  }
+
+  _normalizeWorkQueueStrategy (strategy) {
+    const key = String(strategy || '').trim().toLowerCase();
+    if (!WORK_QUEUE_STRATEGIES.has(key)) return 'highest_value_first';
+    return key;
+  }
+
+  _loadWorkQueueStrategyFromSettings () {
+    if (!this.setup || typeof this.setup.getSetting !== 'function') return this._workQueueStrategy;
+    const saved = this.setup.getSetting('WORK_QUEUE_STRATEGY');
+    this._workQueueStrategy = this._normalizeWorkQueueStrategy(saved);
+    return this._workQueueStrategy;
+  }
+
+  async _setWorkQueueStrategy (strategy) {
+    const next = this._normalizeWorkQueueStrategy(strategy);
+    this._workQueueStrategy = next;
+    if (this.setup && typeof this.setup.setSetting === 'function') {
+      await this.setup.setSetting('WORK_QUEUE_STRATEGY', next);
+    }
+    this._sortWorkQueue();
+    return next;
+  }
+
+  _enqueueWorkItem (item = {}) {
+    const id = String(item.id || '').trim();
+    if (!id || this._workQueueById.has(id)) return false;
+    this._workQueueById.add(id);
+    const valueSats = Number(item.valueSats || 0);
+    this._workQueue.push({
+      id,
+      type: String(item.type || 'unknown'),
+      sourcePeer: item.sourcePeer || '',
+      createdAt: Date.now(),
+      attempts: 0,
+      valueSats: Number.isFinite(valueSats) ? Math.max(0, Math.round(valueSats)) : 0,
+      payload: item.payload || {}
+    });
+    this._sortWorkQueue();
+    this._drainWorkQueue().catch(() => {});
+    return true;
+  }
+
+  _sortWorkQueue () {
+    const strategy = this._normalizeWorkQueueStrategy(this._workQueueStrategy);
+    this._workQueue.sort((a, b) => {
+      if (strategy === 'fifo') {
+        return Number(a.createdAt || 0) - Number(b.createdAt || 0);
+      }
+      if (strategy === 'oldest_high_value_first') {
+        const createdDelta = Number(a.createdAt || 0) - Number(b.createdAt || 0);
+        if (createdDelta !== 0) return createdDelta;
+        return Number(b.valueSats || 0) - Number(a.valueSats || 0);
+      }
+      const valueDelta = Number(b.valueSats || 0) - Number(a.valueSats || 0);
+      if (valueDelta !== 0) return valueDelta;
+      return Number(a.createdAt || 0) - Number(b.createdAt || 0);
+    });
+  }
+
+  async _executeWorkItem (item) {
+    if (!item || typeof item !== 'object') return;
+    if (item.type === 'document-offer-block-download') {
+      const peer = String(item.sourcePeer || '').trim();
+      const hashes = Array.isArray(item.payload.blockHashes) ? item.payload.blockHashes : [];
+      if (!peer || !hashes.length) return;
+      await this._requestMainchainBlocksFromPeer(peer, hashes);
+      return;
+    }
+    if (item.type === 'contract-execution-offer') {
+      const offer = item.payload.offer || {};
+      const object = offer.object && typeof offer.object === 'object' ? offer.object : {};
+      if (object.program && Array.isArray(object.program.steps)) {
+        const run = runExecutionProgram(object.program, {});
+        if (run && run.ok) {
+          this.recordActivity({
+            type: 'Run',
+            object: {
+              type: 'ExecutionOffer',
+              id: String(item.id),
+              stepsExecuted: Number(run.stepsExecuted || 0),
+              valueSats: Number(item.valueSats || 0)
+            }
+          });
+        }
+      }
+    }
+  }
+
+  async _drainWorkQueue () {
+    if (this._workQueueBusy) return;
+    this._workQueueBusy = true;
+    try {
+      while (this._workQueue.length) {
+        this._sortWorkQueue();
+        const next = this._workQueue.shift();
+        if (!next) break;
+        next.attempts = Number(next.attempts || 0) + 1;
+        let requeued = false;
+        try {
+          await this._executeWorkItem(next);
+        } catch (e) {
+          if (next.attempts < 3) {
+            this._workQueue.push(next);
+            requeued = true;
+          } else {
+            console.warn('[HUB:WORKER] dropped work item after retries:', next.id, e && e.message ? e.message : e);
+          }
+        } finally {
+          if (!requeued) this._workQueueById.delete(next.id);
+        }
+      }
+    } finally {
+      this._workQueueBusy = false;
+    }
+  }
+
+  _ingestOfferFromChatMessage (chat = {}, originPeer = '') {
+    const object = chat && chat.object && typeof chat.object === 'object' ? chat.object : {};
+    const env = this._parseDocumentOfferEnvelopeFromContent(object.content || '');
+    if (!env) return;
+    const offerObject = env.object && typeof env.object === 'object' ? env.object : {};
+    const valueSats = this._offerValueSats(env);
+    const offerId = String(offerObject.offerId || offerObject.id || '').trim() || crypto.randomBytes(8).toString('hex');
+    const explicitHashes = []
+      .concat(offerObject.blockHash || [])
+      .concat(Array.isArray(offerObject.blockHashes) ? offerObject.blockHashes : [])
+      .map((h) => String(h || '').trim().toLowerCase())
+      .filter((h) => this._isHex64(h));
+    if (explicitHashes.length) {
+      this._enqueueWorkItem({
+        id: `offer:block:${offerId}`,
+        type: 'document-offer-block-download',
+        sourcePeer: originPeer || '',
+        valueSats,
+        payload: {
+          offer: env,
+          blockHashes: [...new Set(explicitHashes)]
+        }
+      });
+    }
+    if (offerObject.program && Array.isArray(offerObject.program.steps)) {
+      this._enqueueWorkItem({
+        id: `offer:contract:${offerId}`,
+        type: 'contract-execution-offer',
+        sourcePeer: originPeer || '',
+        valueSats,
+        payload: { offer: env }
+      });
+    }
+  }
+
+  _isHex64 (value) {
+    return typeof value === 'string' && /^[0-9a-fA-F]{64}$/.test(value);
+  }
+
+  async _collectLocalMainchainInventorySummary () {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') return null;
+    try {
+      const [bestHashRaw, heightRaw, chainRaw] = await Promise.all([
+        bitcoin._makeRPCRequest('getbestblockhash', []),
+        bitcoin._makeRPCRequest('getblockcount', []),
+        bitcoin._makeRPCRequest('getblockchaininfo', [])
+      ]);
+      const bestHash = String(bestHashRaw || '').trim();
+      const height = Number(heightRaw);
+      if (!this._isHex64(bestHash) || !Number.isFinite(height) || height < 0) return null;
+      const recentHashes = [];
+      const window = 16;
+      const start = Math.max(0, height - (window - 1));
+      for (let h = start; h <= height; h++) {
+        try {
+          const hash = await bitcoin._makeRPCRequest('getblockhash', [h]);
+          if (this._isHex64(hash)) recentHashes.push(String(hash).toLowerCase());
+        } catch (_) {}
+      }
+      return {
+        network: chainRaw && chainRaw.chain ? String(chainRaw.chain) : undefined,
+        height: Math.round(height),
+        bestHash: bestHash.toLowerCase(),
+        recentHashes
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async _requestMainchainInventoryFromPeer (addressInput, reason = 'peer-open') {
+    const address = this._resolvePeerAddress(addressInput);
+    if (!address || !this.agent || !this.agent.connections || !this.agent.connections[address]) return false;
+    const now = Date.now();
+    const last = this._mainchainInventoryRequestCooldown.get(address) || 0;
+    if (now - last < 15000) return false;
+    this._mainchainInventoryRequestCooldown.set(address, now);
+    try {
+      const payload = {
+        type: 'INVENTORY_REQUEST',
+        actor: { id: this.agent.identity.id },
+        object: {
+          kind: 'mainchain',
+          created: now,
+          reason
+        },
+        target: String(address)
+      };
+      this._sendGenericFabricEnvelopeToPeer(address, payload);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async _requestMainchainBlocksFromPeer (addressInput, hashes = []) {
+    const address = this._resolvePeerAddress(addressInput);
+    if (!address || !this.agent || !this.agent.connections || !this.agent.connections[address]) return false;
+    const uniq = [...new Set((Array.isArray(hashes) ? hashes : [])
+      .map((h) => String(h || '').trim().toLowerCase())
+      .filter((h) => this._isHex64(h)))].slice(0, 32);
+    if (!uniq.length) return false;
+    const key = `${address}|${uniq.join(',')}`;
+    if (this._pendingMainchainBlockSyncRequests.has(key)) return false;
+    this._pendingMainchainBlockSyncRequests.add(key);
+    try {
+      const payload = {
+        type: 'INVENTORY_REQUEST',
+        actor: { id: this.agent.identity.id },
+        object: {
+          kind: 'mainchain-blocks',
+          created: Date.now(),
+          hashes: uniq
+        },
+        target: String(address)
+      };
+      this._sendGenericFabricEnvelopeToPeer(address, payload);
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      setTimeout(() => this._pendingMainchainBlockSyncRequests.delete(key), 5000);
+    }
+  }
+
+  async _applyMainchainBlocksFromInventoryItems (items = []) {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') return { applied: 0, attempted: 0 };
+    const rows = (Array.isArray(items) ? items : [])
+      .filter((it) => it && this._isHex64(String(it.hash || '').trim()) && typeof it.hex === 'string' && it.hex.trim());
+    rows.sort((a, b) => Number(a.height || 0) - Number(b.height || 0));
+    let attempted = 0;
+    let applied = 0;
+    for (const row of rows) {
+      attempted += 1;
+      const hash = String(row.hash).toLowerCase();
+      let alreadyHave = false;
+      try {
+        const header = await bitcoin._makeRPCRequest('getblockheader', [hash]);
+        if (header && typeof header === 'object') alreadyHave = true;
+      } catch (_) {}
+      if (alreadyHave) continue;
+      try {
+        const result = await bitcoin._makeRPCRequest('submitblock', [String(row.hex).trim()]);
+        if (result == null || result === 'duplicate' || result === 'duplicate-invalid' || result === 'duplicate-inconclusive') {
+          applied += 1;
+        }
+      } catch (e) {
+        if (this.settings && this.settings.debug) {
+          console.warn('[HUB] submitblock failed for', hash, e && e.message ? e.message : e);
+        }
+      }
+    }
+    return { applied, attempted };
+  }
+
   _getPayjoinService () {
     if (!this.payjoin) return null;
     if (this.settings && this.settings.payjoin && this.settings.payjoin.enable === false) return null;
@@ -1827,6 +2163,200 @@ class Hub extends Service {
     };
   }
 
+  async _probeTcpLocalPort (port, host = '127.0.0.1', timeoutMs = 800) {
+    const startedAt = Date.now();
+    return await new Promise((resolve) => {
+      const socket = new net.Socket();
+      let settled = false;
+      const done = (ok, error) => {
+        if (settled) return;
+        settled = true;
+        try { socket.destroy(); } catch (_) {}
+        resolve({
+          ok: !!ok,
+          host,
+          port,
+          latencyMs: Date.now() - startedAt,
+          error: error ? String(error) : null
+        });
+      };
+
+      socket.setTimeout(timeoutMs);
+      socket.once('connect', () => done(true, null));
+      socket.once('timeout', () => done(false, 'timeout'));
+      socket.once('error', (err) => done(false, err && err.message ? err.message : String(err)));
+      try {
+        socket.connect(port, host);
+      } catch (err) {
+        done(false, err && err.message ? err.message : String(err));
+      }
+    });
+  }
+
+  _buildOperatorProbeTargets () {
+    const out = [];
+    const add = (name, host, port) => {
+      const p = Number(port);
+      if (!Number.isFinite(p) || p <= 0) return;
+      if (out.some((x) => x.name === name && x.host === host && x.port === p)) return;
+      out.push({ name, host, port: p });
+    };
+
+    add('hub-http', '127.0.0.1', this.settings && this.settings.http && this.settings.http.port);
+    add('fabric-p2p', '127.0.0.1', this.settings && this.settings.port);
+    add('bitcoin-rpc', '127.0.0.1', this.settings && this.settings.bitcoin && this.settings.bitcoin.rpcport);
+    add('bitcoin-p2p', '127.0.0.1', this.settings && this.settings.bitcoin && this.settings.bitcoin.port);
+    add('lightning-rpc', '127.0.0.1', this.settings && this.settings.lightning && this.settings.lightning.rpcport);
+    return out;
+  }
+
+  async _collectOperatorHealthSnapshot () {
+    const now = Date.now();
+    const nodeUptimeSec = process.uptime();
+    const mem = process.memoryUsage();
+    const hostname = os.hostname();
+    const platform = `${process.platform}-${process.arch}`;
+    const loadAvg = os.loadavg();
+    const nowCpu = process.cpuUsage();
+    let processCpuPercent = null;
+    if (this._operatorCpuSample && this._operatorCpuSample.at > 0) {
+      const elapsedUs = Math.max(1, (now - this._operatorCpuSample.at) * 1000);
+      const usedUs = Math.max(0, (nowCpu.user - this._operatorCpuSample.user) + (nowCpu.system - this._operatorCpuSample.system));
+      const cores = Math.max(1, Number(os.cpus() && os.cpus().length) || 1);
+      processCpuPercent = Math.max(0, Math.min(100, (usedUs / elapsedUs / cores) * 100));
+    }
+    this._operatorCpuSample = { at: now, user: nowCpu.user, system: nowCpu.system };
+
+    const storePath = path.resolve(hubStoreRoot(), this.settings && this.settings.fs && this.settings.fs.path ? this.settings.fs.path : 'stores/hub');
+    let disk = {
+      path: storePath,
+      availableBytes: null,
+      totalBytes: null,
+      usedBytes: null,
+      usedPercent: null,
+      estimatedSecondsUntilFull: null,
+      estimatedAt: null,
+      trendBytesPerSecond: null
+    };
+
+    try {
+      const stat = await fs.promises.statfs(storePath);
+      const bsize = Number(stat.bsize || 0);
+      const total = Number(stat.blocks || 0) * bsize;
+      const available = Number(stat.bavail || 0) * bsize;
+      const used = total > 0 ? Math.max(0, total - available) : null;
+      const usedPercent = (total > 0 && used != null) ? (used / total) * 100 : null;
+
+      disk = {
+        ...disk,
+        availableBytes: available,
+        totalBytes: total,
+        usedBytes: used,
+        usedPercent
+      };
+
+      this._operatorHealthSamples.push({ at: now, availableBytes: available });
+      if (this._operatorHealthSamples.length > 24) this._operatorHealthSamples.shift();
+      const recent = this._operatorHealthSamples.filter((s) => now - s.at <= (6 * 60 * 60 * 1000));
+      if (recent.length >= 2) {
+        const first = recent[0];
+        const last = recent[recent.length - 1];
+        const dtSec = Math.max(1, (last.at - first.at) / 1000);
+        const delta = Number(first.availableBytes) - Number(last.availableBytes);
+        const bytesPerSec = delta / dtSec;
+        if (Number.isFinite(bytesPerSec) && bytesPerSec > 1) {
+          const etaSec = Math.floor(available / bytesPerSec);
+          disk.trendBytesPerSecond = bytesPerSec;
+          disk.estimatedSecondsUntilFull = etaSec;
+          disk.estimatedAt = new Date(now + (etaSec * 1000)).toISOString();
+        }
+      }
+    } catch (err) {
+      disk.error = err && err.message ? err.message : String(err);
+    }
+
+    let interfacesRaw = {};
+    let interfacesError = null;
+    try {
+      interfacesRaw = os.networkInterfaces() || {};
+    } catch (err) {
+      interfacesError = err && err.message ? err.message : String(err);
+    }
+    const interfaces = Object.keys(interfacesRaw).map((name) => {
+      const entries = Array.isArray(interfacesRaw[name]) ? interfacesRaw[name] : [];
+      return {
+        name,
+        addresses: entries
+          .filter((a) => a && !a.internal)
+          .map((a) => ({ family: a.family, address: a.address, netmask: a.netmask, mac: a.mac }))
+      };
+    }).filter((x) => Array.isArray(x.addresses) && x.addresses.length > 0);
+
+    let dnsProbe = { ok: false, resolver: 'example.com', error: null, addresses: [] };
+    try {
+      const addresses = await dns.resolve('example.com');
+      dnsProbe = { ok: true, resolver: 'example.com', error: null, addresses: Array.isArray(addresses) ? addresses : [] };
+    } catch (err) {
+      dnsProbe = {
+        ok: false,
+        resolver: 'example.com',
+        error: err && err.message ? err.message : String(err),
+        addresses: []
+      };
+    }
+
+    const targets = this._buildOperatorProbeTargets();
+    const probeResults = await Promise.all(targets.map(async (t) => {
+      const r = await this._probeTcpLocalPort(t.port, t.host, 800);
+      return { ...t, ...r };
+    }));
+
+    return {
+      now: new Date(now).toISOString(),
+      node: {
+        hostname,
+        platform,
+        pid: process.pid,
+        nodeVersion: process.version,
+        uptimeSec: nodeUptimeSec,
+        memory: {
+          rss: Number(mem.rss || 0),
+          heapUsed: Number(mem.heapUsed || 0),
+          heapTotal: Number(mem.heapTotal || 0),
+          external: Number(mem.external || 0)
+        },
+        loadAverage: loadAvg,
+        cpu: {
+          cores: Math.max(1, Number(os.cpus() && os.cpus().length) || 1),
+          processPercent: processCpuPercent,
+          processUsageMicros: {
+            user: Number(nowCpu.user || 0),
+            system: Number(nowCpu.system || 0)
+          }
+        }
+      },
+      disk,
+      network: {
+        interfaces,
+        ...(interfacesError ? { interfacesError } : {}),
+        dnsProbe,
+        localProbes: probeResults
+      }
+    };
+  }
+
+  async _handleOperatorHealthRequest (req, res) {
+    try {
+      const body = await this._collectOperatorHealthSnapshot();
+      res.status(200).json(body);
+    } catch (err) {
+      res.status(500).json({
+        status: 'error',
+        message: err && err.message ? err.message : String(err)
+      });
+    }
+  }
+
   /**
    * L1 Taproot vault derived from federation validator list + threshold (deterministic).
    * @returns {object}
@@ -2171,10 +2701,20 @@ class Hub extends Service {
     try {
       for (const s of this._inventoryHtlcById.values()) {
         if (s && s.fundedTxid) {
-          add(s.fundedTxid, 'inventory_htlc', { documentId: s.documentId, settlementId: s.settlementId, phase: 'fund' });
+          add(s.fundedTxid, 'inventory_htlc', {
+            documentId: s.documentId,
+            settlementId: s.settlementId,
+            phase: 'fund',
+            amountSats: Number.isFinite(Number(s.amountSats)) ? Math.round(Number(s.amountSats)) : undefined
+          });
         }
         if (s && s.claimTxid) {
-          add(s.claimTxid, 'inventory_htlc_claim', { documentId: s.documentId, settlementId: s.settlementId, phase: 'seller_claim' });
+          add(s.claimTxid, 'inventory_htlc_claim', {
+            documentId: s.documentId,
+            settlementId: s.settlementId,
+            phase: 'seller_claim',
+            amountSats: Number.isFinite(Number(s.amountSats)) ? Math.round(Number(s.amountSats)) : undefined
+          });
         }
       }
     } catch (_) {}
@@ -2187,7 +2727,13 @@ class Hub extends Service {
           for (const p of Object.values(session.proposals)) {
             if (!p) continue;
             const id = pj.extractProposalTxid(p);
-            if (id) add(id, 'payjoin', { sessionId: session.id, proposalId: p.id });
+            if (id) {
+              add(id, 'payjoin', {
+                sessionId: session.id,
+                proposalId: p.id,
+                amountSats: Number.isFinite(Number(session.amountSats)) ? Math.round(Number(session.amountSats)) : undefined
+              });
+            }
           }
         }
       }
@@ -2254,6 +2800,63 @@ class Hub extends Service {
     const map = this._collectFabricTxLabelMap();
     const merged = txContractLabels.mergeLabelsOntoTransactions(transactions, map);
     return this._applyPayjoinDepositAddressLabels(merged);
+  }
+
+  _computeNodeWealthSummaryFromLabels () {
+    const map = this._collectFabricTxLabelMap();
+    const totals = {
+      payjoin: 0,
+      payjoinDeposit: 0,
+      inventoryHtlcFund: 0,
+      inventoryHtlcClaim: 0,
+      storageContract: 0,
+      totalLabeled: 0
+    };
+    const counts = {
+      payjoin: 0,
+      payjoinDeposit: 0,
+      inventoryHtlcFund: 0,
+      inventoryHtlcClaim: 0,
+      storageContract: 0,
+      totalLabeled: 0
+    };
+    const amountFor = (row) => {
+      if (!row || !row.meta) return 0;
+      const a = Number(
+        row.meta.amountSats != null
+          ? row.meta.amountSats
+          : (row.meta.purchasePriceSats != null ? row.meta.purchasePriceSats : 0)
+      );
+      return Number.isFinite(a) && a > 0 ? Math.round(a) : 0;
+    };
+    for (const row of Object.values(map || {})) {
+      if (!row || !Array.isArray(row.types)) continue;
+      const amount = amountFor(row);
+      const hasType = (t) => row.types.includes(t);
+      if (hasType('payjoin')) {
+        counts.payjoin += 1;
+        if (amount > 0) totals.payjoin += amount;
+      }
+      if (hasType('payjoin_deposit')) {
+        counts.payjoinDeposit += 1;
+        if (amount > 0) totals.payjoinDeposit += amount;
+      }
+      if (hasType('inventory_htlc')) {
+        counts.inventoryHtlcFund += 1;
+        if (amount > 0) totals.inventoryHtlcFund += amount;
+      }
+      if (hasType('inventory_htlc_claim')) {
+        counts.inventoryHtlcClaim += 1;
+        if (amount > 0) totals.inventoryHtlcClaim += amount;
+      }
+      if (hasType('storage_contract')) {
+        counts.storageContract += 1;
+        if (amount > 0) totals.storageContract += amount;
+      }
+      if (row.types.length > 0) counts.totalLabeled += 1;
+    }
+    totals.totalLabeled = totals.payjoin + totals.storageContract;
+    return { counts, totals };
   }
 
   _pruneInventoryHtlcSettlements () {
@@ -4183,6 +4786,10 @@ class Hub extends Service {
     });
   }
 
+  /**
+   * POST body: `{ psbtBase64 }` — PSBT after beneficiary signed all inputs (tapscript path).
+   * Hub adds arbiter Schnorr sigs via `crowdfundingTaproot.signAllInputsWithKey` (same order as finalize).
+   */
   _handleBitcoinCrowdfundingPayoutSignArbiterRequest (req, res) {
     const token = SetupService.extractBearerToken(req);
     if (!this.setup.verifyAdminToken(token)) {
@@ -4212,6 +4819,10 @@ class Hub extends Service {
     }
   }
 
+  /**
+   * POST body: `{ psbtBase64 }` — fully signed payout PSBT (beneficiary + arbiter).
+   * Validates inputs pay the campaign vault, `crowdfundingTaproot.finalizeCrowdfundPayoutPsbt`, then `sendrawtransaction`.
+   */
   _handleBitcoinCrowdfundingPayoutBroadcastRequest (req, res) {
     this._loadCrowdfundingCampaignsIfNeeded();
     const id = String((req.params && req.params.campaignId) || '').trim();
@@ -6369,6 +6980,7 @@ class Hub extends Service {
       });
 
       this.http._addRoute('POST', '/services/rpc', this._handleHttpJsonRpcRequest.bind(this));
+      this.http._addRoute('GET', '/services/operator/health', this._handleOperatorHealthRequest.bind(this));
 
       // Bitcoin service surface:
       // - GET routes are browser-friendly (HTML shell or JSON by Accept header)
@@ -8381,12 +8993,156 @@ class Hub extends Service {
         return buildNetworkStatus();
       });
 
+      this.http._registerMethod('GetWorkerStatus', (...params) => {
+        const top = this._workQueue && this._workQueue.length ? this._workQueue[0] : null;
+        return {
+          type: 'GetWorkerStatusResult',
+          status: 'success',
+          strategy: this._normalizeWorkQueueStrategy(this._workQueueStrategy),
+          strategies: Array.from(WORK_QUEUE_STRATEGIES),
+          workerReady: !!this.worker,
+          workers: Array.isArray(this.workers) ? this.workers.length : 0,
+          queueLength: Array.isArray(this._workQueue) ? this._workQueue.length : 0,
+          queueBusy: !!this._workQueueBusy,
+          top: top
+            ? {
+                id: top.id,
+                type: top.type,
+                valueSats: Number(top.valueSats || 0),
+                attempts: Number(top.attempts || 0),
+                sourcePeer: top.sourcePeer || '',
+                createdAt: top.createdAt || 0
+              }
+            : null
+        };
+      });
+
+      this.http._registerMethod('GetNodeWealthSummary', async (...params) => {
+        await this._collectBitcoinStatus({ force: false }).catch(() => {});
+        const btc = this._state && this._state.content && this._state.content.services && this._state.content.services.bitcoin
+          ? this._state.content.services.bitcoin.status || {}
+          : {};
+        const labelSummary = this._computeNodeWealthSummaryFromLabels();
+        return {
+          type: 'GetNodeWealthSummaryResult',
+          status: 'success',
+          wallet: {
+            available: !!(btc && btc.available),
+            network: btc && btc.network ? String(btc.network) : '',
+            balanceBtc: Number(btc && btc.balance != null ? btc.balance : 0),
+            balanceSats: Number.isFinite(Number(btc && btc.balanceSats)) ? Number(btc.balanceSats) : undefined,
+            height: Number.isFinite(Number(btc && btc.height)) ? Number(btc.height) : undefined
+          },
+          labeledFlows: labelSummary
+        };
+      });
+
+      this.http._registerMethod('ListWorkerQueue', (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const offset = Math.max(0, Number(req.offset || 0) || 0);
+        const limit = Math.max(1, Math.min(200, Number(req.limit || 50) || 50));
+        const queue = Array.isArray(this._workQueue) ? this._workQueue : [];
+        const rows = queue
+          .slice(offset, offset + limit)
+          .map((item) => ({
+            id: item.id,
+            type: item.type,
+            sourcePeer: item.sourcePeer || '',
+            valueSats: Number(item.valueSats || 0),
+            attempts: Number(item.attempts || 0),
+            createdAt: item.createdAt || 0,
+            payload: item.payload || {}
+          }));
+        return {
+          type: 'ListWorkerQueueResult',
+          status: 'success',
+          strategy: this._normalizeWorkQueueStrategy(this._workQueueStrategy),
+          total: queue.length,
+          offset,
+          limit,
+          items: rows
+        };
+      });
+
+      this.http._registerMethod('RunWorkerQueueNow', async (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { type: 'RunWorkerQueueNowResult', status: 'error', message: 'adminToken required' };
+        }
+        await this._drainWorkQueue().catch(() => {});
+        return {
+          type: 'RunWorkerQueueNowResult',
+          status: 'success',
+          queueLength: Array.isArray(this._workQueue) ? this._workQueue.length : 0,
+          queueBusy: !!this._workQueueBusy
+        };
+      });
+
+      this.http._registerMethod('SetWorkerQueueStrategy', async (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { type: 'SetWorkerQueueStrategyResult', status: 'error', message: 'adminToken required' };
+        }
+        const requested = this._normalizeWorkQueueStrategy(req.strategy);
+        if (!WORK_QUEUE_STRATEGIES.has(requested)) {
+          return {
+            type: 'SetWorkerQueueStrategyResult',
+            status: 'error',
+            message: 'invalid strategy',
+            allowed: Array.from(WORK_QUEUE_STRATEGIES)
+          };
+        }
+        const strategy = await this._setWorkQueueStrategy(requested);
+        return {
+          type: 'SetWorkerQueueStrategyResult',
+          status: 'success',
+          strategy,
+          queueLength: Array.isArray(this._workQueue) ? this._workQueue.length : 0
+        };
+      });
+
+      this.http._registerMethod('ClearWorkerQueue', (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { type: 'ClearWorkerQueueResult', status: 'error', message: 'adminToken required' };
+        }
+        const before = Array.isArray(this._workQueue) ? this._workQueue.length : 0;
+        this._workQueue = [];
+        this._workQueueById = new Set();
+        return { type: 'ClearWorkerQueueResult', status: 'success', cleared: before };
+      });
+
+      this.http._registerMethod('DropWorkerQueueItem', (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { type: 'DropWorkerQueueItemResult', status: 'error', message: 'adminToken required' };
+        }
+        const id = String(req.id || '').trim();
+        if (!id) return { type: 'DropWorkerQueueItemResult', status: 'error', message: 'id required' };
+        const before = Array.isArray(this._workQueue) ? this._workQueue.length : 0;
+        this._workQueue = (this._workQueue || []).filter((item) => item && item.id !== id);
+        this._workQueueById.delete(id);
+        return {
+          type: 'DropWorkerQueueItemResult',
+          status: 'success',
+          removed: before !== this._workQueue.length,
+          queueLength: this._workQueue.length
+        };
+      });
+
       // When Hub needs more Fabric P2P connections, publish peering offer (gossiped until fulfilled).
       // Called from pushNetworkStatus and from periodic timer.
       const maybeBroadcastFabricPeeringOffer = () => {
         try {
           const connCount = Object.keys(this.agent.connections || {}).length;
-          const maxPeers = (this.agent.settings.constraints && this.agent.settings.constraints.peers && this.agent.settings.constraints.peers.max) || MAX_PEERS;
+          const agentConstraints = this.agent && this.agent.settings && this.agent.settings.constraints
+            ? this.agent.settings.constraints
+            : null;
+          const maxPeers = (agentConstraints && agentConstraints.peers && agentConstraints.peers.max) || MAX_PEERS;
           if (connCount >= maxPeers || connCount === 0) return;
           const now = Date.now();
           const last = this._lastFabricPeeringOfferAt || 0;
@@ -8429,6 +9185,8 @@ class Hub extends Service {
       this.agent.on('connections:open', (ev) => {
         pushNetworkStatus();
         this._maybeRequestFabricSeedResync(ev);
+        const addr = ev && (ev.address || ev.id);
+        this._requestMainchainInventoryFromPeer(addr, 'connection-open').catch(() => {});
       });
       this.agent.on('connections:close', pushNetworkStatus);
 
@@ -8758,6 +9516,8 @@ class Hub extends Service {
       // The UI Bridge will parse `ChatMessage` and append it to client-side state.
       this.agent.on('chat', (chat) => {
         try {
+          const originPeer = chat && chat._origin ? String(chat._origin) : '';
+          this._ingestOfferFromChatMessage(chat, originPeer);
           if (this.settings && this.settings.debug) {
             try {
               console.log('[HUB:CHAT]', JSON.stringify(chat));
@@ -8931,10 +9691,12 @@ class Hub extends Service {
         }
       });
 
-      // Handle inventory requests from peers and respond with local document inventory.
+      // Handle inventory requests from peers and respond with local inventory.
       this.agent.on('inventory', async ({ message, origin }) => {
         try {
-          if (!message || !message.object || message.object.kind !== 'documents') return;
+          if (!message || !message.object) return;
+          const kind = String(message.object.kind || '').trim().toLowerCase();
+          if (!kind) return;
 
           const logicalSeller = message.target != null ? String(message.target).trim() : '';
           const myId = this.agent.identity && this.agent.identity.id;
@@ -8972,8 +9734,40 @@ class Hub extends Service {
           }
 
           const targetId = message.actor && message.actor.id;
-
-          let items = this._collectLocalDocumentInventoryItems();
+          let items = [];
+          if (kind === 'documents') {
+            items = this._collectLocalDocumentInventoryItems();
+          } else if (kind === 'mainchain') {
+            const summary = await this._collectLocalMainchainInventorySummary();
+            if (summary) items = [summary];
+          } else if (kind === 'mainchain-blocks') {
+            const bitcoin = this._getBitcoinService();
+            const requested = Array.isArray(message.object.hashes) ? message.object.hashes : [];
+            const hashes = [...new Set(requested
+              .map((h) => String(h || '').trim().toLowerCase())
+              .filter((h) => this._isHex64(h)))].slice(0, 32);
+            if (bitcoin && typeof bitcoin._makeRPCRequest === 'function') {
+              for (const hash of hashes) {
+                try {
+                  const blockHex = await bitcoin._makeRPCRequest('getblock', [hash, 0]);
+                  let height = undefined;
+                  try {
+                    const header = await bitcoin._makeRPCRequest('getblockheader', [hash]);
+                    if (header && Number.isFinite(Number(header.height))) height = Number(header.height);
+                  } catch (_) {}
+                  if (typeof blockHex === 'string' && blockHex.trim()) {
+                    items.push({
+                      hash,
+                      hex: blockHex.trim(),
+                      ...(Number.isFinite(height) ? { height } : {})
+                    });
+                  }
+                } catch (_) {}
+              }
+            }
+          } else {
+            return;
+          }
 
           const originConn = origin && (origin.name || origin.address || origin.id);
           const requesterFabricId = message.actor && message.actor.id;
@@ -8984,13 +9778,15 @@ class Hub extends Service {
           } else if (originConn) {
             relayReturnHop = originConn;
           }
-          items = await this._attachHtlcToInventoryItems(items, message, htlcDirectConn, requesterFabricId, relayReturnHop);
+          if (kind === 'documents') {
+            items = await this._attachHtlcToInventoryItems(items, message, htlcDirectConn, requesterFabricId, relayReturnHop);
+          }
 
           const responsePayload = {
             type: 'INVENTORY_RESPONSE',
             actor: { id: this.agent.identity.id },
             object: {
-              kind: 'documents',
+              kind,
               items,
               created: Date.now()
             },
@@ -9037,9 +9833,12 @@ class Hub extends Service {
       });
 
       // When this node requested a remote inventory (or relays a response), Fabric delivers INVENTORY_RESPONSE here.
-      this.agent.on('inventoryResponse', async ({ message }) => {
+      this.agent.on('inventoryResponse', async ({ message, origin }) => {
         try {
-          if (!message || message.type !== 'INVENTORY_RESPONSE' || !message.object || message.object.kind !== 'documents') return;
+          if (!message || message.type !== 'INVENTORY_RESPONSE' || !message.object) return;
+          const kind = String((message.object && message.object.kind) || '').trim().toLowerCase();
+          if (!kind) return;
+          if (!['documents', 'mainchain', 'mainchain-blocks'].includes(kind)) return;
           const obj = message.object && typeof message.object === 'object' ? message.object : null;
           const isFabricResync = !!(obj && obj.fabricResync);
 
@@ -9064,12 +9863,53 @@ class Hub extends Service {
               return;
             }
           }
-          if (obj && obj.fabricResync && Array.isArray(obj.items)) {
+          if (kind === 'documents' && obj && obj.fabricResync && Array.isArray(obj.items)) {
             try {
               this._mergeFabricResyncInventoryItems(obj.items);
             } catch (mergeErr) {
               console.error('[HUB] fabricResync inventory merge failed:', mergeErr && mergeErr.message ? mergeErr.message : mergeErr);
             }
+          }
+          if (kind === 'mainchain' && Array.isArray(obj && obj.items) && obj.items.length) {
+            const summary = obj.items[0] && typeof obj.items[0] === 'object' ? obj.items[0] : null;
+            const peerHeight = summary && Number.isFinite(Number(summary.height)) ? Number(summary.height) : -1;
+            const peerHashes = summary && Array.isArray(summary.recentHashes) ? summary.recentHashes : [];
+            if (peerHeight >= 0) {
+              const local = await this._collectLocalMainchainInventorySummary();
+              const localHeight = local && Number.isFinite(Number(local.height)) ? Number(local.height) : -1;
+              if (localHeight >= 0 && peerHeight > localHeight) {
+                const missing = [];
+                for (const h of peerHashes) {
+                  const hash = String(h || '').trim().toLowerCase();
+                  if (!this._isHex64(hash)) continue;
+                  try {
+                    const bitcoin = this._getBitcoinService();
+                    if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') break;
+                    await bitcoin._makeRPCRequest('getblockheader', [hash]);
+                  } catch (_) {
+                    missing.push(hash);
+                  }
+                }
+                if (missing.length) {
+                  const from = origin && (origin.name || origin.address || origin.id)
+                    ? (origin.name || origin.address || origin.id)
+                    : (message.actor && message.actor.id);
+                  this._enqueueWorkItem({
+                    id: `mainchain:missing:${(message.actor && message.actor.id) || from || 'peer'}:${missing.join(',')}`,
+                    type: 'document-offer-block-download',
+                    sourcePeer: from || '',
+                    valueSats: Number(summary && summary.rewardSats) > 0 ? Number(summary.rewardSats) : 1,
+                    payload: { blockHashes: missing }
+                  });
+                  await this._requestMainchainBlocksFromPeer(from, missing);
+                }
+              }
+            }
+          }
+          if (kind === 'mainchain-blocks' && Array.isArray(obj && obj.items) && obj.items.length) {
+            await this._applyMainchainBlocksFromInventoryItems(obj.items);
+            this._bitcoinStatusCache = { value: null, updatedAt: 0 };
+            await this._collectBitcoinStatus({ force: true }).catch(() => null);
           }
           const payload = JSON.stringify(message);
           const wsMsg = Message.fromVector(['GenericMessage', payload]);
@@ -9082,6 +9922,13 @@ class Hub extends Service {
 
       await this.agent.start();
       await this.http.start();
+      this._loadWorkQueueStrategyFromSettings();
+      this._ensureWorker();
+      if (!this._workQueueTimer) {
+        this._workQueueTimer = setInterval(() => {
+          this._drainWorkQueue().catch(() => {});
+        }, 2000);
+      }
       await this.startBeacon();
 
       // Local State
@@ -9112,6 +9959,12 @@ class Hub extends Service {
         try {
           clearInterval(this._fabricPeeringOfferIntervalId);
           this._fabricPeeringOfferIntervalId = null;
+        } catch (e) {}
+      }
+      if (this._workQueueTimer) {
+        try {
+          clearInterval(this._workQueueTimer);
+          this._workQueueTimer = null;
         } catch (e) {}
       }
       if (this._pushNetworkStatus) {

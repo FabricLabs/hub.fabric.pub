@@ -4,8 +4,6 @@
 const React = require('react');
 const { Link, useLocation } = require('react-router-dom');
 
-const HOVER_CLOSE_DELAY_MS = 350;
-
 // Semantic UI
 const {
   Button,
@@ -70,13 +68,34 @@ function TopPanel (props) {
     (localIdentity && localIdentity.xprv)
   );
   const isAuthed = hasPrivate;
-  const isLockedState = hasLocalIdentity && hasLockedIdentity && !isAuthed;
-  const identitySource = localIdentity || auth;
+  // Fallback for short-lived parent state gaps right after identity create/login:
+  // if props lag for a render, derive id/xpub from persisted local storage so the
+  // chip does not flash back to "Login".
+  const persistedIdentity = React.useMemo(() => {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return null;
+      const raw = window.localStorage.getItem('fabric.identity.local');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || (!parsed.id && !parsed.xpub)) return null;
+      return {
+        id: parsed.id ? String(parsed.id) : undefined,
+        xpub: parsed.xpub ? String(parsed.xpub) : undefined
+      };
+    } catch (e) {
+      return null;
+    }
+  }, [hasLocalIdentity, localIdentity && localIdentity.xpub, auth && auth.xpub]);
+  const identitySource = localIdentity || auth || persistedIdentity;
+  const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
+  // Treat any local identity without private material as locked, even if
+  // hasLockedIdentity lags behind after route transitions.
+  const isLockedState = hasAnyLocalIdentity && !isAuthed && (hasLockedIdentity || !!identitySource);
   /** True when we can derive a client wallet id and show a live balance in the chip. */
   const canShowClientBalance = !!(
     identitySource &&
     identitySource.xpub &&
-    (hasLocalIdentity || isAuthed)
+    (hasAnyLocalIdentity || isAuthed)
   );
   const identityLabel = (() => {
     if (!identitySource) return 'Login';
@@ -93,29 +112,13 @@ function TopPanel (props) {
     return pathname === prefix || pathname.startsWith(`${prefix}/`);
   };
 
-  const [dropdownOpen, setDropdownOpen] = React.useState(false);
-  const hoverTimeoutRef = React.useRef(null);
-  const handleDropdownMouseEnter = () => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    setDropdownOpen(true);
-  };
-  const handleDropdownMouseLeave = () => {
-    hoverTimeoutRef.current = setTimeout(() => setDropdownOpen(false), HOVER_CLOSE_DELAY_MS);
-  };
-  React.useEffect(() => () => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-  }, []);
-
   const [notifList, setNotifList] = React.useState(() => readUiNotifications());
   const [uiTick, setUiTick] = React.useState(0);
   const balanceHoverRefreshAtRef = React.useRef(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
   const uiFlags = loadHubUiFeatureFlags();
   void uiTick;
-  const balanceChipHref = uiFlags.bitcoinPayments ? '/services/bitcoin/payments' : '/services/bitcoin';
+  const balanceChipHref = '/services/bitcoin/transactions?scope=wallet#fabric-btc-tx-client-h3';
 
   React.useEffect(() => {
     const sync = () => setNotifList(readUiNotifications());
@@ -168,7 +171,7 @@ function TopPanel (props) {
             Documents
           </Button>
           <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')}>
-            <Icon name="file contract" />
+            <Icon name="file code" />
             Contracts
           </Button>
         </Button.Group>
@@ -203,27 +206,30 @@ function TopPanel (props) {
               <Dropdown.Item as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" icon="file alternate outline" text="Invoices" />
             ) : null}
             {uiFlags.bitcoinLightning ? (
-              <Dropdown.Item as={Link} to="/services/bitcoin#fabric-bitcoin-lightning" icon="bolt" text="Lightning" />
+              <Dropdown.Item as={Link} to="/services/lightning" icon="bolt" text="Lightning" />
             ) : null}
             {uiFlags.bitcoinExplorer ? (
-              <Dropdown.Item as={Link} to="/services/bitcoin#bitcoin-explorer" icon="search" text="Explorer" />
+              <Dropdown.Item as={Link} to="/services/bitcoin/blocks" icon="search" text="Explorer" />
             ) : null}
+            <Dropdown.Item as={Link} to="/services/bitcoin/faucet" icon="tint" text="Faucet" />
             {uiFlags.bitcoinResources ? (
               <Dropdown.Item as={Link} to="/services/bitcoin/resources" icon="code" text="Bitcoin HTTP resources" />
             ) : null}
             {uiFlags.bitcoinCrowdfund ? (
-              <Dropdown.Item as={Link} to="/services/bitcoin#fabric-bitcoin-crowdfunding" icon="heart outline" text="Crowdfund" />
+              <Dropdown.Item as={Link} to="/services/bitcoin/crowdfunds" icon="heart outline" text="Crowdfunds" />
             ) : null}
             {uiFlags.sidechain ? (
               <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Sidechain & demo" />
             ) : null}
-            <Dropdown.Item
-              as={Link}
-              to="/settings/admin"
-              icon="settings"
-              text="Admin"
-              active={pathname === '/settings/admin' || pathname.startsWith('/settings/admin/')}
-            />
+            {hasHubAdminPeerNav ? (
+              <Dropdown.Item
+                as={Link}
+                to="/settings/admin"
+                icon="settings"
+                text="Admin"
+                active={pathname === '/settings/admin' || pathname.startsWith('/settings/admin/')}
+              />
+            ) : null}
             {uiFlags.sidechain ? (
               <Dropdown.Item
                 as={Link}
@@ -353,14 +359,8 @@ function TopPanel (props) {
           </Label>
         )}
         {isAuthed ? (
-          <div
-            onMouseEnter={handleDropdownMouseEnter}
-            onMouseLeave={handleDropdownMouseLeave}
-            style={{ display: 'inline-block' }}
-          >
+          <div style={{ display: 'inline-block' }}>
             <Dropdown
-              open={dropdownOpen}
-              onClose={() => setDropdownOpen(false)}
               trigger={
                 <Button size="small" primary title="Identity — menu or lock">
                   <Icon name="unlock" style={{ marginRight: '0.15em' }} />
@@ -373,12 +373,12 @@ function TopPanel (props) {
               icon={null}
             >
               <Dropdown.Menu>
-                <Dropdown.Item icon="user" text="User profile" onClick={() => { setDropdownOpen(false); onProfile && onProfile(); }} />
-                <Dropdown.Item icon="pencil" text="Sign message" onClick={() => { setDropdownOpen(false); onSignMessage && onSignMessage(); }} />
+                <Dropdown.Item icon="user" text="User profile" onClick={() => { onProfile && onProfile(); }} />
+                <Dropdown.Item icon="pencil" text="Sign message" onClick={() => { onSignMessage && onSignMessage(); }} />
                 <Dropdown.Item
                   icon="plug"
                   text="Bridge connection"
-                  onClick={() => { setDropdownOpen(false); onOpenSettings && onOpenSettings(); }}
+                  onClick={() => { onOpenSettings && onOpenSettings(); }}
                   title="Hub WebSocket URL and bridge options"
                 />
                 <Dropdown.Divider />
@@ -386,15 +386,12 @@ function TopPanel (props) {
                   icon="lock"
                   text="Lock identity"
                   onClick={() => {
-                    setDropdownOpen(false);
                     if (!onLockIdentity) return;
-                    if (typeof window !== 'undefined' && window.confirm('Lock your identity? You will need to enter your password to unlock again.')) {
-                      onLockIdentity();
-                    }
+                    onLockIdentity();
                   }}
                 />
                 <Dropdown.Divider />
-                <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { setDropdownOpen(false); onDestroyIdentity && onDestroyIdentity(); }} />
+                <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>
             </Dropdown>
           </div>

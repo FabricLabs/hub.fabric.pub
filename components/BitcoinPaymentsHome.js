@@ -46,6 +46,7 @@ const QrScannerModal = require('./QrScannerModal');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { safeBriefMessage } = require('../functions/fabricSafeLog');
 const { hasExternalSigningDelegation } = require('../functions/fabricDelegationLocal');
 
 /**
@@ -100,8 +101,8 @@ function computeMakePaymentDeepLinkPatch (props) {
   return patch;
 }
 
-/** Monospace “yield generator / offers” view — reminiscent of Joinmarket-style CLI tables (deposit offers as rows). */
-function buildJoinmarketStyleOfferAscii (sessions) {
+/** Monospace deposit-session table for Payjoin receiver operations. */
+function buildPayjoinSessionAscii (sessions) {
   const list = Array.isArray(sessions) ? sessions : [];
   const head = 'OFFER_ID        AMNT_SATS   STATUS      ADDR                N_PROP  EXPIRES';
   const sep = '--------------------------------------------------------------------------------';
@@ -166,8 +167,30 @@ class BitcoinPaymentsHome extends React.Component {
       acpPayjoinBusy: false,
       acpPayjoinResult: null,
       lightningSummary: {},
-      lightningChannels: []
+      lightningChannels: [],
+      lightningOutputs: []
     };
+  }
+
+  /** Compute Lightning managed funds from listfunds outputs. */
+  getLightningBalanceFromOutputs (outputs = []) {
+    let confirmed = 0;
+    let unconfirmed = 0;
+    let immature = 0;
+    for (const o of outputs) {
+      const sats = o && o.amount_msat != null
+        ? Math.floor(Number(o.amount_msat) / 1000)
+        : (o && o.amount_sat != null ? Number(o.amount_sat) : 0);
+      const status = String((o && o.status) || '').toLowerCase();
+      if (status === 'confirmed') confirmed += sats;
+      else if (status === 'immature') immature += sats;
+      else if (status === 'spent') {
+        // ignore
+      } else {
+        unconfirmed += sats;
+      }
+    }
+    return { confirmed, unconfirmed, immature };
   }
 
   componentDidMount () {
@@ -252,6 +275,13 @@ class BitcoinPaymentsHome extends React.Component {
         ? txContractLabels.mergeServerAndLocalLabels(transactions, invLabels)
         : [];
 
+      const lightningChannelsList = Array.isArray(lightningChannels)
+        ? lightningChannels
+        : (lightningChannels && Array.isArray(lightningChannels.channels) ? lightningChannels.channels : []);
+      const lightningOutputsList = lightningChannels && Array.isArray(lightningChannels.outputs)
+        ? lightningChannels.outputs
+        : [];
+
       const nextState = {
         loading: false,
         summary,
@@ -264,7 +294,8 @@ class BitcoinPaymentsHome extends React.Component {
           ? payjoinCapabilities
           : { available: false },
         lightningSummary: lightningSummary && typeof lightningSummary === 'object' ? lightningSummary : {},
-        lightningChannels: Array.isArray(lightningChannels) ? lightningChannels : []
+        lightningChannels: lightningChannelsList,
+        lightningOutputs: lightningOutputsList
       };
       const loc = readPaymentsDeepLinkFromLocation();
       const qBitcoinUri = String(loc.bitcoinUri || '').trim() || String((this.props && this.props.bitcoinUriFromQuery) || '').trim();
@@ -720,7 +751,7 @@ class BitcoinPaymentsHome extends React.Component {
       );
       if (!boosted || boosted.status !== 'success' || !boosted.psbtBase64) {
         const msg = (boosted && (boosted.message || boosted.error)) || 'ACP Hub boost failed';
-        throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+        throw new Error(safeBriefMessage(msg, 'ACP Hub boost failed'));
       }
 
       const hex = finalizeAndExtractHex(boosted.psbtBase64, network);
@@ -777,7 +808,9 @@ class BitcoinPaymentsHome extends React.Component {
   }
 
   render () {
+    const transactionsOnly = !!(this.props && this.props.transactionsOnly);
     const wallet = this.state.wallet || {};
+    const hasAdmin = !!readHubAdminTokenFromBrowser(this.props && this.props.adminToken);
     const summary = this.state.summary || {};
     const balanceSats = summary && Number.isFinite(summary.balanceSats) ? summary.balanceSats : (summary && summary.summary && summary.summary.trusted != null ? Math.round(Number(summary.summary.trusted) * 100000000) : null);
     const balanceDisplay = balanceSats != null
@@ -785,11 +818,23 @@ class BitcoinPaymentsHome extends React.Component {
       : 'n/a';
     const ln = this.state.lightningSummary || {};
     const lnChans = Array.isArray(this.state.lightningChannels) ? this.state.lightningChannels : [];
+    const lnOutputs = Array.isArray(this.state.lightningOutputs) ? this.state.lightningOutputs : [];
+    const lnManaged = this.getLightningBalanceFromOutputs(lnOutputs);
     const lnActive = !!(ln && (ln.available === true || ln.status === 'OK' || ln.status === 'STUB' || ln.status === 'RUNNING'));
     const sendTo = String(this.state.to || '').trim();
     const sendAmt = Number(this.state.amountSats);
-    const canSendOnChain = !this.state.lightningInvoice && sendTo.length > 0 && Number.isFinite(sendAmt) && sendAmt > 0;
+    const canSendOnChainBase = !this.state.lightningInvoice && sendTo.length > 0 && Number.isFinite(sendAmt) && sendAmt > 0;
+    const canSendOnChain = canSendOnChainBase && hasAdmin;
     const hubBitcoin = (this.props && this.props.bitcoin) || {};
+    const hubWalletSats = Number(hubBitcoin && hubBitcoin.balanceSats != null
+      ? hubBitcoin.balanceSats
+      : Math.round(Number(hubBitcoin && hubBitcoin.balance != null ? hubBitcoin.balance : 0) * 1e8));
+    const sharedSessionSats = Number(lnManaged.confirmed || 0) + Number(lnManaged.unconfirmed || 0) + Number(lnManaged.immature || 0);
+    const payjoinSessions = Array.isArray(this.state.payjoinSessions) ? this.state.payjoinSessions : [];
+    const payjoinOpenCount = payjoinSessions.filter((s) => {
+      const status = String((s && s.status) || '').toLowerCase();
+      return status !== 'expired' && status !== 'success';
+    }).length;
     const l1Height = hubBitcoin.available && hubBitcoin.height != null && Number.isFinite(Number(hubBitcoin.height))
       ? Number(hubBitcoin.height)
       : null;
@@ -822,7 +867,7 @@ class BitcoinPaymentsHome extends React.Component {
                   </Button>
                   <Header as="h2" id="fabric-bitcoin-payments-h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em' }}>
                     <Icon name="credit card outline" aria-hidden="true" />
-                    <Header.Content>Bitcoin Payments</Header.Content>
+                    <Header.Content>{transactionsOnly ? 'Bitcoin Transactions' : 'Bitcoin Payments'}</Header.Content>
                   </Header>
                 </div>
                 <div role="toolbar" aria-label="Related Bitcoin pages" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
@@ -830,33 +875,37 @@ class BitcoinPaymentsHome extends React.Component {
                     <Icon name="file alternate outline" aria-hidden="true" />
                     Invoices
                   </Button>
-                  <Button as={Link} to="/services/bitcoin#fabric-bitcoin-faucet" basic size="small" title="Regtest: fund an address from the Hub wallet">
-                    <Icon name="tint" aria-hidden="true" />
-                    Faucet
-                  </Button>
+                  {!transactionsOnly ? (
+                    <Button as={Link} to="/services/bitcoin/faucet" basic size="small" title="Regtest: fund an address from the Hub wallet">
+                      <Icon name="tint" aria-hidden="true" />
+                      Faucet
+                    </Button>
+                  ) : null}
                   <Button as={Link} to="/services/bitcoin/resources" basic size="small" title="HTTP resources and L1 payment verification">
                     <Icon name="sitemap" aria-hidden="true" />
                     Resources
                   </Button>
-                  <Button as={Link} to="/services/bitcoin#fabric-bitcoin-crowdfunding" basic size="small" title="Taproot campaign vault, ACP PSBT, Payjoin deposit to vault">
+                  <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" title="Taproot campaign vault, ACP PSBT, Payjoin deposit to vault">
                     <Icon name="heart outline" aria-hidden="true" />
-                    Crowdfund
+                    Crowdfunds
                   </Button>
                 </div>
               </div>
             </div>
             {this.state.error && <Message negative content={this.state.error} />}
-            <div id="fabric-bitcoin-payments-intro">
+            {!transactionsOnly ? (
+              <div id="fabric-bitcoin-payments-intro">
               <Message info>
                 <p style={{ margin: 0, color: '#333' }}>
                   <strong>Single Payjoin receiver &amp; Lightning path</strong>
                 </p>
                 <p style={{ margin: '0.35em 0 0', color: '#555' }}>
-                  This Hub exposes one <strong>Payjoin</strong> endpoint (BIP77 deposit sessions; <code>pj=</code> is a normal BIP78-style receiver for compatible wallets, including Joinmarket-class clients). <strong>Lightning</strong> uses the Hub&apos;s managed node.
+                  This Hub exposes one <strong>Payjoin</strong> endpoint (BIP77 deposit sessions; <code>pj=</code> is a standard BIP78 receiver URL for compatible wallets). <strong>Lightning</strong> uses the Hub&apos;s managed node.
                   On-chain <strong>receive</strong> and <strong>send</strong> default to Payjoin-oriented flows below; turn either off with the toggles when you want a plain address or a simple broadcast.
                 </p>
               </Message>
-            </div>
+              </div>
+            ) : null}
           </section>
           <div style={{ marginBottom: '1em' }}>
             <strong>Balance:</strong> {balanceDisplay}
@@ -866,9 +915,11 @@ class BitcoinPaymentsHome extends React.Component {
             </span>
           </div>
 
-          <BitcoinWalletBranchBar identity={(this.props && this.props.identity) || {}} />
+          {!transactionsOnly ? (
+            <BitcoinWalletBranchBar identity={(this.props && this.props.identity) || {}} />
+          ) : null}
 
-          {(extSigning || btcWatchOnly) && (
+          {!transactionsOnly && (extSigning || btcWatchOnly) && (
             <Message warning size="small" style={{ marginBottom: '1em' }} id="fabric-payments-key-safety">
               <Message.Header>Keys and this screen</Message.Header>
               <p style={{ margin: '0.35em 0 0', color: '#333' }}>
@@ -882,14 +933,15 @@ class BitcoinPaymentsHome extends React.Component {
             </Message>
           )}
 
-          <Message info size="small" id="fabric-payments-tab-demo" style={{ marginBottom: '1em' }}>
+          {!transactionsOnly ? (
+            <Message info size="small" id="fabric-payments-tab-demo" style={{ marginBottom: '1em' }}>
             <Message.Header>Two-tab invoice payment (production walkthrough)</Message.Header>
             <List ordered relaxed style={{ margin: '0.35em 0 0', color: '#333' }}>
               <List.Item>
                 <strong>Regtest funds:</strong> Fund the Hub wallet with <strong>Generate Block</strong> on{' '}
                 <Link to="/services/bitcoin#fabric-bitcoin-regtest-toolbar">Bitcoin</Link>
                 . Optionally use{' '}
-                <Link to="/services/bitcoin#fabric-bitcoin-faucet">Faucet</Link>
+                <Link to="/services/bitcoin/faucet">Faucet</Link>
                 {' '}with <strong>Use my receive address</strong> on Bitcoin (next external address on BIP44 account 0 under your identity). Header balance uses the same account.
               </List.Item>
               <List.Item>
@@ -913,17 +965,21 @@ class BitcoinPaymentsHome extends React.Component {
               </List.Item>
               <List.Item>
                 <strong>Optional — crowdfund:</strong>{' '}
-                <Link to="/services/bitcoin#fabric-bitcoin-crowdfunding">Bitcoin → Crowdfund</Link>
+                <Link to="/services/bitcoin/crowdfunds">Bitcoin → Crowdfunds</Link>
                 {' '}creates a Taproot vault, copies an ACP outputs-only PSBT, or opens a Payjoin session that pays the vault (then pay here with the BIP21 link).
               </List.Item>
             </List>
-          </Message>
-          <HubRegtestAdminTokenPanel
+            </Message>
+          ) : null}
+          {!transactionsOnly ? (
+            <HubRegtestAdminTokenPanel
             network={(hubBitcoin && hubBitcoin.network) || 'regtest'}
             adminTokenProp={this.props && this.props.adminToken}
-          />
+            />
+          ) : null}
 
-          <Segment
+          {!transactionsOnly ? (
+            <Segment
             style={{
               marginBottom: '1.25em',
               background: 'linear-gradient(160deg, #1b1d22 0%, #252830 55%, #1e2229 100%)',
@@ -938,7 +994,7 @@ class BitcoinPaymentsHome extends React.Component {
             </Header>
             <p id="fabric-bitcoin-wealth-stack-summary" style={{ margin: '0 0 0.85em', opacity: 0.88, fontSize: '0.92em', lineHeight: 1.45 }}>
               Three rails for accumulating and routing value: <strong style={{ color: '#9fd89f' }}>Fabric</strong> contracts and document exchange,
-              {' '}<strong style={{ color: '#c9e88a' }}>Joinmarket-class</strong> coordination via Payjoin (BIP77 deposits + BIP78 <code>pj=</code>),
+              {' '}Payjoin deposit coordination (BIP77 deposits + BIP78 <code>pj=</code>),
               and <strong style={{ color: '#7ec8e8' }}>Lightning</strong> channels on the Hub node.
               As the network grows, each rail can move real sats: documents tie to distribute / inventory flows; Payjoin sessions aggregate deposits; Lightning routes instant settlement.
             </p>
@@ -958,13 +1014,13 @@ class BitcoinPaymentsHome extends React.Component {
                     <Icon name="file alternate outline" /> Documents
                   </Button>
                   <Button as={Link} to="/contracts" size="small" basic inverted icon labelPosition="left">
-                    <Icon name="file contract" /> Contracts
+                    <Icon name="file code" /> Contracts
                   </Button>
                 </div>
               </div>
               <div style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid #5a5a32', borderRadius: 6, padding: '0.65rem 0.75rem' }}>
                 <div style={{ fontSize: '0.7rem', letterSpacing: '0.12em', color: '#e8e070', marginBottom: '0.35em' }}>② COORDINATION</div>
-                <div style={{ fontSize: '0.88em' }}>Payjoin sessions (BIP77) — same family as Joinmarket senders hitting <code>pj=</code>.</div>
+                <div style={{ fontSize: '0.88em' }}>Payjoin sessions (BIP77) with live receiver state and proposal activity.</div>
                 <div style={{ fontSize: '0.8em', color: '#aaa', marginTop: '0.35em' }}>
                   Receiver: {this.state.payjoinCapabilities && this.state.payjoinCapabilities.available ? <Label size="mini" color="green" horizontal>up</Label> : <Label size="mini" color="grey" horizontal>down</Label>}
                 </div>
@@ -987,7 +1043,54 @@ class BitcoinPaymentsHome extends React.Component {
               </div>
             </div>
             </section>
-          </Segment>
+            </Segment>
+          ) : null}
+
+          {!transactionsOnly ? (
+            <Segment style={{ marginBottom: '1.25em', borderColor: '#d9e2f3', background: '#f8fbff' }}>
+            <Header as="h3" style={{ marginBottom: '0.35em' }}>Deposits Under Management</Header>
+            <p style={{ color: '#4b5b73', marginBottom: '0.75em', lineHeight: 1.45 }}>
+              Non-admin users keep private keys in-browser. The Hub operator manages shared sessions (Payjoin receiver and Lightning/LSP channels) and may sign contract/session messages without taking custody of client keys.
+            </p>
+            <Table compact celled unstackable size="small" style={{ marginBottom: '0.65em' }}>
+              <Table.Body>
+                <Table.Row>
+                  <Table.Cell width={6}><strong>Client wallet (self-custody)</strong></Table.Cell>
+                  <Table.Cell>{formatSatsDisplay(Number(balanceSats || 0))} sats</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>Keys stay with the user in this browser.</Table.Cell>
+                </Table.Row>
+                <Table.Row>
+                  <Table.Cell><strong>Hub wallet (operator)</strong></Table.Cell>
+                  <Table.Cell>{formatSatsDisplay(hubWalletSats)} sats</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>Hub node spend authority; admin token controls this surface.</Table.Cell>
+                </Table.Row>
+                <Table.Row>
+                  <Table.Cell><strong>Lightning managed liquidity</strong></Table.Cell>
+                  <Table.Cell>{formatSatsDisplay(sharedSessionSats)} sats</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>
+                    confirmed {formatSatsDisplay(lnManaged.confirmed)} · unconfirmed {formatSatsDisplay(lnManaged.unconfirmed)} · immature {formatSatsDisplay(lnManaged.immature)}
+                  </Table.Cell>
+                </Table.Row>
+                <Table.Row>
+                  <Table.Cell><strong>Payjoin sessions (shared)</strong></Table.Cell>
+                  <Table.Cell>{payjoinOpenCount} open</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>{payjoinSessions.length} total sessions tracked.</Table.Cell>
+                </Table.Row>
+              </Table.Body>
+            </Table>
+            <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+              <Button as={Link} to="/services/lightning" size="small" basic icon labelPosition="left">
+                <Icon name="bolt" /> Lightning channels
+              </Button>
+              <Button as={Link} to="/services/bitcoin/payments#wealth-payjoin-board" size="small" basic icon labelPosition="left">
+                <Icon name="shield alternate" /> Payjoin sessions
+              </Button>
+              <Button as={Link} to="/settings/bitcoin-wallet" size="small" basic icon labelPosition="left">
+                <Icon name="key" /> Wallet custody boundary
+              </Button>
+            </div>
+            </Segment>
+          ) : null}
 
           <section aria-labelledby="fabric-bitcoin-wallet-controls-h3">
           <Header as='h3' id="fabric-bitcoin-wallet-controls-h3" dividing>Wallet Controls</Header>
@@ -999,7 +1102,7 @@ class BitcoinPaymentsHome extends React.Component {
                 Request Payment
               </Header>
               <p id="fabric-btc-request-payment-desc" style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.5em' }}>
-                Default: offer a <strong>Payjoin</strong> BIP21 link (Joinmarket / BIP78–compatible). Plain address stays available for legacy wallets.
+                Default: offer a <strong>Payjoin</strong> BIP21 link (BIP78-compatible). Plain address stays available for legacy wallets.
               </p>
               <div style={{ marginBottom: '0.65em' }}>
                 <Checkbox
@@ -1107,8 +1210,17 @@ class BitcoinPaymentsHome extends React.Component {
                 On-chain send uses the <strong>Hub node wallet</strong> (same as Bitcoin home “Send Payment”); your <strong>setup admin token</strong> is required. For self-custody Payjoin, paste a <code>bitcoin:</code> URI with <code>pj=</code> and use local signing when your identity is unlocked.
               </p>
               <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.5em' }}>
-                Send on-chain (default: prefer a <code>bitcoin:</code> URI that includes <code>pj=</code> for Payjoin—e.g. from another Hub or Joinmarket-compatible peer) or pay Lightning.
+                Send on-chain (default: prefer a <code>bitcoin:</code> URI that includes <code>pj=</code> for Payjoin) or pay Lightning.
               </p>
+              {!hasAdmin ? (
+                <Message warning size="small" style={{ marginBottom: '0.65em' }}>
+                  <Message.Header>Hub-wallet send is admin-gated</Message.Header>
+                  <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                    You can still use this page for receive/history, but <strong>Send On-Chain</strong> requires the setup admin token.
+                    Open <Link to="/settings/security">Security &amp; delegation</Link> to confirm session identity, then add/refresh the admin token in settings.
+                  </p>
+                </Message>
+              ) : null}
               </div>
               <div style={{ marginBottom: '0.65em' }}>
                 <Checkbox
@@ -1299,7 +1411,9 @@ class BitcoinPaymentsHome extends React.Component {
               </Form>
               {!this.state.lightningInvoice && !canSendOnChain && !this.state.result && (
                 <Message size="small" info style={{ marginTop: '0.65em' }}>
-                  {sendTo.length === 0
+                  {!hasAdmin
+                    ? 'Admin token required to send from the Hub wallet. You can still request payment and inspect wallet history.'
+                    : sendTo.length === 0
                     ? 'Enter a recipient on-chain address or paste a bitcoin: URI (with optional pj= for Payjoin).'
                     : 'Set a positive amount in sats to enable send.'}
                 </Message>
@@ -1332,8 +1446,15 @@ class BitcoinPaymentsHome extends React.Component {
 
         <Segment>
           <section aria-labelledby="fabric-btc-tx-client-h3" aria-describedby="fabric-btc-tx-client-desc">
-          <Header as='h3' id="fabric-btc-tx-client-h3">Transactions</Header>
-          <p id="fabric-btc-tx-client-desc" style={{ color: '#666', marginBottom: '0.5em' }}><strong>Client (xpub):</strong> transactions associated with your wallet.</p>
+          <Header as='h3' id="fabric-btc-tx-client-h3">My Wallet Activity</Header>
+          <p id="fabric-btc-tx-client-desc" style={{ color: '#666', marginBottom: '0.5em' }}>
+            <strong>Client (xpub):</strong> this is your wallet history. Open any txid to inspect full details in the built-in explorer.
+          </p>
+          {!hasAdmin ? (
+            <Message info size="small" style={{ marginBottom: '0.75em' }}>
+              Non-admin mode: use this page like a normal Bitcoin wallet dashboard (balance + history). Hub-wallet send/broadcast actions remain admin-gated.
+            </Message>
+          ) : null}
           {this.state.transactions.length === 0 ? (
             <p style={{ color: '#666' }}>No transactions found for this wallet.</p>
           ) : (
@@ -1350,6 +1471,9 @@ class BitcoinPaymentsHome extends React.Component {
               <Table.Body>
                 {this.state.transactions.map((tx, idx) => {
                   const amt = tx.ourAmount != null ? tx.ourAmount : tx.value;
+                  const amtNum = Number(amt);
+                  const isOutgoing = Number.isFinite(amtNum) ? amtNum < 0 : false;
+                  const isIncoming = Number.isFinite(amtNum) ? amtNum > 0 : false;
                   const time = tx.blocktime != null ? tx.blocktime : tx.time;
                   const dateStr = time ? new Date(time * 1000).toLocaleString() : '-';
                   return (
@@ -1374,7 +1498,11 @@ class BitcoinPaymentsHome extends React.Component {
                           <span style={{ color: '#999' }}>—</span>
                         )}
                       </Table.Cell>
-                      <Table.Cell>{amt != null ? `${Number(amt).toFixed(8)} BTC` : '-'}</Table.Cell>
+                      <Table.Cell>
+                        {amt != null ? `${Number(amt).toFixed(8)} BTC` : '-'}
+                        {isOutgoing ? <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>sent</Label> : null}
+                        {isIncoming ? <Label size="mini" color="green" style={{ marginLeft: '0.35em' }}>received</Label> : null}
+                      </Table.Cell>
                       <Table.Cell>
                         {tx.confirmations != null ? (
                           <>
@@ -1397,7 +1525,8 @@ class BitcoinPaymentsHome extends React.Component {
           </section>
         </Segment>
 
-        <Segment>
+        {!transactionsOnly ? (
+          <Segment>
           <section aria-labelledby="fabric-btc-mempool-h3" aria-describedby="fabric-btc-mempool-desc">
           <Header as='h3' id="fabric-btc-mempool-h3">Mempool Payments</Header>
           <p id="fabric-btc-mempool-desc" style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge (Hub node):</strong> mempool transactions.</p>
@@ -1439,9 +1568,11 @@ class BitcoinPaymentsHome extends React.Component {
             </Table>
           )}
           </section>
-        </Segment>
+          </Segment>
+        ) : null}
 
-        <Segment
+        {!transactionsOnly ? (
+          <Segment
           id="wealth-payjoin-board"
           style={{
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -1454,11 +1585,11 @@ class BitcoinPaymentsHome extends React.Component {
         >
           <section aria-labelledby="fabric-btc-jm-board-h4" aria-describedby="fabric-btc-jm-board-desc">
           <Header as="h4" id="fabric-btc-jm-board-h4" style={{ fontFamily: 'inherit', color: '#f5e6a6', marginBottom: '0.5em' }}>
-            joinmarket.py-style offer board · Payjoin deposit sessions (BIP77)
+            Payjoin deposit session dashboard (BIP77)
           </Header>
           <p id="fabric-btc-jm-board-desc" style={{ color: '#7a9e7a', fontSize: '0.82rem', marginBottom: '0.65em' }}>
-            Rows read like Joinmarket &quot;offers&quot;: each session is a receiver deposit endpoint; <code>N_PROP</code> is proposal count.
-            External JM / compatible wallets pay the BIP21 + <code>pj=</code> URI you share.
+            Each row is a receiver deposit endpoint with current status, amount target, and proposal activity (<code>N_PROP</code>).
+            Share the BIP21 + <code>pj=</code> URI from Request Payment to collect deposits.
           </p>
           <pre
             style={{
@@ -1474,12 +1605,14 @@ class BitcoinPaymentsHome extends React.Component {
               color: '#c8e6c9'
             }}
           >
-            {buildJoinmarketStyleOfferAscii(this.state.payjoinSessions)}
+            {buildPayjoinSessionAscii(this.state.payjoinSessions)}
           </pre>
           </section>
-        </Segment>
+          </Segment>
+        ) : null}
 
-        <Segment>
+        {!transactionsOnly ? (
+          <Segment>
           <section aria-labelledby="fabric-btc-pj-proposals-h3" aria-describedby="fabric-btc-pj-proposals-intro">
           <Header as='h3' id="fabric-btc-pj-proposals-h3">Payjoin Proposals (BIP77)</Header>
           <div id="fabric-btc-pj-proposals-intro">
@@ -1610,7 +1743,8 @@ class BitcoinPaymentsHome extends React.Component {
           )}
           </section>
           </section>
-        </Segment>
+          </Segment>
+        ) : null}
 
         <Segment>
           <section aria-labelledby="fabric-btc-utxos-h3" aria-describedby="fabric-btc-utxos-desc">

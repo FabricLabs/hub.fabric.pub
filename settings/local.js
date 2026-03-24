@@ -12,6 +12,7 @@ module.exports = Object.assign({}, defaults, {
   /** Reference / operator federation entries (not the live validator list). See `contracts/`. */
   federations: [beaconFederationRef, liquidFederation],
   bitcoin: {
+    ...(process.env.FABRIC_BITCOIN_ENABLE === '0' || process.env.FABRIC_BITCOIN_ENABLE === 'false' ? { enable: false } : {}),
     network: process.env.FABRIC_BITCOIN_NETWORK || 'regtest',
     managed: process.env.FABRIC_BITCOIN_MANAGED ? process.env.FABRIC_BITCOIN_MANAGED !== 'false' : true,
     rpcport: Number(process.env.FABRIC_BITCOIN_RPC_PORT || 18443),
@@ -45,7 +46,8 @@ module.exports = Object.assign({}, defaults, {
     maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256)
   },
   lightning: {
-    stub: process.env.FABRIC_LIGHTNING_STUB === 'true' || process.env.FABRIC_LIGHTNING_STUB === '1'
+    stub: process.env.FABRIC_LIGHTNING_STUB === 'true' || process.env.FABRIC_LIGHTNING_STUB === '1',
+    port: Number(process.env.FABRIC_LIGHTNING_PORT || 19735)
   },
   http: {
     hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',
@@ -72,7 +74,10 @@ module.exports = Object.assign({}, defaults, {
     'hub.fabric.pub:7777',
     'sensemaker.io:7777'
   ],
-  port: process.env.FABRIC_PORT || 7777,
+  port: (() => {
+    const n = Number(process.env.FABRIC_PORT);
+    return Number.isFinite(n) && n > 0 ? n : 7777;
+  })(),
   resources: {
     'Contract': {
       fields: [

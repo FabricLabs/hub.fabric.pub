@@ -424,6 +424,33 @@ describe('@fabric/hub', function () {
         assert.strictEqual(body.status, 'error');
         assert.ok(String(body.message).toLowerCase().includes('bitcoin'), body.message);
       });
+
+      it('AnchorExecutionRunCommitment requires adminToken', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+
+        const hex64 = 'a'.repeat(64);
+        const anchor = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 303,
+          method: 'AnchorExecutionRunCommitment',
+          params: [{ commitmentHex: hex64 }]
+        }, { Accept: 'application/json' });
+
+        assert.strictEqual(anchor.status, 200);
+        assert.ok(anchor.body && anchor.body.result, 'JSON-RPC result');
+        const body = anchor.body.result;
+        assert.strictEqual(body.status, 'error');
+        assert.ok(String(body.message).toLowerCase().includes('admintoken'), body.message);
+      });
+
     });
 
     describe('Accept Header Response Format', function () {

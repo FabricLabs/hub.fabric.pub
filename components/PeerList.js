@@ -8,12 +8,15 @@ const {
   Button,
   Card,
   Divider,
+  Form,
   Header,
   Icon,
+  Input,
   Label,
   List,
   Loader,
   Message,
+  Modal,
   Segment,
   Statistic
 } = require('semantic-ui-react');
@@ -22,6 +25,7 @@ const { peerTopologyToDot } = require('../functions/peerTopologyDot');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const {
   normalizeFabricPeerAddress,
+  normalizePeerAddressInput,
   dedupeFabricPeers,
   fabricPeerPrimaryLabel,
   buildWebrtcCombinedRows,
@@ -33,6 +37,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { toast } = require('../functions/toast');
 
 /** Default “primary authority” Fabric TCP peer — long-lived hub, high trust, Bitcoin head reference. */
 const DEFAULT_PRIMARY_FABRIC_HUB = 'hub.fabric.pub:7777';
@@ -76,6 +81,53 @@ function sortFabricPeersForAuthority (peers, primaryNorm) {
 }
 
 class PeersPage extends React.Component {
+  constructor (props) {
+    super(props);
+    this.state = {
+      addPeerModalOpen: false,
+      addPeerDraft: '',
+      connectPeerModalOpen: false,
+      connectPeerIdDraft: ''
+    };
+  }
+
+  _openAddPeerModal = () => {
+    this.setState({ addPeerModalOpen: true, addPeerDraft: '' });
+  };
+
+  _closeAddPeerModal = () => {
+    this.setState({ addPeerModalOpen: false, addPeerDraft: '' });
+  };
+
+  _submitAddPeer = () => {
+    const { onAddPeer } = this.props;
+    const normalized = normalizePeerAddressInput(this.state.addPeerDraft);
+    if (!normalized) {
+      toast.warning('Enter a host or host:port (e.g. hub.fabric.pub or 127.0.0.1:7777).', { header: 'Add peer' });
+      return;
+    }
+    if (typeof onAddPeer === 'function') {
+      onAddPeer({ address: normalized });
+    }
+    this.setState({ addPeerModalOpen: false, addPeerDraft: '' });
+  };
+
+  _openConnectPeerModal = () => {
+    this.setState({ connectPeerModalOpen: true, connectPeerIdDraft: '' });
+  };
+
+  _closeConnectPeerModal = () => {
+    this.setState({ connectPeerModalOpen: false, connectPeerIdDraft: '' });
+  };
+
+  _submitConnectPeerModal = () => {
+    const { onConnectWebRTCPeer } = this.props;
+    const value = String(this.state.connectPeerIdDraft || '').trim();
+    if (!value || typeof onConnectWebRTCPeer !== 'function') return;
+    onConnectWebRTCPeer(value);
+    this.setState({ connectPeerModalOpen: false, connectPeerIdDraft: '' });
+  };
+
   componentDidMount () {
     if (typeof this.props.onRefreshPeers === 'function') {
       this.props.onRefreshPeers();
@@ -427,11 +479,10 @@ class PeersPage extends React.Component {
                         )}
                         <Button
                           primary
+                          type="button"
                           onClick={() => {
-                            const address = window.prompt('Enter peer address (host:port or host):');
-                            if (!address || typeof onAddPeer !== 'function') return;
-                            const normalized = address.includes(':') ? address : `${address}:7777`;
-                            onAddPeer({ address: normalized });
+                            if (typeof onAddPeer !== 'function') return;
+                            this._openAddPeerModal();
                           }}
                         >
                           <Icon name='add' />
@@ -619,14 +670,7 @@ class PeersPage extends React.Component {
                     <Button
                       size='small'
                       basic
-                      onClick={() => {
-                        try {
-                          const input = window.prompt('Enter WebRTC peer ID to connect:');
-                          const value = (input || '').trim();
-                          if (!value) return;
-                          onConnectWebRTCPeer(value);
-                        } catch (e) {}
-                      }}
+                      onClick={this._openConnectPeerModal}
                       title='Manually connect to a specific WebRTC peer by ID'
                     >
                       <Icon name='plug' />
@@ -762,6 +806,89 @@ class PeersPage extends React.Component {
               </Card.Description>
             </Card.Content>
           </Card>
+
+        <Modal
+          open={this.state.addPeerModalOpen}
+          onClose={this._closeAddPeerModal}
+          onOpen={() => {
+            const el = typeof document !== 'undefined' && document.getElementById('fabric-add-peer-address');
+            if (el && typeof el.focus === 'function') {
+              window.requestAnimationFrame(() => el.focus());
+            }
+          }}
+          size="small"
+          closeOnDimmerClick
+          closeOnEscape
+        >
+          <Modal.Header>Add Fabric peer</Modal.Header>
+          <Modal.Content>
+            <p style={{ marginTop: 0, color: '#555' }}>
+              TCP address for Fabric P2P (default port <code>7777</code>). You can paste a full URL — it will be normalized.
+            </p>
+            <Form
+              onSubmit={(e) => {
+                e.preventDefault();
+                this._submitAddPeer();
+              }}
+            >
+              <Form.Field>
+                <label htmlFor="fabric-add-peer-address">Peer address</label>
+                <Input
+                  id="fabric-add-peer-address"
+                  placeholder="host:port or host (e.g. hub.fabric.pub)"
+                  value={this.state.addPeerDraft}
+                  onChange={(e) => this.setState({ addPeerDraft: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      this._submitAddPeer();
+                    }
+                  }}
+                />
+              </Form.Field>
+            </Form>
+          </Modal.Content>
+          <Modal.Actions>
+            <Button type="button" onClick={this._closeAddPeerModal}>
+              Cancel
+            </Button>
+            <Button type="button" primary onClick={this._submitAddPeer}>
+              <Icon name="add" />
+              Add peer
+            </Button>
+          </Modal.Actions>
+        </Modal>
+        <Modal
+          open={this.state.connectPeerModalOpen}
+          onClose={this._closeConnectPeerModal}
+          size="tiny"
+          closeOnDimmerClick
+          closeOnEscape
+        >
+          <Modal.Header>Connect to WebRTC peer</Modal.Header>
+          <Modal.Content>
+            <Form onSubmit={(e) => { e.preventDefault(); this._submitConnectPeerModal(); }}>
+              <Form.Field>
+                <label htmlFor="peers-connect-peer-id">Peer ID</label>
+                <Input
+                  id="peers-connect-peer-id"
+                  placeholder="fabric-bridge-…"
+                  value={this.state.connectPeerIdDraft}
+                  onChange={(e) => this.setState({ connectPeerIdDraft: e.target.value })}
+                />
+              </Form.Field>
+            </Form>
+          </Modal.Content>
+          <Modal.Actions>
+            <Button type="button" onClick={this._closeConnectPeerModal}>
+              Cancel
+            </Button>
+            <Button type="button" primary onClick={this._submitConnectPeerModal}>
+              <Icon name="plug" />
+              Connect
+            </Button>
+          </Modal.Actions>
+        </Modal>
       </fabric-hub-peers>
     );
   }

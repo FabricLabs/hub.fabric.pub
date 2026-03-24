@@ -76,7 +76,7 @@ class BottomPanel extends React.Component {
         aria-label="Hub status footer"
         style={{
           flexShrink: 0,
-          marginTop: 0,
+          marginTop: '1em',
           marginBottom: 0,
           marginLeft: 0,
           marginRight: 0,

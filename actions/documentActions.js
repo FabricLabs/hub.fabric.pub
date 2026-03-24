@@ -2,6 +2,7 @@
 
 const { fetchFromAPI } = require('./apiActions');
 const createTimeoutPromise = require('../functions/createTimeoutPromise');
+const { safeIdentityErr } = require('../functions/fabricSafeLog');
 
 
 async function fetchDocumentsFromAPI(token) {
@@ -196,7 +197,7 @@ const searchDocument = (query) => {
 
       dispatch(searchDocumentSuccess(obj.content));
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching data:', safeIdentityErr(error));
       dispatch(searchDocumentFailure(error.message));
     }
   }
@@ -250,7 +251,7 @@ const createDocumentSection = (fabricID, target, title, content = null) => {
 
       dispatch(createSectionSuccess(sections));
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching data:', safeIdentityErr(error));
       dispatch(createSectionFailure(error.message));
     }
   }
@@ -270,10 +271,10 @@ const deleteDocumentSection = (fabricID, target) => {
       });
 
       const sections = await response.json();
-      
+
       dispatch(deleteSectionSuccess(sections));
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching data:', safeIdentityErr(error));
       dispatch(deleteSectionFailure(error.message));
     }
   }
@@ -295,10 +296,10 @@ const editDocumentSection = (fabricID, target, title, content = null) => {
       });
 
       const obj = await response.json();
-      
+
       dispatch(editSectionSuccess(obj));
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching data:', safeIdentityErr(error));
       dispatch(editSectionFailure(error.message));
     }
   }
@@ -322,7 +323,7 @@ const editDocument = (fabricID,title) => {
 
       dispatch(editDocumentSuccess(document));
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching data:', safeIdentityErr(error));
       dispatch(editDocumentFailure(error.message));
     }
   }
@@ -350,13 +351,11 @@ const deleteDocument = (fabricID) => {
       }
       dispatch(deleteDocumentSuccess());
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching data:', safeIdentityErr(error));
       dispatch(deleteDocumentFailure(error.message));
     }
   }
 }
-
-
 
 module.exports = {
   fetchDocument,

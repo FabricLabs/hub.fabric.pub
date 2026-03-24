@@ -8,6 +8,7 @@ const { Button, Icon, Label } = require('semantic-ui-react');
 const ChatInput = require('./ChatInput');
 const { isDelegationSignatureRequestActivity } = require('../functions/messageTypes');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 const MESSAGE_PAGE_SIZE = 10;
@@ -67,6 +68,7 @@ class ActivityStreamElement extends React.Component {
     this._shouldScrollToBottom = false;
     this._prevEntriesLength = 0;
     this._userHasLoadedMore = false;
+    this._userHasScrolledInStream = false;
     return this;
   }
 
@@ -153,6 +155,7 @@ class ActivityStreamElement extends React.Component {
       (entries) => {
         const sentinel = entries[0];
         if (!sentinel || !sentinel.isIntersecting) return;
+        if (!this._userHasScrolledInStream) return;
         this._userHasLoadedMore = true;
         this.setState((prev) => {
           const total = prev.entries.length;
@@ -239,7 +242,7 @@ class ActivityStreamElement extends React.Component {
         bridgeInstance.applyL1InvoicePaymentActivity(d);
       }
     } catch (e) {
-      console.warn('[FABRIC:STREAM] l1PaymentActivity:', e);
+      console.warn('[FABRIC:STREAM] l1PaymentActivity:', safeIdentityErr(e));
     }
   };
 
@@ -276,6 +279,25 @@ class ActivityStreamElement extends React.Component {
         return true;
       });
 
+      // Tombstones can be replayed or emitted through multiple paths; keep the latest
+      // event per target so one purge action does not flood the visible feed.
+      const tombstoneLast = new Map();
+      for (const m of fabricDeduped) {
+        if (!m || m.type !== 'Tombstone' || !m.object || typeof m.object !== 'object') continue;
+        const activityId = m.object.activityMessageId != null ? String(m.object.activityMessageId).trim() : '';
+        const documentId = m.object.documentId != null ? String(m.object.documentId).trim() : '';
+        const key = activityId ? `activity:${activityId}` : (documentId ? `document:${documentId}` : '');
+        if (key) tombstoneLast.set(key, m);
+      }
+      const fabricDedupedFinal = fabricDeduped.filter((m) => {
+        if (!m || m.type !== 'Tombstone' || !m.object || typeof m.object !== 'object') return true;
+        const activityId = m.object.activityMessageId != null ? String(m.object.activityMessageId).trim() : '';
+        const documentId = m.object.documentId != null ? String(m.object.documentId).trim() : '';
+        const key = activityId ? `activity:${activityId}` : (documentId ? `document:${documentId}` : '');
+        if (!key) return true;
+        return tombstoneLast.get(key) === m;
+      });
+
       this._shouldScrollToBottom = this._isScrolledToBottom();
       this.setState((s) => {
         const isFirstLoad = s.entries.length === 0;
@@ -288,14 +310,14 @@ class ActivityStreamElement extends React.Component {
           const c = e && e.object && e.object.created;
           return typeof c === 'number' ? c : new Date(c || 0).getTime() || 0;
         };
-        const entries = fabricDeduped.concat(prevNotices).sort((a, b) => tNotice(a) - tNotice(b));
+        const entries = fabricDedupedFinal.concat(prevNotices).sort((a, b) => tNotice(a) - tNotice(b));
         return {
           entries,
           displayLimit: isFirstLoad ? MESSAGE_PAGE_SIZE : s.displayLimit
         };
       });
     } catch (e) {
-      console.error('[FABRIC:STREAM]', 'Error processing global state update:', e);
+      console.error('[FABRIC:STREAM]', 'Error processing global state update:', safeIdentityErr(e));
     }
   };
 
@@ -391,6 +413,7 @@ class ActivityStreamElement extends React.Component {
         {this.props.includeHeader && <h3>{headerTitle}</h3>}
         <div
           ref={this._scrollContainerRef}
+          onScroll={() => { this._userHasScrolledInStream = true; }}
           style={{
             maxHeight: '40vh',
             minHeight: '8em',

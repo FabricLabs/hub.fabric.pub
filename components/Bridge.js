@@ -25,14 +25,45 @@ const { formatSatsDisplay } = require('../functions/formatSats');
 const { toast } = require('../functions/toast');
 const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
-const { extractPeerXpub, shortenPublicId } = require('../functions/peerIdentity');
+const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput } = require('../functions/peerIdentity');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { safeIdentityErr, safeDebugStatePreview, safeUrlForLog } = require('../functions/fabricSafeLog');
 
 const IDENTITY_UI_UNLOCK_SUFFIX = ' Use Settings → Fabric identity or the top-bar Locked control.';
 const MSG_IDENTITY_UNLOCK_CHAT = `Unlock identity to send chat messages.${IDENTITY_UI_UNLOCK_SUFFIX}`;
 const MSG_IDENTITY_UNLOCK_PEER = `Unlock identity to send peer messages.${IDENTITY_UI_UNLOCK_SUFFIX}`;
+
+/**
+ * Describe inbound/outbound payloads for debug logs without printing raw bytes or bodies (privacy).
+ * @param {*} data
+ * @returns {object}
+ */
+function fabricDebugDescribePayload (data) {
+  if (data == null) return { kind: 'null' };
+  if (typeof data === 'string') return { kind: 'string', length: data.length };
+  if (data instanceof ArrayBuffer) return { kind: 'ArrayBuffer', byteLength: data.byteLength };
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(data)) {
+    return { kind: 'TypedArray', byteLength: data.byteLength };
+  }
+  try {
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(data)) {
+      return { kind: 'Buffer', length: data.length };
+    }
+  } catch (e) {}
+  try {
+    if (typeof Blob !== 'undefined' && data instanceof Blob) return { kind: 'Blob', size: data.size };
+  } catch (e) {}
+  if (typeof data === 'object') {
+    const o = { kind: 'object' };
+    if (Object.prototype.hasOwnProperty.call(data, 'type')) o.type = data.type;
+    if (typeof data.data === 'string') o.dataStringLength = data.data.length;
+    else if (data.data && typeof data.data.byteLength === 'number') o.dataByteLength = data.data.byteLength;
+    return o;
+  }
+  return { kind: typeof data };
+}
 
 /**
  * Manages a WebSocket connection to a remote server.
@@ -395,7 +426,7 @@ class Bridge extends React.Component {
     };
 
     dc.onmessage = (ev) => {
-      console.debug('[BRIDGE]', 'WebRTC data from', peerId, ev.data);
+      console.debug('[BRIDGE]', 'WebRTC data from', peerId, fabricDebugDescribePayload(ev.data));
       this.handleWebRTCPeerMessage(peerId, ev.data);
     };
 
@@ -405,7 +436,7 @@ class Bridge extends React.Component {
     };
 
     dc.onerror = (err) => {
-      console.error('[BRIDGE]', 'WebRTC data channel error for', peerId, err);
+      console.error('[BRIDGE]', 'WebRTC data channel error for', peerId, safeIdentityErr(err));
     };
   }
 
@@ -531,7 +562,7 @@ class Bridge extends React.Component {
         if (queued && queued.length) {
           for (const cand of queued) {
             pc.addIceCandidate(new RTCIceCandidate(cand)).catch(err => {
-              console.error('[BRIDGE]', 'Error adding queued ICE candidate from', fromPeerId, err);
+              console.error('[BRIDGE]', 'Error adding queued ICE candidate from', fromPeerId, safeIdentityErr(err));
             });
           }
           this._rtcPendingIce.delete(fromPeerId);
@@ -720,11 +751,11 @@ class Bridge extends React.Component {
           });
         }
       } else {
-        console.error('[BRIDGE]', 'Failed to apply JSON-Patch:', result);
+        console.error('[BRIDGE]', 'Failed to apply JSON-Patch:', safeIdentityErr(result));
       }
 
     } catch (error) {
-      console.error('[BRIDGE]', 'Error updating global state:', error);
+      console.error('[BRIDGE]', 'Error updating global state:', safeIdentityErr(error));
     }
   }
 
@@ -744,7 +775,7 @@ class Bridge extends React.Component {
       if (!raw) return fallback;
       return JSON.parse(raw);
     } catch (e) {
-      console.warn('[BRIDGE]', `Could not read ${key} from storage:`, e);
+      console.warn('[BRIDGE]', `Could not read ${key} from storage:`, safeIdentityErr(e));
       return fallback;
     }
   }
@@ -755,7 +786,7 @@ class Bridge extends React.Component {
       window.localStorage.setItem(key, JSON.stringify(value));
       return true;
     } catch (e) {
-      console.warn('[BRIDGE]', `Could not persist ${key}:`, e);
+      console.warn('[BRIDGE]', `Could not persist ${key}:`, safeIdentityErr(e));
       return false;
     }
   }
@@ -766,7 +797,7 @@ class Bridge extends React.Component {
       window.localStorage.removeItem(key);
       return true;
     } catch (e) {
-      console.warn('[BRIDGE]', `Could not remove ${key} from storage:`, e);
+      console.warn('[BRIDGE]', `Could not remove ${key} from storage:`, safeIdentityErr(e));
       return false;
     }
   }
@@ -870,7 +901,7 @@ class Bridge extends React.Component {
     try {
       return key.encrypt(contentBase64);
     } catch (e) {
-      console.warn('[BRIDGE]', 'Document encrypt failed:', e);
+      console.warn('[BRIDGE]', 'Document encrypt failed:', safeIdentityErr(e));
       return null;
     }
   }
@@ -881,7 +912,7 @@ class Bridge extends React.Component {
     try {
       return key.decrypt(contentEncrypted);
     } catch (e) {
-      console.warn('[BRIDGE]', 'Document decrypt failed:', e);
+      console.warn('[BRIDGE]', 'Document decrypt failed:', safeIdentityErr(e));
       return null;
     }
   }
@@ -1745,7 +1776,7 @@ class Bridge extends React.Component {
   setHubAddress (hubAddress) {
     const ok = this._applyHubAddressString(hubAddress);
     if (!ok) {
-      console.warn('[BRIDGE]', 'Invalid hub address:', hubAddress);
+      console.warn('[BRIDGE]', 'Invalid hub address:', safeUrlForLog(hubAddress));
       return false;
     }
 
@@ -1779,7 +1810,7 @@ class Bridge extends React.Component {
           this.ws.close();
         }
       } catch (e) {
-        console.warn('[BRIDGE]', 'Error cleaning up previous WebSocket:', e);
+        console.warn('[BRIDGE]', 'Error cleaning up previous WebSocket:', safeIdentityErr(e));
       }
       this.ws = null;
     }
@@ -1807,7 +1838,7 @@ class Bridge extends React.Component {
         try {
           this.ws.send(message);
         } catch (error) {
-          console.error('[BRIDGE]', 'Error sending queued message:', error);
+          console.error('[BRIDGE]', 'Error sending queued message:', safeIdentityErr(error));
           // Re-queue the message if send fails
           this.messageQueue.unshift(message);
           break;
@@ -1833,9 +1864,9 @@ class Bridge extends React.Component {
       const kind = error && typeof error === 'object' && error.type
         ? error.type
         : (error && error.message) || error;
-      console.error('[BRIDGE]', 'WebSocket error:', url, kind, error);
+      console.error('[BRIDGE]', 'WebSocket error:', url, kind, safeIdentityErr(error));
       this._isConnected = false;
-      this.setState({ error, isConnected: false }, () => {
+      this.setState({ error: safeIdentityErr(error), isConnected: false }, () => {
         // Call onStateUpdate prop if provided for backward compatibility
         if (this.props.onStateUpdate && typeof this.props.onStateUpdate === 'function') {
           this.props.onStateUpdate(this.state);
@@ -1901,7 +1932,7 @@ class Bridge extends React.Component {
    */
   handleWebRTCMessage (data) {
     try {
-      console.debug('[BRIDGE]', 'Processing WebRTC message:', data);
+      console.debug('[BRIDGE]', 'Processing WebRTC message:', fabricDebugDescribePayload(data));
 
       // Handle our structured WebRTC messages
       if (data && typeof data === 'object' && data.type === 'fabric-message') {
@@ -1926,7 +1957,7 @@ class Bridge extends React.Component {
       this.onSocketMessage({ data: messageData });
 
     } catch (error) {
-      console.error('[BRIDGE]', 'Error handling WebRTC message:', error);
+      console.error('[BRIDGE]', 'Error handling WebRTC message:', safeIdentityErr(error));
     }
   }
 
@@ -2017,7 +2048,7 @@ class Bridge extends React.Component {
     }
 
     if (!Array.isArray(candidates)) {
-      console.warn('[BRIDGE]', 'Invalid peer candidates:', candidates);
+      console.warn('[BRIDGE]', 'Invalid peer candidates:', typeof candidates);
       return;
     }
 
@@ -2110,7 +2141,7 @@ class Bridge extends React.Component {
         }
       }));
     } catch (e) {
-      console.debug('[BRIDGE] _recordPeerGossipTopology:', e && e.message ? e.message : e);
+      console.debug('[BRIDGE] _recordPeerGossipTopology:', safeIdentityErr(e));
     }
   }
 
@@ -2178,7 +2209,7 @@ class Bridge extends React.Component {
         this.sendWebRTCSignal(peerId, offerSignal);
       }).catch(err => {
         entry.makingOffer = false;
-        console.error('[BRIDGE]', 'Error creating WebRTC offer to', peerId, err);
+        console.error('[BRIDGE]', 'Error creating WebRTC offer to', peerId, safeIdentityErr(err));
         this.disconnectWebRTCPeer(peerId);
       });
 
@@ -2191,7 +2222,7 @@ class Bridge extends React.Component {
       }, connectTimeoutMs);
       this._webrtcConnectTimers.set(peerId, timer);
     } catch (error) {
-      console.error('[BRIDGE]', 'Failed to initiate native WebRTC connection to peer:', peerId, error);
+      console.error('[BRIDGE]', 'Failed to initiate native WebRTC connection to peer:', peerId, safeIdentityErr(error));
       this.disconnectWebRTCPeer(peerId);
     }
   }
@@ -2217,7 +2248,7 @@ class Bridge extends React.Component {
       if (typeof Blob !== 'undefined' && data instanceof Blob) {
         data.arrayBuffer().then((ab) => {
           this.onSocketMessage({ data: ab });
-        }).catch((err) => console.error('[BRIDGE]', 'WebRTC Blob read failed:', err));
+        }).catch((err) => console.error('[BRIDGE]', 'WebRTC Blob read failed:', safeIdentityErr(err)));
         return;
       }
 
@@ -2410,7 +2441,7 @@ class Bridge extends React.Component {
                 });
               }
             } catch (e) {
-              console.warn('[BRIDGE]', 'Could not create local WebRTC chat message:', e);
+              console.warn('[BRIDGE]', 'Could not create local WebRTC chat message:', safeIdentityErr(e));
             }
             break;
           }
@@ -2420,7 +2451,7 @@ class Bridge extends React.Component {
         }
       }
     } catch (error) {
-      console.error('[BRIDGE]', 'Error handling WebRTC peer message:', error);
+      console.error('[BRIDGE]', 'Error handling WebRTC peer message:', safeIdentityErr(error));
     }
   }
 
@@ -2459,7 +2490,7 @@ class Bridge extends React.Component {
       peerInfo.connection.send(outbound);
       return true;
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending to WebRTC peer:', peerId, error);
+      console.error('[BRIDGE]', 'Error sending to WebRTC peer:', peerId, safeIdentityErr(error));
       return false;
     }
   }
@@ -2581,7 +2612,7 @@ class Bridge extends React.Component {
       try {
         peerInfo.connection.close();
       } catch (error) {
-        console.warn('[BRIDGE]', 'Error closing WebRTC connection for peer:', peerId, error);
+        console.warn('[BRIDGE]', 'Error closing WebRTC connection for peer:', peerId, safeIdentityErr(error));
       }
     }
 
@@ -2589,7 +2620,7 @@ class Bridge extends React.Component {
       try {
         rtcEntry.dc.close();
       } catch (error) {
-        console.warn('[BRIDGE]', 'Error closing WebRTC data channel for peer:', peerId, error);
+        console.warn('[BRIDGE]', 'Error closing WebRTC data channel for peer:', peerId, safeIdentityErr(error));
       }
     }
 
@@ -2597,7 +2628,7 @@ class Bridge extends React.Component {
       try {
         rtcEntry.pc.close();
       } catch (error) {
-        console.warn('[BRIDGE]', 'Error closing RTCPeerConnection for peer:', peerId, error);
+        console.warn('[BRIDGE]', 'Error closing RTCPeerConnection for peer:', peerId, safeIdentityErr(error));
       }
     }
 
@@ -2627,7 +2658,7 @@ class Bridge extends React.Component {
           try {
             peerInfo.connection.close();
           } catch (error) {
-            console.warn('[BRIDGE]', 'Error closing WebRTC connection for peer:', peerId, error);
+            console.warn('[BRIDGE]', 'Error closing WebRTC connection for peer:', peerId, safeIdentityErr(error));
           }
         }
       }
@@ -2676,7 +2707,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.ws.send(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending JSON-RPC:', error);
+      console.error('[BRIDGE]', 'Error sending JSON-RPC:', safeIdentityErr(error));
     }
   }
 
@@ -2724,7 +2755,7 @@ class Bridge extends React.Component {
     const { data, error, isConnected, webrtcConnected } = this.state;
 
     if (error && this.settings.debug) {
-      return <div>Error: {error.message}</div>;
+      return <div>Error: {error}</div>;
     }
 
     if (!data && this.settings.debug) {
@@ -2744,7 +2775,7 @@ class Bridge extends React.Component {
               {this.peerId && ` (${this.peerId})`}
             </div>
             <h1>Data Received:</h1>
-            <pre>{JSON.stringify(data, null, 2)}</pre>
+            <pre>{safeDebugStatePreview(data)}</pre>
           </div>
         ) : null}
       </fabric-bridge>
@@ -2783,7 +2814,7 @@ class Bridge extends React.Component {
           this.ws.close();
         }
       } catch (e) {
-        console.warn('[BRIDGE]', 'Error cleaning up WebSocket on stop:', e);
+        console.warn('[BRIDGE]', 'Error cleaning up WebSocket on stop:', safeIdentityErr(e));
       }
       this.ws = null;
     }
@@ -2795,7 +2826,7 @@ class Bridge extends React.Component {
           peerInfo.connection.close();
         }
       } catch (e) {
-        console.warn('[BRIDGE]', 'Error closing WebRTC peer connection:', peerId, e);
+        console.warn('[BRIDGE]', 'Error closing WebRTC peer connection:', peerId, safeIdentityErr(e));
       }
     }
     this.webrtcPeers.clear();
@@ -2809,7 +2840,7 @@ class Bridge extends React.Component {
       try {
         if (entry && entry.pc && typeof entry.pc.close === 'function') entry.pc.close();
       } catch (e) {
-        console.warn('[BRIDGE]', 'Error closing RTCPeerConnection:', peerId, e);
+        console.warn('[BRIDGE]', 'Error closing RTCPeerConnection:', peerId, safeIdentityErr(e));
       }
     }
     this._rtcPeers.clear();
@@ -2893,7 +2924,7 @@ class Bridge extends React.Component {
         publicKey: pubHex
       };
     } catch (error) {
-      console.error('[BRIDGE]', 'Error signing text:', error);
+      console.error('[BRIDGE]', 'Error signing text:', safeIdentityErr(error));
       return null;
     }
   }
@@ -3005,7 +3036,7 @@ class Bridge extends React.Component {
       if (sig.length !== 64) return false;
       return key.verifySchnorr(text, sig);
     } catch (error) {
-      console.error('[BRIDGE]', 'Error verifying text:', error);
+      console.error('[BRIDGE]', 'Error verifying text:', safeIdentityErr(error));
       return null;
     }
   }
@@ -3052,7 +3083,7 @@ class Bridge extends React.Component {
     try {
       return fabricMessage.signWithKey(this.settings.signingKey);
     } catch (error) {
-      console.warn('[BRIDGE]', 'Signing failed, sending unsigned:', error && error.message ? error.message : error);
+      console.warn('[BRIDGE]', 'Signing failed, sending unsigned:', safeIdentityErr(error));
       return message;
     }
   }
@@ -3084,7 +3115,7 @@ class Bridge extends React.Component {
         console.debug('[BRIDGE]', 'Message sent via WebRTC');
         return;
       } catch (error) {
-        console.warn('[BRIDGE]', 'WebRTC send failed, falling back to WebSocket:', error);
+        console.warn('[BRIDGE]', 'WebRTC send failed, falling back to WebSocket:', safeIdentityErr(error));
       }
     }
 
@@ -3098,7 +3129,7 @@ class Bridge extends React.Component {
       this.ws.send(message);
       console.debug('[BRIDGE]', 'Message sent via WebSocket');
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending message via WebSocket:', error);
+      console.error('[BRIDGE]', 'Error sending message via WebSocket:', safeIdentityErr(error));
       // Queue the message if send fails
       this.messageQueue.push(message);
     }
@@ -3243,6 +3274,11 @@ class Bridge extends React.Component {
               const result = Array.isArray(jsonCall.params) && jsonCall.params.length > 0
                 ? jsonCall.params[jsonCall.params.length - 1]
                 : (jsonCall.result || null);
+
+              if (result && typeof result === 'object' && result.status === 'error' && typeof result.message === 'string' && result.message &&
+                !result.type && result.documentId == null && result.contractId == null) {
+                toast.error(String(result.message), { header: 'Hub', duration: 6000 });
+              }
 
               // Full GetNetworkStatus / ListPeers payloads (and hub pushes). Match {@link isHubNetworkStatusShape}
               // so we do not drop valid status when `network` is absent or the hub shape drifts slightly.
@@ -3854,7 +3890,7 @@ class Bridge extends React.Component {
             }));
             this._persistMessages();
           } catch (e) {
-            console.error('[BRIDGE]', 'Could not parse P2P_RELAY envelope:', e);
+            console.error('[BRIDGE]', 'Could not parse P2P_RELAY envelope:', safeIdentityErr(e));
           }
           break;
         case 'CHAT_MESSAGE':
@@ -3896,7 +3932,7 @@ class Bridge extends React.Component {
                   created
                 }));
               } catch (e) {
-                console.log('[BRIDGE:CHAT]', chat);
+                console.log('[BRIDGE:CHAT]', 'parse failed', safeIdentityErr(e));
               }
             }
 
@@ -3917,7 +3953,7 @@ class Bridge extends React.Component {
             }));
             this._persistMessages();
           } catch (e) {
-            console.error('[BRIDGE]', 'Could not parse ChatMessage body:', e);
+            console.error('[BRIDGE]', 'Could not parse ChatMessage body:', safeIdentityErr(e));
           }
           break;
         case 'JSONPatch':
@@ -3940,7 +3976,7 @@ class Bridge extends React.Component {
               value: patchData.value
             });
           } catch (parseError) {
-            console.error('[BRIDGE]', 'Could not parse JSONPatch message body:', parseError);
+            console.error('[BRIDGE]', 'Could not parse JSONPatch message body:', safeIdentityErr(parseError));
           }
           break;
         case 'MessageStart':
@@ -3963,8 +3999,8 @@ class Bridge extends React.Component {
         }
       });
     } catch (error) {
-      console.error('[BRIDGE]', 'Error processing message:', error);
-      this.setState({ error }, () => {
+      console.error('[BRIDGE]', 'Error processing message:', safeIdentityErr(error));
+      this.setState({ error: safeIdentityErr(error) }, () => {
         // Call onStateUpdate prop if provided for backward compatibility
         if (this.props.onStateUpdate && typeof this.props.onStateUpdate === 'function') {
           this.props.onStateUpdate(this.state);
@@ -3995,8 +4031,7 @@ class Bridge extends React.Component {
     const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [] })]);
     const buffer = message.toBuffer();
     if (this.settings.debug) {
-      console.debug('[BRIDGE]', 'JSONCall:', message);
-      console.debug('[BRIDGE]', 'Sending network status request:', buffer);
+      console.debug('[BRIDGE]', 'Sending network status request, bytes:', buffer && buffer.length);
     }
     this.sendSignedMessage(buffer);
   }
@@ -4086,8 +4121,7 @@ class Bridge extends React.Component {
     const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'ListPeers', params: [] })]);
     const buffer = message.toBuffer();
     if (this.settings.debug) {
-      console.debug('[BRIDGE]', 'JSONCall:', message);
-      console.debug('[BRIDGE]', 'Sending ListPeers request:', buffer);
+      console.debug('[BRIDGE]', 'Sending ListPeers request, bytes:', buffer && buffer.length);
     }
     this.sendSignedMessage(buffer);
   }
@@ -4097,8 +4131,9 @@ class Bridge extends React.Component {
    * @param {Object} peer - Peer descriptor (e.g. { address }).
    */
   sendAddPeerRequest (peer = {}) {
-    const resolved = typeof peer === 'string' ? peer : (peer && peer.address) || '';
-    if (!resolved) {
+    const raw = typeof peer === 'string' ? peer : (peer && peer.address) || '';
+    const normalizedAddr = normalizePeerAddressInput(raw);
+    if (!normalizedAddr) {
       console.warn('[BRIDGE] sendAddPeerRequest: no address provided');
       return;
     }
@@ -4106,7 +4141,7 @@ class Bridge extends React.Component {
     try {
       const payload = {
         method: 'AddPeer',
-        params: [peer]
+        params: [{ address: normalizedAddr }]
       };
 
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
@@ -4119,11 +4154,11 @@ class Bridge extends React.Component {
         try {
           this.sendListPeersRequest();
         } catch (refreshError) {
-          console.error('[BRIDGE]', 'Error refreshing peer list after AddPeer:', refreshError);
+          console.error('[BRIDGE]', 'Error refreshing peer list after AddPeer:', safeIdentityErr(refreshError));
         }
       }, 1000);
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending AddPeer request:', error);
+      console.error('[BRIDGE]', 'Error sending AddPeer request:', safeIdentityErr(error));
     }
   }
 
@@ -4142,11 +4177,11 @@ class Bridge extends React.Component {
         try {
           this.sendListPeersRequest();
         } catch (e) {
-          console.error('[BRIDGE]', 'Error refreshing peer list after RemovePeer:', e);
+          console.error('[BRIDGE]', 'Error refreshing peer list after RemovePeer:', safeIdentityErr(e));
         }
       }, 500);
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending RemovePeer request:', error);
+      console.error('[BRIDGE]', 'Error sending RemovePeer request:', safeIdentityErr(error));
     }
   }
 
@@ -4363,7 +4398,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending SubmitChatMessage:', error);
+      console.error('[BRIDGE]', 'Error sending SubmitChatMessage:', safeIdentityErr(error));
     }
   }
 
@@ -4435,7 +4470,7 @@ class Bridge extends React.Component {
       }
       return { ok: false, message: (result && result.message) || 'Unexpected response from hub' };
     } catch (error) {
-      console.error('[BRIDGE]', 'emitTombstone error:', error);
+      console.error('[BRIDGE]', 'emitTombstone error:', safeIdentityErr(error));
       return { ok: false, message: error && error.message ? error.message : String(error) };
     }
   }
@@ -4497,7 +4532,7 @@ class Bridge extends React.Component {
       }));
       this._persistMessages();
     } catch (e) {
-      console.warn('[BRIDGE]', 'Could not create local queued peer chat message:', e);
+      console.warn('[BRIDGE]', 'Could not create local queued peer chat message:', safeIdentityErr(e));
     }
 
     // Add to in-memory queue and persist.
@@ -4540,7 +4575,7 @@ class Bridge extends React.Component {
         const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
         this.sendSignedMessage(message.toBuffer());
       } catch (error) {
-        console.error('[BRIDGE]', 'Error sending queued peer message:', error);
+        console.error('[BRIDGE]', 'Error sending queued peer message:', safeIdentityErr(error));
         remaining.push(job);
       }
     }
@@ -4672,7 +4707,7 @@ class Bridge extends React.Component {
         try { this.sendListPeersRequest(); } catch (e) {}
       }, 250);
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending SetPeerNickname request:', error);
+      console.error('[BRIDGE]', 'Error sending SetPeerNickname request:', safeIdentityErr(error));
     }
   }
 
@@ -4688,7 +4723,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending GetPeer request:', error);
+      console.error('[BRIDGE]', 'Error sending GetPeer request:', safeIdentityErr(error));
     }
   }
 
@@ -4714,7 +4749,7 @@ class Bridge extends React.Component {
         } catch (e) {}
       }, 400);
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending RequestFabricPeerResync:', error);
+      console.error('[BRIDGE]', 'Error sending RequestFabricPeerResync:', safeIdentityErr(error));
     }
   }
 
@@ -4724,7 +4759,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending ListDocuments request:', error);
+      console.error('[BRIDGE]', 'Error sending ListDocuments request:', safeIdentityErr(error));
       try {
         pushUiNotification({
           id: `list-documents-${Date.now()}`,
@@ -4745,7 +4780,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending GetDocument request:', error);
+      console.error('[BRIDGE]', 'Error sending GetDocument request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('documentLoadFailed', {
@@ -4858,7 +4893,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending CreateDocument request:', error);
+      console.error('[BRIDGE]', 'Error sending CreateDocument request:', safeIdentityErr(error));
       const sha = doc.sha256 ? String(doc.sha256) : (doc.id ? String(doc.id) : '');
       if (sha && this._pendingPublishBySha) {
         this._pendingPublishBySha.delete(sha);
@@ -4960,7 +4995,7 @@ class Bridge extends React.Component {
       if (this._pendingPublishDocumentBackendIds) {
         this._pendingPublishDocumentBackendIds.delete(String(resolved));
       }
-      console.error('[BRIDGE]', 'Error sending PublishDocument request:', error);
+      console.error('[BRIDGE]', 'Error sending PublishDocument request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
@@ -4996,7 +5031,7 @@ class Bridge extends React.Component {
       if (this._pendingCreatePurchaseInvoiceBackendIds) {
         this._pendingCreatePurchaseInvoiceBackendIds.delete(backendKey);
       }
-      console.error('[BRIDGE]', 'Error sending CreatePurchaseInvoice request:', error);
+      console.error('[BRIDGE]', 'Error sending CreatePurchaseInvoice request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('purchaseInvoiceFailed', {
@@ -5055,7 +5090,7 @@ class Bridge extends React.Component {
       if (this._pendingCreateDistributeInvoiceBackendIds) {
         this._pendingCreateDistributeInvoiceBackendIds.delete(backendKey);
       }
-      console.error('[BRIDGE]', 'Error sending CreateDistributeInvoice request:', error);
+      console.error('[BRIDGE]', 'Error sending CreateDistributeInvoice request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('distributeInvoiceFailed', {
@@ -5091,7 +5126,7 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       this._pendingSendDistributeProposalContext = null;
-      console.error('[BRIDGE]', 'Error sending SendDistributeProposal request:', error);
+      console.error('[BRIDGE]', 'Error sending SendDistributeProposal request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('distributeProposalFailed', {
@@ -5145,7 +5180,7 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       this._pendingAcceptDistributeContext = null;
-      console.error('[BRIDGE]', 'Error sending AcceptDistributeProposal request:', error);
+      console.error('[BRIDGE]', 'Error sending AcceptDistributeProposal request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined' && proposalId) {
           window.dispatchEvent(new CustomEvent('acceptDistributeProposalFailed', {
@@ -5179,7 +5214,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending CreateExecutionContract:', error);
+      console.error('[BRIDGE]', 'Error sending CreateExecutionContract:', safeIdentityErr(error));
     }
   }
 
@@ -5196,7 +5231,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending RunExecutionContract:', error);
+      console.error('[BRIDGE]', 'Error sending RunExecutionContract:', safeIdentityErr(error));
     }
   }
 
@@ -5236,7 +5271,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending DistributeDocument request:', error);
+      console.error('[BRIDGE]', 'Error sending DistributeDocument request:', safeIdentityErr(error));
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('storageContractBondFailed', {
@@ -5266,7 +5301,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending RequestPeerInventory:', error);
+      console.error('[BRIDGE]', 'Error sending RequestPeerInventory:', safeIdentityErr(error));
     }
   }
 
@@ -5284,7 +5319,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending ConfirmInventoryHtlcPayment:', error);
+      console.error('[BRIDGE]', 'Error sending ConfirmInventoryHtlcPayment:', safeIdentityErr(error));
     }
   }
 
@@ -5304,7 +5339,7 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
-      console.error('[BRIDGE]', 'Error sending SendPeerFile request:', error);
+      console.error('[BRIDGE]', 'Error sending SendPeerFile request:', safeIdentityErr(error));
     }
   }
 }

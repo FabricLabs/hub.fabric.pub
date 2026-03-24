@@ -30,6 +30,7 @@ const {
   DELEGATION_STORAGE_KEY,
   notifyDelegationStorageChanged
 } = require('../functions/fabricDelegationLocal');
+const { safeIdentityErr } = require('../functions/fabricSafeLog');
 
 const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
 
@@ -116,14 +117,14 @@ function IdentityManager (props) {
             passwordProtected: false
           };
         } catch (e) {
-          console.warn('[IDENTITY]', 'Failed to restore xpub-only identity:', e);
+          console.warn('[IDENTITY]', 'Failed to restore xpub-only identity:', safeIdentityErr(e));
           return null;
         }
       }
 
       return null;
     } catch (e) {
-      console.warn('[IDENTITY]', 'Failed to restore local identity:', e);
+      console.warn('[IDENTITY]', 'Failed to restore local identity:', safeIdentityErr(e));
       return null;
     }
   });
@@ -290,6 +291,8 @@ function IdentityManager (props) {
         setError('No identity found in extension. Create or restore one in the Fabric Hub extension popup first.');
         return;
       }
+      // Extension → page only delivers watch-only fields (xpub + id). xprv never crosses postMessage into
+      // the page JS realm; import or unlock a full key here when you need signing or decryption.
       try {
         if (typeof window !== 'undefined' && window.localStorage) {
           const toStore = identity.xprv
@@ -672,7 +675,7 @@ function IdentityManager (props) {
                           throw new Error('Stored identity is not password-protected.');
                         }
                       } catch (err) {
-                        console.error('[IDENTITY]', 'Unlock failed:', err);
+                        console.error('[IDENTITY]', 'Unlock failed:', safeIdentityErr(err));
                         setError('Incorrect password or corrupted identity. Please try again.');
                       } finally {
                         setBusy(false);
@@ -753,7 +756,7 @@ function IdentityManager (props) {
                         window.localStorage.removeItem('fabric:documents');
                       }
                     } catch (e) {
-                      console.error('[IDENTITY]', 'Forget identity error:', e);
+                      console.error('[IDENTITY]', 'Forget identity error:', safeIdentityErr(e));
                     }
                     setShowConfirmForget(false);
                     setLocalIdentity(null);
@@ -835,69 +838,13 @@ function IdentityManager (props) {
                     return;
                   }
                   setError(null);
-                  setBusy(true);
-                  try {
-                    const xprv = pendingSeed && pendingSeed.xprv;
-                    if (!xprv) throw new Error('Missing xprv for pending seed.');
-                    const identity = new Identity({ xprv });
-                    const key = identity.key;
-                    const pwd = a;
-                    const isPasswordProtected = true;
-                    let hasStorage = false;
-                    try {
-                      hasStorage = (typeof window !== 'undefined' && !!window.localStorage);
-                    } catch (e) {
-                      hasStorage = false;
-                    }
-                    if (hasStorage) {
-                      const salt = crypto.randomBytes(16).toString('hex');
-                      const keyBytes = crypto.createHash('sha256')
-                        .update(salt + pwd)
-                        .digest();
-                      const iv = crypto.randomBytes(16);
-                      const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
-                      let enc = cipher.update(xprv, 'utf8', 'hex');
-                      enc += cipher.final('hex');
-                      const payload = {
-                        id: identity.id,
-                        xpub: key.xpub,
-                        xprvEnc: iv.toString('hex') + ':' + enc,
-                        passwordProtected: true,
-                        passwordSalt: salt
-                      };
-                      window.localStorage.setItem('fabric.identity.local', JSON.stringify(payload));
-                    }
-                    const nextIdentity = {
-                      id: identity.id != null ? String(identity.id) : undefined,
-                      xpub: key.xpub != null ? String(key.xpub) : undefined,
-                      xprv: xprv != null ? String(xprv) : undefined,
-                      passwordProtected: isPasswordProtected
-                    };
-
-                    try {
-                      if (typeof window !== 'undefined' && window.sessionStorage) {
-                        window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
-                      }
-                    } catch (e) {}
-
-                    setLocalIdentity(nextIdentity);
-                    if (typeof props.onLocalIdentityChange === 'function') {
-                      props.onLocalIdentityChange(nextIdentity);
-                    }
-                    resetSeedState();
-                    if (typeof props.onUnlockSuccess === 'function') {
-                      props.onUnlockSuccess(nextIdentity);
-                    }
-                  } catch (e) {
-                    console.error('[IDENTITY]', 'Save and login failed:', e);
-                    setError((e && e.message) ? e.message : String(e));
-                  } finally {
-                    setBusy(false);
-                  }
+                  // Keep the generated seed in-memory and show backup details next.
+                  // Final persistence/login happens in the "Login with this identity" step.
+                  setSeedConfirmed(true);
                 }}
               >
                 <Icon name="arrow right" />
-                Continue
+                Continue to backup review
               </Button>
               <Button
                 basic
@@ -943,7 +890,7 @@ function IdentityManager (props) {
                     setIdentityPassword('');
                     setIdentityPasswordConfirm('');
                   } catch (e) {
-                    console.error('[IDENTITY]', 'Regenerate identity failed:', e);
+                    console.error('[IDENTITY]', 'Regenerate identity failed:', safeIdentityErr(e));
                     setError((e && e.stack) ? e.stack : (e && e.message ? e.message : String(e)));
                   } finally {
                     setIsGenerating(false);
@@ -1111,6 +1058,14 @@ function IdentityManager (props) {
                     xprv,
                     passwordProtected: isPasswordProtected
                   });
+                  if (typeof props.onLocalIdentityChange === 'function') {
+                    props.onLocalIdentityChange({
+                      id: identity.id != null ? String(identity.id) : undefined,
+                      xpub: key.xpub != null ? String(key.xpub) : undefined,
+                      xprv: xprv != null ? String(xprv) : undefined,
+                      passwordProtected: !!isPasswordProtected
+                    });
+                  }
                   resetSeedState();
                   if (typeof props.onUnlockSuccess === 'function') {
                     props.onUnlockSuccess({
@@ -1121,7 +1076,7 @@ function IdentityManager (props) {
                     });
                   }
                 } catch (e) {
-                  console.error('[IDENTITY]', 'Save local identity failed:', e);
+                  console.error('[IDENTITY]', 'Save local identity failed:', safeIdentityErr(e));
                   setError((e && e.stack) ? e.stack : (e && e.message ? e.message : String(e)));
                 }
               }}
@@ -1299,7 +1254,7 @@ function IdentityManager (props) {
                   });
                   resetSeedState();
                 } catch (e) {
-                  console.error('[IDENTITY]', 'Activate xpub failed:', e);
+                  console.error('[IDENTITY]', 'Activate xpub failed:', safeIdentityErr(e));
                   setError((e && e.stack) ? e.stack : (e && e.message ? e.message : String(e)));
                 } finally {
                   setBusy(false);
@@ -1430,7 +1385,7 @@ function IdentityManager (props) {
                       });
                     }
                   } catch (e) {
-                    console.error('[IDENTITY]', 'Import backup failed:', e);
+                    console.error('[IDENTITY]', 'Import backup failed:', safeIdentityErr(e));
                     setError((e && e.message) ? e.message : String(e));
                   } finally {
                     setBusy(false);
@@ -1548,7 +1503,7 @@ function IdentityManager (props) {
                   }
                   resetSeedState();
                 } catch (e) {
-                  console.error('[IDENTITY]', 'Mnemonic import failed:', e);
+                  console.error('[IDENTITY]', 'Mnemonic import failed:', safeIdentityErr(e));
                   setError((e && e.message) ? e.message : String(e));
                 } finally {
                   setBusy(false);
@@ -1613,7 +1568,7 @@ function IdentityManager (props) {
                   setIdentityPassword('');
                   setIdentityPasswordConfirm('');
                 } catch (e) {
-                  console.error('[IDENTITY]', 'Generate identity failed:', e);
+                  console.error('[IDENTITY]', 'Generate identity failed:', safeIdentityErr(e));
                   setError((e && e.stack) ? e.stack : (e && e.message ? e.message : String(e)));
                 } finally {
                   setIsGenerating(false);

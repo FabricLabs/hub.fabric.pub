@@ -19,6 +19,8 @@ function SettingsHome () {
     return subscribeHubUiFeatureFlags(() => setUiTick((t) => t + 1));
   }, []);
   const uf = loadHubUiFeatureFlags();
+  /** Same gate as {@link TopPanel}: Peers nav is hub-admin-only. */
+  const hasHubAdminPeerNav = !!readHubAdminTokenFromBrowser();
 
   return (
     <Segment style={{ maxWidth: 960, margin: '1em auto' }}>
@@ -47,14 +49,14 @@ function SettingsHome () {
         <Card as={Link} to="/contracts" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>
-              <Icon name="file contract" aria-hidden="true" /> Contracts
+              <Icon name="file code" aria-hidden="true" /> Contracts
             </Card.Header>
             <Card.Description>
               Storage and execution contracts; optional L1-backed execution registry when the hub Bitcoin service is available.
             </Card.Description>
           </Card.Content>
         </Card>
-        {uf.peers && hasHubAdminForPeers ? (
+        {uf.peers && hasHubAdminPeerNav ? (
           <Card as={Link} to="/peers" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>

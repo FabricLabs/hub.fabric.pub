@@ -5,8 +5,11 @@
  *
  * Deposits share one P2TR address. Tapscript encodes:
  *   - Payout path: 8-byte LE commitments to goalSats + minContributionSats (dropped), then
- *     Schnorr 2-of-2 (beneficiary + arbiter x-only keys, lexicographically sorted). The beneficiary
+ *     Schnorr 2-of-2 (beneficiary + arbiter x-only keys in script as k0,k1 = sorted pair). The beneficiary
  *     cannot move funds alone; the arbiter co-signs only when aggregate confirmed value ≥ goal (policy).
+ *     When finalizing PSBT witness stacks, signature order follows BIP342 / bitcoinjs tapscript finalizer:
+ *     pubkey **position in the leaf script, descending** (later OP_CHECKSIG / CHECKSIGADD pubkey first), not
+ *     lexicographic x-only order.
  *   - Refund path: absolute CLTV + arbiter-only signature (sweep after deadline).
  *
  * Bitcoin Script cannot sum balances across separate UTXOs; the goal is enforced by tapleaf
@@ -352,6 +355,8 @@ function signAllInputsWithKey (psbt, priv32) {
 
 /**
  * Finalize payout inputs (2-of-2 tapscript with leading DROP commitments).
+ * Witness signature order must match bitcoinjs tapScriptFinalizer / BIP342: sort by
+ * pubkey position in the leaf script descending (later CHECKSIG pair first in the witness stack).
  */
 function finalizeCrowdfundPayoutPsbt (psbt) {
   for (let i = 0; i < psbt.inputCount; i++) {
@@ -363,10 +368,19 @@ function finalizeCrowdfundPayoutPsbt (psbt) {
       const lh = bip341.tapleafHash({ output: leaf.script, version: leaf.leafVersion });
       const sigs = (input.tapScriptSig || []).filter((t) => t.leafHash.equals(lh));
       if (sigs.length < 2) throw new Error('Need two tapscript signatures for crowdfund payout leaf.');
-      const ordered = sigs.slice().sort((a, b) => a.pubkey.compare(b.pubkey));
+      const ordered = sigs
+        .map((tss) => {
+          const fake33 = Buffer.concat([Buffer.from([0x02]), tss.pubkey]);
+          const positionInScript = psbtutils.pubkeyPositionInScript(fake33, leaf.script);
+          if (positionInScript < 0) {
+            throw new Error('Crowdfund tapscript pubkey not found in leaf script.');
+          }
+          return { tss, positionInScript };
+        })
+        .sort((a, b) => b.positionInScript - a.positionInScript);
       const witness = [];
-      for (const t of ordered) {
-        const sig = t.signature.length >= 64 ? t.signature.subarray(0, 64) : t.signature;
+      for (const { tss } of ordered) {
+        const sig = tss.signature.length >= 64 ? tss.signature.subarray(0, 64) : tss.signature;
         witness.push(sig);
       }
       witness.push(leaf.script, leaf.controlBlock);

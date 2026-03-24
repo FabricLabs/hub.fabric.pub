@@ -178,9 +178,9 @@ class InvoiceListHome extends React.Component {
                     <Icon name="sitemap" aria-hidden="true" />
                     Resources
                   </Button>
-                  <Button as={Link} to="/services/bitcoin#fabric-bitcoin-crowdfunding" basic size="small" title="Taproot campaign, ACP PSBT, Payjoin deposit to vault">
+                  <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" title="Taproot campaign, ACP PSBT, Payjoin deposit to vault">
                     <Icon name="heart outline" aria-hidden="true" />
-                    Crowdfund
+                    Crowdfunds
                   </Button>
                 </div>
               </div>

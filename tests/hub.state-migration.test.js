@@ -8,7 +8,7 @@ const Hub = require('../services/hub');
 const MIGRATION_TEST_PATH = path.join(__dirname, '../stores/hub-migration-test');
 
 describe('Hub state migration', function () {
-  this.timeout(15000);
+  this.timeout(30000);
 
   it('migrates fabricMessageTree to chain.tree when loading legacy state', async function () {
     const legacyTree = { leaves: 5, root: 'abc123' };

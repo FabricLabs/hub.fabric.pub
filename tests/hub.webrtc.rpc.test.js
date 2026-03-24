@@ -164,12 +164,19 @@ describe('Hub WebRTC RPC methods', function () {
   it('RelayFromWebRTC rate-limits per fromPeerId', function () {
     const { methods } = harness;
     let errors = 0;
-    for (let i = 0; i < 52; i++) {
-      const r = methods.RelayFromWebRTC({
-        fromPeerId: 'rate-test-peer',
-        envelope: { original: `{"i":${i}}`, originalType: 'P2P_CHAT_MESSAGE', hops: [] }
-      });
-      if (r.status === 'error' && /rate limit/i.test(r.message)) errors++;
+    const originalNow = Date.now;
+    const fixedNow = originalNow();
+    Date.now = () => fixedNow;
+    try {
+      for (let i = 0; i < 52; i++) {
+        const r = methods.RelayFromWebRTC({
+          fromPeerId: 'rate-test-peer',
+          envelope: { original: `{"i":${i}}`, originalType: 'P2P_CHAT_MESSAGE', hops: [] }
+        });
+        if (r.status === 'error' && /rate limit/i.test(r.message)) errors++;
+      }
+    } finally {
+      Date.now = originalNow;
     }
     assert.ok(errors >= 1, 'should reject relay after burst over default per-second cap');
   });

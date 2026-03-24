@@ -147,7 +147,6 @@ class Dashboard extends React.Component {
   };
 
   handleSearchChange = (e) => {
-    console.log('search change:', e);
     this.setState({ search: e.target.value });
   };
 
