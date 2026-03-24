@@ -16,6 +16,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 function FeaturesPage () {
   const [hubUiTick, setHubUiTick] = React.useState(0);
@@ -35,7 +36,7 @@ function FeaturesPage () {
         </Header>
         <p style={{ color: '#666', maxWidth: '42rem', lineHeight: 1.45 }}>
           <strong>{BRAND_NAME}</strong> — {BRAND_TAGLINE}. Identity and signing use standard Bitcoin cryptography (secp256k1; BIP32/BIP39-style keys in the browser). <strong>Distributed storage</strong> (publish, distribute, encrypted documents) and <strong>distributed execution</strong> (deterministic programs, optional L1-backed registry) live under Documents and Contracts. The{' '}
-          <Link to="/services/bitcoin">Bitcoin</Link> dashboard is always available; peers, activities, sidechain demo, and Bitcoin sub-pages (payments, invoices, explorer, Lightning, crowdfund) follow toggles in{' '}
+          <Link to="/services/bitcoin">Bitcoin</Link> dashboard is always available; Activities, Features, and the block/tx explorer are always on. Peers management uses the hub admin token in this browser; sidechain demo and other Bitcoin sub-pages (payments, invoices, Lightning, crowdfund) follow toggles in{' '}
           <Link to="/settings/admin">Admin</Link> → Feature visibility. The shortcuts below match home and the <strong>More</strong> menu when those routes are enabled.
         </p>
       </Segment>
@@ -101,32 +102,65 @@ function FeaturesPage () {
             <Icon name="user" aria-hidden="true" />
             Log in
           </Button>
-          <Button as={Link} to="/documents" basic icon labelPosition="left">
-            <Icon name="file outline" aria-hidden="true" />
-            Documents
-          </Button>
-          {uf.peers ? (
+          {showPeersShortcut ? (
             <Button as={Link} to="/peers" basic icon labelPosition="left">
               <Icon name="sitemap" aria-hidden="true" />
               Peers
             </Button>
           ) : null}
+          <Button as={Link} to="/documents" basic icon labelPosition="left">
+            <Icon name="file outline" aria-hidden="true" />
+            Documents
+          </Button>
+          <Button as={Link} to="/contracts" basic icon labelPosition="left">
+            <Icon name="file contract" aria-hidden="true" />
+            Contracts
+          </Button>
           {uf.activities ? (
             <Button as={Link} to="/activities" basic icon labelPosition="left" title="Same as the bell in the top bar">
               <Icon name="bell outline" aria-hidden="true" />
               Activities
             </Button>
           ) : null}
-          {uf.bitcoinInvoices ? (
-            <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic icon labelPosition="left">
-              <Icon name="file alternate outline" aria-hidden="true" />
-              Invoices
+          {uf.sidechain ? (
+            <Button as={Link} to="/sidechains" basic icon labelPosition="left">
+              <Icon name="random" aria-hidden="true" />
+              Sidechain
             </Button>
           ) : null}
+          {uf.sidechain ? (
+            <Button
+              as={Link}
+              to="/settings/admin/beacon-federation"
+              basic
+              icon
+              labelPosition="left"
+              title="L1-bound beacon epochs, manifest, federation witnesses"
+            >
+              <Icon name="star" aria-hidden="true" />
+              Beacon Federation
+            </Button>
+          ) : null}
+          {uf.sidechain ? (
+            <Button as={Link} to="/settings/federation" basic icon labelPosition="left" title="Validator pubkeys and threshold">
+              <Icon name="users" aria-hidden="true" />
+              Distributed federation
+            </Button>
+          ) : null}
+          <Button as={Link} to="/services/bitcoin" basic icon labelPosition="left">
+            <Icon name="bitcoin" aria-hidden="true" />
+            Bitcoin
+          </Button>
           {uf.bitcoinPayments ? (
             <Button as={Link} to="/services/bitcoin/payments" basic icon labelPosition="left">
               <Icon name="credit card outline" aria-hidden="true" />
               Payments
+            </Button>
+          ) : null}
+          {uf.bitcoinInvoices ? (
+            <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic icon labelPosition="left">
+              <Icon name="file alternate outline" aria-hidden="true" />
+              Invoices
             </Button>
           ) : null}
           {uf.bitcoinLightning ? (
@@ -153,27 +187,17 @@ function FeaturesPage () {
               Crowdfund
             </Button>
           ) : null}
-          <Button as={Link} to="/contracts" basic icon labelPosition="left">
-            <Icon name="file contract" aria-hidden="true" />
-            Contracts
-          </Button>
-          {uf.sidechain ? (
-            <Button as={Link} to="/sidechains" basic icon labelPosition="left">
-              <Icon name="random" aria-hidden="true" />
-              Sidechain
-            </Button>
-          ) : null}
-          <Button as={Link} to="/services/bitcoin" basic icon labelPosition="left">
-            <Icon name="bitcoin" aria-hidden="true" />
-            Bitcoin
+          <Button as={Link} to="/settings/admin" basic icon labelPosition="left">
+            <Icon name="settings" aria-hidden="true" />
+            Admin
           </Button>
           <Button as={Link} to="/settings" basic icon labelPosition="left">
             <Icon name="setting" aria-hidden="true" />
             Settings
           </Button>
-          <Button as={Link} to="/settings/admin" basic icon labelPosition="left">
-            <Icon name="settings" aria-hidden="true" />
-            Admin
+          <Button as={Link} to="/settings/security" basic icon labelPosition="left" title="Unlock, delegation, same destination as Log in">
+            <Icon name="shield" aria-hidden="true" />
+            Security
           </Button>
         </div>
       </Segment>

@@ -756,7 +756,7 @@ class BitcoinHome extends React.Component {
     const hex = getCrowdfundingBeneficiaryPubkeyHex(this.getIdentity());
     if (!hex) {
       this.setState({
-        cfError: 'Unlock identity (xprv) so we can derive your payment wallet pubkey at m/44\'/0\'/0\'/0/0.',
+        cfError: 'Unlock identity (xprv) so we can derive your payment wallet pubkey at m/44\'/0\'/0\'/0/0. Use Settings → Fabric identity or the top-bar Locked control.',
         cfSuccess: null
       });
       return;
@@ -1512,7 +1512,7 @@ class BitcoinHome extends React.Component {
                   type='button'
                   primary
                   disabled={!bitcoinReady || !hubUi.bitcoinExplorer}
-                  title={!hubUi.bitcoinExplorer ? 'Enable Bitcoin explorer in Admin → Feature visibility' : undefined}
+                  title={!hubUi.bitcoinExplorer ? 'Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility' : undefined}
                   onClick={() => this.handleTxLookup()}
                 >
                   <Icon name='search' />
@@ -1579,7 +1579,7 @@ class BitcoinHome extends React.Component {
         <Segment loading={this.state.loading}>
           <Header as='h3'>Wallet</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <strong>Client:</strong> identity fingerprint, xpub, receive index, and client balance. <strong>Bridge:</strong> receive address + funding rails.
+            <strong>Client:</strong> identity fingerprint, xpub, receive index, and client balance (matches the top-bar chip). <strong>Bridge:</strong> Hub node wallet — regtest block rewards, optional admin spends, Payjoin receiver. <strong>Documents:</strong> publishing is free; paid <Link to="/documents">distribute</Link> uses L1 invoices tied to your identity.
             {(hubUi.bitcoinPayments || hubUi.bitcoinLightning) ? (
               <span>
                 {' '}This Hub runs{' '}
@@ -2366,7 +2366,7 @@ class BitcoinHome extends React.Component {
               <Form.Field>
                 <label>Memo (optional)</label>
                 <Input
-                  placeholder='payjoin test'
+                  placeholder='Shown in wallet (optional)'
                   value={this.state.payjoinMemo}
                   onChange={(e) => this.setState({ payjoinMemo: e.target.value })}
                 />
@@ -2560,7 +2560,7 @@ class BitcoinHome extends React.Component {
               <Form.Field>
                 <label>Memo (optional)</label>
                 <Input
-                  placeholder='debug payment'
+                  placeholder='Note for your records (optional)'
                   value={this.state.paymentMemo}
                   onChange={(e) => this.setState({ paymentMemo: e.target.value })}
                 />
@@ -2955,7 +2955,7 @@ class BitcoinHome extends React.Component {
               <Form.Field>
                 <label>Invoice memo</label>
                 <Input
-                  placeholder='local lightning test'
+                  placeholder='Shown to payer (optional)'
                   value={this.state.invoiceMemo}
                   onChange={(e) => this.setState({ invoiceMemo: e.target.value })}
                 />

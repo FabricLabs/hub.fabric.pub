@@ -28,6 +28,11 @@ const { parseFederationContractInvite, parseFederationContractInviteResponse } =
 const { extractPeerXpub, shortenPublicId } = require('../functions/peerIdentity');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
+const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+
+const IDENTITY_UI_UNLOCK_SUFFIX = ' Use Settings → Fabric identity or the top-bar Locked control.';
+const MSG_IDENTITY_UNLOCK_CHAT = `Unlock identity to send chat messages.${IDENTITY_UI_UNLOCK_SUFFIX}`;
+const MSG_IDENTITY_UNLOCK_PEER = `Unlock identity to send peer messages.${IDENTITY_UI_UNLOCK_SUFFIX}`;
 
 /**
  * Manages a WebSocket connection to a remote server.
@@ -87,6 +92,10 @@ class Bridge extends React.Component {
     this.chatSubmissionQueue = [];
     this.pendingHubChatQueue = []; // Chat messages sent while hub was offline; flush to bridge when reconnected
     this._pendingClaimCallbacks = new Map(); // documentId -> { resolve, reject }
+    /** Hub file id (sha) passed to CreatePurchaseInvoice — correlates error responses to the UI modal. */
+    this._pendingCreatePurchaseInvoiceBackendIds = new Set();
+    /** Same for CreateDistributeInvoice (pay-to-distribute step 1). */
+    this._pendingCreateDistributeInvoiceBackendIds = new Set();
     this.queue = [];
     this.ws = null;
     this._heartbeat = null;
@@ -126,6 +135,14 @@ class Bridge extends React.Component {
     this._onClientBalanceUpdate = this._onClientBalanceUpdate.bind(this);
 
     // Track backing SHA ids that should be published once CreateDocument succeeds.
+    /** Hub document file id (sha) when a PublishDocument JSONCall is in flight. */
+    this._pendingPublishDocumentBackendIds = new Set();
+    /** When publish first runs CreateDocument, correlate generic RPC errors to the document row. */
+    this._lastPublishCreateContext = null; // { sha: string, actorId: string, sentAt: number }
+    /** AcceptDistributeProposal in flight — correlate hub errors to hosting UI. */
+    this._pendingAcceptDistributeContext = null; // { backendId: string, proposalId: string, sentAt: number }
+    /** SendDistributeProposal in flight — correlate typed hub result to document detail UI. */
+    this._pendingSendDistributeProposalContext = null; // { backendId: string, peerKey: string, sentAt: number }
     this._pendingPublishBySha = new Set();
     /** @type {Map<string, object>} Incomplete P2P_FILE_SEND transfers keyed by transferId */
     this._p2pFileReceivers = new Map();
@@ -919,7 +936,7 @@ class Bridge extends React.Component {
     return this._hasUnlockedIdentity();
   }
 
-  _notifyIdentityUnlockRequired (message = 'Unlock identity to send chat messages.') {
+  _notifyIdentityUnlockRequired (message = MSG_IDENTITY_UNLOCK_CHAT) {
     try {
       window.dispatchEvent(new CustomEvent('fabric:chatWarning', {
         detail: {
@@ -3216,7 +3233,9 @@ class Bridge extends React.Component {
         case 'Pong':
           // Keepalive response from hub; no action needed beyond acknowledging receipt.
           break;
+        // Wire opcode decodes to JSON_CALL; Message.fromVector(['JSONCall', …]) uses friendly alias.
         case 'JSONCall':
+        case 'JSON_CALL':
           // Parse JSONCall and handle JSONCallResult responses
           try {
             const jsonCall = JSON.parse(message.body);
@@ -3225,37 +3244,10 @@ class Bridge extends React.Component {
                 ? jsonCall.params[jsonCall.params.length - 1]
                 : (jsonCall.result || null);
 
-              // Treat only full network status results as networkStatus.
-              if (result && typeof result === 'object' && result.network && !result.type) {
-                this.setState({ networkStatus: result, lastNetworkStatus: result }, () => {
-                  // When network status changes (especially peer connectivity),
-                  // try to flush any queued peer messages.
-                  this._flushPeerMessageQueue();
-                  window.dispatchEvent(new CustomEvent('networkStatusUpdate', { detail: { networkStatus: result } }));
-                });
-                // Sync published state from hub global store into globalState.documents.
-                const published = result.publishedDocuments;
-                if (published && typeof published === 'object' && this.globalState && this.globalState.documents) {
-                  let changed = false;
-                  for (const [docId, doc] of Object.entries(this.globalState.documents)) {
-                    if (!doc) continue;
-                    const inStore = published[docId] || (doc.sha256 && published[doc.sha256]);
-                    if (inStore && !doc.published) {
-                      this.globalState.documents[docId] = { ...doc, published: inStore.published || true };
-                      changed = true;
-                    } else if (doc.published && !inStore) {
-                      const next = { ...doc };
-                      delete next.published;
-                      this.globalState.documents[docId] = next;
-                      changed = true;
-                    }
-                  }
-                  if (changed) {
-                    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                      detail: { operation: { op: 'replace', path: '/documents', value: this.globalState.documents }, globalState: this.globalState }
-                    }));
-                  }
-                }
+              // Full GetNetworkStatus / ListPeers payloads (and hub pushes). Match {@link isHubNetworkStatusShape}
+              // so we do not drop valid status when `network` is absent or the hub shape drifts slightly.
+              if (result && typeof result === 'object' && !result.type && isHubNetworkStatusShape(result)) {
+                this.applyHubNetworkStatusPayload(result);
               }
 
               // WebRTC peer discovery response (does not touch networkStatus)
@@ -3324,6 +3316,10 @@ class Bridge extends React.Component {
                 const backendId = result.document.id; // sha-based id from hub
                 const sha = result.document.sha256 || backendId;
 
+                if (this._lastPublishCreateContext && sha && this._lastPublishCreateContext.sha === sha) {
+                  this._lastPublishCreateContext = null;
+                }
+
                 this._storeDocument(backendId, { ...(this.globalState.documents[backendId] || {}), ...result.document });
 
                 // If user clicked Publish on this sha before create completed, now is the time to publish.
@@ -3355,31 +3351,76 @@ class Bridge extends React.Component {
                 }
               }
               if (result && typeof result === 'object' && result.type === 'CreatePurchaseInvoiceResult' && result.documentId) {
+                const purchaseDid = String(result.documentId);
+                if (this._pendingCreatePurchaseInvoiceBackendIds) {
+                  this._pendingCreatePurchaseInvoiceBackendIds.delete(purchaseDid);
+                }
                 window.dispatchEvent(new CustomEvent('purchaseInvoiceReady', {
                   detail: {
-                    documentId: result.documentId,
+                    documentId: purchaseDid,
                     address: result.address,
                     amountSats: result.amountSats,
                     contentHash: result.contentHash,
                     network: result.network
                   }
                 }));
+              } else if (
+                result && typeof result === 'object' &&
+                result.status === 'error' &&
+                result.documentId != null && String(result.documentId) !== '' &&
+                this._pendingCreatePurchaseInvoiceBackendIds &&
+                this._pendingCreatePurchaseInvoiceBackendIds.has(String(result.documentId))
+              ) {
+                const purchaseErrDid = String(result.documentId);
+                this._pendingCreatePurchaseInvoiceBackendIds.delete(purchaseErrDid);
+                window.dispatchEvent(new CustomEvent('purchaseInvoiceFailed', {
+                  detail: {
+                    documentId: purchaseErrDid,
+                    message: String(result.message || 'Could not create purchase invoice')
+                  }
+                }));
               }
               if (result && typeof result === 'object' && result.type === 'CreateDistributeInvoiceResult' && result.documentId) {
+                const distDid = String(result.documentId);
+                if (this._pendingCreateDistributeInvoiceBackendIds) {
+                  this._pendingCreateDistributeInvoiceBackendIds.delete(distDid);
+                }
                 window.dispatchEvent(new CustomEvent('distributeInvoiceReady', {
                   detail: {
-                    documentId: result.documentId,
+                    documentId: distDid,
                     address: result.address,
                     amountSats: result.amountSats,
                     config: result.config,
                     network: result.network
                   }
                 }));
+              } else if (
+                result && typeof result === 'object' &&
+                result.status === 'error' &&
+                result.documentId != null && String(result.documentId) !== '' &&
+                this._pendingCreateDistributeInvoiceBackendIds &&
+                this._pendingCreateDistributeInvoiceBackendIds.has(String(result.documentId))
+              ) {
+                const distErrDid = String(result.documentId);
+                this._pendingCreateDistributeInvoiceBackendIds.delete(distErrDid);
+                window.dispatchEvent(new CustomEvent('distributeInvoiceFailed', {
+                  detail: {
+                    documentId: distErrDid,
+                    message: String(result.message || 'Could not create distribute invoice')
+                  }
+                }));
               }
               if (result && typeof result === 'object' && result.type === 'AcceptDistributeProposalResult' && result.documentId) {
+                const accDid = String(result.documentId);
+                if (
+                  this._pendingAcceptDistributeContext &&
+                  this._pendingAcceptDistributeContext.backendId === accDid
+                ) {
+                  this._pendingAcceptDistributeContext = null;
+                }
                 window.dispatchEvent(new CustomEvent('distributeInvoiceReady', {
                   detail: {
-                    documentId: result.documentId,
+                    documentId: accDid,
                     address: result.address,
                     amountSats: result.amountSats,
                     config: result.config,
@@ -3387,10 +3428,70 @@ class Bridge extends React.Component {
                     fromProposal: true
                   }
                 }));
+              } else if (
+                result && typeof result === 'object' &&
+                result.status === 'error' &&
+                result.documentId != null && String(result.documentId) !== '' &&
+                this._pendingAcceptDistributeContext &&
+                String(result.documentId) === this._pendingAcceptDistributeContext.backendId
+              ) {
+                const ctx = this._pendingAcceptDistributeContext;
+                this._pendingAcceptDistributeContext = null;
+                const failDid = String(result.documentId);
+                try {
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('acceptDistributeProposalFailed', {
+                      detail: {
+                        documentId: failDid,
+                        proposalId: ctx.proposalId,
+                        message: String(result.message || 'Could not accept proposal')
+                      }
+                    }));
+                  }
+                } catch (_) {}
+              }
+              if (result && typeof result === 'object' && result.type === 'SendDistributeProposalResult') {
+                const ctx = this._pendingSendDistributeProposalContext;
+                if (ctx) {
+                  this._pendingSendDistributeProposalContext = null;
+                  const did = String(
+                    (result.documentId != null && String(result.documentId) !== '')
+                      ? result.documentId
+                      : ctx.backendId
+                  );
+                  if (result.status === 'success') {
+                    try {
+                      if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('distributeProposalSent', {
+                          detail: {
+                            documentId: did,
+                            proposalId: result.proposalId != null ? String(result.proposalId) : '',
+                            peerKey: ctx.peerKey
+                          }
+                        }));
+                      }
+                    } catch (_) {}
+                  } else {
+                    try {
+                      if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('distributeProposalFailed', {
+                          detail: {
+                            documentId: did,
+                            message: String(result.message || 'Could not send hosting offer')
+                          }
+                        }));
+                      }
+                    } catch (_) {}
+                  }
+                }
               }
               if (result && typeof result === 'object' && result.type === 'PublishDocumentResult' && result.document && result.document.id) {
                 const backendId = result.document.id; // sha-based id from hub
                 const sha = result.document.sha256 || backendId;
+
+                if (this._pendingPublishDocumentBackendIds) {
+                  this._pendingPublishDocumentBackendIds.delete(String(backendId));
+                }
 
                 this.globalState.documents = this.globalState.documents || {};
 
@@ -3424,6 +3525,49 @@ class Bridge extends React.Component {
                     globalState: this.globalState
                   }
                 }));
+              }
+              if (
+                result && typeof result === 'object' &&
+                result.status === 'error' &&
+                result.documentId != null && String(result.documentId) !== '' &&
+                this._pendingPublishDocumentBackendIds &&
+                this._pendingPublishDocumentBackendIds.has(String(result.documentId))
+              ) {
+                const pubErrDid = String(result.documentId);
+                this._pendingPublishDocumentBackendIds.delete(pubErrDid);
+                try {
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+                      detail: {
+                        documentId: pubErrDid,
+                        message: String(result.message || 'Publish failed')
+                      }
+                    }));
+                  }
+                } catch (_) {}
+              }
+              if (
+                result && typeof result === 'object' &&
+                result.status === 'error' &&
+                result.message &&
+                !result.type &&
+                !(Object.prototype.hasOwnProperty.call(result, 'documentId') && result.documentId != null && String(result.documentId) !== '')
+              ) {
+                const ctx = this._lastPublishCreateContext;
+                if (ctx && (Date.now() - ctx.sentAt) < 25000) {
+                  this._lastPublishCreateContext = null;
+                  if (this._pendingPublishBySha) this._pendingPublishBySha.delete(ctx.sha);
+                  try {
+                    if (typeof window !== 'undefined') {
+                      window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+                        detail: {
+                          documentId: ctx.actorId,
+                          message: String(result.message)
+                        }
+                      }));
+                    }
+                  } catch (_) {}
+                }
               }
               if (result && typeof result === 'object' && result.type === 'CreateExecutionContractResult' && result.contract) {
                 if (typeof window !== 'undefined') {
@@ -3858,6 +4002,82 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Apply a {@link GetNetworkStatus} / push payload (same as WebSocket JSONCallResult path).
+   * Used by HTTP `/services/rpc` fallbacks when the UI needs catalog + peers without waiting on WS.
+   * @param {object} result
+   * @returns {boolean} true when applied
+   */
+  applyHubNetworkStatusPayload (result) {
+    if (!result || typeof result !== 'object' || result.type || !isHubNetworkStatusShape(result)) {
+      return false;
+    }
+    this.setState({ networkStatus: result, lastNetworkStatus: result }, () => {
+      try {
+        this._flushPeerMessageQueue();
+      } catch (_) {}
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('networkStatusUpdate', { detail: { networkStatus: result } }));
+        }
+      } catch (_) {}
+    });
+    const published = result.publishedDocuments;
+    if (published && typeof published === 'object' && this.globalState && this.globalState.documents) {
+      let changed = false;
+      for (const [docId, doc] of Object.entries(this.globalState.documents)) {
+        if (!doc) continue;
+        const inStore = published[docId] || (doc.sha256 && published[doc.sha256]);
+        if (inStore && !doc.published) {
+          this.globalState.documents[docId] = { ...doc, published: inStore.published || true };
+          changed = true;
+        } else if (doc.published && !inStore) {
+          const next = { ...doc };
+          delete next.published;
+          this.globalState.documents[docId] = next;
+          changed = true;
+        }
+      }
+      if (changed) {
+        try {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+              detail: { operation: { op: 'replace', path: '/documents', value: this.globalState.documents }, globalState: this.globalState }
+            }));
+          }
+        } catch (_) {}
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Merge `ListDocuments` JSON-RPC result into {@link globalState.documents} (same as WebSocket path).
+   * @param {object} result
+   * @returns {boolean} true when merged
+   */
+  mergeListDocumentsRpcResult (result) {
+    if (!result || typeof result !== 'object' || result.type !== 'ListDocumentsResult' || !Array.isArray(result.documents)) {
+      return false;
+    }
+    this.globalState.documents = this.globalState.documents || {};
+    for (const doc of result.documents) {
+      if (!doc || !doc.id) continue;
+      this._storeDocument(doc.id, { ...(this.globalState.documents[doc.id] || {}), ...doc });
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+          detail: {
+            operation: { op: 'replace', path: `/documents`, value: this.globalState.documents },
+            globalState: this.globalState
+          }
+        }));
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  /**
    * Request an updated peer list from the hub.
    * This uses the ListPeers JSONCall method, which returns
    * the same status shape as GetNetworkStatus (including peers).
@@ -3940,7 +4160,7 @@ class Bridge extends React.Component {
 
     if (!this._hasUnlockedIdentity()) {
       console.warn('[BRIDGE]', 'submitChatMessage called without an unlocked identity; message will not be sent.');
-      this._notifyIdentityUnlockRequired('Unlock identity to send chat messages.');
+      this._notifyIdentityUnlockRequired(MSG_IDENTITY_UNLOCK_CHAT);
       return false;
     }
     const identityId = this._getIdentityId();
@@ -4079,7 +4299,7 @@ class Bridge extends React.Component {
     if (!text) return;
     if (!this._hasUnlockedIdentity()) {
       console.warn('[BRIDGE]', 'sendSubmitChatMessageRequest called without an unlocked identity; message will not be sent.');
-      this._notifyIdentityUnlockRequired('Unlock identity to send chat messages.');
+      this._notifyIdentityUnlockRequired(MSG_IDENTITY_UNLOCK_CHAT);
       return;
     }
     const created = body && body.created ? body.created : Date.now();
@@ -4344,7 +4564,7 @@ class Bridge extends React.Component {
     if (!resolved || !resolvedText) return;
     if (!this._hasUnlockedIdentity()) {
       console.warn('[BRIDGE]', 'sendPeerMessageRequest called without an unlocked identity; message will not be sent.');
-      this._notifyIdentityUnlockRequired('Unlock identity to send peer messages.');
+      this._notifyIdentityUnlockRequired(MSG_IDENTITY_UNLOCK_PEER);
       return;
     }
     const created = Date.now();
@@ -4505,6 +4725,15 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending ListDocuments request:', error);
+      try {
+        pushUiNotification({
+          id: `list-documents-${Date.now()}`,
+          kind: 'error',
+          title: 'Could not refresh document list',
+          subtitle: error && error.message ? error.message : String(error),
+          href: '/documents'
+        });
+      } catch (_) {}
     }
   }
 
@@ -4517,7 +4746,107 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending GetDocument request:', error);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('documentLoadFailed', {
+            detail: {
+              documentId: String(resolved),
+              message: error && error.message ? error.message : 'Could not request document from hub.'
+            }
+          }));
+        }
+      } catch (_) {}
     }
+  }
+
+  /**
+   * Apply a hub `GetDocument` JSON-RPC / JSONCallResult payload into local document state.
+   * Used when the document detail view falls back to HTTP `/services/rpc` (e.g. WS path delayed).
+   * @param {object} result - `{ type: 'GetDocumentResult', document?, documentId?, message? }`
+   * @returns {boolean} true when handled (success or not-found)
+   */
+  mergeGetDocumentRpcResult (result) {
+    if (!result || typeof result !== 'object' || result.type !== 'GetDocumentResult') return false;
+    if (result.document && result.document.id) {
+      const did = result.document.id;
+      this._storeDocument(did, result.document);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+            detail: {
+              operation: { op: 'add', path: `/documents/${did}`, value: this.globalState.documents[did] },
+              globalState: this.globalState
+            }
+          }));
+        }
+      } catch (_) {}
+      return true;
+    }
+    if (result.documentId != null && String(result.documentId) !== '') {
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('documentLoadFailed', {
+            detail: {
+              documentId: String(result.documentId),
+              message: (result.message && String(result.message)) || 'Document not found.'
+            }
+          }));
+        }
+      } catch (_) {}
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Apply hub `CreateDistributeInvoice` JSON-RPC result (same events as WebSocket path).
+   * @param {object} result
+   * @returns {boolean} true when recognized
+   */
+  mergeCreateDistributeInvoiceRpcResult (result) {
+    if (!result || typeof result !== 'object') return false;
+    if (result.type === 'CreateDistributeInvoiceResult' && result.documentId) {
+      const distDid = String(result.documentId);
+      if (this._pendingCreateDistributeInvoiceBackendIds) {
+        this._pendingCreateDistributeInvoiceBackendIds.delete(distDid);
+      }
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('distributeInvoiceReady', {
+            detail: {
+              documentId: distDid,
+              address: result.address,
+              amountSats: result.amountSats,
+              config: result.config,
+              network: result.network
+            }
+          }));
+        }
+      } catch (_) {}
+      return true;
+    }
+    if (
+      result.status === 'error' &&
+      result.documentId != null &&
+      String(result.documentId) !== ''
+    ) {
+      const distErrDid = String(result.documentId);
+      if (this._pendingCreateDistributeInvoiceBackendIds) {
+        this._pendingCreateDistributeInvoiceBackendIds.delete(distErrDid);
+      }
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('distributeInvoiceFailed', {
+            detail: {
+              documentId: distErrDid,
+              message: String(result.message || 'Could not create distribute invoice')
+            }
+          }));
+        }
+      } catch (_) {}
+      return true;
+    }
+    return false;
   }
 
   sendCreateDocumentRequest (doc) {
@@ -4530,6 +4859,37 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending CreateDocument request:', error);
+      const sha = doc.sha256 ? String(doc.sha256) : (doc.id ? String(doc.id) : '');
+      if (sha && this._pendingPublishBySha) {
+        this._pendingPublishBySha.delete(sha);
+      }
+      if (
+        this._lastPublishCreateContext &&
+        sha &&
+        this._lastPublishCreateContext.sha === sha
+      ) {
+        const actorId = this._lastPublishCreateContext.actorId;
+        this._lastPublishCreateContext = null;
+        try {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+              detail: {
+                documentId: String(actorId || sha),
+                message: error && error.message ? error.message : String(error)
+              }
+            }));
+          }
+        } catch (_) {}
+      }
+      try {
+        pushUiNotification({
+          id: `create-document-${Date.now()}`,
+          kind: 'error',
+          title: 'Create document failed',
+          subtitle: error && error.message ? error.message : String(error),
+          href: '/documents'
+        });
+      } catch (_) {}
     }
   }
 
@@ -4551,6 +4911,16 @@ class Bridge extends React.Component {
       const contentBase64 = this.getDecryptedDocumentContent(logical);
       if (!contentBase64) {
         console.warn('[BRIDGE]', 'Cannot publish document without decrypted content:', logical);
+        try {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+              detail: {
+                documentId: String(logical),
+                message: 'Cannot publish without decrypted content. Unlock your identity (top bar or Settings → Fabric identity).'
+              }
+            }));
+          }
+        } catch (_) {}
         return;
       }
 
@@ -4562,6 +4932,7 @@ class Bridge extends React.Component {
         size: doc.size,
         contentBase64
       };
+      this._lastPublishCreateContext = { sha: String(sha), actorId: String(logical), sentAt: Date.now() };
       this.sendCreateDocumentRequest(createDoc);
       if (this._pendingPublishBySha) {
         this._pendingPublishBySha.add(sha);
@@ -4578,11 +4949,28 @@ class Bridge extends React.Component {
       const params = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats))
         ? [{ id: resolved, purchasePriceSats: Number(opts.purchasePriceSats) }]
         : [resolved];
+      const backendKey = String(resolved);
+      if (this._pendingPublishDocumentBackendIds) {
+        this._pendingPublishDocumentBackendIds.add(backendKey);
+      }
       const payload = { method: 'PublishDocument', params };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
+      if (this._pendingPublishDocumentBackendIds) {
+        this._pendingPublishDocumentBackendIds.delete(String(resolved));
+      }
       console.error('[BRIDGE]', 'Error sending PublishDocument request:', error);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+            detail: {
+              documentId: String(logical),
+              message: error && error.message ? error.message : String(error)
+            }
+          }));
+        }
+      } catch (_) {}
     }
   }
 
@@ -4596,12 +4984,26 @@ class Bridge extends React.Component {
     if (!logical) return;
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
+    const backendKey = String(backendId);
+    if (this._pendingCreatePurchaseInvoiceBackendIds) {
+      this._pendingCreatePurchaseInvoiceBackendIds.add(backendKey);
+    }
     try {
       const payload = { method: 'CreatePurchaseInvoice', params: [{ documentId: backendId }] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
+      if (this._pendingCreatePurchaseInvoiceBackendIds) {
+        this._pendingCreatePurchaseInvoiceBackendIds.delete(backendKey);
+      }
       console.error('[BRIDGE]', 'Error sending CreatePurchaseInvoice request:', error);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('purchaseInvoiceFailed', {
+            detail: { documentId: backendKey, message: error && error.message ? error.message : String(error) }
+          }));
+        }
+      } catch (_) {}
     }
   }
 
@@ -4641,12 +5043,26 @@ class Bridge extends React.Component {
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     let backendId = logical;
     if (doc && doc.sha256) backendId = doc.sha256;
+    const backendKey = String(backendId);
+    if (this._pendingCreateDistributeInvoiceBackendIds) {
+      this._pendingCreateDistributeInvoiceBackendIds.add(backendKey);
+    }
     try {
       const payload = { method: 'CreateDistributeInvoice', params: [{ documentId: backendId, ...config }] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
+      if (this._pendingCreateDistributeInvoiceBackendIds) {
+        this._pendingCreateDistributeInvoiceBackendIds.delete(backendKey);
+      }
       console.error('[BRIDGE]', 'Error sending CreateDistributeInvoice request:', error);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('distributeInvoiceFailed', {
+            detail: { documentId: backendKey, message: error && error.message ? error.message : String(error) }
+          }));
+        }
+      } catch (_) {}
     }
   }
 
@@ -4656,13 +5072,45 @@ class Bridge extends React.Component {
    * @param {Object} proposal - { documentId, amountSats, config?, document?, documentName? }
    */
   sendSendDistributeProposalRequest (peerAddress, proposal) {
-    if (!peerAddress || !proposal || !proposal.documentId || !Number.isFinite(Number(proposal.amountSats))) return;
+    if (!peerAddress || !proposal || typeof proposal !== 'object') return;
+    const documentId = proposal.documentId;
+    const amountSats = Number(proposal.amountSats);
+    if (!documentId || !Number.isFinite(amountSats) || amountSats <= 0) return;
+    const peerKey = typeof peerAddress === 'object' && peerAddress
+      ? String(peerAddress.id || peerAddress.address || peerAddress)
+      : String(peerAddress);
+    if (!peerKey) return;
+    this._pendingSendDistributeProposalContext = {
+      backendId: String(documentId),
+      peerKey,
+      sentAt: Date.now()
+    };
     try {
-      const payload = { method: 'SendDistributeProposal', params: [peerAddress, proposal] };
+      const payload = { method: 'SendDistributeProposal', params: [peerKey, proposal] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
+      this._pendingSendDistributeProposalContext = null;
       console.error('[BRIDGE]', 'Error sending SendDistributeProposal request:', error);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('distributeProposalFailed', {
+            detail: {
+              documentId: String(documentId),
+              message: error && error.message ? error.message : String(error)
+            }
+          }));
+        }
+      } catch (_) {}
+      try {
+        pushUiNotification({
+          id: `distribute-proposal-${Date.now()}`,
+          kind: 'error',
+          title: 'Hosting offer not sent',
+          subtitle: error && error.message ? error.message : String(error),
+          href: '/documents'
+        });
+      } catch (_) {}
     }
   }
 
@@ -4675,6 +5123,13 @@ class Bridge extends React.Component {
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[proposal.documentId];
     let backendId = proposal.documentId;
     if (doc && doc.sha256) backendId = doc.sha256;
+    const backendKey = String(backendId);
+    const proposalId = proposal.id != null ? String(proposal.id) : '';
+    this._pendingAcceptDistributeContext = {
+      backendId: backendKey,
+      proposalId,
+      sentAt: Date.now()
+    };
     try {
       const payload = {
         method: 'AcceptDistributeProposal',
@@ -4689,7 +5144,19 @@ class Bridge extends React.Component {
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
+      this._pendingAcceptDistributeContext = null;
       console.error('[BRIDGE]', 'Error sending AcceptDistributeProposal request:', error);
+      try {
+        if (typeof window !== 'undefined' && proposalId) {
+          window.dispatchEvent(new CustomEvent('acceptDistributeProposalFailed', {
+            detail: {
+              documentId: backendKey,
+              proposalId,
+              message: error && error.message ? error.message : String(error)
+            }
+          }));
+        }
+      } catch (_) {}
     }
   }
 
@@ -4770,6 +5237,16 @@ class Bridge extends React.Component {
       this.sendSignedMessage(message.toBuffer());
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending DistributeDocument request:', error);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('storageContractBondFailed', {
+            detail: {
+              documentId: String(backendId),
+              message: error && error.message ? error.message : String(error)
+            }
+          }));
+        }
+      } catch (_) {}
     }
   }
 

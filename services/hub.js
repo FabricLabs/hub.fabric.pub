@@ -45,7 +45,13 @@ const PeeringService = require('../services/peering');
 const HTTPServer = require('@fabric/http/types/server');
 const FabricDistributedExecutionHTTP = require('../functions/fabricDistributedExecutionHttp');
 const DistributedExecution = require('../functions/fabricDistributedExecution');
-const { P2P_PEERING_OFFER, P2P_PEER_GOSSIP, MAX_PEERS } = require('@fabric/core/constants');
+const {
+  P2P_PEERING_OFFER,
+  P2P_PEER_GOSSIP,
+  MAX_PEERS,
+  HEADER_SIZE,
+  P2P_CHAIN_SYNC_REQUEST
+} = require('@fabric/core/constants');
 
 // Hard limits and validation patterns
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
@@ -172,6 +178,8 @@ class Hub extends Service {
         network: process.env.FABRIC_BITCOIN_NETWORK || (process.env.NODE_ENV === 'test' ? 'regtest' : 'mainnet'),
         host: process.env.FABRIC_BITCOIN_HOST || '127.0.0.1',
         rpcport: Number(process.env.FABRIC_BITCOIN_RPC_PORT || 8332),
+        /** Managed bitcoind: accept inbound P2P on the network’s default port unless set to `false` (tests use custom ports + `listen: false`). */
+        listen: true,
         username: process.env.FABRIC_BITCOIN_USERNAME || process.env.BITCOIN_RPC_USER || '',
         password: process.env.FABRIC_BITCOIN_PASSWORD || process.env.BITCOIN_RPC_PASS || '',
         debug: false,
@@ -244,7 +252,7 @@ class Hub extends Service {
     const rpcportProvided = Object.prototype.hasOwnProperty.call(inputBitcoin, 'rpcport');
     if (this.settings.bitcoin && this.settings.bitcoin.network === 'regtest' && this.settings.bitcoin.managed !== false) {
       this.settings.bitcoin.managed = true;
-      if (!rpcportProvided) this.settings.bitcoin.rpcport = 20444;
+      if (!rpcportProvided) this.settings.bitcoin.rpcport = 18443;
     }
 
     // Vector Clock
@@ -255,6 +263,7 @@ class Hub extends Service {
 
     // Internals
     this.agent = new Peer(this.settings);
+    this._installFabricChainSyncRequestBridge();
     /** fromPeerId → { count, windowStart } for RelayFromWebRTC rate limiting */
     this._webrtcRelayRate = new Map();
     this.chain = new Chain(this.settings);
@@ -283,8 +292,6 @@ class Hub extends Service {
     this._bitcoinCacheTTL = 15000;
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
     this._lastBitcoinBlockActivityTip = null;
-    /** Fabric P2P `ChainSyncRequest` handler: one resync burst per TCP peer at a time. */
-    this._fabricPeerResyncInFlight = new Map();
     // Pending pay-to-distribute requests: documentId -> { address, amountSats, config, createdAt }
     this._distributeRequests = {};
     // Pending execution registry invoices: programDigest (64 hex) -> { address, amountSats, program, name?, createdAt }
@@ -303,16 +310,20 @@ class Hub extends Service {
           p2pAddNodesAllowMainnet: !!(this.settings.bitcoin && this.settings.bitcoin.p2pAddNodesAllowMainnet),
           debug: this.settings.bitcoin.debug !== undefined ? this.settings.bitcoin.debug : !!this.settings.debug,
           key: { xprv: this._rootKey.xprv },
-          // Regtest: default no P2P listen (sandbox-friendly). Set `bitcoin.listen: true` for a local seed node
-          // (multi-hub regtest mesh / playnet); still disable DNS seeds unless extras override.
-          ...(this.settings.bitcoin.network === 'regtest' && this.settings.bitcoin.managed
+          // Managed: P2P listen on default network port unless `bitcoin.listen: false` (integration tests use ephemeral ports).
+          // Regtest: disable DNS seeds unless extras override.
+          ...(this.settings.bitcoin.managed
             ? {
-              listen: this.settings.bitcoin.listen === true,
-              bitcoinExtraParams: ['-dnsseed=0'].concat(
-                Array.isArray(this.settings.bitcoin.bitcoinExtraParams)
-                  ? this.settings.bitcoin.bitcoinExtraParams
-                  : []
-              )
+              listen: this.settings.bitcoin.listen !== false,
+              ...(this.settings.bitcoin.network === 'regtest'
+                ? {
+                    bitcoinExtraParams: ['-dnsseed=0'].concat(
+                      Array.isArray(this.settings.bitcoin.bitcoinExtraParams)
+                        ? this.settings.bitcoin.bitcoinExtraParams
+                        : []
+                    )
+                  }
+                : {})
             }
             : {}),
           // ZMQ for real-time block/tx notifications (bitcoind started with -zmqpubhashblock etc. on this port)
@@ -320,7 +331,7 @@ class Hub extends Service {
         });
         // Managed regtest: single RPC probe candidate and shorter wait-for-RPC polling so we fit within startTimeoutMs
         if (this.settings.bitcoin.managed && this.settings.bitcoin.network === 'regtest') {
-          const rpcport = Number(this.settings.bitcoin.rpcport || 20444);
+          const rpcport = Number(this.settings.bitcoin.rpcport || 18443);
           this.bitcoin._buildRPCProbeCandidates = function () {
             return [{ host: '127.0.0.1', rpcport, source: 'hub', network: 'regtest' }];
           };
@@ -663,6 +674,110 @@ class Hub extends Service {
     sock._writeFabric(msg.toBuffer());
   }
 
+  /**
+   * Send a JSON envelope that {@link Peer} delivers as {@link GenericMessage} so `_handleGenericMessage`
+   * runs (required for `INVENTORY_REQUEST` / `INVENTORY_RESPONSE`; bare vector labels are not switched).
+   * @param {string} addressInput
+   * @param {object|string} envelope Parsed object or JSON string (must include `type` when object).
+   */
+  _sendGenericFabricEnvelopeToPeer (addressInput, envelope) {
+    const address = this._resolvePeerAddress(addressInput);
+    if (!address) throw new Error('peer not connected');
+    const sock = this.agent && this.agent.connections && this.agent.connections[address];
+    if (!sock || typeof sock._writeFabric !== 'function') {
+      throw new Error('peer not connected');
+    }
+    const body = typeof envelope === 'string' ? envelope : JSON.stringify(envelope);
+    const msg = Message.fromVector(['GenericMessage', body]).signWithKey(this.agent.key);
+    sock._writeFabric(msg.toBuffer());
+  }
+
+  /**
+   * When a Fabric TCP session opens to an address listed in {@link settings.peers} (or
+   * `FABRIC_FABRIC_RESYNC_PEERS`), send {@link ChainSyncRequest} so the peer can push catalog
+   * inventory and replay `BitcoinBlock` Fabric log rows. Bitcoin Core chain length still follows
+   * bitcoind P2P (`addnode`), not this path.
+   * Disable: `FABRIC_DISABLE_FABRIC_SEED_RESYNC=1`.
+   */
+  _maybeRequestFabricSeedResync (ev) {
+    if (process.env.FABRIC_DISABLE_FABRIC_SEED_RESYNC === '1' ||
+        process.env.FABRIC_DISABLE_FABRIC_SEED_RESYNC === 'true') {
+      return;
+    }
+    if (!this.agent || !ev) return;
+    const addr = ev.address || ev.id;
+    if (!addr || typeof addr !== 'string' || !this.agent.connections[addr]) return;
+
+    const seeds = new Set();
+    const peers = Array.isArray(this.settings.peers) ? this.settings.peers : [];
+    for (const p of peers) {
+      if (typeof p === 'string' && p.trim()) seeds.add(p.trim().toLowerCase());
+    }
+    const extra = String(process.env.FABRIC_FABRIC_RESYNC_PEERS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const p of extra) seeds.add(p.toLowerCase());
+    if (!seeds.size) return;
+
+    const key = addr.trim().toLowerCase();
+    if (!seeds.has(key)) return;
+
+    if (!this._fabricSeedResyncCooldown) this._fabricSeedResyncCooldown = new Map();
+    const now = Date.now();
+    const last = this._fabricSeedResyncCooldown.get(key) || 0;
+    if (now - last < 30000) return;
+    this._fabricSeedResyncCooldown.set(key, now);
+
+    const myId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
+    const body = JSON.stringify({
+      v: 1,
+      reason: 'hub-auto-seed-fabric-resync',
+      requester: myId,
+      at: new Date().toISOString()
+    });
+    try {
+      this._sendVectorToPeer(addr, ['ChainSyncRequest', body]);
+      if (this.settings.debug) {
+        console.debug('[HUB] ChainSyncRequest → seed peer', addr);
+      }
+    } catch (err) {
+      console.error('[HUB] auto Fabric seed resync failed:', err && err.message ? err.message : err);
+    }
+  }
+
+  /**
+   * `@fabric/core` Peer treats wire `ChainSyncRequest` as unhandled (default switch branch), so
+   * `chainSyncRequest` never fires. Peek the type opcode and emit so {@link _fabricPeerResyncRespondToRequest} runs.
+   */
+  _installFabricChainSyncRequestBridge () {
+    const agent = this.agent;
+    if (!agent || typeof agent._handleFabricMessage !== 'function') return;
+    const orig = agent._handleFabricMessage.bind(agent);
+    agent._handleFabricMessage = (buffer, origin, socket) => {
+      try {
+        if (Buffer.isBuffer(buffer) && buffer.length >= HEADER_SIZE) {
+          const typeCode = buffer.readUInt32BE(72);
+          if (typeCode === P2P_CHAIN_SYNC_REQUEST) {
+            const raw = buffer.slice(HEADER_SIZE);
+            let object = {};
+            try {
+              object = raw.length ? JSON.parse(String(raw)) : {};
+            } catch (_) {
+              object = {};
+            }
+            agent.emit('chainSyncRequest', {
+              origin: origin || {},
+              object,
+              socket: socket || null
+            });
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+      return orig(buffer, origin, socket);
+    };
+  }
+
   _getCollectionMap (name) {
     this._state.content = this._state.content || {};
     this._state.content.collections = this._state.content.collections || {};
@@ -759,6 +874,66 @@ class Hub extends Service {
   }
 
   /**
+   * Apply published rows from a peer {@link INVENTORY_RESPONSE} after {@link ChainSyncRequest}
+   * (`object.fabricResync`) so {@link ListDocuments} / catalog match the anchor hub without local `CreateDocument`.
+   * Does not write `documents/<id>.json`; {@link GetDocument} still needs replication or fetch.
+   * @param {object[]} items
+   */
+  _mergeFabricResyncInventoryItems (items) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    this._ensureResourceCollections();
+    this._state.documents = this._state.documents || {};
+    this._state.content.collections.documents = this._state.content.collections.documents || {};
+    const coll = this._state.content.collections.documents;
+    const now = new Date().toISOString();
+    for (const it of items) {
+      if (!it || !it.published) continue;
+      const id = this._normalizeDocumentId(it.id);
+      if (!id) continue;
+      const existed = !!coll[id];
+      const pubVal = typeof it.published === 'string' ? it.published : now;
+      if (!this._state.documents[id]) {
+        this._state.documents[id] = {
+          id,
+          sha256: it.sha256 || id,
+          name: it.name || 'document',
+          mime: it.mime || 'application/octet-stream',
+          size: it.size != null ? Number(it.size) : 0,
+          created: it.created || now,
+          lineage: it.lineage || id,
+          parent: it.parent != null ? it.parent : null,
+          revision: it.revision != null ? Number(it.revision) : 1,
+          edited: it.edited || it.created || now
+        };
+      }
+      const loc = this._state.documents[id];
+      coll[id] = {
+        id,
+        document: id,
+        name: it.name || loc.name,
+        mime: it.mime || loc.mime,
+        size: it.size != null ? Number(it.size) : loc.size,
+        sha256: it.sha256 || id,
+        created: it.created || loc.created,
+        lineage: it.lineage || loc.lineage || id,
+        parent: it.parent != null ? it.parent : loc.parent,
+        revision: it.revision != null ? Number(it.revision) : loc.revision,
+        edited: it.edited || it.created || loc.edited || now,
+        published: pubVal,
+        ...(Number.isFinite(Number(it.purchasePriceSats)) && Number(it.purchasePriceSats) > 0
+          ? { purchasePriceSats: Math.round(Number(it.purchasePriceSats)) }
+          : {})
+      };
+      if (!existed) {
+        this._state.content.counts = this._state.content.counts || {};
+        this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
+      }
+    }
+    this._refreshChainState('fabric-resync-inventory');
+    this.commit();
+  }
+
+  /**
    * Respond to a Fabric {@link P2P_CHAIN_SYNC_REQUEST}: push document inventory, request peer inventory,
    * and replay recent `BitcoinBlock` Fabric log payloads over P2P (throttled).
    * @param {string} originConn host:port
@@ -773,55 +948,48 @@ class Hub extends Service {
       : '';
     const targetId = requesterFromBody || mapped;
 
-    if (this._fabricPeerResyncInFlight.get(originConn)) {
-      console.warn('[HUB] Fabric resync already in flight for', originConn);
-      return;
-    }
-    this._fabricPeerResyncInFlight.set(originConn, Date.now());
+    const items = this._collectLocalDocumentInventoryItems();
+    const responsePayload = {
+      type: 'INVENTORY_RESPONSE',
+      actor: { id: myId },
+      object: {
+        kind: 'documents',
+        items,
+        created: Date.now(),
+        fabricResync: true
+      },
+      ...(targetId ? { target: targetId } : {})
+    };
+    this._sendGenericFabricEnvelopeToPeer(originConn, responsePayload);
     try {
-      const items = this._collectLocalDocumentInventoryItems();
-      const responsePayload = {
-        type: 'INVENTORY_RESPONSE',
-        actor: { id: myId },
-        object: {
-          kind: 'documents',
-          items,
-          created: Date.now(),
-          fabricResync: true
-        },
-        ...(targetId ? { target: targetId } : {})
-      };
-      this._sendVectorToPeer(originConn, ['INVENTORY_RESPONSE', JSON.stringify(responsePayload)]);
+      const wsMsg = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]);
+      if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
+      if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
+    } catch (_) {}
+
+    const invReq = {
+      type: 'INVENTORY_REQUEST',
+      actor: { id: myId },
+      object: { kind: 'documents', fabricResync: true }
+    };
+    this._sendGenericFabricEnvelopeToPeer(originConn, invReq);
+
+    const MAX_BLOCKS = 500;
+    const delayMs = 25;
+    const blocks = this._getFabricMessages()
+      .filter((e) => e && e.type === 'BitcoinBlock' && e.payload && typeof e.payload === 'object')
+      .slice(-MAX_BLOCKS);
+    for (let i = 0; i < blocks.length; i++) {
+      await new Promise((r) => setTimeout(r, delayMs));
       try {
-        const wsMsg = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]);
-        if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
-        if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
-      } catch (_) {}
-
-      const invReq = {
-        type: 'INVENTORY_REQUEST',
-        actor: { id: myId },
-        object: { kind: 'documents', fabricResync: true }
-      };
-      this._sendVectorToPeer(originConn, ['INVENTORY_REQUEST', JSON.stringify(invReq)]);
-
-      const MAX_BLOCKS = 500;
-      const delayMs = 25;
-      const blocks = this._getFabricMessages()
-        .filter((e) => e && e.type === 'BitcoinBlock' && e.payload && typeof e.payload === 'object')
-        .slice(-MAX_BLOCKS);
-      for (let i = 0; i < blocks.length; i++) {
-        await new Promise((r) => setTimeout(r, delayMs));
-        try {
-          this._sendVectorToPeer(originConn, ['BitcoinBlock', JSON.stringify(blocks[i].payload)]);
-        } catch (sendErr) {
-          console.warn('[HUB] Fabric resync BitcoinBlock send failed:', sendErr && sendErr.message ? sendErr.message : sendErr);
-          break;
-        }
+        this._sendVectorToPeer(originConn, ['BitcoinBlock', JSON.stringify(blocks[i].payload)]);
+      } catch (sendErr) {
+        console.warn('[HUB] Fabric resync BitcoinBlock send failed:', sendErr && sendErr.message ? sendErr.message : sendErr);
+        break;
       }
+    }
+    if (this.settings && this.settings.debug) {
       console.debug('[HUB] Fabric peer resync completed for', originConn, 'bitcoinBlocks:', blocks.length);
-    } finally {
-      this._fabricPeerResyncInFlight.delete(originConn);
     }
   }
 
@@ -5882,7 +6050,7 @@ class Hub extends Service {
         const btcDatadir = path.isAbsolute(btcDatadirRaw)
           ? btcDatadirRaw
           : path.resolve(hubStoreRoot(), btcDatadirRaw);
-        const rpcport = Number(btcSettings.rpcport || 20444);
+        const rpcport = Number(btcSettings.rpcport || 18443);
         const username = btcSettings.username || '';
         const password = btcSettings.password || '';
 
@@ -5895,12 +6063,15 @@ class Hub extends Service {
           ? this.settings.lightning.datadir
           : path.resolve(hubStoreRoot(), './stores/lightning/hub');
 
+        const lnPortRaw = this.settings.lightning && this.settings.lightning.port;
+        const lnPort = lnPortRaw != null && String(lnPortRaw).trim() !== '' ? Number(lnPortRaw) : null;
+
         this.lightning = new Lightning({
           managed: true,
           network: 'regtest',
           datadir: lnDatadir,
           hostname: '0.0.0.0',
-          port: 9735,
+          ...(Number.isFinite(lnPort) ? { port: lnPort } : {}),
           debug: !!this.settings.debug,
           bitcoin: {
             host: btcSettings.host || '127.0.0.1',
@@ -6660,8 +6831,7 @@ class Hub extends Service {
             target: payloadTarget
           };
 
-          const vector = ['INVENTORY_REQUEST', JSON.stringify(payload)];
-          this._sendVectorToPeer(address, vector);
+          this._sendGenericFabricEnvelopeToPeer(address, payload);
 
           return { status: 'success' };
         } catch (err) {
@@ -6836,15 +7006,30 @@ class Hub extends Service {
             }
           }
 
-          const list = Object.values(docs).sort((a, b) => {
-            const ta = a && a.created ? new Date(a.created).getTime() : 0;
-            const tb = b && b.created ? new Date(b.created).getTime() : 0;
-            return tb - ta;
-          }).map((meta) => {
-            if (!meta || !meta.id) return meta;
-            const id = meta.id;
+          const unionIds = new Set(Object.keys(docs));
+          for (const id of Object.keys(collections)) {
+            const row = collections[id];
+            if (row && row.published) unionIds.add(id);
+          }
+
+          const list = [...unionIds].map((id) => {
             const publishedMeta = collections[id];
-            const backingId = meta.sha256 || id;
+            const meta = docs[id] || (publishedMeta
+              ? {
+                id: publishedMeta.id || id,
+                sha256: publishedMeta.sha256 || id,
+                name: publishedMeta.name,
+                mime: publishedMeta.mime || 'application/octet-stream',
+                size: publishedMeta.size != null ? publishedMeta.size : 0,
+                created: publishedMeta.created,
+                lineage: publishedMeta.lineage || publishedMeta.id || id,
+                parent: publishedMeta.parent != null ? publishedMeta.parent : null,
+                revision: publishedMeta.revision != null ? publishedMeta.revision : 1,
+                edited: publishedMeta.edited || publishedMeta.created
+              }
+              : null);
+            if (!meta || !meta.id) return null;
+            const backingId = meta.sha256 || meta.id;
             const storageContractId = contractIndex[backingId];
             return Object.assign(
               {},
@@ -6852,6 +7037,10 @@ class Hub extends Service {
               publishedMeta && publishedMeta.published ? { published: publishedMeta.published, purchasePriceSats: publishedMeta.purchasePriceSats } : null,
               storageContractId ? { storageContractId } : null
             );
+          }).filter(Boolean).sort((a, b) => {
+            const ta = a && a.created ? new Date(a.created).getTime() : 0;
+            const tb = b && b.created ? new Date(b.created).getTime() : 0;
+            return tb - ta;
           });
 
           const bitcoin = this._getBitcoinService();
@@ -6930,17 +7119,19 @@ class Hub extends Service {
       this.http._registerMethod('CreateDistributeInvoice', async (...params) => {
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
-        if (!documentId) return { status: 'error', message: 'documentId required' };
+        if (!documentId) return { status: 'error', message: 'documentId required', documentId: null };
 
         const bitcoin = this._getBitcoinService();
-        if (!bitcoin) return { status: 'error', message: 'Bitcoin service unavailable for pay-to-distribute' };
+        if (!bitcoin) {
+          return { status: 'error', message: 'Bitcoin service unavailable for pay-to-distribute', documentId };
+        }
 
         const raw = this.fs.readFile(`documents/${documentId}.json`);
-        if (!raw) return { status: 'error', message: 'document not found' };
+        if (!raw) return { status: 'error', message: 'document not found', documentId };
 
         const amountSats = Number(config.amountSats || 0);
         if (!Number.isFinite(amountSats) || amountSats <= 0) {
-          return { status: 'error', message: 'positive amountSats required' };
+          return { status: 'error', message: 'positive amountSats required', documentId };
         }
 
         const address = await bitcoin.getUnusedAddress();
@@ -6975,12 +7166,26 @@ class Hub extends Service {
         const proposal = typeof body === 'object' ? body : {};
         const documentId = this._normalizeDocumentId(proposal.documentId || proposal.document?.id);
         const amountSats = Number(proposal.amountSats || 0);
-        if (!idOrAddress) return { status: 'error', message: 'peer id/address required' };
+        if (!idOrAddress) {
+          return { type: 'SendDistributeProposalResult', status: 'error', message: 'peer id/address required' };
+        }
         if (!documentId || !Number.isFinite(amountSats) || amountSats <= 0) {
-          return { status: 'error', message: 'documentId and positive amountSats required' };
+          return {
+            type: 'SendDistributeProposalResult',
+            status: 'error',
+            message: 'documentId and positive amountSats required',
+            ...(documentId ? { documentId } : {})
+          };
         }
         const address = this._resolvePeerAddress(idOrAddress);
-        if (!address || !this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
+        if (!address || !this.agent.connections[address]) {
+          return {
+            type: 'SendDistributeProposalResult',
+            status: 'error',
+            message: 'peer not connected',
+            documentId
+          };
+        }
         try {
           const targetValue = (typeof idOrAddress === 'object' && idOrAddress)
             ? (idOrAddress.id || idOrAddress.address || String(idOrAddress))
@@ -7002,10 +7207,20 @@ class Hub extends Service {
           };
           const vector = ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)];
           this._sendVectorToPeer(address, vector);
-          return { status: 'success', proposalId: `proposal:${Date.now()}:${this.agent.identity.id}` };
+          return {
+            type: 'SendDistributeProposalResult',
+            status: 'success',
+            proposalId: `proposal:${Date.now()}:${this.agent.identity.id}`,
+            documentId
+          };
         } catch (err) {
           console.error('[HUB] SendDistributeProposal error:', err);
-          return { status: 'error', message: err && err.message ? err.message : 'send failed' };
+          return {
+            type: 'SendDistributeProposalResult',
+            status: 'error',
+            message: err && err.message ? err.message : 'send failed',
+            documentId
+          };
         }
       });
 
@@ -7017,13 +7232,20 @@ class Hub extends Service {
         const amountSats = Number(proposal.amountSats || 0);
         const senderAddress = proposal.senderAddress || proposal.sender;
         if (!documentId || !Number.isFinite(amountSats) || amountSats <= 0) {
-          return { status: 'error', message: 'documentId and positive amountSats required' };
+          const echoId = documentId || (proposal && proposal.documentId ? String(proposal.documentId) : '');
+          return {
+            status: 'error',
+            message: 'documentId and positive amountSats required',
+            ...(echoId ? { documentId: echoId } : {})
+          };
         }
-        if (!senderAddress) return { status: 'error', message: 'senderAddress required to send acceptance' };
+        if (!senderAddress) {
+          return { status: 'error', message: 'senderAddress required to send acceptance', documentId };
+        }
         const bitcoin = this._getBitcoinService();
-        if (!bitcoin) return { status: 'error', message: 'Bitcoin service unavailable' };
+        if (!bitcoin) return { status: 'error', message: 'Bitcoin service unavailable', documentId };
         const raw = this.fs.readFile(`documents/${documentId}.json`);
-        if (!raw) return { status: 'error', message: 'document not found' };
+        if (!raw) return { status: 'error', message: 'document not found', documentId };
         try {
           const address = await bitcoin.getUnusedAddress();
           const now = new Date().toISOString();
@@ -7067,7 +7289,11 @@ class Hub extends Service {
           };
         } catch (err) {
           console.error('[HUB] AcceptDistributeProposal error:', err);
-          return { status: 'error', message: err && err.message ? err.message : 'accept failed' };
+          return {
+            status: 'error',
+            message: err && err.message ? err.message : 'accept failed',
+            documentId
+          };
         }
       });
 
@@ -7083,7 +7309,7 @@ class Hub extends Service {
         try {
           // Ensure the document exists locally
           const raw = this.fs.readFile(`documents/${id}.json`);
-          if (!raw) return { status: 'error', message: 'document not found' };
+          if (!raw) return { status: 'error', message: 'document not found', documentId: id };
           const parsed = JSON.parse(raw);
 
           // Global store lives in this Service's state (this._state.content)
@@ -7145,7 +7371,11 @@ class Hub extends Service {
           return { type: 'PublishDocumentResult', document: this._state.content.collections.documents[id] };
         } catch (err) {
           console.error('[HUB] PublishDocument error:', err);
-          return { status: 'error', message: err && err.message ? err.message : 'publish failed' };
+          return {
+            status: 'error',
+            message: err && err.message ? err.message : 'publish failed',
+            documentId: id
+          };
         }
       });
 
@@ -7154,23 +7384,25 @@ class Hub extends Service {
       this.http._registerMethod('CreatePurchaseInvoice', async (...params) => {
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
-        if (!documentId) return { status: 'error', message: 'documentId required' };
+        if (!documentId) return { status: 'error', message: 'documentId required', documentId: null };
 
         const bitcoin = this._getBitcoinService();
-        if (!bitcoin) return { status: 'error', message: 'Bitcoin service unavailable for document purchase' };
+        if (!bitcoin) {
+          return { status: 'error', message: 'Bitcoin service unavailable for document purchase', documentId };
+        }
 
         const raw = this.fs.readFile(`documents/${documentId}.json`);
-        if (!raw) return { status: 'error', message: 'document not found' };
+        if (!raw) return { status: 'error', message: 'document not found', documentId };
 
         const parsed = JSON.parse(raw);
         const collections = this._state.content && this._state.content.collections && this._state.content.collections.documents;
         const publishedMeta = collections && collections[documentId];
         if (!publishedMeta || !publishedMeta.published) {
-          return { status: 'error', message: 'document is not published' };
+          return { status: 'error', message: 'document is not published', documentId };
         }
 
         const contentBase64 = parsed.contentBase64;
-        if (!contentBase64) return { status: 'error', message: 'document content not available' };
+        if (!contentBase64) return { status: 'error', message: 'document content not available', documentId };
         const contentBuffer = Buffer.from(contentBase64, 'base64');
         const contentSize = contentBuffer.length;
         const costPerByteSats = Math.max(0, Number(this.setup.getSetting('COST_PER_BYTE_SATS') || 0.01));
@@ -7178,14 +7410,22 @@ class Hub extends Service {
         const docPrice = Number(publishedMeta.purchasePriceSats || 0);
         const amountSats = Math.max(Number(config.amountSats || 0) || docPrice, floorSats);
         if (!Number.isFinite(amountSats) || amountSats <= 0) {
-          return { status: 'error', message: 'document has no purchase price. Set purchasePriceSats when publishing or configure COST_PER_BYTE_SATS.' };
+          return {
+            status: 'error',
+            message: 'document has no purchase price. Set purchasePriceSats when publishing or configure COST_PER_BYTE_SATS.',
+            documentId
+          };
         }
 
         let contentHash;
         try {
           contentHash = publishedDocumentEnvelope.purchaseContentHashHex(documentId, parsed);
         } catch (e) {
-          return { status: 'error', message: e && e.message ? e.message : 'document publish envelope hash failed' };
+          return {
+            status: 'error',
+            message: e && e.message ? e.message : 'document publish envelope hash failed',
+            documentId
+          };
         }
 
         const address = await bitcoin.getUnusedAddress();
@@ -8186,7 +8426,10 @@ class Hub extends Service {
       // Expose for lifecycle cleanup.
       this._pushNetworkStatus = pushNetworkStatus;
 
-      this.agent.on('connections:open', pushNetworkStatus);
+      this.agent.on('connections:open', (ev) => {
+        pushNetworkStatus();
+        this._maybeRequestFabricSeedResync(ev);
+      });
       this.agent.on('connections:close', pushNetworkStatus);
 
       // Push network status when WebRTC peers connect/disconnect
@@ -8715,7 +8958,7 @@ class Hub extends Service {
                   target: message.target,
                   object: { ...message.object, inventoryRelayTtl: ttl - 1 }
                 };
-                this._sendVectorToPeer(forwardAddr, ['INVENTORY_REQUEST', JSON.stringify(fwd)]);
+                this._sendGenericFabricEnvelopeToPeer(forwardAddr, fwd);
                 if (this.settings && this.settings.debug) {
                   console.debug('[HUB] INVENTORY_REQUEST relayed toward', logicalSeller, 'via', forwardAddr);
                 }
@@ -8754,18 +8997,17 @@ class Hub extends Service {
             target: targetId
           };
 
-          const vector = ['INVENTORY_RESPONSE', JSON.stringify(responsePayload)];
           const originAddress = originConn;
           if (originAddress && this.agent.connections[originAddress]) {
-            this._sendVectorToPeer(originAddress, vector);
+            this._sendGenericFabricEnvelopeToPeer(originAddress, responsePayload);
           } else if (typeof this.agent.relay === 'function') {
             // Fallback: relay to all peers (for older Peer implementations that support relay)
-            const reply = Message.fromVector(vector).signWithKey(this.agent.key);
+            const reply = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key);
             this.agent.relay(reply);
           } else {
             // As a last resort, iterate connections and write directly.
             try {
-              const reply = Message.fromVector(vector).signWithKey(this.agent.key);
+              const reply = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key);
               const buf = reply.toBuffer();
               for (const sock of Object.values(this.agent.connections || {})) {
                 if (sock && typeof sock._writeFabric === 'function') {
@@ -8798,20 +9040,36 @@ class Hub extends Service {
       this.agent.on('inventoryResponse', async ({ message }) => {
         try {
           if (!message || message.type !== 'INVENTORY_RESPONSE' || !message.object || message.object.kind !== 'documents') return;
-          const buyerId = message.target != null ? String(message.target).trim() : '';
-          const myId = this.agent.identity && this.agent.identity.id;
-          if (buyerId && myId && buyerId !== myId) {
-            const nextAddr = this._resolvePeerAddress(buyerId);
-            if (nextAddr && this.agent.connections[nextAddr]) {
-              try {
-                this._sendVectorToPeer(nextAddr, ['INVENTORY_RESPONSE', JSON.stringify(message)]);
-              } catch (relayErr) {
-                console.warn('[HUB] INVENTORY_RESPONSE relay failed:', relayErr && relayErr.message ? relayErr.message : relayErr);
+          const obj = message.object && typeof message.object === 'object' ? message.object : null;
+          const isFabricResync = !!(obj && obj.fabricResync);
+
+          // ChainSync catalog sync: response is already on the correct TCP session — never treat `target`
+          // as an HTLC relay hop. A strict buyerId !== myId check can drop the merge when id strings differ
+          // (encoding/normalization) and hub 6 never lists the anchor's published doc.
+          if (!isFabricResync) {
+            const buyerId = message.target != null ? String(message.target).trim() : '';
+            const rawMyId = this.agent.identity && this.agent.identity.id;
+            const myId = rawMyId != null && String(rawMyId).trim() !== '' ? String(rawMyId).trim() : '';
+            if (buyerId && myId && buyerId !== myId) {
+              const nextAddr = this._resolvePeerAddress(buyerId);
+              if (nextAddr && this.agent.connections[nextAddr]) {
+                try {
+                  this._sendGenericFabricEnvelopeToPeer(nextAddr, message);
+                } catch (relayErr) {
+                  console.warn('[HUB] INVENTORY_RESPONSE relay failed:', relayErr && relayErr.message ? relayErr.message : relayErr);
+                }
+              } else {
+                console.warn('[HUB] INVENTORY_RESPONSE cannot relay to buyer', buyerId);
               }
-            } else {
-              console.warn('[HUB] INVENTORY_RESPONSE cannot relay to buyer', buyerId);
+              return;
             }
-            return;
+          }
+          if (obj && obj.fabricResync && Array.isArray(obj.items)) {
+            try {
+              this._mergeFabricResyncInventoryItems(obj.items);
+            } catch (mergeErr) {
+              console.error('[HUB] fabricResync inventory merge failed:', mergeErr && mergeErr.message ? mergeErr.message : mergeErr);
+            }
           }
           const payload = JSON.stringify(message);
           const wsMsg = Message.fromVector(['GenericMessage', payload]);

@@ -11,6 +11,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 function SettingsHome () {
   const [, setUiTick] = React.useState(0);
@@ -27,10 +28,8 @@ function SettingsHome () {
           <Header.Content>Settings</Header.Content>
         </Header>
         <p id="settings-page-summary" style={{ color: '#666', margin: '0 0 1.5em', maxWidth: '42rem', lineHeight: 1.45 }}>
-          Hub configuration uses the <code>/settings</code> HTTP API (JSON). Use the cards below for documents
-          {uf.activities ? ', the hub activity feed, ' : ', '}
-          and identity-related tools: browser ↔ desktop linking, delegation tokens, and per-session audit.
-          {!uf.activities ? ' Enable “Activities” in Admin → Feature visibility to show the Activities card and full feed.' : ''}
+          Hub configuration uses the <code>/settings</code> HTTP API (JSON). Use the cards below for documents, contracts,
+          the hub activity feed, and identity-related tools: browser ↔ desktop linking, delegation tokens, and per-session audit.
         </p>
       </section>
 
@@ -38,13 +37,47 @@ function SettingsHome () {
         <Card as={Link} to="/documents" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>
-              <Icon name="folder open" aria-hidden="true" /> Documents
+              <Icon name="file outline" aria-hidden="true" /> Documents
             </Card.Header>
             <Card.Description>
               Publish, distribute, and open the document list for this browser (same as the top nav).
             </Card.Description>
           </Card.Content>
         </Card>
+        <Card as={Link} to="/contracts" style={{ cursor: 'pointer' }}>
+          <Card.Content>
+            <Card.Header>
+              <Icon name="file contract" aria-hidden="true" /> Contracts
+            </Card.Header>
+            <Card.Description>
+              Storage and execution contracts; optional L1-backed execution registry when the hub Bitcoin service is available.
+            </Card.Description>
+          </Card.Content>
+        </Card>
+        {uf.peers && hasHubAdminForPeers ? (
+          <Card as={Link} to="/peers" style={{ cursor: 'pointer' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name="sitemap" aria-hidden="true" /> Peers
+              </Card.Header>
+              <Card.Description>
+                Fabric TCP peers and WebRTC mesh (same as top nav).
+              </Card.Description>
+            </Card.Content>
+          </Card>
+        ) : null}
+        {uf.features ? (
+          <Card as={Link} to="/features" style={{ cursor: 'pointer' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name="info circle" aria-hidden="true" /> Features tour
+              </Card.Header>
+              <Card.Description>
+                Product overview and the same shortcut row as home and <strong>More</strong> → Features.
+              </Card.Description>
+            </Card.Content>
+          </Card>
+        ) : null}
         {uf.activities ? (
           <Card as={Link} to="/activities" style={{ cursor: 'pointer' }}>
             <Card.Content>
@@ -57,6 +90,35 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
+        <Card
+          style={{ cursor: 'pointer' }}
+          tabIndex={0}
+          role="button"
+          aria-label="Open Fabric identity manager"
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
+            }
+          }}
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
+            }
+          }}
+        >
+          <Card.Content>
+            <Card.Header>
+              <Icon name="user circle" aria-hidden="true" /> Fabric identity
+            </Card.Header>
+            <Card.Description>
+              Unlock, import, or export your local Fabric keys (same modal as <strong>Profile</strong> / <strong>Manage identity</strong> in the top bar).
+              For Bitcoin receive addresses and balance, see{' '}
+              <Link to="/settings/bitcoin-wallet" onClick={(e) => e.stopPropagation()}>Bitcoin wallet &amp; derivation</Link>.
+            </Card.Description>
+          </Card.Content>
+        </Card>
         <Card as={Link} to="/settings/bitcoin-wallet" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>
@@ -65,6 +127,16 @@ function SettingsHome () {
             <Card.Description>
               How Bitcoin addresses and client balance map to your Fabric identity: one BIP44 Bitcoin account (
               <code style={{ whiteSpace: 'nowrap' }}>{`m/44'/0'/0'`}</code>) for receives, change, and Hub wallet id.
+            </Card.Description>
+          </Card.Content>
+        </Card>
+        <Card as={Link} to="/services/bitcoin" style={{ cursor: 'pointer' }}>
+          <Card.Content>
+            <Card.Header>
+              <Icon name="bitcoin" aria-hidden="true" /> Bitcoin dashboard
+            </Card.Header>
+            <Card.Description>
+              Hub L1 status, regtest tools, explorer, Payjoin, and Lightning; Payments / Invoices / Resources and other sub-pages follow Feature visibility.
             </Card.Description>
           </Card.Content>
         </Card>
@@ -91,6 +163,30 @@ function SettingsHome () {
           </Card.Content>
         </Card>
         {uf.sidechain ? (
+          <Card as={Link} to="/sidechains" style={{ cursor: 'pointer' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name="random" aria-hidden="true" /> Sidechain &amp; demo
+              </Card.Header>
+              <Card.Description>
+                Global state, JSON patches, and operator context (same route as <strong>More</strong> → Sidechain).
+              </Card.Description>
+            </Card.Content>
+          </Card>
+        ) : null}
+        {uf.sidechain ? (
+          <Card as={Link} to="/settings/admin/beacon-federation" style={{ cursor: 'pointer' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name="star" aria-hidden="true" /> Beacon Federation
+              </Card.Header>
+              <Card.Description>
+                L1-bound epochs, manifest links, and federation witness walkthrough (same as <strong>More</strong> → Beacon Federation).
+              </Card.Description>
+            </Card.Content>
+          </Card>
+        ) : null}
+        {uf.sidechain ? (
           <Card as={Link} to="/settings/federation" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -114,7 +210,7 @@ function SettingsHome () {
           <Card as={Link} to="/services/bitcoin/resources" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
-                <Icon name="bitcoin" aria-hidden="true" /> Bitcoin HTTP resources
+                <Icon name="code" aria-hidden="true" /> Bitcoin HTTP resources
               </Card.Header>
               <Card.Description>
                 L1 payment verification, browse JSON from <code>/services/bitcoin</code> and <code>/services/lightning</code>, and quick-open common GET paths.

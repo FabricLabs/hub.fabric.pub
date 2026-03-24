@@ -109,6 +109,9 @@ stores/schemata
 # Test store (isolated from main hub; do not commit)
 stores/hub-test
 
+# Hub operator debug mirror (see functions/hubDebugFileLog.js)
+stores/hub/debug.log
+
 # Local playnet regtest mesh (launcher-generated state)
 stores/playnet-mesh-runtime/
 

@@ -101,7 +101,7 @@ function ChannelView () {
           style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
           role="banner"
         >
-          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin and Lightning home">
+          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer (Lightning)">
             <Icon name="arrow left" aria-hidden="true" />
             Bitcoin / LN
           </Button>

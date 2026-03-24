@@ -18,6 +18,12 @@ const defaultBitcoinRpcPort = (network) => {
 /** Writable root for stores (Electron desktop sets FABRIC_HUB_USER_DATA to app.getPath('userData')). */
 const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
+const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
+const _hubDebugLog = installHubDebugFileLog({ userDataRoot });
+if (_hubDebugLog.active && _hubDebugLog.filePath) {
+  console.log('[FABRIC:HUB] ERROR/WARN mirror →', _hubDebugLog.filePath, '(FABRIC_HUB_DEBUG_LOG=0 off, =all unfiltered)');
+}
+
 function bitcoinDataDirForNetwork (root, network) {
   const n = String(network || 'regtest').toLowerCase();
   const rel = {

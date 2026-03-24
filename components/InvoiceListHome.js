@@ -156,9 +156,9 @@ class InvoiceListHome extends React.Component {
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5em' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin home">
+                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
                     <Icon name="arrow left" aria-hidden="true" />
-                    Back
+                    Explorer
                   </Button>
                   <Header as="h2" id="invoices-page-heading" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em' }}>
                     <Icon name="file alternate outline" aria-hidden="true" />

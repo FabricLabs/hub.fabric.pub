@@ -358,8 +358,12 @@ function BitcoinBlockView () {
                     return (
                       <Table.Row key={`${txid}:${idx}`}>
                         <Table.Cell>
-                          <Link to={`/services/bitcoin/transactions/${encodeURIComponent(txid)}`}>
-                            <code>{txid}</code>
+                          <Link
+                            to={`/services/bitcoin/transactions/${encodeURIComponent(txid)}`}
+                            title={txid}
+                            aria-label={`Transaction ${txid}`}
+                          >
+                            <code>{shortHash(txid)}</code>
                           </Link>
                         </Table.Cell>
                         <Table.Cell>{value != null ? `${value} BTC` : '-'}</Table.Cell>

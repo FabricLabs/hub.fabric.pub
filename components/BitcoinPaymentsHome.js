@@ -475,7 +475,11 @@ class BitcoinPaymentsHome extends React.Component {
   async handleCreatePayjoinReceiveLink () {
     const addr = String(this.state.receiveAddress || '').trim();
     if (!addr) {
-      this.setState({ payjoinReceiveResult: { error: 'Receive address is required. Unlock identity or refresh.' } });
+      this.setState({
+        payjoinReceiveResult: {
+          error: 'Receive address is required. Unlock identity (Settings → Fabric identity or top-bar Locked) or refresh.'
+        }
+      });
       return;
     }
     this.setState({ payjoinReceiveBusy: true, payjoinReceiveResult: null });
@@ -812,9 +816,9 @@ class BitcoinPaymentsHome extends React.Component {
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5em' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin home">
+                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
                     <Icon name="arrow left" aria-hidden="true" />
-                    Back
+                    Explorer
                   </Button>
                   <Header as="h2" id="fabric-bitcoin-payments-h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em' }}>
                     <Icon name="credit card outline" aria-hidden="true" />
@@ -871,6 +875,8 @@ class BitcoinPaymentsHome extends React.Component {
                 Receive addresses and header balance use your Fabric identity <strong>xpub</strong> (BIP44 account 0).{' '}
                 <strong>Make Payment</strong> spends the <strong>Hub node wallet</strong> with the setup admin token, not private keys stored in this browser.
                 In-browser <strong>Payjoin</strong> signing needs a fully unlocked local identity (xprv in this tab).{' '}
+                <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>
+                {' · '}
                 <Link to="/settings/security">Security &amp; delegation</Link> — revoke desktop delegation on shared machines.
               </p>
             </Message>
@@ -899,6 +905,11 @@ class BitcoinPaymentsHome extends React.Component {
               <List.Item>
                 On the Invoices tab, use <strong>Confirm payment</strong> with the txid on the invoice card, or verify via{' '}
                 <Link to="/services/bitcoin/resources">Resources</Link>.
+              </List.Item>
+              <List.Item>
+                <strong>Documents:</strong>{' '}
+                <Link to="/documents">Documents</Link>
+                {' '}— <strong>Purchase</strong> (HTLC) and <strong>Distribute</strong> (storage contract) both settle on L1; the purchase modal accepts your paying txid or <strong>Pay from hub wallet</strong> (admin token). Same verifier as above if you need txid + address + amount.
               </List.Item>
               <List.Item>
                 <strong>Optional — crowdfund:</strong>{' '}

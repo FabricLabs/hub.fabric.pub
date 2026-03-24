@@ -25,6 +25,7 @@ const { sha256: sha256Hash } = require('@noble/hashes/sha256');
 const Actor = require('@fabric/core/types/actor');
 const DistributeProposalsList = require('./DistributeProposalsList');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 
 function shortHexId (value) {
   const s = String(value || '');
@@ -58,6 +59,13 @@ function textToBase64 (str) {
   return btoa(binary);
 }
 
+function jsonRpcErrText (err) {
+  if (!err || typeof err !== 'object') return 'rejected';
+  if (err.message != null) return String(err.message);
+  if (err.data != null) return String(err.data);
+  return 'rejected';
+}
+
 function DocumentsPage (props) {
   const [file, setFile] = React.useState(null);
   const [meta, setMeta] = React.useState(null);
@@ -67,23 +75,34 @@ function DocumentsPage (props) {
   const [createDocContent, setCreateDocContent] = React.useState('');
   const [showCreateDoc, setShowCreateDoc] = React.useState(false);
   const [recentDocId, setRecentDocId] = React.useState(null);
+  const [, setNetworkStatusTick] = React.useState(0);
+  const [catalogHttpFallbackError, setCatalogHttpFallbackError] = React.useState(null);
+  const [docsState, setDocsState] = React.useState({});
 
   const navigate = useNavigate();
+
+  React.useEffect(() => {
+    const bump = () => setNetworkStatusTick((t) => t + 1);
+    if (typeof window === 'undefined') return undefined;
+    window.addEventListener('networkStatusUpdate', bump);
+    return () => window.removeEventListener('networkStatusUpdate', bump);
+  }, []);
 
   // Pull published index from hub networkStatus (global store = source of truth for published state).
   const bridgeRef = props.bridgeRef;
   const current = bridgeRef && bridgeRef.current;
   const hasEncryptionKey = !!(current && typeof current.hasDocumentEncryptionKey === 'function' && current.hasDocumentEncryptionKey());
   const networkStatus = current && (current.networkStatus || current.lastNetworkStatus);
-  // Full GetNetworkStatus payloads include `network`; use that so we stop "loading" even if `publishedDocuments` is absent (empty catalog).
-  const hasNetworkSnapshot = !!(networkStatus && typeof networkStatus === 'object' && networkStatus.network);
+  const hasNetworkSnapshot = isHubNetworkStatusShape(networkStatus);
+
+  React.useEffect(() => {
+    if (hasNetworkSnapshot) setCatalogHttpFallbackError(null);
+  }, [hasNetworkSnapshot]);
   const publishedRaw = networkStatus && networkStatus.publishedDocuments;
   const indexed = !hasNetworkSnapshot
     ? null
     : (publishedRaw && typeof publishedRaw === 'object' ? publishedRaw : {});
   const fabricPeerId = networkStatus && networkStatus.fabricPeerId ? String(networkStatus.fabricPeerId) : null;
-
-  const [docsState, setDocsState] = React.useState({});
 
   React.useEffect(() => {
     const handler = (event) => {
@@ -109,9 +128,97 @@ function DocumentsPage (props) {
   }, [recentDocId]);
 
   React.useEffect(() => {
-    if (typeof props.onListDocuments === 'function') props.onListDocuments();
+    if (typeof props.onListDocuments !== 'function') return undefined;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) props.onListDocuments();
+    });
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // When WebSocket snapshots are slow, hydrate catalog + hub document index via HTTP (same origin).
+  React.useEffect(() => {
+    if (hasNetworkSnapshot) return undefined;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      const bridge = props.bridgeRef && props.bridgeRef.current;
+      const origin = typeof window !== 'undefined' && window.location && window.location.origin
+        ? window.location.origin
+        : '';
+      if (!bridge || !origin) return;
+      if (
+        typeof bridge.applyHubNetworkStatusPayload !== 'function' ||
+        typeof bridge.mergeListDocumentsRpcResult !== 'function'
+      ) {
+        return;
+      }
+      const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+      const parseRpc = (r) => r.json().catch(() => null);
+      Promise.all([
+        fetch(`${origin}/services/rpc`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'GetNetworkStatus', params: [] })
+        }).then(async (r) => ({ ok: r.ok, status: r.status, body: await parseRpc(r) })),
+        fetch(`${origin}/services/rpc`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ListDocuments', params: [] })
+        }).then(async (r) => ({ ok: r.ok, status: r.status, body: await parseRpc(r) }))
+      ])
+        .then(([ns, list]) => {
+          if (cancelled) return;
+          const nsBody = ns && ns.body;
+          const listBody = list && list.body;
+          let nsApplied = false;
+          let listApplied = false;
+          if (nsBody && nsBody.result && typeof bridge.applyHubNetworkStatusPayload === 'function') {
+            nsApplied = !!bridge.applyHubNetworkStatusPayload(nsBody.result);
+          }
+          if (listBody && listBody.result && typeof bridge.mergeListDocumentsRpcResult === 'function') {
+            listApplied = !!bridge.mergeListDocumentsRpcResult(listBody.result);
+          }
+          const nsErr = nsBody && nsBody.error;
+          const listErr = listBody && listBody.error;
+          const httpBad = (!ns || !ns.ok) || (!list || !list.ok);
+          const parts = [];
+          if (nsErr) parts.push(`Network status: ${jsonRpcErrText(nsErr)}`);
+          if (listErr) parts.push(`Document list: ${jsonRpcErrText(listErr)}`);
+          if (!nsErr && ns && !ns.ok) parts.push(`Network status: HTTP ${ns.status}`);
+          if (!listErr && list && !list.ok) parts.push(`Document list: HTTP ${list.status}`);
+          if (parts.length) {
+            setCatalogHttpFallbackError(parts.join(' · '));
+          } else if (
+            !nsErr && !listErr &&
+            nsBody && listBody &&
+            !nsApplied && !listApplied &&
+            nsBody.result == null && listBody.result == null
+          ) {
+            setCatalogHttpFallbackError(
+              httpBad
+                ? 'Hub did not return JSON-RPC results for catalog hydration. Check /services/rpc.'
+                : 'Hub returned empty responses for network status and document list.'
+            );
+          } else if (!nsErr && !listErr && !nsApplied && nsBody && nsBody.result != null) {
+            setCatalogHttpFallbackError('Network status response could not be applied (unexpected shape).');
+          } else if (!listErr && !listApplied && listBody && listBody.result != null) {
+            setCatalogHttpFallbackError('Document list response could not be merged (unexpected shape).');
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setCatalogHttpFallbackError(
+            (err && err.message) ? err.message : 'Network error while loading catalog from hub.'
+          );
+        });
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [hasNetworkSnapshot, props.bridgeRef]);
 
   // Unified model: all docs in documents store; hub index = published refs
   const allDocs = Object.values(docsState || {}).filter((d) => d && d.id);
@@ -185,6 +292,9 @@ function DocumentsPage (props) {
       if (typeof props.onAddLocalDocument === 'function') {
         props.onAddLocalDocument(meta);
       }
+      if (typeof props.onCreateDocument === 'function') {
+        props.onCreateDocument(meta);
+      }
       setRecentDocId(meta.id);
       setFile(null);
       // Navigate directly to the new document detail view
@@ -224,6 +334,9 @@ function DocumentsPage (props) {
       if (typeof props.onAddLocalDocument === 'function') {
         props.onAddLocalDocument(meta);
       }
+      if (typeof props.onCreateDocument === 'function') {
+        props.onCreateDocument(meta);
+      }
       setRecentDocId(meta.id);
       setCreateDocName('');
       setCreateDocContent('');
@@ -244,7 +357,7 @@ function DocumentsPage (props) {
         >
           <Button basic size="small" as={Link} to="/" aria-label="Back to home">
             <Icon name="arrow left" aria-hidden="true" />
-            Back
+            Home
           </Button>
           <div
             style={{
@@ -287,11 +400,28 @@ function DocumentsPage (props) {
 
         <Divider />
 
+        {catalogHttpFallbackError && !hasNetworkSnapshot && (
+          <Message
+            warning
+            size="small"
+            style={{ marginBottom: '1em' }}
+            onDismiss={() => setCatalogHttpFallbackError(null)}
+          >
+            <Message.Header>Could not fully load hub catalog over HTTP</Message.Header>
+            <p style={{ margin: '0.35em 0 0', color: '#333' }}>{catalogHttpFallbackError}</p>
+            <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#666' }}>
+              The WebSocket session may still sync in a moment — or reload the page. JSON-RPC:{' '}
+              <code style={{ fontSize: '0.85em' }}>/services/rpc</code>
+            </p>
+          </Message>
+        )}
+
         {!hasEncryptionKey && (
           <Message info style={{ marginBottom: '1em' }}>
-            <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Identity is locked</p>
+            <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Private key not loaded</p>
             <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-              Use <strong>Locked</strong> in the top bar, enter your decryption password, and choose <strong>Unlock private key</strong> to create or upload documents in this browser.
+              Use the <strong>Identity</strong> control in the top bar (it shows <strong>Locked</strong> when your signing key is not in memory), or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> for the same unlock/import modal. Open the menu, enter your decryption password, and choose <strong>Unlock private key</strong> to create or upload encrypted documents.{' '}
+              <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> explains how the same identity drives Hub L1 addresses.
               For local dev use the same phrase as the hub (<code>FABRIC_SEED</code> if set, else <code>FABRIC_MNEMONIC</code>): <code>window.FABRIC_DEV_BROWSER_SEED</code> in <code>assets/config.local.js</code>, optional <code>window.FABRIC_DEV_BROWSER_PASSPHRASE</code> for BIP39 extension, or hub <code>FABRIC_DEV_PUSH_BROWSER_IDENTITY=1</code> (never on exposed hosts). For RPC-only automation see <code>npm run test:e2e-document-purchase</code>.
             </p>
           </Message>
@@ -301,7 +431,9 @@ function DocumentsPage (props) {
           <Segment loading={busy}>
             <Header as="h3">Add content</Header>
             <p style={{ color: '#666' }}>
-              Select a file or create a document from text. Publish later to add to the hub.
+              Select a file or create a document from text. <strong>Publish</strong> adds the doc to the hub catalog (free).
+              <strong> Distribute</strong> (long-term storage contracts) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
+              <Link to="/services/bitcoin">Bitcoin</Link> (or <Link to="/services/bitcoin/payments">Payments</Link> when enabled in Admin).
             </p>
             <Button
               size="small"

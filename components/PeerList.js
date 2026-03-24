@@ -94,6 +94,9 @@ class PeersPage extends React.Component {
       if (path === '/peerTopologyGossip') this.forceUpdate();
     };
     window.addEventListener('globalStateUpdate', this._onPeerTopologyGossip);
+
+    this._onNetworkStatus = () => this.forceUpdate();
+    window.addEventListener('networkStatusUpdate', this._onNetworkStatus);
   }
 
   componentWillUnmount () {
@@ -104,6 +107,10 @@ class PeersPage extends React.Component {
     if (this._onPeerTopologyGossip) {
       window.removeEventListener('globalStateUpdate', this._onPeerTopologyGossip);
       this._onPeerTopologyGossip = null;
+    }
+    if (this._onNetworkStatus) {
+      window.removeEventListener('networkStatusUpdate', this._onNetworkStatus);
+      this._onNetworkStatus = null;
     }
   }
 
@@ -207,7 +214,7 @@ class PeersPage extends React.Component {
           >
             <Button basic size="small" as={Link} to="/" aria-label="Back to home">
               <Icon name="arrow left" aria-hidden="true" />
-              Back
+              Home
             </Button>
             <div style={{ flex: '1 1 12rem', minWidth: 0 }}>
               <Header as="h2" id="peers-page-heading" style={{ margin: 0 }}>

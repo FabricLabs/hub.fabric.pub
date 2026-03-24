@@ -196,6 +196,30 @@ function IdentityManager (props) {
     } catch (e) {}
   }, [localIdentity]);
 
+  function identitySnapshotKey (i) {
+    if (!i || (!i.id && !i.xpub)) return '';
+    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.xprv ? '1' : '0'}|${i.passwordProtected ? '1' : '0'}`;
+  }
+
+  // Keep modal state aligned with Hub shell when parent identity changes (forget, desktop link, etc.).
+  React.useEffect(() => {
+    const p = props.currentIdentity;
+    if (!p || (!p.id && !p.xpub)) {
+      setLocalIdentity((prev) => (prev ? null : prev));
+      return;
+    }
+    setLocalIdentity((prev) => {
+      if (identitySnapshotKey(prev) === identitySnapshotKey(p)) return prev;
+      if (prev && prev.xprv && !p.xprv && p.passwordProtected) return prev;
+      return {
+        id: p.id,
+        xpub: p.xpub,
+        xprv: p.xprv || null,
+        passwordProtected: !!p.passwordProtected
+      };
+    });
+  }, [props.currentIdentity]);
+
   // Notify parent when the local identity changes so outer UI (TopPanel) and Bridge can update.
   // Include xprv when available so Bridge can encrypt documents.
   React.useEffect(() => {
@@ -444,6 +468,14 @@ function IdentityManager (props) {
         <Icon name="key" />
         <Header.Content>Identity</Header.Content>
       </Header>
+      <p style={{ color: '#666', marginTop: '0.25em', marginBottom: '0.75em', maxWidth: '42em', lineHeight: 1.45 }}>
+        The top-bar <strong>Wallet</strong> chip, Bitcoin receive addresses, and{' '}
+        <Link to="/documents">document</Link> flows (encrypt, publish, paid distribute / purchase proofs) use this identity when the private key is unlocked in this browser.
+        {' '}On-chain derivation for this Hub is described under{' '}
+        <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>.
+        {' '}Reopen this dialog from the identity menu (<strong>User profile</strong>) or{' '}
+        <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>.
+      </p>
       <div>
         {localIdentity ? (
           <>
@@ -479,7 +511,11 @@ function IdentityManager (props) {
                   ))}
                 </ul>
               </Segment>
-            ) : null}
+            ) : (
+              <p style={{ color: '#888', fontSize: '0.92em', marginTop: '0.75em', marginBottom: 0 }}>
+                No linked devices on this origin yet — desktop login or delegation flows add entries here for auditing.
+              </p>
+            )}
             <p style={{ color: '#666' }}>
               <strong>Private Key:</strong>{' '}
               {localIdentity.xprv
@@ -1099,6 +1135,12 @@ function IdentityManager (props) {
             <p style={{ color: '#666' }}>
               Choose how you would like to connect:
             </p>
+            <Message info size="small" style={{ marginBottom: '0.85em', maxWidth: '40rem' }}>
+              <p style={{ margin: 0, fontSize: '0.95em', color: '#333', lineHeight: 1.45 }}>
+                <strong>Full key</strong> (generate, import backup, mnemonic, desktop, or password-unlock): encrypt and decrypt documents, publish signed listings, and use in-browser Payjoin when enabled.
+                <strong> xpub-only</strong> (<em>Existing Key</em>): watch-only — the top-bar balance chip works, but you cannot sign publishes, decrypt your own ciphertext, or complete browser-side Payjoin without another signing path.
+              </p>
+            </Message>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', maxWidth: 320 }}>
               {extensionAvailable ? (
                 <Button
@@ -1184,14 +1226,15 @@ function IdentityManager (props) {
               icon
               labelPosition="left"
               style={{ marginBottom: '1em' }}
+              aria-label="Back to sign-in options"
               onClick={() => {
                 setLoginMethod(null);
                 setXpubInput('');
                 setError(null);
               }}
             >
-              <Icon name="arrow left" />
-              Back
+              <Icon name="arrow left" aria-hidden="true" />
+              Change method
             </Button>
             <Header as="h4" size="small">
               <Icon name="key" />
@@ -1199,6 +1242,7 @@ function IdentityManager (props) {
             </Header>
             <p style={{ color: '#666' }}>
               Paste your extended public key (xpub) to connect. It will be stored only in this browser.
+              You can track balance and receive addresses against this xpub; you <strong>cannot</strong> decrypt encrypted documents, sign publishes, or spend from this browser without importing the matching seed or using desktop / extension signing.
             </p>
             <Form>
               <Form.Field>
@@ -1274,13 +1318,14 @@ function IdentityManager (props) {
               icon
               labelPosition="left"
               style={{ marginBottom: '1em' }}
+              aria-label="Back to sign-in options"
               onClick={() => {
                 setLoginMethod(null);
                 setError(null);
               }}
             >
-              <Icon name="arrow left" />
-              Back
+              <Icon name="arrow left" aria-hidden="true" />
+              Change method
             </Button>
             <Header as="h4" size="small">
               <Icon name="download" />
@@ -1407,6 +1452,7 @@ function IdentityManager (props) {
               icon
               labelPosition="left"
               style={{ marginBottom: '1em' }}
+              aria-label="Back to sign-in options"
               onClick={() => {
                 setLoginMethod(null);
                 setError(null);
@@ -1415,8 +1461,8 @@ function IdentityManager (props) {
                 setDevMnemonicReplace(false);
               }}
             >
-              <Icon name="arrow left" />
-              Back
+              <Icon name="arrow left" aria-hidden="true" />
+              Change method
             </Button>
             <Header as="h4" size="small">
               <Icon name="paste" />
@@ -1521,13 +1567,14 @@ function IdentityManager (props) {
               icon
               labelPosition="left"
               style={{ marginBottom: '1em' }}
+              aria-label="Back to sign-in options"
               onClick={() => {
                 setLoginMethod(null);
                 setError(null);
               }}
             >
-              <Icon name="arrow left" />
-              Back
+              <Icon name="arrow left" aria-hidden="true" />
+              Change method
             </Button>
             <Header as="h4" size="small">
               <Icon name="shield" />

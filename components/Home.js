@@ -30,12 +30,14 @@ const {
 const NotificationsStream = require('./NotificationsStream');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 class Home extends React.Component {
   render () {
     const {
       bridge,
       bridgeRef,
+      networkStatusFromEvent,
       onDiscoverWebRTCPeers,
       onRepublishWebRTCOffer,
       onConnectWebRTCPeer,
@@ -47,10 +49,15 @@ class Home extends React.Component {
       adminToken
     } = this.props;
     const uf = loadHubUiFeatureFlags();
+    const hasHubAdminForPeers = !!readHubAdminTokenFromBrowser(adminToken);
     // Prefer the live Bridge ref; fall back to legacy `bridge` prop.
     const ref = bridgeRef || bridge;
     const current = ref && ref.current;
-    const candidate = current && current.networkStatus;
+    const candidateFromEvent = networkStatusFromEvent;
+    const candidateFromRef = current && current.networkStatus;
+    const candidate = isHubNetworkStatusShape(candidateFromEvent)
+      ? candidateFromEvent
+      : (isHubNetworkStatusShape(candidateFromRef) ? candidateFromRef : null);
     const fallback = current && current.lastNetworkStatus;
     const networkStatus = isHubNetworkStatusShape(candidate)
       ? candidate
@@ -100,7 +107,7 @@ class Home extends React.Component {
                   </span>
                 </Card.Meta>
                 <Card.Description>
-                  {uf.peers && (shareNodeId || hostPort) && (
+                  {uf.peers && hasHubAdminForPeers && (shareNodeId || hostPort) && (
                     <div style={{ marginBottom: '1em', padding: '0.75em', background: 'rgba(0,0,0,0.03)', borderRadius: '4px' }}>
                       <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Share with other peers</Header>
                       {shareNodeId && (
@@ -159,7 +166,7 @@ class Home extends React.Component {
                     }}
                   >
                     <div>
-                      {uf.peers ? (
+                      {uf.peers && hasHubAdminForPeers ? (
                         <>
                           <strong>Bridge Peers:</strong> {peers.length}{' '}
                           <span style={{ color: '#777' }}>·</span>{' '}
@@ -170,7 +177,7 @@ class Home extends React.Component {
                       <strong>Documents:</strong> {published.length}
                     </div>
                   </div>
-                  {uf.peers ? (
+                  {uf.peers && hasHubAdminForPeers ? (
                   <div
                     style={{
                       marginTop: '0.5em',
@@ -324,10 +331,13 @@ class Home extends React.Component {
         <nav aria-label="Hub shortcuts" style={{ marginBottom: '0.5em' }}>
           <Segment basic style={{ marginTop: 0, marginBottom: 0, paddingTop: '0.35em', paddingBottom: '0.35em' }}>
             <span style={{ color: '#666', fontSize: '0.88em', marginRight: '0.35em', verticalAlign: 'middle' }}>Go to:</span>
-            {uf.peers ? (
+            {uf.peers && hasHubAdminForPeers ? (
               <Button as={Link} to="/peers" size="tiny" basic style={{ margin: '0.15em' }}>Peers</Button>
             ) : null}
             <Button as={Link} to="/documents" size="tiny" basic style={{ margin: '0.15em' }}>Documents</Button>
+            {uf.features ? (
+              <Button as={Link} to="/features" size="tiny" basic style={{ margin: '0.15em' }}>Features</Button>
+            ) : null}
             {uf.activities ? (
               <Button as={Link} to="/activities" size="tiny" basic style={{ margin: '0.15em' }}>Activities</Button>
             ) : null}
@@ -347,13 +357,40 @@ class Home extends React.Component {
                 Beacon Fed.
               </Button>
             ) : null}
+            {uf.sidechain ? (
+              <Button
+                as={Link}
+                to="/settings/federation"
+                size="tiny"
+                basic
+                style={{ margin: '0.15em' }}
+                title="Validator pubkeys and threshold"
+              >
+                Federation
+              </Button>
+            ) : null}
             <Button as={Link} to="/services/bitcoin" size="tiny" basic style={{ margin: '0.15em' }}>Bitcoin</Button>
+            {uf.bitcoinPayments ? (
+              <Button as={Link} to="/services/bitcoin/payments" size="tiny" basic style={{ margin: '0.15em' }}>Payments</Button>
+            ) : null}
+            {uf.bitcoinInvoices ? (
+              <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" size="tiny" basic style={{ margin: '0.15em' }}>Invoices</Button>
+            ) : null}
+            {uf.bitcoinLightning ? (
+              <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-lightning' }} size="tiny" basic style={{ margin: '0.15em' }}>Lightning</Button>
+            ) : null}
+            {uf.bitcoinExplorer ? (
+              <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} size="tiny" basic style={{ margin: '0.15em' }}>Explorer</Button>
+            ) : null}
+            {uf.bitcoinResources ? (
+              <Button as={Link} to="/services/bitcoin/resources" size="tiny" basic style={{ margin: '0.15em' }}>Resources</Button>
+            ) : null}
+            {uf.bitcoinCrowdfund ? (
+              <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-crowdfunding' }} size="tiny" basic style={{ margin: '0.15em' }}>Crowdfund</Button>
+            ) : null}
             <Button as={Link} to="/settings/admin" size="tiny" basic style={{ margin: '0.15em' }}>Admin</Button>
             <Button as={Link} to="/settings" size="tiny" basic style={{ margin: '0.15em' }}>Settings</Button>
             <Button as={Link} to="/settings/security" size="tiny" basic style={{ margin: '0.15em' }}>Security</Button>
-            {uf.features ? (
-              <Button as={Link} to="/features" size="tiny" basic style={{ margin: '0.15em' }}>Features</Button>
-            ) : null}
           </Segment>
         </nav>
         <Segment>
@@ -397,24 +434,26 @@ class Home extends React.Component {
           </Card>
         </Segment>
         <Segment>
-          <Header as='h2'>Delegation &amp; signing</Header>
-          <p style={{ color: '#666', marginTop: '-0.35em', marginBottom: '0.75em' }}>
-            Pending Fabric hub signature requests.
-            {uf.activities ? (
-              <>
-                {' '}Wallet, Payjoin, and other toasts live under{' '}
-                <Link to="/activities">Activities</Link> (bell in the top bar).
-              </>
-            ) : (
-              <> Use <Link to="/settings/security">Security</Link> for sessions and delegation.</>
-            )}
-          </p>
-          <NotificationsStream
-            bridge={ref}
-            bridgeRef={ref}
-            adminToken={adminToken}
-            onRequireUnlock={onRequireUnlock}
-          />
+          <section aria-labelledby="home-delegation-heading" aria-describedby="home-delegation-summary">
+            <Header as='h2' id="home-delegation-heading">Delegation &amp; signing</Header>
+            <p id="home-delegation-summary" style={{ color: '#666', marginTop: '-0.35em', marginBottom: '0.75em' }}>
+              Pending Fabric hub signature requests.
+              {uf.activities ? (
+                <>
+                  {' '}Wallet, Payjoin, and other toasts live under{' '}
+                  <Link to="/activities">Activities</Link> (bell in the top bar).
+                </>
+              ) : (
+                <> Use <Link to="/settings/security">Security</Link> for sessions and delegation.</>
+              )}
+            </p>
+            <NotificationsStream
+              bridge={ref}
+              bridgeRef={ref}
+              adminToken={adminToken}
+              onRequireUnlock={onRequireUnlock}
+            />
+          </section>
         </Segment>
         {uf.activities ? (
         <Segment>
@@ -445,10 +484,33 @@ class Home extends React.Component {
 
 function HomeWithLocation (props) {
   const location = useLocation();
+  /** Same payload Bridge puts in state — avoids reading ref before React commits Bridge. */
+  const [networkStatusFromEvent, setNetworkStatusFromEvent] = React.useState(null);
+
+  React.useEffect(() => {
+    const seed = () => {
+      const inst = props.bridgeRef && props.bridgeRef.current;
+      const n = inst && inst.networkStatus;
+      if (isHubNetworkStatusShape(n)) setNetworkStatusFromEvent(n);
+    };
+    seed();
+    const t = setTimeout(seed, 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  React.useEffect(() => {
+    const onNs = (e) => {
+      const n = e.detail && e.detail.networkStatus;
+      setNetworkStatusFromEvent(n && typeof n === 'object' && isHubNetworkStatusShape(n) ? n : null);
+    };
+    window.addEventListener('networkStatusUpdate', onNs);
+    return () => window.removeEventListener('networkStatusUpdate', onNs);
+  }, []);
+
   React.useLayoutEffect(() => {
     scrollToHashElement(location.hash);
   }, [location.pathname, location.hash]);
-  return <Home {...props} location={location} />;
+  return <Home {...props} location={location} networkStatusFromEvent={networkStatusFromEvent} />;
 }
 
 module.exports = HomeWithLocation;

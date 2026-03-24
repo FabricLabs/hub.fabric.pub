@@ -15,6 +15,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 // Dependencies
 const React = require('react');
@@ -80,7 +81,19 @@ function NavigateDocumentsDetailAlias () {
 /** Legacy singular `/peer/...` → plural canonical `/peers/...`. */
 function NavigatePeerDetailAlias () {
   const f = loadHubUiFeatureFlags();
-  if (!f.peers) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!f.peers) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'peers',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
   const { id } = useParams();
   const raw = id != null ? String(id).trim() : '';
   if (!raw) return <Navigate to="/peers" replace />;
@@ -89,26 +102,105 @@ function NavigatePeerDetailAlias () {
 
 function NavigatePeerRootAlias () {
   const f = loadHubUiFeatureFlags();
-  if (!f.peers) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!f.peers) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'peers',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
   return <Navigate to="/peers" replace />;
 }
 
 function NavigateActivityToActivities () {
   const f = loadHubUiFeatureFlags();
-  if (!f.activities) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!f.activities) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'activities',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
   return <Navigate to="/activities" replace />;
 }
 
 function UiFlagRoute ({ flag, children }) {
   const f = loadHubUiFeatureFlags();
-  if (!f[flag]) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!f[flag]) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: flag,
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
+  return children;
+}
+
+/** Peers routes: feature flag on, and hub admin token in this browser (operator-only UI). */
+function PeersAdminRoute ({ children, adminToken }) {
+  const f = loadHubUiFeatureFlags();
+  const location = useLocation();
+  if (!f.peers) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'peers',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
+  if (!readHubAdminTokenFromBrowser(adminToken)) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'peersAdmin',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
   return children;
 }
 
 /** Legacy `/tx/...` bookmark → canonical Bitcoin transaction view. */
 function NavigateLegacyBitcoinTxAlias () {
   const f = loadHubUiFeatureFlags();
-  if (!f.bitcoinExplorer) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!f.bitcoinExplorer) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'bitcoinExplorer',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
   const { txhash } = useParams();
   const raw = txhash != null ? String(txhash).trim() : '';
   if (!raw) return <Navigate to="/services/bitcoin" replace />;
@@ -118,7 +210,19 @@ function NavigateLegacyBitcoinTxAlias () {
 /** Legacy `/block/...` bookmark → canonical Bitcoin block view. */
 function NavigateLegacyBitcoinBlockAlias () {
   const f = loadHubUiFeatureFlags();
-  if (!f.bitcoinExplorer) return <Navigate to="/" replace />;
+  const location = useLocation();
+  if (!f.bitcoinExplorer) {
+    return (
+      <Navigate
+        to="/settings/admin"
+        replace
+        state={{
+          featureFlagBlocked: 'bitcoinExplorer',
+          blockedPath: `${location.pathname || ''}${location.search || ''}`
+        }}
+      />
+    );
+  }
   const { blockhash } = useParams();
   const raw = blockhash != null ? String(blockhash).trim() : '';
   if (!raw) {
@@ -134,6 +238,7 @@ function UnknownRouteShell () {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
+  const hasHubAdminForPeers = !!readHubAdminTokenFromBrowser(null);
   return (
     <Segment style={{ marginTop: '2em' }}>
       <Header as="h3">Page not found</Header>
@@ -142,25 +247,30 @@ function UnknownRouteShell () {
         <code style={{ wordBreak: 'break-all' }}>{full}</code>
         . Use the nav above or open Home.
         {uf.activities ? ' The activity feed and in-app toasts are under the bell (top bar).' : ''}
-        {!uf.features ? ' Enable “Features” in Admin → Feature visibility for the full product tour at /features.' : ''}
       </p>
       <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }} role="navigation" aria-label="Suggested pages">
         <Button as={Link} to="/" primary aria-label="Home">
           <Icon name="home" />
           Home
         </Button>
+        {uf.peers && hasHubAdminForPeers ? (
+          <Button as={Link} to="/peers" basic aria-label="Peers">
+            <Icon name="sitemap" />
+            Peers
+          </Button>
+        ) : null}
         <Button as={Link} to="/documents" basic aria-label="Documents">
-          <Icon name="folder open" />
+          <Icon name="file outline" />
           Documents
         </Button>
         <Button as={Link} to="/contracts" basic aria-label="Contracts">
           <Icon name="file contract" />
           Contracts
         </Button>
-        {uf.peers ? (
-          <Button as={Link} to="/peers" basic aria-label="Peers">
-            <Icon name="sitemap" />
-            Peers
+        {uf.features ? (
+          <Button as={Link} to="/features" basic aria-label="Features">
+            <Icon name="info circle" />
+            Features
           </Button>
         ) : null}
         {uf.activities ? (
@@ -169,28 +279,28 @@ function UnknownRouteShell () {
             Activities
           </Button>
         ) : null}
-        {uf.features ? (
-          <Button as={Link} to="/features" basic aria-label="Features">
-            <Icon name="info circle" />
-            Features
-          </Button>
-        ) : null}
         {uf.sidechain ? (
           <Button as={Link} to="/sidechains" basic aria-label="Sidechain and demo">
             <Icon name="random" />
             Sidechain
           </Button>
         ) : null}
+        {uf.sidechain ? (
+          <React.Fragment>
+            <Button as={Link} to="/settings/admin/beacon-federation" basic aria-label="Beacon Federation">
+              <Icon name="star" />
+              Beacon Federation
+            </Button>
+            <Button as={Link} to="/settings/federation" basic aria-label="Distributed federation">
+              <Icon name="users" />
+              Federation
+            </Button>
+          </React.Fragment>
+        ) : null}
         <Button as={Link} to="/services/bitcoin" basic aria-label="Bitcoin">
           <Icon name="bitcoin" />
           Bitcoin
         </Button>
-        {uf.bitcoinResources ? (
-          <Button as={Link} to="/services/bitcoin/resources" basic aria-label="Bitcoin HTTP resources">
-            <Icon name="code" />
-            Bitcoin resources
-          </Button>
-        ) : null}
         {uf.bitcoinPayments ? (
           <Button as={Link} to="/services/bitcoin/payments" basic aria-label="Payments">
             <Icon name="credit card outline" />
@@ -203,26 +313,38 @@ function UnknownRouteShell () {
             Invoices
           </Button>
         ) : null}
-        <Button as={Link} to="/settings" basic aria-label="Settings">
-          <Icon name="setting" />
-          Settings
-        </Button>
+        {uf.bitcoinLightning ? (
+          <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-lightning' }} basic aria-label="Lightning">
+            <Icon name="bolt" />
+            Lightning
+          </Button>
+        ) : null}
+        {uf.bitcoinExplorer ? (
+          <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} basic aria-label="Explorer">
+            <Icon name="search" />
+            Explorer
+          </Button>
+        ) : null}
+        {uf.bitcoinResources ? (
+          <Button as={Link} to="/services/bitcoin/resources" basic aria-label="Bitcoin HTTP resources">
+            <Icon name="code" />
+            Bitcoin resources
+          </Button>
+        ) : null}
+        {uf.bitcoinCrowdfund ? (
+          <Button as={Link} to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-crowdfunding' }} basic aria-label="Crowdfund">
+            <Icon name="heart outline" />
+            Crowdfund
+          </Button>
+        ) : null}
         <Button as={Link} to="/settings/admin" basic aria-label="Admin">
           <Icon name="settings" />
           Admin
         </Button>
-        {uf.sidechain ? (
-          <React.Fragment>
-            <Button as={Link} to="/settings/admin/beacon-federation" basic aria-label="Beacon Federation">
-              <Icon name="star" />
-              Beacon Federation
-            </Button>
-            <Button as={Link} to="/settings/federation" basic aria-label="Distributed federation">
-              <Icon name="sliders horizontal" />
-              Federation
-            </Button>
-          </React.Fragment>
-        ) : null}
+        <Button as={Link} to="/settings" basic aria-label="Settings">
+          <Icon name="setting" />
+          Settings
+        </Button>
         <Button as={Link} to="/settings/security" basic aria-label="Security and delegation">
           <Icon name="shield" />
           Security & delegation
@@ -332,8 +454,13 @@ function LoginGate (props) {
         <Icon name="lock" />
         Log in required
       </Header>
-      <p style={{ color: '#666', marginBottom: '1em' }}>
-        Create or restore a local identity to access this feature.
+      <p style={{ color: '#666', maxWidth: '32rem', margin: '0 auto 0.75em', lineHeight: 1.45 }}>
+        Create or restore a local Fabric identity to access this feature (encrypt documents, sign publishes, and use the browser Bitcoin account tied to your keys).
+      </p>
+      <p style={{ color: '#666', maxWidth: '32rem', margin: '0 auto 1em', lineHeight: 1.45 }}>
+        Use <strong>Log in</strong> below, the top-bar identity menu, or open{' '}
+        <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> for the same unlock/import flow.{' '}
+        <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> explains on-chain addresses for this identity.
       </p>
       <Button primary onClick={() => onLogin && onLogin()}>
         <Icon name="user circle" />
@@ -738,6 +865,10 @@ class HubInterface extends React.Component {
       };
       window.addEventListener('fabric:federationContractInvite', this._fabricFedInvite);
       window.addEventListener('fabric:federationContractInviteResponse', this._fabricFedResp);
+      this._onFabricOpenIdentityManager = () => {
+        this.openIdentityManager();
+      };
+      window.addEventListener('fabricOpenIdentityManager', this._onFabricOpenIdentityManager);
       this._adminTokenRefreshInterval = setInterval(() => this._refreshAdminTokenIfNeeded(), 24 * 60 * 60 * 1000);
     }
     this._toastUnsub = toast.addListener((t) => {
@@ -765,6 +896,9 @@ class HubInterface extends React.Component {
       }
       if (this._fabricFedInvite) window.removeEventListener('fabric:federationContractInvite', this._fabricFedInvite);
       if (this._fabricFedResp) window.removeEventListener('fabric:federationContractInviteResponse', this._fabricFedResp);
+      if (this._onFabricOpenIdentityManager) {
+        window.removeEventListener('fabricOpenIdentityManager', this._onFabricOpenIdentityManager);
+      }
       if (this._adminTokenRefreshInterval) clearInterval(this._adminTokenRefreshInterval);
     }
   }
@@ -1035,6 +1169,7 @@ class HubInterface extends React.Component {
                 <TopPanel
                   hubAddress={this.state.uiHubAddress}
                   auth={effectiveAuth}
+                  adminToken={this.state.adminToken}
                   localIdentity={local}
                   hasLocalIdentity={!!hasLocal}
                   hasLockedIdentity={effectiveHasLockedIdentity}
@@ -1685,7 +1820,7 @@ class HubInterface extends React.Component {
                   <Route
                     path="/peers"
                     element={(
-                      <UiFlagRoute flag="peers">
+                      <PeersAdminRoute adminToken={this.state.adminToken}>
                         <PeerList
                         auth={effectiveAuth}
                         bridge={this.props.bridge}
@@ -1784,13 +1919,13 @@ class HubInterface extends React.Component {
                         }}
                         {...this.props}
                       />
-                      </UiFlagRoute>
+                      </PeersAdminRoute>
                     )}
                   />
                   <Route
                     path="/peers/:id"
                     element={(
-                      <UiFlagRoute flag="peers">
+                      <PeersAdminRoute adminToken={this.state.adminToken}>
                         <PeerView
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -1851,7 +1986,7 @@ class HubInterface extends React.Component {
                         {...this.props}
                         adminToken={this.state.adminToken}
                       />
-                      </UiFlagRoute>
+                      </PeersAdminRoute>
                     )}
                   />
                   <Route
@@ -1967,6 +2102,13 @@ class HubInterface extends React.Component {
                             return bridgeInstance.sendDistributeDocumentRequest(id, config);
                           }
                           return null;
+                        }}
+                        onSendDistributeProposal={(peerKey, proposal) => {
+                          if (!this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendSendDistributeProposalRequest === 'function') {
+                            bridgeInstance.sendSendDistributeProposalRequest(peerKey, proposal);
+                          }
                         }}
                         {...this.props}
                         adminToken={this.state.adminToken}
@@ -2112,7 +2254,7 @@ class HubInterface extends React.Component {
                   <Route path="*" element={<UnknownRouteShell />} />
                 </Routes>
                 </div>
-                <BottomPanel pubkey={nodePubkey} />
+                <BottomPanel pubkey={nodePubkey} adminToken={this.state.adminToken} />
                 </div>
               </BrowserRouter>
             )}

@@ -14,7 +14,7 @@ module.exports = Object.assign({}, defaults, {
   bitcoin: {
     network: process.env.FABRIC_BITCOIN_NETWORK || 'regtest',
     managed: process.env.FABRIC_BITCOIN_MANAGED ? process.env.FABRIC_BITCOIN_MANAGED !== 'false' : true,
-    rpcport: Number(process.env.FABRIC_BITCOIN_RPC_PORT || 20444),
+    rpcport: Number(process.env.FABRIC_BITCOIN_RPC_PORT || 18443),
     startTimeoutMs: Number(process.env.FABRIC_BITCOIN_START_TIMEOUT_MS || 60000),
     /** Optional origin for @fabric/core HTTP fallback (`/services/bitcoin/...`). Unset = RPC only. */
     explorerBaseUrl: process.env.FABRIC_EXPLORER_URL || null,

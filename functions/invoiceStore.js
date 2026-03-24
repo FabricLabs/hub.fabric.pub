@@ -68,8 +68,9 @@ function createInvoice (invoice = {}) {
  * @returns {boolean} true if removed
  */
 function deleteInvoice (id) {
-  const list = loadInvoices().filter((inv) => inv.id !== id);
-  if (list.length === loadInvoices().length) return false;
+  const before = loadInvoices();
+  const list = before.filter((inv) => inv.id !== id);
+  if (list.length === before.length) return false;
   saveInvoices(list);
   return true;
 }

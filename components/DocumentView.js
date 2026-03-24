@@ -40,6 +40,38 @@ function shortHexId (value) {
   return `${s.slice(0, 10)}…${s.slice(-8)}`;
 }
 
+/** Resolve a document from Bridge `globalState.documents` by route id or content hash (case-insensitive hex). */
+function pickDocumentFromMap (documents, rawId) {
+  if (!documents || rawId == null || rawId === '') return null;
+  const id = String(rawId).trim();
+  if (!id) return null;
+  if (documents[id]) return documents[id];
+  const lower = id.toLowerCase();
+  if (documents[lower]) return documents[lower];
+  for (const d of Object.values(documents)) {
+    if (!d || typeof d !== 'object') continue;
+    const did = d.id != null ? String(d.id) : '';
+    const sha = d.sha256 != null ? String(d.sha256) : (d.sha != null ? String(d.sha) : '');
+    if (did === id || sha === id) return d;
+    if (did.toLowerCase() === lower || sha.toLowerCase() === lower) return d;
+  }
+  return null;
+}
+
+/** Fabric TCP peers from GetNetworkStatus (excludes bridge/WebRTC signaling rows). */
+function fabricTcpPeersFromNetworkStatus (ns) {
+  const peers = Array.isArray(ns && ns.peers) ? ns.peers : [];
+  return peers.filter((p) => {
+    if (!p || typeof p !== 'object') return false;
+    const pid = String(p.id || '');
+    const address = String(p.address || '');
+    const hasWebRTCMetadata = !!(p.metadata && Array.isArray(p.metadata.capabilities));
+    if (pid.startsWith('fabric-bridge-') || address.startsWith('fabric-bridge-')) return false;
+    if (hasWebRTCMetadata && p.status === 'registered') return false;
+    return true;
+  });
+}
+
 function getAdminTokenFromProps (props) {
   const t = props && props.adminToken;
   if (t && String(t).trim()) return String(t).trim();
@@ -67,6 +99,7 @@ function DocumentDetail (props) {
   const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [isPublishing, setIsPublishing] = React.useState(false);
+  const [publishError, setPublishError] = React.useState(null);
   const [distributeOpen, setDistributeOpen] = React.useState(false);
   const [distributeBusy, setDistributeBusy] = React.useState(false);
   const [distributeAmountSats, setDistributeAmountSats] = React.useState('');
@@ -81,6 +114,11 @@ function DocumentDetail (props) {
   const [distributeSuccessContractId, setDistributeSuccessContractId] = React.useState(null);
   const [distributeTxChain, setDistributeTxChain] = React.useState(null);
   const [distributeBridgeBusy, setDistributeBridgeBusy] = React.useState(false);
+  const [peerOfferKey, setPeerOfferKey] = React.useState('');
+  const [peerOfferBusy, setPeerOfferBusy] = React.useState(false);
+  const [peerOfferError, setPeerOfferError] = React.useState(null);
+  const [peerOfferSuccess, setPeerOfferSuccess] = React.useState(null);
+  const [peerListTick, setPeerListTick] = React.useState(0);
 
   const [publishPriceSats, setPublishPriceSats] = React.useState(DEFAULT_PUBLISH_PRICE_SATS);
   const [purchaseOpen, setPurchaseOpen] = React.useState(false);
@@ -100,23 +138,129 @@ function DocumentDetail (props) {
   const [tombstoneError, setTombstoneError] = React.useState(null);
   const [loadError, setLoadError] = React.useState(null);
   const [hubUiTick, setHubUiTick] = React.useState(0);
+  const [upstreamRev, setUpstreamRev] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
+
+  const upstreamSettings = React.useMemo(() => loadUpstreamSettings(), [upstreamRev]);
+
+  React.useEffect(() => {
+    const bump = () => setUpstreamRev((n) => n + 1);
+    if (typeof window === 'undefined') return undefined;
+    window.addEventListener('fabricBitcoinUpstreamChanged', bump);
+    const onStorage = (ev) => {
+      if (ev && ev.key === 'fabric.bitcoin.upstream') bump();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('fabricBitcoinUpstreamChanged', bump);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
 
   React.useEffect(() => {
     setLoadError(null);
   }, [id]);
 
   React.useEffect(() => {
-    if (typeof props.onGetDocument === 'function' && id) props.onGetDocument(id);
+    if (!id || typeof props.onGetDocument !== 'function') return undefined;
+    // Defer until after other DocumentView effects (e.g. globalStateUpdate listener) have run.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) props.onGetDocument(id);
+    });
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // If WebSocket GetDocument never merges into Bridge state, fall back to same-origin HTTP JSON-RPC (read-only).
+  React.useEffect(() => {
+    if (!id || doc) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      const bridge = props.bridgeRef && props.bridgeRef.current;
+      const gs = bridge && typeof bridge.getGlobalState === 'function' ? bridge.getGlobalState() : null;
+      if (pickDocumentFromMap(gs && gs.documents, id)) return;
+      const origin = typeof window !== 'undefined' && window.location && window.location.origin
+        ? window.location.origin
+        : '';
+      if (!origin || !bridge || typeof bridge.mergeGetDocumentRpcResult !== 'function') return;
+      fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method: 'GetDocument',
+          params: [id]
+        })
+      })
+        .then(async (r) => {
+          let body = null;
+          try {
+            body = await r.json();
+          } catch (_) {
+            body = null;
+          }
+          return { ok: r.ok, status: r.status, body };
+        })
+        .then(({ ok, status, body }) => {
+          if (cancelled) return;
+          const fail = (message) => {
+            if (typeof window === 'undefined') return;
+            window.dispatchEvent(new CustomEvent('documentLoadFailed', {
+              detail: { documentId: String(id), message }
+            }));
+          };
+          if (!body || typeof body !== 'object') {
+            if (!ok) fail(`Could not load document (HTTP ${status || 'error'}).`);
+            return;
+          }
+          if (body.error) {
+            const err = body.error;
+            const msg = err && (err.message != null || err.data != null)
+              ? String(err.message != null ? err.message : err.data)
+              : 'Hub refused the document request.';
+            fail(msg);
+            return;
+          }
+          if (body.result == null) {
+            if (!ok) fail(`Could not load document (HTTP ${status || 'error'}).`);
+            return;
+          }
+          const applied = bridge.mergeGetDocumentRpcResult(body.result);
+          if (!applied && body.result && body.result.type === 'GetDocumentResult') {
+            fail(
+              (body.result.message && String(body.result.message)) || 'Document could not be loaded from the hub.'
+            );
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (typeof window === 'undefined') return;
+          window.dispatchEvent(new CustomEvent('documentLoadFailed', {
+            detail: {
+              documentId: String(id),
+              message: (err && err.message) ? err.message : 'Network error while loading document from hub.'
+            }
+          }));
+        });
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [id, doc, props.bridgeRef]);
 
   React.useEffect(() => {
     const handler = (e) => {
       const d = e && e.detail;
-      if (!d || d.documentId == null || String(d.documentId) !== String(id)) return;
+      if (!d || d.documentId == null) return;
+      const docId = String(d.documentId);
+      const match = docId === String(id) || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (!match) return;
       setLoadError(d.message || 'Document not found.');
     };
     if (typeof window !== 'undefined') {
@@ -124,7 +268,7 @@ function DocumentDetail (props) {
       return () => window.removeEventListener('documentLoadFailed', handler);
     }
     return undefined;
-  }, [id]);
+  }, [id, doc]);
 
   React.useEffect(() => {
     if (!id || doc) return undefined;
@@ -136,6 +280,14 @@ function DocumentDetail (props) {
 
   React.useEffect(() => {
     setPublishPriceSats(DEFAULT_PUBLISH_PRICE_SATS);
+    setPublishError(null);
+  }, [id]);
+
+  React.useEffect(() => {
+    setPeerOfferKey('');
+    setPeerOfferBusy(false);
+    setPeerOfferError(null);
+    setPeerOfferSuccess(null);
   }, [id]);
 
   React.useEffect(() => {
@@ -150,8 +302,7 @@ function DocumentDetail (props) {
       const detail = e && e.detail;
       if (!detail || !detail.documentId) return;
       const docId = detail.documentId;
-      const sha = doc && doc.sha256;
-      const match = docId === id || docId === sha;
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
       if (match) {
         setDistributeInvoice({
           address: detail.address,
@@ -160,11 +311,97 @@ function DocumentDetail (props) {
           network: detail.network
         });
         setDistributeTxid('');
+        setDistributeBusy(false);
+        setDistributeError(null);
       }
     };
     window.addEventListener('distributeInvoiceReady', handler);
     return () => window.removeEventListener('distributeInvoiceReady', handler);
   }, [id, doc]);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.documentId) return;
+      const docId = detail.documentId;
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (!match) return;
+      setDistributeBusy(false);
+      setDistributeInvoice(null);
+      setDistributeError(String(detail.message || 'Could not create distribute invoice'));
+    };
+    window.addEventListener('distributeInvoiceFailed', handler);
+    return () => window.removeEventListener('distributeInvoiceFailed', handler);
+  }, [id, doc]);
+
+  // If CreateDistributeInvoice never returns over WebSocket, retry via same-origin HTTP JSON-RPC.
+  React.useEffect(() => {
+    if (!distributeOpen || distributeInvoice || distributeSuccessContractId || !distributeBusy) return undefined;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      const bridge = props.bridgeRef && props.bridgeRef.current;
+      const backendId = (doc && doc.sha256) ? String(doc.sha256) : String(id);
+      if (!bridge || typeof bridge.mergeCreateDistributeInvoiceRpcResult !== 'function' || !backendId) return;
+      const amount = parseInt(distributeAmountSats, 10);
+      if (!Number.isFinite(amount) || amount <= 0) return;
+      const origin = typeof window !== 'undefined' && window.location && window.location.origin
+        ? window.location.origin
+        : '';
+      if (!origin) return;
+      const config = {
+        documentId: backendId,
+        amountSats: amount,
+        desiredCopies: Math.max(1, parseInt(distributeDesiredCopies, 10) || 1),
+        durationYears: distributeDurationYears,
+        challengeCadence: distributeCadence,
+        responseDeadline: distributeDeadline
+      };
+      fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method: 'CreateDistributeInvoice',
+          params: [config]
+        })
+      })
+        .then((r) => r.json())
+        .then((body) => {
+          if (cancelled || !body || body.result == null) return;
+          bridge.mergeCreateDistributeInvoiceRpcResult(body.result);
+        })
+        .catch(() => {});
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [
+    distributeOpen,
+    distributeInvoice,
+    distributeSuccessContractId,
+    distributeBusy,
+    id,
+    doc,
+    distributeAmountSats,
+    distributeDesiredCopies,
+    distributeDurationYears,
+    distributeCadence,
+    distributeDeadline,
+    props.bridgeRef
+  ]);
+
+  // Waiting for CreateDistributeInvoice (step 1) — avoid stuck loading if the hub never answers
+  React.useEffect(() => {
+    if (!distributeOpen || distributeInvoice || distributeSuccessContractId || !distributeBusy) return undefined;
+    const t = setTimeout(() => {
+      setDistributeBusy(false);
+      setDistributeError((prev) => prev || 'Timed out waiting for a distribute invoice from the hub. Check Bitcoin and try Request invoice again.');
+    }, 45000);
+    return () => clearTimeout(t);
+  }, [distributeOpen, distributeInvoice, distributeSuccessContractId, distributeBusy]);
 
   // When payment is bonded (contract created), show success in the distribute modal
   React.useEffect(() => {
@@ -206,14 +443,68 @@ function DocumentDetail (props) {
     return () => clearTimeout(timeout);
   }, [distributeBusy, distributeSuccessContractId]);
 
+  React.useEffect(() => {
+    const bump = () => setPeerListTick((t) => t + 1);
+    if (typeof window === 'undefined') return undefined;
+    window.addEventListener('networkStatusUpdate', bump);
+    window.addEventListener('globalStateUpdate', bump);
+    return () => {
+      window.removeEventListener('networkStatusUpdate', bump);
+      window.removeEventListener('globalStateUpdate', bump);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const d = e && e.detail;
+      if (!d || d.documentId == null) return;
+      const docId = String(d.documentId);
+      const match = docId === String(id) || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (!match) return;
+      setPeerOfferBusy(false);
+      setPeerOfferError(null);
+      const pid = d.proposalId ? String(d.proposalId) : '';
+      setPeerOfferSuccess(
+        pid
+          ? `Hosting offer sent (${shortHexId(pid)}). When the peer accepts, pay their invoice to bond storage.`
+          : 'Hosting offer sent. When the peer accepts, pay their invoice to bond storage.'
+      );
+    };
+    window.addEventListener('distributeProposalSent', handler);
+    return () => window.removeEventListener('distributeProposalSent', handler);
+  }, [id, doc]);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const d = e && e.detail;
+      if (!d || d.documentId == null) return;
+      const docId = String(d.documentId);
+      const match = docId === String(id) || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (!match) return;
+      setPeerOfferBusy(false);
+      setPeerOfferSuccess(null);
+      setPeerOfferError(String(d.message || 'Could not send hosting offer'));
+    };
+    window.addEventListener('distributeProposalFailed', handler);
+    return () => window.removeEventListener('distributeProposalFailed', handler);
+  }, [id, doc]);
+
+  React.useEffect(() => {
+    if (!peerOfferBusy) return undefined;
+    const t = setTimeout(() => {
+      setPeerOfferBusy(false);
+      setPeerOfferError((prev) => prev || 'Timed out waiting for a response from the hub.');
+    }, 45000);
+    return () => clearTimeout(t);
+  }, [peerOfferBusy]);
+
   // Listen for HTLC purchase invoice
   React.useEffect(() => {
     const handler = (e) => {
       const detail = e && e.detail;
       if (!detail || !detail.documentId) return;
       const docId = detail.documentId;
-      const sha = doc && doc.sha256;
-      const match = docId === id || docId === sha;
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
       if (match && purchaseOpen) {
         setPurchaseInvoice({
           address: detail.address,
@@ -229,12 +520,36 @@ function DocumentDetail (props) {
     return () => window.removeEventListener('purchaseInvoiceReady', handler);
   }, [id, doc, purchaseOpen]);
 
+  React.useEffect(() => {
+    const handler = (e) => {
+      const detail = e && e.detail;
+      if (!detail || !detail.documentId) return;
+      const docId = detail.documentId;
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (match && purchaseOpen) {
+        setPurchaseInvoice(null);
+        setPurchaseError(String(detail.message || 'Could not create purchase invoice'));
+      }
+    };
+    window.addEventListener('purchaseInvoiceFailed', handler);
+    return () => window.removeEventListener('purchaseInvoiceFailed', handler);
+  }, [id, doc, purchaseOpen]);
+
+  // If the hub never answers, avoid an infinite "Requesting invoice…" state.
+  React.useEffect(() => {
+    if (!purchaseOpen || purchaseInvoice || purchasedContent) return undefined;
+    const t = setTimeout(() => {
+      setPurchaseError((prev) => prev || 'Timed out waiting for a purchase invoice from the hub. Check Bitcoin, publish status, and list price, then close and try Purchase again.');
+    }, 45000);
+    return () => clearTimeout(t);
+  }, [purchaseOpen, purchaseInvoice, purchasedContent]);
+
   const [, setNetworkTick] = React.useState(0);
   React.useEffect(() => {
     const handler = (event) => {
       const gs = event && event.detail && event.detail.globalState;
       if (!gs || !gs.documents) return;
-      const candidate = gs.documents[id];
+      const candidate = pickDocumentFromMap(gs.documents, id);
       if (candidate) {
         setLoadError(null);
         setDoc(candidate);
@@ -263,7 +578,7 @@ function DocumentDetail (props) {
       if (!current || typeof current.getGlobalState !== 'function') return;
       const gs = current.getGlobalState();
       if (!gs || !gs.documents) return;
-      const candidate = gs.documents[id];
+      const candidate = pickDocumentFromMap(gs.documents, id);
       if (candidate) {
         setLoadError(null);
         setDoc(candidate);
@@ -279,14 +594,33 @@ function DocumentDetail (props) {
     const pub = doc?.published || (props.bridgeRef?.current?.networkStatus?.publishedDocuments?.[doc?.id] || (doc?.sha256 && props.bridgeRef?.current?.networkStatus?.publishedDocuments?.[doc?.sha256]));
     if (doc && pub) {
       setIsPublishing(false);
+      setPublishError(null);
       return;
     }
     if (!isPublishing) return;
     const timeout = setTimeout(() => {
       setIsPublishing(false);
+      setPublishError((prev) => prev || 'No publish confirmation from the hub yet. Check your connection or try again.');
     }, 10000);
     return () => clearTimeout(timeout);
   }, [doc, doc?.published, doc?.id, doc?.sha256, isPublishing, props.bridgeRef]);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const d = e && e.detail;
+      if (!d || d.documentId == null || String(d.documentId) === '') return;
+      const docId = String(d.documentId);
+      const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
+      if (!match) return;
+      setIsPublishing(false);
+      setPublishError(String(d.message || 'Publish failed'));
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('publishDocumentFailed', handler);
+      return () => window.removeEventListener('publishDocumentFailed', handler);
+    }
+    return undefined;
+  }, [id, doc]);
 
   // Decrypt only when user clicks Unlock (for encrypted docs)
   const handleUnlock = React.useCallback(() => {
@@ -343,6 +677,24 @@ function DocumentDetail (props) {
   const bridgeForWire = props.bridgeRef && props.bridgeRef.current;
   const distributeModalNoLocalWire = !!(bridgeForWire && typeof bridgeForWire.hasLocalWireSigningKey === 'function' && !bridgeForWire.hasLocalWireSigningKey());
   const authorDocId = doc && (doc.lineage || doc.id) ? String(doc.lineage || doc.id) : '';
+
+  const fabricPeersForOffer = React.useMemo(() => {
+    const cur = props.bridgeRef && props.bridgeRef.current;
+    const ns = cur && (cur.networkStatus || cur.lastNetworkStatus);
+    return fabricTcpPeersFromNetworkStatus(ns);
+  }, [props.bridgeRef, peerListTick]);
+
+  const fabricPeerDropdownOptions = React.useMemo(() => {
+    return fabricPeersForOffer.map((p) => {
+      const addr = String(p.address || '').trim();
+      const pid = String(p.id || '').trim();
+      const value = pid || addr;
+      const text = (addr && pid && addr !== pid)
+        ? `${addr} (${shortHexId(pid)})`
+        : (addr || shortHexId(pid) || value);
+      return { key: value, text, value };
+    }).filter((o) => o.value);
+  }, [fabricPeersForOffer]);
 
   const adminTokenResolved = String(
     (props.adminToken != null && props.adminToken) ||
@@ -476,8 +828,7 @@ function DocumentDetail (props) {
           setContractPayTx({ loading: false, txid: null });
           return;
         }
-        const upstream = loadUpstreamSettings();
-        const data = await fetchTransactionByHash(upstream, txid);
+        const data = await fetchTransactionByHash(upstreamSettings, txid);
         if (cancelled) return;
         if (data && data.status === 'error') {
           setContractPayTx({
@@ -506,7 +857,7 @@ function DocumentDetail (props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [doc && doc.storageContractId]);
+  }, [doc && doc.storageContractId, upstreamSettings]);
 
   // Distribute modal: poll funding tx depth while invoice step is open
   React.useEffect(() => {
@@ -524,10 +875,9 @@ function DocumentDetail (props) {
       return;
     }
     let cancelled = false;
-    const upstream = loadUpstreamSettings();
     const tick = async () => {
       try {
-        const data = await fetchTransactionByHash(upstream, tx);
+        const data = await fetchTransactionByHash(upstreamSettings, tx);
         if (cancelled) return;
         if (data && data.status === 'error') {
           setDistributeTxChain({ loading: false, error: data.message || 'Tx not found' });
@@ -547,7 +897,7 @@ function DocumentDetail (props) {
       cancelled = true;
       clearInterval(iv);
     };
-  }, [distributeOpen, distributeInvoice, distributeTxid, distributeSuccessContractId]);
+  }, [distributeOpen, distributeInvoice, distributeTxid, distributeSuccessContractId, upstreamSettings]);
 
   // URLs for sharing: canonical (path param) and hash-only (keeps id client-side).
   let shareUrlHash = '';
@@ -593,8 +943,7 @@ function DocumentDetail (props) {
     setDistributeBridgeBusy(true);
     setDistributeError(null);
     try {
-      const upstream = loadUpstreamSettings();
-      const res = await sendBridgePayment(upstream, {
+      const res = await sendBridgePayment(upstreamSettings, {
         to,
         amountSats,
         memo: `Distribute ${String(id).slice(0, 16)}`
@@ -630,7 +979,8 @@ function DocumentDetail (props) {
     distributeCadence,
     distributeDeadline,
     props.onDistributeDocument,
-    props.adminToken
+    props.adminToken,
+    upstreamSettings
   ]);
 
   const handlePayPurchaseFromBridge = React.useCallback(async () => {
@@ -653,8 +1003,7 @@ function DocumentDetail (props) {
     setPurchaseBridgeBusy(true);
     setPurchaseError(null);
     try {
-      const upstream = loadUpstreamSettings();
-      const res = await sendBridgePayment(upstream, {
+      const res = await sendBridgePayment(upstreamSettings, {
         to,
         amountSats,
         memo: `Purchase ${String(id).slice(0, 16)}`
@@ -678,7 +1027,7 @@ function DocumentDetail (props) {
       setPurchaseBridgeBusy(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchaseInvoice, id, props.onClaimPurchase, props.adminToken]);
+  }, [purchaseInvoice, id, props.onClaimPurchase, props.adminToken, upstreamSettings]);
 
   return (
     <fabric-document-detail class='fade-in'>
@@ -689,7 +1038,7 @@ function DocumentDetail (props) {
         >
           <Button basic size="small" as={Link} to="/documents" aria-label="Back to documents list">
             <Icon name="arrow left" aria-hidden="true" />
-            Back
+            Documents
           </Button>
           <Header
             as="h2"
@@ -794,7 +1143,7 @@ function DocumentDetail (props) {
                                     Payment transaction
                                   </Link>
                                 ) : (
-                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
                                     {contractPayTx.txid}
                                   </code>
                                 )}
@@ -814,7 +1163,7 @@ function DocumentDetail (props) {
                                     View payment transaction
                                   </Link>
                                 ) : (
-                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
                                     {contractPayTx.txid}
                                   </code>
                                 )}
@@ -827,7 +1176,7 @@ function DocumentDetail (props) {
                                     Payment transaction
                                   </Link>
                                 ) : (
-                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
                                     {contractPayTx.txid}
                                   </code>
                                 )}
@@ -905,6 +1254,7 @@ function DocumentDetail (props) {
                     primary
                     loading={htlcUnlockBusy}
                     disabled={!TXID_HEX_64.test(htlcPreimageHex.trim())}
+                    title="Preimage is 32 bytes (64 hex characters), same length as a txid"
                     onClick={handleHtlcPreimageUnlock}
                   >
                     <Icon name="key" />
@@ -927,8 +1277,11 @@ function DocumentDetail (props) {
                 <Message info size="small" style={{ marginTop: '0.75em' }}>
                   <Message.Header>Identity key locked</Message.Header>
                   <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
-                    Use <strong>Locked</strong> in the top bar to unlock your private key before you can publish, download, or preview encrypted content.
-                    A listed <strong>Purchase</strong> can still be paid from an external wallet; &quot;Pay from hub wallet&quot; needs an admin token.
+                    Unlock your private key from the top bar (the identity control shows <strong>Locked</strong> until you enter your password), or open{' '}
+                    <Link to="/settings">Settings</Link>
+                    {' '}and use the <strong>Fabric identity</strong> card. Then you can publish, download, or preview encrypted content.
+                    A listed <strong>Purchase</strong> can still be paid from an external wallet; &quot;Pay from hub wallet&quot; needs an admin token.{' '}
+                    <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> ties the same identity to L1 addresses.
                   </p>
                   {typeof props.onRequestUnlock === 'function' && (
                     <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
@@ -961,6 +1314,7 @@ function DocumentDetail (props) {
                 onClick={() => {
                   if (doc && isPublishedInStore) return;
                   if (!id || typeof props.onPublishDocument !== 'function') return;
+                  setPublishError(null);
                   setIsPublishing(true);
                   const price = parseInt(publishPriceSats, 10);
                   props.onPublishDocument(id, price > 0 ? { purchasePriceSats: price } : undefined);
@@ -1027,7 +1381,10 @@ function DocumentDetail (props) {
                     navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
                     return;
                   }
-                  if (id) setDistributeOpen(true);
+                  if (id) {
+                    setDistributeError(null);
+                    setDistributeOpen(true);
+                  }
                 }}
                 disabled={!id}
                 title={storageContractId ? 'View storage contract' : 'Distribute this document across other nodes'}
@@ -1077,6 +1434,17 @@ function DocumentDetail (props) {
                 </Button>
               )}
             </div>
+            {publishError ? (
+              <Message
+                negative
+                size="small"
+                style={{ marginTop: '0.75em' }}
+                onDismiss={() => setPublishError(null)}
+              >
+                <Message.Header>Publish did not complete</Message.Header>
+                <p style={{ margin: '0.35em 0 0', fontSize: '0.95em' }}>{publishError}</p>
+              </Message>
+            ) : null}
           </Card.Content>
         </Card>
         )}
@@ -1167,13 +1535,17 @@ function DocumentDetail (props) {
           size="small"
           open={distributeOpen}
           onClose={() => {
-            if (distributeBusy || distributeBridgeBusy) return;
+            if (distributeBusy || distributeBridgeBusy || peerOfferBusy) return;
             setDistributeOpen(false);
             setDistributeError(null);
             setDistributeInvoice(null);
             setDistributeTxid('');
             setDistributeSuccessContractId(null);
             setDistributeBridgeBusy(false);
+            setPeerOfferKey('');
+            setPeerOfferBusy(false);
+            setPeerOfferError(null);
+            setPeerOfferSuccess(null);
           }}
         >
           <Header icon="cloud upload" content="Pay to distribute" />
@@ -1239,9 +1611,10 @@ function DocumentDetail (props) {
               </Segment>
             ) : !distributeInvoice ? (
               <Form
+                id="fabric-document-distribute-form"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!id || distributeBusy) return;
+                  if (!id || distributeBusy || peerOfferBusy) return;
                   const amount = parseInt(distributeAmountSats, 10);
                   if (!Number.isFinite(amount) || amount <= 0) {
                     setDistributeError('Enter a positive amount in sats.');
@@ -1258,7 +1631,6 @@ function DocumentDetail (props) {
                   };
                   if (typeof props.onRequestDistributeInvoice === 'function') {
                     props.onRequestDistributeInvoice(id, config);
-                    setDistributeBusy(false);
                   } else {
                     setDistributeError('Distribute is not available on this hub.');
                     setDistributeBusy(false);
@@ -1322,6 +1694,94 @@ function DocumentDetail (props) {
                     onChange={(_, data) => setDistributeDeadline(data.value)}
                   />
                 </Form.Field>
+                <Divider section />
+                <Message info size="small">
+                  <Message.Header>Offer a connected Fabric peer</Message.Header>
+                  <p style={{ margin: '0.35em 0 0', color: '#333' }}>
+                    Sends a private P2P hosting offer (same channel as incoming proposals on{' '}
+                    <Link to="/documents">Documents</Link>). The peer accepts from their list and returns a Bitcoin invoice; you pay that invoice to bond storage.
+                    The hub must already have the file under its content hash — create or open the document once so it is stored on the hub.
+                  </p>
+                  {fabricPeerDropdownOptions.length === 0 ? (
+                    <p style={{ margin: '0.75em 0 0', color: '#666' }}>
+                      No Fabric TCP peers in the latest hub snapshot. Connect a peer under{' '}
+                      <Link to="/peers">Peers</Link>.
+                    </p>
+                  ) : (
+                    <>
+                      <Form.Field style={{ marginTop: '0.75em' }}>
+                        <label>Peer</label>
+                        <Dropdown
+                          placeholder="Select peer (must be connected on the hub)"
+                          selection
+                          search
+                          options={fabricPeerDropdownOptions}
+                          value={peerOfferKey}
+                          onChange={(e, { value }) => {
+                            setPeerOfferKey(String(value || ''));
+                            setPeerOfferError(null);
+                            setPeerOfferSuccess(null);
+                          }}
+                        />
+                      </Form.Field>
+                      <Button
+                        type="button"
+                        basic
+                        color="blue"
+                        loading={peerOfferBusy}
+                        disabled={
+                          peerOfferBusy ||
+                          distributeBusy ||
+                          distributeBridgeBusy ||
+                          !peerOfferKey ||
+                          typeof props.onSendDistributeProposal !== 'function'
+                        }
+                        onClick={() => {
+                          const amount = parseInt(distributeAmountSats, 10);
+                          if (!Number.isFinite(amount) || amount <= 0) {
+                            setPeerOfferError('Enter a positive amount in sats above first.');
+                            return;
+                          }
+                          const backendId = (doc && doc.sha256) ? String(doc.sha256) : String(id);
+                          if (!backendId || typeof props.onSendDistributeProposal !== 'function') return;
+                          setPeerOfferBusy(true);
+                          setPeerOfferError(null);
+                          setPeerOfferSuccess(null);
+                          const config = {
+                            desiredCopies: Math.max(1, parseInt(distributeDesiredCopies, 10) || 1),
+                            durationYears: distributeDurationYears,
+                            challengeCadence: distributeCadence,
+                            responseDeadline: distributeDeadline,
+                            actorId: (doc && doc.id) ? String(doc.id) : null
+                          };
+                          props.onSendDistributeProposal(peerOfferKey, {
+                            documentId: backendId,
+                            amountSats: amount,
+                            config,
+                            documentName: (doc && doc.name) || name,
+                            document: doc
+                              ? { id: doc.id, sha256: doc.sha256, name: doc.name, mime: doc.mime, size: doc.size }
+                              : null
+                          });
+                        }}
+                      >
+                        <Icon name="send" />
+                        Send hosting offer
+                      </Button>
+                      {typeof props.onSendDistributeProposal !== 'function' && (
+                        <p style={{ marginTop: '0.5em', color: '#888', fontSize: '0.9em' }}>
+                          This session does not expose peer proposals (bridge not ready).
+                        </p>
+                      )}
+                      {peerOfferError && (
+                        <Message negative size="small" style={{ marginTop: '0.75em' }} content={peerOfferError} />
+                      )}
+                      {peerOfferSuccess && (
+                        <Message positive size="small" style={{ marginTop: '0.75em' }} content={peerOfferSuccess} />
+                      )}
+                    </>
+                  )}
+                </Message>
                 {distributeError && (
                   <p style={{ marginTop: '0.75em', color: '#b00' }}>
                     {distributeError}
@@ -1393,7 +1853,7 @@ function DocumentDetail (props) {
                         Open transaction
                       </Link>
                     ) : (
-                      <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                      <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
                         {String(distributeTxid).trim()}
                       </code>
                     )}
@@ -1432,16 +1892,20 @@ function DocumentDetail (props) {
             <Button
               basic
               onClick={() => {
-                if (distributeBusy || distributeBridgeBusy) return;
+                if (distributeBusy || distributeBridgeBusy || peerOfferBusy) return;
                 setDistributeOpen(false);
                 setDistributeError(null);
                 setDistributeInvoice(null);
                 setDistributeTxid('');
                 setDistributeSuccessContractId(null);
                 setDistributeBridgeBusy(false);
+                setPeerOfferKey('');
+                setPeerOfferBusy(false);
+                setPeerOfferError(null);
+                setPeerOfferSuccess(null);
               }}
             >
-              {distributeSuccessContractId ? 'Close' : distributeInvoice ? 'Back' : 'Cancel'}
+              {distributeSuccessContractId ? 'Close' : distributeInvoice ? 'Previous' : 'Cancel'}
             </Button>
             {distributeSuccessContractId ? (
               <Button
@@ -1461,17 +1925,10 @@ function DocumentDetail (props) {
             ) : !distributeInvoice ? (
               <Button
                 primary
+                type="submit"
+                form="fabric-document-distribute-form"
                 loading={distributeBusy}
-                disabled={distributeBusy}
-                onClick={() => {
-                  const node = document && document.activeElement;
-                  if (node && node.form) {
-                    node.form.requestSubmit();
-                  } else {
-                    const form = document.querySelector('form');
-                    if (form) form.requestSubmit();
-                  }
-                }}
+                disabled={distributeBusy || peerOfferBusy}
               >
                 Request invoice
               </Button>
@@ -1523,7 +1980,21 @@ function DocumentDetail (props) {
           <Header icon="bitcoin" content="Purchase document (HTLC)" />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              Pay Bitcoin to unlock this document. The content is locked with sha256(sha256(content)); payment verification unlocks delivery.
+              Pay the on-chain invoice (P2TR HTLC). The hub checks that your transaction pays this address for at least the listed amount, then returns ciphertext you can open; the binding matches the <strong>Paid access</strong> description on this page (Fabric <code>DocumentPublish</code> envelope / <code>CreatePurchaseInvoice</code>).
+            </p>
+            <p style={{ color: '#888', fontSize: '0.9em', marginTop: '0.35em' }}>
+              If <strong>Claim &amp; Unlock</strong> fails immediately after you broadcast, the payment may still be unconfirmed — on regtest use <strong>Generate Block</strong> on{' '}
+              <Link to="/services/bitcoin">Bitcoin</Link>.
+              {uf.bitcoinResources ? (
+                <>
+                  {' '}For a raw L1 proof (txid + address + sats), use{' '}
+                  <Link to="/services/bitcoin/resources">Bitcoin → Resources</Link>.
+                </>
+              ) : (
+                <>
+                  {' '}Enable <strong>Bitcoin — HTTP resources</strong> in Admin for the interactive payment verifier.
+                </>
+              )}
             </p>
             {purchasedContent ? (
               <Segment color="green">
@@ -1541,7 +2012,17 @@ function DocumentDetail (props) {
                 </Button>
               </Segment>
             ) : !purchaseInvoice ? (
-              <p style={{ color: '#888' }}>Requesting invoice…</p>
+              <div style={{ marginTop: '0.5em' }}>
+                {!purchaseError && <p style={{ color: '#888' }}>Requesting invoice…</p>}
+                {purchaseError && (
+                  <>
+                    <Message negative>{purchaseError}</Message>
+                    <p style={{ color: '#666', fontSize: '0.9em', marginTop: '0.75em' }}>
+                      Typical causes: Bitcoin unavailable on the hub, document not published, or no list price / floor. Use <Link to="/services/bitcoin">Bitcoin</Link> and confirm this document shows <strong>Published</strong> with a purchase price.
+                    </p>
+                  </>
+                )}
+              </div>
             ) : (
               <>
                 <Invoice
@@ -1640,9 +2121,9 @@ function DocumentDetail (props) {
           <Message negative style={{ marginTop: '1em' }}>
             <Message.Header>Could not load document</Message.Header>
             <p>{loadError}</p>
-            <Button as={Link} to="/documents" style={{ marginTop: '0.75em' }}>
-              <Icon name="arrow left" />
-              Back to documents
+            <Button as={Link} to="/documents" style={{ marginTop: '0.75em' }} aria-label="Back to documents list">
+              <Icon name="arrow left" aria-hidden="true" />
+              Documents
             </Button>
             <Button
               basic
@@ -1681,7 +2162,12 @@ function DocumentDetail (props) {
             <p style={{ color: '#666' }}>
               {props.hasDocumentKey
                 ? 'Encrypted. Click Unlock above to decrypt and view.'
-                : 'Encrypted. Unlock your identity to view this document.'}
+                : (
+                  <>
+                    Encrypted. Unlock your identity to view this document (
+                    <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or the top-bar <strong>Locked</strong> control).
+                  </>
+                )}
             </p>
           </Segment>
         )}

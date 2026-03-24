@@ -70,7 +70,7 @@ class FrontPage extends React.Component {
             </Button.Group>
           </Container>
         </div>
-        {/* Features Section — in-app anchor for Learn More (Splash router has no /features route). */}
+        {/* Features Section — in-app anchor for Learn More (signed-in app uses /features via HubInterface). */}
         <div className='ui vertical stripe segment' id='front-page-features'>
           <Container text>
             <Header as='h2' style={{ fontSize: '2em', textAlign: 'center' }}>

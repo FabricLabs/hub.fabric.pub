@@ -129,6 +129,13 @@ function PeerDetail (props) {
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
   void hubUiTick;
+  const [networkStatusTick, setNetworkStatusTick] = React.useState(0);
+  React.useEffect(() => {
+    const onNs = () => setNetworkStatusTick((t) => t + 1);
+    window.addEventListener('networkStatusUpdate', onNs);
+    return () => window.removeEventListener('networkStatusUpdate', onNs);
+  }, []);
+  void networkStatusTick;
   const uf = loadHubUiFeatureFlags();
 
   const bridge = props.bridge;
@@ -407,9 +414,10 @@ function PeerDetail (props) {
               as={Link}
               to="/peers"
               title="Back to peers"
+              aria-label="Back to peers list"
             >
-              <Icon name="arrow left" />
-              Back
+              <Icon name="arrow left" aria-hidden="true" />
+              Peers
             </Button>
             <div>
               <div>{title}</div>
@@ -806,7 +814,10 @@ function PeerDetail (props) {
             {!hasUnlockedIdentity && (
               <Message warning size="small" style={{ marginBottom: '0.75em' }}>
                 <Message.Header>Identity locked</Message.Header>
-                Unlock your identity (local signing material) to send Fabric peer chat. Received messages still appear here.
+                <p style={{ margin: 0, lineHeight: 1.45 }}>
+                  Unlock your identity (local signing material) to send Fabric peer chat — top-bar <strong>Locked</strong> / identity menu, or{' '}
+                  <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>. Received messages still appear here.
+                </p>
               </Message>
             )}
             {hasUnlockedIdentity && !isConnected && (
@@ -933,7 +944,7 @@ function PeerDetail (props) {
                         <code>{htlcConfirmFeedback.txid}</code>
                       </Link>
                     ) : (
-                      <code title="Enable Bitcoin explorer in Admin for the tx viewer">{htlcConfirmFeedback.txid}</code>
+                      <code title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{htlcConfirmFeedback.txid}</code>
                     )}
                     <span style={{ color: '#666' }}> — mempool until confirmed on-chain</span>
                   </p>
@@ -1088,7 +1099,7 @@ function PeerDetail (props) {
                                   View funding tx
                                 </Link>
                               ) : (
-                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin for the tx viewer">
+                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
                                   {String(htlcTxids[doc.htlc.settlementId]).trim()}
                                 </code>
                               )

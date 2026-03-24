@@ -8,6 +8,7 @@ const { Button, Icon, Label } = require('semantic-ui-react');
 const ChatInput = require('./ChatInput');
 const { isDelegationSignatureRequestActivity } = require('../functions/messageTypes');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 const MESSAGE_PAGE_SIZE = 10;
 
@@ -304,7 +305,7 @@ class ActivityStreamElement extends React.Component {
       event.detail &&
       typeof event.detail.message === 'string' &&
       event.detail.message.trim()
-    ) || 'Unlock identity to send chat messages.';
+    ) || 'Unlock identity to send chat messages. Use Settings → Fabric identity or the top-bar Locked control.';
 
     this.setState({ chatWarning: message });
 
@@ -372,9 +373,15 @@ class ActivityStreamElement extends React.Component {
       bridgeInstance &&
       typeof bridgeInstance.hasUnlockedIdentity === 'function'
     ) ? bridgeInstance.hasUnlockedIdentity() : true;
-    const chatDisabledReason = canSubmitChat ? null : 'Unlock identity to send chat messages.';
+    const chatDisabledReason = canSubmitChat
+      ? null
+      : 'Unlock identity to send chat messages. Use Settings → Fabric identity or the top-bar Locked control.';
     const streamPreset = this.props.streamPreset || 'default';
     const uf = loadHubUiFeatureFlags();
+    const peerDetailNav = !!(
+      uf.peers &&
+      readHubAdminTokenFromBrowser(this.props.adminToken)
+    );
     const headerTitle = typeof this.props.headerTitle === 'string' && this.props.headerTitle.trim()
       ? this.props.headerTitle.trim()
       : (streamPreset === 'notifications' ? 'Delegation & signing' : 'Activity Stream');
@@ -432,7 +439,7 @@ class ActivityStreamElement extends React.Component {
                               Transaction
                             </Link>
                           ) : (
-                            <code style={{ fontSize: '0.88em', color: '#666' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">
+                            <code style={{ fontSize: '0.88em', color: '#666' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">
                               {String(txid).slice(0, 16)}…
                             </code>
                           )}
@@ -590,7 +597,7 @@ class ActivityStreamElement extends React.Component {
                               {heightLabel}
                             </Link>
                           ) : (
-                            <span title="Enable Bitcoin explorer in Admin to open the block viewer">{heightLabel}</span>
+                            <span title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the block viewer">{heightLabel}</span>
                           )
                           )
                         : <span>{heightLabel}</span>}
@@ -638,7 +645,7 @@ class ActivityStreamElement extends React.Component {
 
                 let targetHref = null;
                 if (typeof target === 'string' && target && !isLikelyBip32ExtendedKey(target)) {
-                  if (uf.peers) targetHref = `/peers/${encodeURIComponent(target)}`;
+                  if (peerDetailNav) targetHref = `/peers/${encodeURIComponent(target)}`;
                 } else if (target && target.type === 'Collection' && target.name === 'documents') {
                   targetHref = '/documents';
                 }
@@ -652,7 +659,7 @@ class ActivityStreamElement extends React.Component {
                   >
                     {actorId && actorId !== 'system'
                       ? (
-                          !isLikelyBip32ExtendedKey(actorId) && uf.peers
+                          !isLikelyBip32ExtendedKey(actorId) && peerDetailNav
                             ? (
                               <Link
                                 to={`/peers/${encodeURIComponent(actorId)}`}
@@ -661,7 +668,7 @@ class ActivityStreamElement extends React.Component {
                                 <strong>@{actorId}</strong>
                               </Link>
                               )
-                            : <strong title={!uf.peers && !isLikelyBip32ExtendedKey(actorId) ? 'Peers disabled — enable Peers in Admin → Feature visibility' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
+                            : <strong title={!peerDetailNav && !isLikelyBip32ExtendedKey(actorId) ? 'Peers detail requires hub admin token in this browser' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
                         )
                       : <strong>@{actorId}</strong>}{' '}
                     {verb}{' '}
@@ -768,6 +775,13 @@ class ActivityStreamElement extends React.Component {
               title={chatDisabledReason || 'Send chat message'}
               disabled={!canSubmitChat}
             />
+          )}
+          {showChatChrome && !canSubmitChat &&
+            ((typeof this.props.onSubmitChat === 'function') ||
+              (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
+            <p style={{ marginTop: '0.35em', marginBottom: 0, fontSize: '0.85em', color: '#666' }}>
+              <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> (or the top-bar <strong>Locked</strong> control) unlocks chat signing.
+            </p>
           )}
         </div>
       </fabric-activity-stream>

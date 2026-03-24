@@ -25,6 +25,7 @@ function DistributeProposalsList (props) {
   const [invoiceByProposal, setInvoiceByProposal] = React.useState({});
   const [contractByProposal, setContractByProposal] = React.useState({});
   const [bondFail, setBondFail] = React.useState(null);
+  const [acceptFail, setAcceptFail] = React.useState(null);
   const pendingAcceptRef = React.useRef({});
 
   React.useEffect(() => {
@@ -89,6 +90,22 @@ function DistributeProposalsList (props) {
     return () => window.removeEventListener('storageContractBondFailed', handler);
   }, [bridgeRef]);
 
+  React.useEffect(() => {
+    const handler = (e) => {
+      const d = e && e.detail;
+      if (!d || !d.proposalId) return;
+      setAcceptingId(null);
+      try {
+        if (d.documentId && pendingAcceptRef.current) {
+          delete pendingAcceptRef.current[d.documentId];
+        }
+      } catch (_) {}
+      setAcceptFail({ proposalId: String(d.proposalId), message: String(d.message || 'Accept failed') });
+    };
+    window.addEventListener('acceptDistributeProposalFailed', handler);
+    return () => window.removeEventListener('acceptDistributeProposalFailed', handler);
+  }, []);
+
   // Listen for distributeInvoiceReady when we accept a proposal (host flow)
   React.useEffect(() => {
     const handler = (e) => {
@@ -134,12 +151,14 @@ function DistributeProposalsList (props) {
     const doc = bridgeInstance.globalState && bridgeInstance.globalState.documents && bridgeInstance.globalState.documents[proposal.documentId];
     const backendId = (doc && doc.sha256) || proposal.documentId;
     pendingAcceptRef.current[backendId] = proposal.id;
+    setAcceptFail((prev) => (prev && prev.proposalId === proposal.id ? null : prev));
     setAcceptingId(proposal.id);
     bridgeInstance.sendAcceptDistributeProposalRequest(proposal);
     setTimeout(() => setAcceptingId(null), 3000);
   };
 
   const handleReject = (proposal) => {
+    setAcceptFail((prev) => (prev && prev.proposalId === proposal.id ? null : prev));
     if (!bridgeRef || !bridgeRef.current) return;
     const gs = bridgeRef.current.globalState || {};
     gs.distributeProposals = gs.distributeProposals || {};
@@ -251,6 +270,16 @@ function DistributeProposalsList (props) {
                 </List.Description>
                 {!hasInvoice ? (
                   <div style={{ marginTop: '0.5em' }}>
+                    {acceptFail && acceptFail.proposalId === proposal.id && (
+                      <Message
+                        negative
+                        size="small"
+                        style={{ marginBottom: '0.65em' }}
+                        onDismiss={() => setAcceptFail((prev) => (prev && prev.proposalId === proposal.id ? null : prev))}
+                      >
+                        {acceptFail.message}
+                      </Message>
+                    )}
                     <Button
                       size="small"
                       primary

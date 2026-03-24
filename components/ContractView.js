@@ -311,7 +311,7 @@ function ContractView (props) {
         >
           <Button basic size="small" as={Link} to="/contracts" aria-label="Back to contracts list">
             <Icon name="arrow left" aria-hidden="true" />
-            Back
+            Contracts
           </Button>
           <Header as="h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
             <Header.Content>
@@ -631,7 +631,7 @@ function ContractView (props) {
                           View anchor tx {anchorTxid.slice(0, 18)}…
                         </Button>
                       ) : (
-                        <code style={{ wordBreak: 'break-all', fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{anchorTxid}</code>
+                        <code style={{ wordBreak: 'break-all', fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{anchorTxid}</code>
                       )}
                     </p>
                   )}
@@ -713,7 +713,7 @@ function ContractView (props) {
                             {String(contract.txid).slice(0, 16)}…
                           </Button>
                         ) : (
-                          <code style={{ wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{contract.txid}</code>
+                          <code style={{ wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{contract.txid}</code>
                         )}
                         {payTxMeta && payTxMeta.loading && (
                           <Label size="small" style={{ marginLeft: '0.5em' }} basic>
@@ -845,7 +845,7 @@ function ContractView (props) {
                             {String(contract.txid).slice(0, 16)}…
                           </Button>
                         ) : (
-                          <code style={{ wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{contract.txid}</code>
+                          <code style={{ wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{contract.txid}</code>
                         )}
                         {payTxMeta && payTxMeta.loading && (
                           <Label size="small" style={{ marginLeft: '0.5em' }} basic>

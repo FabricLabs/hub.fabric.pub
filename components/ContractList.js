@@ -425,7 +425,7 @@ function ContractList () {
         >
           <Button basic size="small" as={Link} to="/" aria-label="Back to home">
             <Icon name="arrow left" aria-hidden="true" />
-            Back
+            Home
           </Button>
           <Header as="h2" id="contracts-page-heading" style={{ margin: 0 }}>
             <Header.Content>Contracts</Header.Content>
@@ -544,7 +544,7 @@ function ContractList () {
                                 Tx
                               </Button>
                             ) : (
-                              <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{c.txid}</code>
+                              <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{c.txid}</code>
                             )}
                           </span>
                         )}
@@ -799,7 +799,7 @@ function ContractList () {
                                   Tx
                                 </Button>
                               ) : (
-                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin explorer in Admin to open the tx viewer">{c.txid}</code>
+                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{c.txid}</code>
                               )}
                             </span>
                           )}

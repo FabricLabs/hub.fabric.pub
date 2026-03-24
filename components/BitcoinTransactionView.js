@@ -85,9 +85,9 @@ function BitcoinTransactionView () {
           role="banner"
         >
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-            <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin home">
+            <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
               <Icon name="arrow left" aria-hidden="true" />
-              Back
+              Explorer
             </Button>
             {TXHASH_REGEX.test(hash) && (
               <Button

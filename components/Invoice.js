@@ -506,7 +506,7 @@ function Invoice (props) {
                       {uf.bitcoinExplorer ? (
                         <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Open transaction</Link>
                       ) : (
-                        <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{effectiveTxid}</code>
+                        <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{effectiveTxid}</code>
                       )}
                     </>
                   );
@@ -519,7 +519,7 @@ function Invoice (props) {
                 {uf.bitcoinExplorer ? (
                   <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>View status</Link>
                 ) : (
-                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{effectiveTxid}</code>
+                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{effectiveTxid}</code>
                 )}
                 {chainStatus.matchedSats != null && (
                   <span style={{ display: 'block', marginTop: '0.35em', color: '#666', fontSize: '0.9em' }}>
@@ -536,7 +536,7 @@ function Invoice (props) {
                 {uf.bitcoinExplorer ? (
                   <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Transaction page</Link>
                 ) : (
-                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{effectiveTxid}</code>
+                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{effectiveTxid}</code>
                 )}
               </p>
             )}
@@ -554,7 +554,7 @@ function Invoice (props) {
                       {txid}
                     </Link>
                   ) : (
-                    <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin explorer in Admin for the tx viewer">{txid}</code>
+                    <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{txid}</code>
                   )}
                 </div>
               ))}

@@ -25,6 +25,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 function TopPanel (props) {
   const location = useLocation();
@@ -47,6 +48,10 @@ function TopPanel (props) {
   const bitcoin = props && props.bitcoin;
   const clientBalance = props && props.clientBalance;
   const clientBalanceLoading = !!(props && props.clientBalanceLoading);
+  const adminTokenProp = props && props.adminToken;
+  const hasHubAdminPeerNav = !!(
+    readHubAdminTokenFromBrowser(adminTokenProp)
+  );
 
   const formatIdentityValue = (value) => {
     if (value == null) return '';
@@ -67,8 +72,8 @@ function TopPanel (props) {
   const isAuthed = hasPrivate;
   const isLockedState = hasLocalIdentity && hasLockedIdentity && !isAuthed;
   const identitySource = localIdentity || auth;
-  /** Browser wallet chip: any loaded identity with an xpub (unlocked, locked, or xpub-only). */
-  const showClientBitcoinBalanceChip = !!(
+  /** True when we can derive a client wallet id and show a live balance in the chip. */
+  const canShowClientBalance = !!(
     identitySource &&
     identitySource.xpub &&
     (hasLocalIdentity || isAuthed)
@@ -106,6 +111,7 @@ function TopPanel (props) {
 
   const [notifList, setNotifList] = React.useState(() => readUiNotifications());
   const [uiTick, setUiTick] = React.useState(0);
+  const balanceHoverRefreshAtRef = React.useRef(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
   const uiFlags = loadHubUiFeatureFlags();
   void uiTick;
@@ -151,7 +157,7 @@ function TopPanel (props) {
             <Icon name="home" />
             Home
           </Button>
-          {uiFlags.peers ? (
+          {uiFlags.peers && hasHubAdminPeerNav ? (
             <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')}>
               <Icon name="sitemap" />
               Peers
@@ -191,10 +197,10 @@ function TopPanel (props) {
             ) : null}
             <Dropdown.Item as={Link} to="/services/bitcoin" icon="bitcoin" text="Bitcoin" />
             {uiFlags.bitcoinPayments ? (
-              <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card" text="Payments" />
+              <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card outline" text="Payments" />
             ) : null}
             {uiFlags.bitcoinInvoices ? (
-              <Dropdown.Item as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" icon="file alternate" text="Invoices" />
+              <Dropdown.Item as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" icon="file alternate outline" text="Invoices" />
             ) : null}
             {uiFlags.bitcoinLightning ? (
               <Dropdown.Item as={Link} to="/services/bitcoin#fabric-bitcoin-lightning" icon="bolt" text="Lightning" />
@@ -264,29 +270,75 @@ function TopPanel (props) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        {showClientBitcoinBalanceChip && (
-          <Label
+        <div style={{ position: 'relative', display: 'inline-block' }}>
+          <Button
             as={Link}
-            to={balanceChipHref}
+            to="/activities"
             size="small"
-            basic
             title={
-              clientBalanceLoading && clientBalance == null
-                ? 'Loading your browser wallet balance…'
-                : 'Your browser wallet balance (this identity / session) — click for Bitcoin'
+              notifList.length
+                ? `${notifList.length} in-app notification(s) — open Activities to manage`
+                : 'Activities — hub log, chat, and in-app notifications'
             }
-            style={{ cursor: 'pointer' }}
+            aria-label="Activities and notifications"
+            primary={active('/activities')}
+            basic={!active('/activities')}
+            style={{
+              border: 'none',
+              boxShadow: 'none',
+              background: 'transparent',
+              padding: '0.45em 0.55em',
+              margin: 0
+            }}
           >
-            <Icon name="bitcoin" color="orange" />
-            {clientBalanceLoading && clientBalance == null
-              ? '…'
-              : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
-                  ? (clientBalance.balanceSats >= 100000000
-                      ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
-                      : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
-                  : '—')}
-          </Label>
-        )}
+            <Icon name="bell outline" />
+          </Button>
+          {notifList.length > 0 && (
+            <Label
+              circular
+              color="red"
+              size="mini"
+              style={{ position: 'absolute', top: -6, right: -6, margin: 0, minWidth: '1.5em' }}
+              title={`${notifList.length} notification(s)`}
+            >
+              {notifList.length > 99 ? '99+' : String(notifList.length)}
+            </Label>
+          )}
+        </div>
+        <Label
+          as={Link}
+          to={balanceChipHref}
+          size="small"
+          basic
+          title={
+            !canShowClientBalance
+              ? 'Open Bitcoin — log in or set a local identity to track your browser wallet balance here'
+              : clientBalanceLoading && clientBalance == null
+                ? 'Loading your browser wallet balance…'
+                : 'Your browser wallet balance (this identity / session) — hover to refresh, click for Bitcoin'
+          }
+          style={{ cursor: 'pointer' }}
+          onMouseEnter={() => {
+            if (!onRefreshBalance || !canShowClientBalance) return;
+            const now = Date.now();
+            if (now - balanceHoverRefreshAtRef.current < 8000) return;
+            balanceHoverRefreshAtRef.current = now;
+            try {
+              onRefreshBalance();
+            } catch (_) {}
+          }}
+        >
+          <Icon name="bitcoin" color="orange" />
+          {!canShowClientBalance
+            ? 'Wallet'
+            : (clientBalanceLoading && clientBalance == null
+                ? '…'
+                : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
+                    ? (clientBalance.balanceSats >= 100000000
+                        ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
+                        : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
+                    : '—'))}
+        </Label>
         {bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
           <Label
             as={Link}
@@ -300,43 +352,6 @@ function TopPanel (props) {
             Mempool {bitcoin.mempoolTxCount}
           </Label>
         )}
-        {uiFlags.activities ? (
-          <div style={{ position: 'relative', display: 'inline-block' }}>
-            <Button
-              as={Link}
-              to="/activities"
-              size="small"
-              title={
-                notifList.length
-                  ? `${notifList.length} in-app notification(s) — open Activities to manage`
-                  : 'Activities — hub log, chat, and in-app notifications'
-              }
-              aria-label="Activities and notifications"
-              primary={active('/activities')}
-              basic={!active('/activities')}
-              style={{
-                border: 'none',
-                boxShadow: 'none',
-                background: 'transparent',
-                padding: '0.45em 0.55em',
-                margin: 0
-              }}
-            >
-              <Icon name="bell outline" />
-            </Button>
-            {notifList.length > 0 && (
-              <Label
-                circular
-                color="red"
-                size="mini"
-                style={{ position: 'absolute', top: -6, right: -6, margin: 0, minWidth: '1.5em' }}
-                title={`${notifList.length} notification(s)`}
-              >
-                {notifList.length > 99 ? '99+' : String(notifList.length)}
-              </Label>
-            )}
-          </div>
-        ) : null}
         {isAuthed ? (
           <div
             onMouseEnter={handleDropdownMouseEnter}
