@@ -81,6 +81,7 @@ const path = require('path');
 const url = require('url');
 const merge = require('lodash.merge');
 
+const { hubSettingsMerge } = require('../functions/hubSettingsMerge');
 const Hub = require('../services/hub');
 const settings = require('../settings/local');
 const { installMaskedConsole } = require('../functions/playnetMaskedConsole');
@@ -871,7 +872,7 @@ describe('Playnet market (simulation + optional mesh)', function () {
           fs.mkdirSync(root, { recursive: true });
           fsRoots.push(root);
 
-          const h = new Hub(merge({}, settings, {
+          const h = new Hub(hubSettingsMerge(settings, {
             port: p2pPorts[i],
             peers: [],
             fs: { path: root },
@@ -1060,7 +1061,7 @@ describe('Playnet market (simulation + optional mesh)', function () {
         const makeBase = (i, root) => {
           if (i === 0) {
             const extra = ['-dnsseed=0'].concat(extraBtcParams);
-            return merge({}, settings, {
+            return hubSettingsMerge(settings, {
               port: fabricPorts[i],
               peers: [],
               fs: { path: root },
@@ -1085,7 +1086,7 @@ describe('Playnet market (simulation + optional mesh)', function () {
               debug: false
             });
           }
-          return merge({}, settings, {
+          return hubSettingsMerge(settings, {
             port: fabricPorts[i],
             peers: [],
             fs: { path: root },

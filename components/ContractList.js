@@ -814,14 +814,16 @@ function ContractList () {
                 </Form.Field>
                 {execBitcoinOn && (
                   <Form.Field>
-                    <label>Registry fee (sats)</label>
+                    <label htmlFor="fabric-exec-registry-fee-sats">Registry fee (sats)</label>
                     <Form.Input
+                      id="fabric-exec-registry-fee-sats"
                       type="number"
                       min={1}
                       step={1}
                       value={execAmountSats}
                       onChange={(e, d) => setExecAmountSats(d.value)}
                       placeholder={String(DEFAULT_REGISTRY_FEE_SATS)}
+                      aria-label="Execution registry invoice amount in satoshis"
                     />
                   </Form.Field>
                 )}

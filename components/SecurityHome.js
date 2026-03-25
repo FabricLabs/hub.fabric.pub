@@ -264,8 +264,15 @@ function SecurityHome () {
         <p id="security-active-sessions-desc" style={{ color: '#666', fontSize: '0.95em' }}>
           Loopback clients (including this page when served from localhost) can list all open delegation tokens. Use <strong>Destroy session</strong> to revoke a token; the browser must log in again.
         </p>
-        <Button size="small" basic onClick={() => void refreshSessions()} disabled={busy}>
-          <Icon name="refresh" />
+        <Button
+          size="small"
+          basic
+          type="button"
+          onClick={() => void refreshSessions()}
+          disabled={busy}
+          aria-label="Refresh delegation sessions list"
+        >
+          <Icon name="refresh" aria-hidden="true" />
           Refresh list
         </Button>
         <Table celled compact unstackable style={{ marginTop: '1em' }}>

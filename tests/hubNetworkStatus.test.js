@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const Message = require('@fabric/core/types/message');
-const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 
 describe('hubNetworkStatus', function () {
   it('accepts typical GetNetworkStatus payloads', function () {
@@ -21,5 +21,19 @@ describe('hubNetworkStatus', function () {
     const m = Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: ['00', { network: { address: 'x' } }] })]);
     assert.strictEqual(m.type, 'JSON_CALL');
     assert.strictEqual(m.friendlyType, 'JSONCall');
+  });
+
+  it('bridgeWebSocketLoadingHint reflects WebSocket state', function () {
+    assert.strictEqual(bridgeWebSocketLoadingHint(null), null);
+    assert.strictEqual(bridgeWebSocketLoadingHint({}), null);
+    assert.ok(String(bridgeWebSocketLoadingHint({
+      getConnectionStatus: () => ({ websocket: { connected: true, readyState: 1 } })
+    })).includes('WebSocket connected'));
+    assert.ok(String(bridgeWebSocketLoadingHint({
+      getConnectionStatus: () => ({ websocket: { connected: false, readyState: 0 } })
+    })).includes('Opening WebSocket'));
+    assert.ok(String(bridgeWebSocketLoadingHint({
+      getConnectionStatus: () => ({ websocket: { connected: false, readyState: 3 } })
+    })).includes('Reconnecting'));
   });
 });

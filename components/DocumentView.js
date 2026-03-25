@@ -29,6 +29,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 
 const DEFAULT_PUBLISH_PRICE_SATS = '25';
 const TXID_HEX_64 = /^[a-fA-F0-9]{64}$/;
@@ -544,7 +545,6 @@ function DocumentDetail (props) {
     return () => clearTimeout(t);
   }, [purchaseOpen, purchaseInvoice, purchasedContent]);
 
-  const [, setNetworkTick] = React.useState(0);
   React.useEffect(() => {
     const handler = (event) => {
       const gs = event && event.detail && event.detail.globalState;
@@ -563,11 +563,6 @@ function DocumentDetail (props) {
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
   }, [id]);
-  React.useEffect(() => {
-    const handler = () => setNetworkTick((n) => n + 1);
-    window.addEventListener('networkStatusUpdate', handler);
-    return () => window.removeEventListener('networkStatusUpdate', handler);
-  }, []);
 
   // On mount, hydrate from existing Bridge globalState so locally-added documents
   // are immediately visible without waiting for another event.
@@ -591,7 +586,9 @@ function DocumentDetail (props) {
   // Stop "publishing…" state once the document has a published timestamp,
   // or after a safety timeout if the hub reports an error.
   React.useEffect(() => {
-    const pub = doc?.published || (props.bridgeRef?.current?.networkStatus?.publishedDocuments?.[doc?.id] || (doc?.sha256 && props.bridgeRef?.current?.networkStatus?.publishedDocuments?.[doc?.sha256]));
+    const bridge = props.bridgeRef && props.bridgeRef.current;
+    const publishedDocs = bridge && (bridge.networkStatus?.publishedDocuments || bridge.lastNetworkStatus?.publishedDocuments);
+    const pub = !!(doc && (doc.published || (publishedDocs && (publishedDocs[doc.id] || (doc.sha256 && publishedDocs[doc.sha256])))));
     if (doc && pub) {
       setIsPublishing(false);
       setPublishError(null);
@@ -603,7 +600,48 @@ function DocumentDetail (props) {
       setPublishError((prev) => prev || 'No publish confirmation from the hub yet. Check your connection or try again.');
     }, 10000);
     return () => clearTimeout(timeout);
-  }, [doc, doc?.published, doc?.id, doc?.sha256, isPublishing, props.bridgeRef]);
+  }, [doc, doc?.published, doc?.id, doc?.sha256, isPublishing, props.bridgeRef, peerListTick]);
+
+  // If the WebSocket drops the publish result, resync catalog + document row over HTTP (same-origin RPC).
+  React.useEffect(() => {
+    if (!isPublishing || !doc) return undefined;
+    const backendId = String(doc.sha256 || doc.id || id || '').trim();
+    if (!backendId) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      const bridge = props.bridgeRef && props.bridgeRef.current;
+      const origin = typeof window !== 'undefined' && window.location && window.location.origin
+        ? window.location.origin
+        : '';
+      if (!bridge || !origin) return;
+      (async () => {
+        try {
+          await hydrateHubNetworkStatusViaHttp(bridge, origin);
+        } catch (_) {}
+        if (cancelled) return;
+        try {
+          const r = await fetch(`${origin}/services/rpc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: Date.now(),
+              method: 'GetDocument',
+              params: [backendId]
+            })
+          });
+          const body = await r.json().catch(() => null);
+          if (cancelled || !body || body.result == null || typeof bridge.mergeGetDocumentRpcResult !== 'function') return;
+          bridge.mergeGetDocumentRpcResult(body.result);
+        } catch (_) {}
+      })();
+    }, 3500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isPublishing, doc, id, props.bridgeRef]);
 
   React.useEffect(() => {
     const handler = (e) => {
@@ -676,6 +714,8 @@ function DocumentDetail (props) {
     || null;
   const bridgeForWire = props.bridgeRef && props.bridgeRef.current;
   const distributeModalNoLocalWire = !!(bridgeForWire && typeof bridgeForWire.hasLocalWireSigningKey === 'function' && !bridgeForWire.hasLocalWireSigningKey());
+  /** Publish / pay-to-distribute require an unlocked Fabric identity so JSON-RPC is Schnorr-signed and local bytes are available. */
+  const needsIdentityUnlock = !props.hasDocumentKey;
   const authorDocId = doc && (doc.lineage || doc.id) ? String(doc.lineage || doc.id) : '';
 
   const fabricPeersForOffer = React.useMemo(() => {
@@ -929,6 +969,10 @@ function DocumentDetail (props) {
 
   const handlePayDistributeFromBridge = React.useCallback(async () => {
     if (!distributeInvoice || !id) return;
+    if (!props.hasDocumentKey) {
+      setDistributeError('Unlock your Fabric identity first — distribute bonding from this browser requires an unlocked session.');
+      return;
+    }
     const token = getAdminTokenFromProps(props);
     if (!token) {
       setDistributeError('Admin token required to pay from the hub wallet.');
@@ -980,11 +1024,16 @@ function DocumentDetail (props) {
     distributeDeadline,
     props.onDistributeDocument,
     props.adminToken,
+    props.hasDocumentKey,
     upstreamSettings
   ]);
 
   const handlePayPurchaseFromBridge = React.useCallback(async () => {
     if (!purchaseInvoice || !id) return;
+    if (!props.hasDocumentKey) {
+      setPurchaseError('Unlock your Fabric identity first — purchase bonding from this browser requires an unlocked session.');
+      return;
+    }
     const token = getAdminTokenFromProps(props);
     if (!token) {
       setPurchaseError('Admin token required to pay from the hub wallet.');
@@ -1027,7 +1076,7 @@ function DocumentDetail (props) {
       setPurchaseBridgeBusy(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [purchaseInvoice, id, props.onClaimPurchase, props.adminToken, upstreamSettings]);
+  }, [purchaseInvoice, id, props.onClaimPurchase, props.adminToken, props.hasDocumentKey, upstreamSettings]);
 
   return (
     <fabric-document-detail class='fade-in'>
@@ -1273,15 +1322,17 @@ function DocumentDetail (props) {
                   </Button>
                 </div>
               )}
-              {needsIdentityKeyForEncryptedBody && (
+              {needsIdentityUnlock && (
                 <Message info size="small" style={{ marginTop: '0.75em' }}>
-                  <Message.Header>Identity key locked</Message.Header>
+                  <Message.Header>Unlock Fabric identity</Message.Header>
                   <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
-                    Unlock your private key from the top bar (the identity control shows <strong>Locked</strong> until you enter your password), or open{' '}
+                    Use the top bar identity control (it shows <strong>Locked</strong> until you enter your password) or{' '}
                     <Link to="/settings">Settings</Link>
-                    {' '}and use the <strong>Fabric identity</strong> card. Then you can publish, download, or preview encrypted content.
-                    A listed <strong>Purchase</strong> can still be paid from an external wallet; &quot;Pay from hub wallet&quot; needs an admin token.{' '}
-                    <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> ties the same identity to L1 addresses.
+                    {' → '}
+                    <strong>Fabric identity</strong>. <strong>Publish</strong>, <strong>Purchase</strong> (HTLC invoice/claim), and <strong>Distribute</strong> only run while unlocked so hub requests are Schnorr-signed and document bytes are available.
+                    Pay-to-distribute and hub-wallet <strong>Pay Now</strong> use <strong>real Bitcoin transactions</strong>: <strong>Pay Now</strong> and <strong>Pay from hub wallet</strong> broadcast via this hub&apos;s <code>bitcoind</code> (admin token where required); you can also pay from any external wallet and paste the txid.
+                    {needsIdentityKeyForEncryptedBody ? ' Encrypted documents also need unlock to preview or download.' : ''}{' '}
+                    <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> ties this identity to L1 receive/send paths.
                   </p>
                   {typeof props.onRequestUnlock === 'function' && (
                     <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
@@ -1319,10 +1370,10 @@ function DocumentDetail (props) {
                   const price = parseInt(publishPriceSats, 10);
                   props.onPublishDocument(id, price > 0 ? { purchasePriceSats: price } : undefined);
                 }}
-                disabled={!doc || isPublishing || !!isPublishedInStore || needsIdentityKeyForEncryptedBody}
+                disabled={!doc || isPublishing || !!isPublishedInStore || needsIdentityUnlock}
                 title={
-                  needsIdentityKeyForEncryptedBody
-                    ? 'Unlock your identity to publish encrypted documents'
+                  needsIdentityUnlock
+                    ? 'Unlock your identity to publish (signed hub request)'
                     : (doc && isPublishedInStore ? 'Document is published' : 'Publish this document ID to the hub global store')
                 }
               >
@@ -1340,10 +1391,10 @@ function DocumentDetail (props) {
                   value={publishPriceSats}
                   onChange={(e) => setPublishPriceSats(e.target.value)}
                   style={{ width: 110 }}
-                  disabled={needsIdentityKeyForEncryptedBody}
+                  disabled={needsIdentityUnlock}
                   title={
-                    needsIdentityKeyForEncryptedBody
-                      ? 'Unlock identity to set purchase price when publishing encrypted content'
+                    needsIdentityUnlock
+                      ? 'Unlock identity to set list price when publishing'
                       : `List price when publishing (default ${DEFAULT_PUBLISH_PRICE_SATS} sats; HTLC purchase)`
                   }
                 />
@@ -1354,7 +1405,9 @@ function DocumentDetail (props) {
                   color="orange"
                   icon
                   labelPosition="left"
+                  disabled={needsIdentityUnlock}
                   onClick={() => {
+                    if (needsIdentityUnlock) return;
                     setPurchaseOpen(true);
                     setPurchaseInvoice(null);
                     setPurchaseTxid('');
@@ -1364,7 +1417,11 @@ function DocumentDetail (props) {
                       props.onRequestPurchaseInvoice(id);
                     }
                   }}
-                  title="Purchase this document (HTLC: pay to unlock with sha256(sha256(content)))"
+                  title={
+                    needsIdentityUnlock
+                      ? 'Unlock identity to request a purchase invoice (signed hub request)'
+                      : 'Purchase this document (HTLC: pay to unlock with sha256(sha256(content)))'
+                  }
                 >
                   <Icon name="bitcoin" />
                   Purchase ({formatSatsDisplay(docPurchasePriceSats)} sats)
@@ -1386,8 +1443,12 @@ function DocumentDetail (props) {
                     setDistributeOpen(true);
                   }
                 }}
-                disabled={!id}
-                title={storageContractId ? 'View storage contract' : 'Distribute this document across other nodes'}
+                disabled={!id || needsIdentityUnlock}
+                title={
+                  needsIdentityUnlock
+                    ? 'Unlock your identity to start pay-to-distribute (signed requests, real L1 bond)'
+                    : (storageContractId ? 'View storage contract' : 'Distribute this document across other nodes')
+                }
               >
                 <Icon name={storageContractId ? 'cloud' : 'cloud upload'} />
                 {storageContractId ? 'Distributed' : 'Distribute'}
@@ -1412,10 +1473,16 @@ function DocumentDetail (props) {
                   icon
                   labelPosition="left"
                   onClick={() => {
+                    if (needsIdentityUnlock) return;
                     setTombstoneError(null);
                     setTombstoneOpen(true);
                   }}
-                  title="Remove this document from the hub published catalog (requires admin token)"
+                  disabled={needsIdentityUnlock}
+                  title={
+                    needsIdentityUnlock
+                      ? 'Unlock your identity before removing this document from the hub catalog'
+                      : 'Remove this document from the hub published catalog (requires admin token)'
+                  }
                 >
                   <Icon name="trash" />
                   Unpublish
@@ -1553,8 +1620,17 @@ function DocumentDetail (props) {
             <p style={{ color: '#666' }}>
               Pay Bitcoin (L1) to have other nodes store this document under a long-term contract.
               By default, storage is requested for 4 years with periodic random challenges.
+              Payment is a <strong>real on-chain transaction</strong> to the invoice address; the hub verifies it before recording the storage contract.
             </p>
-            {distributeModalNoLocalWire && (
+            {needsIdentityUnlock && (
+              <Message warning size="small" style={{ marginBottom: '1em' }}>
+                <Message.Header>Identity locked</Message.Header>
+                <p style={{ margin: '0.35em 0 0', color: '#333' }}>
+                  Close this dialog, unlock your identity in the top bar, then open Distribute again.
+                </p>
+              </Message>
+            )}
+            {!!props.hasDocumentKey && distributeModalNoLocalWire && (
               <Message warning size="small" style={{ marginBottom: '1em' }}>
                 <Message.Header>No local signing key in this browser</Message.Header>
                 <p style={{ margin: '0.35em 0 0', color: '#333' }}>
@@ -1614,7 +1690,7 @@ function DocumentDetail (props) {
                 id="fabric-document-distribute-form"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!id || distributeBusy || peerOfferBusy) return;
+                  if (!id || distributeBusy || peerOfferBusy || needsIdentityUnlock) return;
                   const amount = parseInt(distributeAmountSats, 10);
                   if (!Number.isFinite(amount) || amount <= 0) {
                     setDistributeError('Enter a positive amount in sats.');
@@ -1733,6 +1809,7 @@ function DocumentDetail (props) {
                           peerOfferBusy ||
                           distributeBusy ||
                           distributeBridgeBusy ||
+                          needsIdentityUnlock ||
                           !peerOfferKey ||
                           typeof props.onSendDistributeProposal !== 'function'
                         }
@@ -1797,6 +1874,8 @@ function DocumentDetail (props) {
                   label="Storage contract payment"
                   identity={props.identity || {}}
                   compact
+                  requireUnlockedIdentityForHubPay
+                  identityUnlocked={!!props.hasDocumentKey}
                   onPaid={(txid) => {
                     setDistributeTxid(txid);
                     if (txid && id && typeof props.onDistributeDocument === 'function') {
@@ -1824,9 +1903,14 @@ function DocumentDetail (props) {
                       type="button"
                       color="orange"
                       loading={distributeBridgeBusy}
-                      disabled={distributeBridgeBusy || distributeBusy || !!distributeSuccessContractId}
+                      disabled={
+                        distributeBridgeBusy ||
+                        distributeBusy ||
+                        !!distributeSuccessContractId ||
+                        needsIdentityUnlock
+                      }
                       onClick={handlePayDistributeFromBridge}
-                      title="POST /services/bitcoin sendpayment — exact invoice amount to the distribute address (admin token)"
+                      title="POST /services/bitcoin sendpayment — hub bitcoind broadcasts; admin token + unlocked identity required in this browser"
                     >
                       <Icon name="server" />
                       Pay from hub wallet & bond
@@ -1928,7 +2012,8 @@ function DocumentDetail (props) {
                 type="submit"
                 form="fabric-document-distribute-form"
                 loading={distributeBusy}
-                disabled={distributeBusy || peerOfferBusy}
+                disabled={distributeBusy || peerOfferBusy || needsIdentityUnlock}
+                title={needsIdentityUnlock ? 'Unlock identity to request a distribute invoice' : undefined}
               >
                 Request invoice
               </Button>
@@ -1980,8 +2065,13 @@ function DocumentDetail (props) {
           <Header icon="bitcoin" content="Purchase document (HTLC)" />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              Pay the on-chain invoice (P2TR HTLC). The hub checks that your transaction pays this address for at least the listed amount, then returns ciphertext you can open; the binding matches the <strong>Paid access</strong> description on this page (Fabric <code>DocumentPublish</code> envelope / <code>CreatePurchaseInvoice</code>).
+              Pay the on-chain invoice (P2TR HTLC). The hub checks that your transaction pays this address for at least the listed amount, then returns ciphertext you can open; the binding matches the <strong>Paid access</strong> description on this page (Fabric <code>DocumentPublish</code> envelope / <code>CreatePurchaseInvoice</code>). Payment is a <strong>real L1 broadcast</strong> (mempool then confirmations).
             </p>
+            {needsIdentityUnlock && (
+              <Message warning size="small" style={{ marginTop: '0.75em' }}>
+                Unlock your identity to complete this flow from this browser.
+              </Message>
+            )}
             <p style={{ color: '#888', fontSize: '0.9em', marginTop: '0.35em' }}>
               If <strong>Claim &amp; Unlock</strong> fails immediately after you broadcast, the payment may still be unconfirmed — on regtest use <strong>Generate Block</strong> on{' '}
               <Link to="/services/bitcoin">Bitcoin</Link>.
@@ -2032,6 +2122,8 @@ function DocumentDetail (props) {
                   label="Document purchase (HTLC)"
                   identity={props.identity || {}}
                   compact
+                  requireUnlockedIdentityForHubPay
+                  identityUnlocked={!!props.hasDocumentKey}
                   onPaid={(txid) => {
                     setPurchaseTxid(txid);
                     if (txid && id && typeof props.onClaimPurchase === 'function') {
@@ -2056,9 +2148,14 @@ function DocumentDetail (props) {
                       type="button"
                       color="orange"
                       loading={purchaseBridgeBusy}
-                      disabled={purchaseBridgeBusy || purchaseBusy || !!purchasedContent}
+                      disabled={
+                        purchaseBridgeBusy ||
+                        purchaseBusy ||
+                        !!purchasedContent ||
+                        needsIdentityUnlock
+                      }
                       onClick={handlePayPurchaseFromBridge}
-                      title="POST /services/bitcoin sendpayment — invoice amount to the purchase address (admin token)"
+                      title="POST /services/bitcoin sendpayment — hub bitcoind broadcasts; admin token + unlocked identity in this browser"
                     >
                       <Icon name="server" />
                       Pay from hub wallet & unlock

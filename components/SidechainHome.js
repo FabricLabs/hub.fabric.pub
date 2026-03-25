@@ -843,24 +843,35 @@ class SidechainHome extends React.Component {
             Without validators configured, use your admin token from Settings; it is read from the same store as other admin flows.
           </p>
           <Form>
-            <p style={{ margin: '0 0 0.5em', color: '#666', fontSize: '0.9em' }}>
+            <p style={{ margin: '0 0 0.5em', color: '#666', fontSize: '0.9em' }} id="fabric-sidechain-witness-intro">
               <strong>Federation witness</strong> — optional when the hub is admin-only; <strong>required</strong> when validators are configured.
               Used for <strong>Apply patch</strong> and <strong>every</strong> document-offer / L1 escrow sidechain action below (same <code>SubmitSidechainStatePatch</code> verification). Example:{' '}
               <code style={{ fontSize: '11px' }}>{'{"version":1,"signatures":{"03…":"<schnorr sig hex>"}}'}</code>
             </p>
+            <label htmlFor="fabric-sidechain-federation-witness" style={{ display: 'block', marginBottom: '0.35em', fontWeight: 600 }}>
+              Federation witness JSON
+            </label>
             <TextArea
+              id="fabric-sidechain-federation-witness"
               rows={5}
               value={this.state.federationWitnessJson}
               onChange={(e, { value }) => this.setState({ federationWitnessJson: value })}
               placeholder='{"version":1,"signatures":{}}'
               style={{ fontFamily: 'monospace', fontSize: '12px' }}
+              aria-label="Federation witness JSON for SubmitSidechainStatePatch"
+              aria-describedby="fabric-sidechain-witness-intro"
             />
-            <Header as="h4" style={{ marginTop: '1.25em', marginBottom: '0.5em' }}>Raw patch (RFC6902)</Header>
+            <Header as="h4" style={{ marginTop: '1.25em', marginBottom: '0.5em' }} id="fabric-sidechain-raw-patch-heading">
+              Raw patch (RFC6902)
+            </Header>
             <TextArea
+              id="fabric-sidechain-patch-json"
               rows={12}
               value={patchJson}
               onChange={(e, { value }) => this.setState({ patchJson: value })}
               style={{ fontFamily: 'monospace', fontSize: '12px' }}
+              aria-label="RFC6902 JSON Patch operations for sidechain content"
+              aria-labelledby="fabric-sidechain-raw-patch-heading"
             />
             <Button style={{ marginTop: '0.75em' }} primary onClick={() => this._submitRawPatch()}>
               Apply patch

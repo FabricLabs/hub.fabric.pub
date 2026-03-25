@@ -19,6 +19,30 @@ const {
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 
 /**
+ * Same-origin only: browse JSON is for the local Hub, not arbitrary URLs.
+ */
+function normalizeBrowseJsonPath (raw) {
+  let path = String(raw || '').trim() || '/services/bitcoin';
+  if (path.startsWith('//')) {
+    throw new Error('Use a path starting with / (protocol-relative URLs are not allowed).');
+  }
+  if (/^https?:\/\//i.test(path)) {
+    let u;
+    try {
+      u = new URL(path);
+    } catch (_) {
+      throw new Error('Invalid URL.');
+    }
+    if (typeof window !== 'undefined' && window.location && u.origin !== window.location.origin) {
+      throw new Error('Cross-origin fetch is disabled. Use a path on this hub (e.g. /services/bitcoin).');
+    }
+    return u.pathname + u.search + u.hash;
+  }
+  if (!path.startsWith('/')) return `/${path}`;
+  return path;
+}
+
+/**
  * Operator view: canonical Bitcoin HTTP resources (GET) + L1 payment verification form.
  */
 class BitcoinResourcesHome extends React.Component {
@@ -97,8 +121,17 @@ class BitcoinResourcesHome extends React.Component {
   }
 
   async handleFetchJson () {
-    let path = String(this.state.fetchPath || '').trim() || '/services/bitcoin';
-    if (!path.startsWith('/') && !path.startsWith('http')) path = `/${path}`;
+    let path;
+    try {
+      path = normalizeBrowseJsonPath(this.state.fetchPath);
+    } catch (err) {
+      this.setState({
+        fetchLoading: false,
+        fetchResult: null,
+        fetchError: err && err.message ? err.message : String(err)
+      });
+      return;
+    }
 
     this.setState({ fetchLoading: true, fetchResult: null, fetchError: null });
     try {
@@ -308,7 +341,9 @@ class BitcoinResourcesHome extends React.Component {
         <Segment>
           <section aria-labelledby="btc-resources-fetch-h3" aria-describedby="btc-resources-fetch-desc">
           <Header as="h3" id="btc-resources-fetch-h3">Browse JSON</Header>
-          <p id="btc-resources-fetch-desc" style={{ color: '#666' }}>GET a path relative to your explorer base (default <code>/services/bitcoin</code>).</p>
+          <p id="btc-resources-fetch-desc" style={{ color: '#666' }}>
+            GET a path on <strong>this hub</strong> (default <code>/services/bitcoin</code>). Cross-origin and protocol-relative URLs are rejected.
+          </p>
           <Form onSubmit={(e) => { e.preventDefault(); this.handleFetchJson(); }}>
             <Form.Input
               label='Path'

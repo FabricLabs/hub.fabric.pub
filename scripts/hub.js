@@ -19,6 +19,7 @@ const defaultBitcoinRpcPort = (network) => {
 const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
+const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const _hubDebugLog = installHubDebugFileLog({ userDataRoot });
 if (_hubDebugLog.active && _hubDebugLog.filePath) {
   console.log('[FABRIC:HUB] ERROR/WARN mirror →', _hubDebugLog.filePath, '(FABRIC_HUB_DEBUG_LOG=0 off, =all unfiltered)');
@@ -87,7 +88,7 @@ try {
     // LAN / shared HTTP: initial bind only when env does not override (runtime toggles use hub rebind).
     if (setup.HTTP_SHARED_MODE !== undefined && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
       const shared = parseVal(setup.HTTP_SHARED_MODE);
-      const bindAll = shared === true || shared === 'true';
+      const bindAll = isHttpSharedModeEnabled(shared);
       settings = {
         ...settings,
         http: {
@@ -99,6 +100,24 @@ try {
   }
 } catch (e) {
   // Ignore; use defaults from local.js
+}
+
+// Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.json.
+// Without this, settings/local.js default interface would be 0.0.0.0. CLI/dev without FABRIC_HUB_USER_DATA keeps LAN-open default.
+if (process.env.FABRIC_HUB_USER_DATA && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
+  let sharedDefined = false;
+  try {
+    if (fs.existsSync(setupPath)) {
+      const disk = JSON.parse(fs.readFileSync(setupPath, 'utf8'));
+      sharedDefined = disk && Object.prototype.hasOwnProperty.call(disk, 'HTTP_SHARED_MODE');
+    }
+  } catch (_) {}
+  if (!sharedDefined) {
+    settings = {
+      ...settings,
+      http: { ...(settings.http || {}), interface: '127.0.0.1' }
+    };
+  }
 }
 
 // Electron / packaged desktop: writable stores + absolute bitcoind datadir under userData

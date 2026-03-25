@@ -41,6 +41,8 @@ const BITCOIN_ORANGE = '#F7931A';
  * @param {function} [props.onPaid] - Callback on success: (txid) => void
  * @param {function} [props.onError] - Callback on error: (error) => void
  * @param {boolean} [props.compact] - Use compact layout (e.g. inline in modals)
+ * @param {boolean} [props.requireUnlockedIdentityForHubPay] - When true, disable “Pay Now” until `identityUnlocked` (hub still broadcasts a real tx; operator session must be unlocked).
+ * @param {boolean} [props.identityUnlocked] - Paired with `requireUnlockedIdentityForHubPay` (default true when not required).
  */
 function Invoice (props) {
   const [hubUiTick, setHubUiTick] = React.useState(0);
@@ -60,7 +62,9 @@ function Invoice (props) {
     onPaid,
     onError,
     compact = false,
-    adminToken: adminTokenProp
+    adminToken: adminTokenProp,
+    requireUnlockedIdentityForHubPay = false,
+    identityUnlocked = true
   } = props;
 
   const [paying, setPaying] = React.useState(false);
@@ -135,8 +139,14 @@ function Invoice (props) {
     }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
   }, [paymentUri, compact]);
 
+  const hubPayBlockedByIdentity = !!(requireUnlockedIdentityForHubPay && !identityUnlocked);
+
   const handlePay = React.useCallback(async () => {
     if (!address || !amountSats || amountSats <= 0) return;
+    if (requireUnlockedIdentityForHubPay && !identityUnlocked) {
+      setError('Unlock your Fabric identity (top bar) before Pay Now — this session must be unlocked for distribute/publish flows.');
+      return;
+    }
     setPaying(true);
     setError(null);
     setResult(null);
@@ -174,7 +184,7 @@ function Invoice (props) {
     } finally {
       setPaying(false);
     }
-  }, [address, amountSats, memo, label, upstream, wallet, onPaid, onError, refreshChainStatus, adminTokenProp]);
+  }, [address, amountSats, memo, label, upstream, wallet, onPaid, onError, refreshChainStatus, adminTokenProp, requireUnlockedIdentityForHubPay, identityUnlocked]);
 
   const isMainnet = String(network || '').toLowerCase() === 'mainnet';
 
@@ -464,6 +474,12 @@ function Invoice (props) {
           </div>
         )}
 
+        {!isPaid && !isMainnet && hubPayBlockedByIdentity && (
+          <Message info size="small" style={{ marginTop: '1em', textAlign: 'left' }}>
+            Unlock your identity in the top bar to use <strong>Pay Now</strong> here. You can still pay from any external wallet and paste the txid below — that creates a real on-chain payment verified by the hub.
+          </Message>
+        )}
+
         {!isPaid && !isMainnet && (
           <Button
             type="button"
@@ -471,9 +487,9 @@ function Invoice (props) {
             style={{ marginTop: '1em', background: BITCOIN_ORANGE }}
             icon="bitcoin"
             content="Pay Now"
-            aria-label="Pay invoice via hub Payments API (admin token required)"
+            aria-label="Pay invoice via hub Payments API (admin token required; hub bitcoind broadcasts)"
             loading={paying}
-            disabled={paying || verifying}
+            disabled={paying || verifying || hubPayBlockedByIdentity}
             onClick={handlePay}
           />
         )}

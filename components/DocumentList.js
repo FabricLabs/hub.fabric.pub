@@ -25,7 +25,8 @@ const { sha256: sha256Hash } = require('@noble/hashes/sha256');
 const Actor = require('@fabric/core/types/actor');
 const DistributeProposalsList = require('./DistributeProposalsList');
 const { formatSatsDisplay } = require('../functions/formatSats');
-const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
+const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 
 function shortHexId (value) {
   const s = String(value || '');
@@ -104,6 +105,10 @@ function DocumentsPage (props) {
     : (publishedRaw && typeof publishedRaw === 'object' ? publishedRaw : {});
   const fabricPeerId = networkStatus && networkStatus.fabricPeerId ? String(networkStatus.fabricPeerId) : null;
 
+  const documentsLoadingSubtext = !current
+    ? 'Connecting to the hub (WebSocket bridge)…'
+    : (bridgeWebSocketLoadingHint(current) || 'Waiting for network status from the hub (published catalog).');
+
   React.useEffect(() => {
     const handler = (event) => {
       const gs = event && event.detail && event.detail.globalState;
@@ -157,11 +162,7 @@ function DocumentsPage (props) {
       const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
       const parseRpc = (r) => r.json().catch(() => null);
       Promise.all([
-        fetch(`${origin}/services/rpc`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'GetNetworkStatus', params: [] })
-        }).then(async (r) => ({ ok: r.ok, status: r.status, body: await parseRpc(r) })),
+        hydrateHubNetworkStatusViaHttp(bridge, origin).then((applied) => ({ appliedViaHydrate: applied })),
         fetch(`${origin}/services/rpc`, {
           method: 'POST',
           headers,
@@ -170,39 +171,28 @@ function DocumentsPage (props) {
       ])
         .then(([ns, list]) => {
           if (cancelled) return;
-          const nsBody = ns && ns.body;
+          const nsApplied = !!(ns && ns.appliedViaHydrate);
           const listBody = list && list.body;
-          let nsApplied = false;
           let listApplied = false;
-          if (nsBody && nsBody.result && typeof bridge.applyHubNetworkStatusPayload === 'function') {
-            nsApplied = !!bridge.applyHubNetworkStatusPayload(nsBody.result);
-          }
           if (listBody && listBody.result && typeof bridge.mergeListDocumentsRpcResult === 'function') {
             listApplied = !!bridge.mergeListDocumentsRpcResult(listBody.result);
           }
-          const nsErr = nsBody && nsBody.error;
           const listErr = listBody && listBody.error;
-          const httpBad = (!ns || !ns.ok) || (!list || !list.ok);
+          const httpBad = !list || !list.ok;
           const parts = [];
-          if (nsErr) parts.push(`Network status: ${jsonRpcErrText(nsErr)}`);
           if (listErr) parts.push(`Document list: ${jsonRpcErrText(listErr)}`);
-          if (!nsErr && ns && !ns.ok) parts.push(`Network status: HTTP ${ns.status}`);
           if (!listErr && list && !list.ok) parts.push(`Document list: HTTP ${list.status}`);
+          if (!nsApplied && !listApplied) {
+            parts.push('Network status: could not hydrate via HTTP (hub down or unexpected GetNetworkStatus shape)');
+          }
           if (parts.length) {
             setCatalogHttpFallbackError(parts.join(' · '));
-          } else if (
-            !nsErr && !listErr &&
-            nsBody && listBody &&
-            !nsApplied && !listApplied &&
-            nsBody.result == null && listBody.result == null
-          ) {
+          } else if (!listErr && listBody && !listApplied && listBody.result == null) {
             setCatalogHttpFallbackError(
               httpBad
                 ? 'Hub did not return JSON-RPC results for catalog hydration. Check /services/rpc.'
-                : 'Hub returned empty responses for network status and document list.'
+                : 'Hub returned empty responses for the document list.'
             );
-          } else if (!nsErr && !listErr && !nsApplied && nsBody && nsBody.result != null) {
-            setCatalogHttpFallbackError('Network status response could not be applied (unexpected shape).');
           } else if (!listErr && !listApplied && listBody && listBody.result != null) {
             setCatalogHttpFallbackError('Document list response could not be merged (unexpected shape).');
           }
@@ -528,9 +518,7 @@ function DocumentsPage (props) {
                 <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
                   Loading documents…
                   <Header.Subheader>
-                    {current
-                      ? 'Waiting for network status from the hub (published catalog).'
-                      : 'Connecting to the hub (WebSocket bridge)…'}
+                    {documentsLoadingSubtext}
                   </Header.Subheader>
                 </Header>
               </div>

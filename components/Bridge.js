@@ -29,6 +29,10 @@ const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput } = require(
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const {
+  needsCreateDocumentBeforePublish,
+  mergePublishedDocumentsFromHubStatus
+} = require('../functions/documentPublishSync');
 const { safeIdentityErr, safeDebugStatePreview, safeUrlForLog } = require('../functions/fabricSafeLog');
 
 const IDENTITY_UI_UNLOCK_SUFFIX = ' Use Settings → Fabric identity or the top-bar Locked control.';
@@ -985,14 +989,39 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Find a document row when the route id may differ from the map key (opaque id vs content hash).
+   * @param {string} logicalId
+   * @returns {{ key: string, doc: object }|null}
+   */
+  _resolveDocumentRow (logicalId) {
+    if (!logicalId || !this.globalState || !this.globalState.documents) return null;
+    const id = String(logicalId).trim();
+    if (!id) return null;
+    const map = this.globalState.documents;
+    if (map[id]) return { key: id, doc: map[id] };
+    const lower = id.toLowerCase();
+    if (map[lower]) return { key: lower, doc: map[lower] };
+    for (const [k, d] of Object.entries(map)) {
+      if (!d || typeof d !== 'object') continue;
+      const did = d.id != null ? String(d.id) : '';
+      const sha = d.sha256 != null ? String(d.sha256) : (d.sha != null ? String(d.sha) : '');
+      if (did === id || sha === id || did.toLowerCase() === lower || sha.toLowerCase() === lower) {
+        return { key: k, doc: d };
+      }
+    }
+    return null;
+  }
+
+  /**
    * Return document content (base64) for display or upload. Decrypts if stored encrypted.
    * @param {string} id - Document id
    * @returns {string|null} contentBase64 or null
    */
   getDecryptedDocumentContent (id) {
-    if (!id || !this.globalState.documents) return null;
-    const doc = this.globalState.documents[id];
-    if (!doc) return null;
+    if (!id) return null;
+    const row = this._resolveDocumentRow(id);
+    if (!row || !row.doc) return null;
+    const doc = row.doc;
     // For encrypted documents, only ever return plaintext when we have a live document key.
     if (doc.contentEncrypted) {
       const decrypted = this._decryptContent(doc.contentEncrypted);
@@ -3046,7 +3075,7 @@ class Bridge extends React.Component {
    * Watch-only and desktop-delegated identities use xpub-only {@link Key} — JSONCall may be sent unsigned.
    */
   _canSignOutgoing () {
-    const k = this.settings.signingKey;
+    const k = this.settings.signingKey || this.key;
     return !!(k && k.private);
   }
 
@@ -3062,7 +3091,8 @@ class Bridge extends React.Component {
    * @returns {Buffer|Message} - Signed Fabric Message, or original buffer when unsigned
    */
   signMessage (message) {
-    if (!this.settings.signingKey) {
+    const signingKey = this.settings.signingKey || this.key;
+    if (!signingKey) {
       if (this.settings.debug) console.debug('[BRIDGE]', 'No signing key — sending unsigned');
       return message;
     }
@@ -3081,7 +3111,7 @@ class Bridge extends React.Component {
     }
 
     try {
-      return fabricMessage.signWithKey(this.settings.signingKey);
+      return fabricMessage.signWithKey(signingKey);
     } catch (error) {
       console.warn('[BRIDGE]', 'Signing failed, sending unsigned:', safeIdentityErr(error));
       return message;
@@ -3348,32 +3378,7 @@ class Bridge extends React.Component {
               if (result && typeof result === 'object' && result.type === 'ConfirmInventoryHtlcPaymentResult') {
                 window.dispatchEvent(new CustomEvent('inventoryHtlcConfirmResult', { detail: result }));
               }
-              if (result && typeof result === 'object' && result.type === 'CreateDocumentResult' && result.document && result.document.id) {
-                const backendId = result.document.id; // sha-based id from hub
-                const sha = result.document.sha256 || backendId;
-
-                if (this._lastPublishCreateContext && sha && this._lastPublishCreateContext.sha === sha) {
-                  this._lastPublishCreateContext = null;
-                }
-
-                this._storeDocument(backendId, { ...(this.globalState.documents[backendId] || {}), ...result.document });
-
-                // If user clicked Publish on this sha before create completed, now is the time to publish.
-                if (sha && this._pendingPublishBySha && this._pendingPublishBySha.has(sha)) {
-                  try {
-                    this.sendPublishDocumentRequest(sha);
-                  } finally {
-                    this._pendingPublishBySha.delete(sha);
-                  }
-                }
-
-                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                  detail: {
-                    operation: { op: 'add', path: `/documents/${backendId}`, value: this.globalState.documents[backendId] },
-                    globalState: this.globalState
-                  }
-                }));
-              }
+              this.mergeCreateDocumentRpcResult(result);
               if (result && typeof result === 'object' && (result.type === 'ClaimPurchaseResult' || (result.status === 'error' && result.documentId))) {
                 const docId = result.documentId;
                 const pending = this._pendingClaimCallbacks && docId && this._pendingClaimCallbacks.get(docId);
@@ -3521,90 +3526,7 @@ class Bridge extends React.Component {
                   }
                 }
               }
-              if (result && typeof result === 'object' && result.type === 'PublishDocumentResult' && result.document && result.document.id) {
-                const backendId = result.document.id; // sha-based id from hub
-                const sha = result.document.sha256 || backendId;
-
-                if (this._pendingPublishDocumentBackendIds) {
-                  this._pendingPublishDocumentBackendIds.delete(String(backendId));
-                }
-
-                this.globalState.documents = this.globalState.documents || {};
-
-                // Prefer an existing local document whose sha256 matches, so we keep opaque Actor IDs stable.
-                let targetId = backendId;
-                if (sha) {
-                  for (const [localId, existingDoc] of Object.entries(this.globalState.documents)) {
-                    if (existingDoc && (existingDoc.sha256 === sha || existingDoc.sha === sha)) {
-                      targetId = localId;
-                      break;
-                    }
-                  }
-                }
-
-                const existing = this.globalState.documents[targetId] || {};
-                this.globalState.documents[targetId] = {
-                  ...existing,
-                  ...result.document,
-                  id: targetId,
-                  published: result.document.published || existing.published || true
-                };
-
-                // Optionally clean up raw backend-only entry if different.
-                if (targetId !== backendId && this.globalState.documents[backendId]) {
-                  delete this.globalState.documents[backendId];
-                }
-
-                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                  detail: {
-                    operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
-                    globalState: this.globalState
-                  }
-                }));
-              }
-              if (
-                result && typeof result === 'object' &&
-                result.status === 'error' &&
-                result.documentId != null && String(result.documentId) !== '' &&
-                this._pendingPublishDocumentBackendIds &&
-                this._pendingPublishDocumentBackendIds.has(String(result.documentId))
-              ) {
-                const pubErrDid = String(result.documentId);
-                this._pendingPublishDocumentBackendIds.delete(pubErrDid);
-                try {
-                  if (typeof window !== 'undefined') {
-                    window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
-                      detail: {
-                        documentId: pubErrDid,
-                        message: String(result.message || 'Publish failed')
-                      }
-                    }));
-                  }
-                } catch (_) {}
-              }
-              if (
-                result && typeof result === 'object' &&
-                result.status === 'error' &&
-                result.message &&
-                !result.type &&
-                !(Object.prototype.hasOwnProperty.call(result, 'documentId') && result.documentId != null && String(result.documentId) !== '')
-              ) {
-                const ctx = this._lastPublishCreateContext;
-                if (ctx && (Date.now() - ctx.sentAt) < 25000) {
-                  this._lastPublishCreateContext = null;
-                  if (this._pendingPublishBySha) this._pendingPublishBySha.delete(ctx.sha);
-                  try {
-                    if (typeof window !== 'undefined') {
-                      window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
-                        detail: {
-                          documentId: ctx.actorId,
-                          message: String(result.message)
-                        }
-                      }));
-                    }
-                  } catch (_) {}
-                }
-              }
+              this.mergePublishDocumentRpcResult(result);
               if (result && typeof result === 'object' && result.type === 'CreateExecutionContractResult' && result.contract) {
                 if (typeof window !== 'undefined') {
                   window.dispatchEvent(new CustomEvent('executionContractCreated', {
@@ -4058,20 +3980,7 @@ class Bridge extends React.Component {
     });
     const published = result.publishedDocuments;
     if (published && typeof published === 'object' && this.globalState && this.globalState.documents) {
-      let changed = false;
-      for (const [docId, doc] of Object.entries(this.globalState.documents)) {
-        if (!doc) continue;
-        const inStore = published[docId] || (doc.sha256 && published[doc.sha256]);
-        if (inStore && !doc.published) {
-          this.globalState.documents[docId] = { ...doc, published: inStore.published || true };
-          changed = true;
-        } else if (doc.published && !inStore) {
-          const next = { ...doc };
-          delete next.published;
-          this.globalState.documents[docId] = next;
-          changed = true;
-        }
-      }
+      const changed = mergePublishedDocumentsFromHubStatus(this.globalState.documents, published);
       if (changed) {
         try {
           if (typeof window !== 'undefined') {
@@ -4834,6 +4743,127 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Apply hub `PublishDocument` result (WebSocket JSONCallResult or HTTP /services/rpc fallback).
+   * @param {object} result
+   * @returns {boolean} true when recognized
+   */
+  mergePublishDocumentRpcResult (result) {
+    if (!result || typeof result !== 'object') return false;
+    if (result.type === 'PublishDocumentResult' && result.document && result.document.id) {
+      const backendId = result.document.id;
+      const sha = result.document.sha256 || backendId;
+      if (this._pendingPublishDocumentBackendIds) {
+        this._pendingPublishDocumentBackendIds.delete(String(backendId));
+      }
+      this.globalState.documents = this.globalState.documents || {};
+      let targetId = backendId;
+      if (sha) {
+        for (const [localId, existingDoc] of Object.entries(this.globalState.documents)) {
+          if (existingDoc && (existingDoc.sha256 === sha || existingDoc.sha === sha)) {
+            targetId = localId;
+            break;
+          }
+        }
+      }
+      const existing = this.globalState.documents[targetId] || {};
+      this.globalState.documents[targetId] = {
+        ...existing,
+        ...result.document,
+        id: targetId,
+        published: result.document.published || existing.published || true
+      };
+      if (targetId !== backendId && this.globalState.documents[backendId]) {
+        delete this.globalState.documents[backendId];
+      }
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+            detail: {
+              operation: { op: 'add', path: `/documents/${targetId}`, value: this.globalState.documents[targetId] },
+              globalState: this.globalState
+            }
+          }));
+        }
+      } catch (_) {}
+      return true;
+    }
+    if (
+      result.status === 'error' &&
+      result.documentId != null &&
+      String(result.documentId) !== '' &&
+      this._pendingPublishDocumentBackendIds &&
+      this._pendingPublishDocumentBackendIds.has(String(result.documentId))
+    ) {
+      const pubErrDid = String(result.documentId);
+      this._pendingPublishDocumentBackendIds.delete(pubErrDid);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+            detail: { documentId: pubErrDid, message: String(result.message || 'Publish failed') }
+          }));
+        }
+      } catch (_) {}
+      return true;
+    }
+    if (
+      result.status === 'error' &&
+      result.message &&
+      !result.type &&
+      !(Object.prototype.hasOwnProperty.call(result, 'documentId') && result.documentId != null && String(result.documentId) !== '')
+    ) {
+      const ctx = this._lastPublishCreateContext;
+      if (ctx && (Date.now() - ctx.sentAt) < 25000) {
+        this._lastPublishCreateContext = null;
+        if (this._pendingPublishBySha) this._pendingPublishBySha.delete(ctx.sha);
+        try {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+              detail: { documentId: ctx.actorId, message: String(result.message) }
+            }));
+          }
+        } catch (_) {}
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Apply hub `CreateDocument` result (WebSocket JSONCallResult or HTTP /services/rpc fallback).
+   * @param {object} result
+   * @returns {boolean} true when recognized
+   */
+  mergeCreateDocumentRpcResult (result) {
+    if (!result || typeof result !== 'object' || result.type !== 'CreateDocumentResult' || !result.document || !result.document.id) {
+      return false;
+    }
+    const backendId = result.document.id;
+    const sha = result.document.sha256 || backendId;
+    if (this._lastPublishCreateContext && sha && this._lastPublishCreateContext.sha === sha) {
+      this._lastPublishCreateContext = null;
+    }
+    this._storeDocument(backendId, { ...(this.globalState.documents[backendId] || {}), ...result.document });
+    if (sha && this._pendingPublishBySha && this._pendingPublishBySha.has(sha)) {
+      try {
+        this.sendPublishDocumentRequest(sha);
+      } finally {
+        this._pendingPublishBySha.delete(sha);
+      }
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+          detail: {
+            operation: { op: 'add', path: `/documents/${backendId}`, value: this.globalState.documents[backendId] },
+            globalState: this.globalState
+          }
+        }));
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  /**
    * Apply hub `CreateDistributeInvoice` JSON-RPC result (same events as WebSocket path).
    * @param {object} result
    * @returns {boolean} true when recognized
@@ -4886,12 +4916,64 @@ class Bridge extends React.Component {
 
   sendCreateDocumentRequest (doc) {
     if (!doc || typeof doc !== 'object') return;
+    if (!this._canSignOutgoing()) {
+      const sha = doc.sha256 ? String(doc.sha256) : (doc.id ? String(doc.id) : '');
+      if (sha && this._pendingPublishBySha) this._pendingPublishBySha.delete(sha);
+      if (
+        this._lastPublishCreateContext &&
+        sha &&
+        this._lastPublishCreateContext.sha === sha
+      ) {
+        const actorId = this._lastPublishCreateContext.actorId;
+        this._lastPublishCreateContext = null;
+        try {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+              detail: {
+                documentId: String(actorId || sha),
+                message: 'Unlock your Fabric identity — CreateDocument must be Schnorr-signed on the wire.'
+              }
+            }));
+          }
+        } catch (_) {}
+      }
+      try {
+        pushUiNotification({
+          id: `create-document-${Date.now()}`,
+          kind: 'error',
+          title: 'Create document blocked',
+          subtitle: 'Unlock your Fabric identity to upload or publish.',
+          href: '/documents'
+        });
+      } catch (_) {}
+      return;
+    }
     try {
       const contentBase64 = doc.contentBase64 || (doc.id ? this.getDecryptedDocumentContent(doc.id) : null);
       const payloadDoc = contentBase64 ? { ...doc, contentBase64 } : doc;
       const payload = { method: 'CreateDocument', params: [payloadDoc] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
+      // Fallback for delayed/lost WS responses: perform same-origin HTTP JSON-RPC CreateDocument.
+      setTimeout(() => {
+        try {
+          const origin = typeof window !== 'undefined' && window.location && window.location.origin
+            ? window.location.origin
+            : '';
+          if (!origin) return;
+          fetch(`${origin}/services/rpc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'CreateDocument', params: [payloadDoc] })
+          })
+            .then((r) => r.json().catch(() => null))
+            .then((body) => {
+              if (!body || body.result == null) return;
+              this.mergeCreateDocumentRpcResult(body.result);
+            })
+            .catch(() => {});
+        } catch (_) {}
+      }, 2500);
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending CreateDocument request:', safeIdentityErr(error));
       const sha = doc.sha256 ? String(doc.sha256) : (doc.id ? String(doc.id) : '');
@@ -4937,42 +5019,49 @@ class Bridge extends React.Component {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
     if (!logical) return;
 
-    const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+    if (!this._canSignOutgoing()) {
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
+            detail: {
+              documentId: String(logical),
+              message: 'Unlock your Fabric identity — PublishDocument must be Schnorr-signed on the wire.'
+            }
+          }));
+        }
+      } catch (_) {}
+      return;
+    }
 
-    // If this is a local-only document with a backing sha256 and not yet published,
+    const row = this._resolveDocumentRow(logical);
+    const doc = row && row.doc;
+
+    // If this is a local-only document (opaque id) with a backing sha256 and not yet published,
     // first ensure the hub has the full content via CreateDocument, then publish.
-    if (doc && doc.sha256 && !doc.published) {
+    // When `logical` is already the content hash (second hop after CreateDocument), skip re-upload.
+    if (needsCreateDocumentBeforePublish(logical, doc)) {
       const sha = doc.sha256;
       const contentBase64 = this.getDecryptedDocumentContent(logical);
       if (!contentBase64) {
-        console.warn('[BRIDGE]', 'Cannot publish document without decrypted content:', logical);
-        try {
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
-              detail: {
-                documentId: String(logical),
-                message: 'Cannot publish without decrypted content. Unlock your identity (top bar or Settings → Fabric identity).'
-              }
-            }));
-          }
-        } catch (_) {}
+        // Fallback: after reload we may have metadata-only local rows while hub already has documents/<sha>.json.
+        // Try direct publish by sha instead of failing early on missing local plaintext bytes.
+        console.warn('[BRIDGE]', 'Missing local content for create-before-publish; trying direct publish by sha:', logical);
+      } else {
+        const createDoc = {
+          id: sha,
+          sha256: sha,
+          name: doc.name,
+          mime: doc.mime,
+          size: doc.size,
+          contentBase64
+        };
+        this._lastPublishCreateContext = { sha: String(sha), actorId: String(logical), sentAt: Date.now() };
+        this.sendCreateDocumentRequest(createDoc);
+        if (this._pendingPublishBySha) {
+          this._pendingPublishBySha.add(sha);
+        }
         return;
       }
-
-      const createDoc = {
-        id: sha,
-        sha256: sha,
-        name: doc.name,
-        mime: doc.mime,
-        size: doc.size,
-        contentBase64
-      };
-      this._lastPublishCreateContext = { sha: String(sha), actorId: String(logical), sentAt: Date.now() };
-      this.sendCreateDocumentRequest(createDoc);
-      if (this._pendingPublishBySha) {
-        this._pendingPublishBySha.add(sha);
-      }
-      return;
     }
 
     let resolved = logical;
@@ -4991,6 +5080,30 @@ class Bridge extends React.Component {
       const payload = { method: 'PublishDocument', params };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
+      // WebSocket delivery can be delayed/lost; fallback to same-origin HTTP JSON-RPC while pending.
+      setTimeout(() => {
+        try {
+          if (
+            !this._pendingPublishDocumentBackendIds ||
+            !this._pendingPublishDocumentBackendIds.has(backendKey)
+          ) return;
+          const origin = typeof window !== 'undefined' && window.location && window.location.origin
+            ? window.location.origin
+            : '';
+          if (!origin) return;
+          fetch(`${origin}/services/rpc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'PublishDocument', params })
+          })
+            .then((r) => r.json().catch(() => null))
+            .then((body) => {
+              if (!body || body.result == null) return;
+              this.mergePublishDocumentRpcResult(body.result);
+            })
+            .catch(() => {});
+        } catch (_) {}
+      }, 3500);
     } catch (error) {
       if (this._pendingPublishDocumentBackendIds) {
         this._pendingPublishDocumentBackendIds.delete(String(resolved));
@@ -5020,6 +5133,19 @@ class Bridge extends React.Component {
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
     const backendKey = String(backendId);
+    if (!this._canSignOutgoing()) {
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('purchaseInvoiceFailed', {
+            detail: {
+              documentId: backendKey,
+              message: 'Unlock your Fabric identity — CreatePurchaseInvoice must be Schnorr-signed on the wire.'
+            }
+          }));
+        }
+      } catch (_) {}
+      return;
+    }
     if (this._pendingCreatePurchaseInvoiceBackendIds) {
       this._pendingCreatePurchaseInvoiceBackendIds.add(backendKey);
     }
@@ -5051,6 +5177,9 @@ class Bridge extends React.Component {
   async sendClaimPurchaseRequest (id, txid) {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
     if (!logical || !txid) return { error: 'documentId and txid required' };
+    if (!this._canSignOutgoing()) {
+      return { error: 'Unlock your Fabric identity — ClaimPurchase must be Schnorr-signed on the wire.' };
+    }
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
     return new Promise((resolve) => {
@@ -5079,6 +5208,19 @@ class Bridge extends React.Component {
     let backendId = logical;
     if (doc && doc.sha256) backendId = doc.sha256;
     const backendKey = String(backendId);
+    if (!this._canSignOutgoing()) {
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('distributeInvoiceFailed', {
+            detail: {
+              documentId: backendKey,
+              message: 'Unlock your Fabric identity — CreateDistributeInvoice must be Schnorr-signed on the wire.'
+            }
+          }));
+        }
+      } catch (_) {}
+      return;
+    }
     if (this._pendingCreateDistributeInvoiceBackendIds) {
       this._pendingCreateDistributeInvoiceBackendIds.add(backendKey);
     }
@@ -5111,6 +5253,19 @@ class Bridge extends React.Component {
     const documentId = proposal.documentId;
     const amountSats = Number(proposal.amountSats);
     if (!documentId || !Number.isFinite(amountSats) || amountSats <= 0) return;
+    if (!this._canSignOutgoing()) {
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('distributeProposalFailed', {
+            detail: {
+              documentId: String(documentId),
+              message: 'Unlock your Fabric identity — hosting offers must be Schnorr-signed on the wire.'
+            }
+          }));
+        }
+      } catch (_) {}
+      return;
+    }
     const peerKey = typeof peerAddress === 'object' && peerAddress
       ? String(peerAddress.id || peerAddress.address || peerAddress)
       : String(peerAddress);
@@ -5245,6 +5400,22 @@ class Bridge extends React.Component {
   sendDistributeDocumentRequest (id, config = {}) {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
     if (!logical) return;
+
+    if (!this._canSignOutgoing()) {
+      const docEarly = this.globalState && this.globalState.documents && this.globalState.documents[logical];
+      const bid = (docEarly && docEarly.sha256) ? String(docEarly.sha256) : String(logical);
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('storageContractBondFailed', {
+            detail: {
+              documentId: bid,
+              message: 'Unlock your Fabric identity — CreateStorageContract must be Schnorr-signed on the wire.'
+            }
+          }));
+        }
+      } catch (_) {}
+      return;
+    }
 
     let backendId = logical;
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];

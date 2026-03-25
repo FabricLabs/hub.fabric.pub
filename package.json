@@ -76,6 +76,8 @@
     "playnet:mesh:open": "node scripts/playnet-regtest-mesh-launch.js --open",
     "test:e2e-webrtc": "node scripts/verify-webrtc-chat-e2e.js",
     "test:hub-webrtc": "mocha tests/hub.webrtc.rpc.test.js",
+    "test:document-network": "mocha tests/hub.document.network.e2e.test.js --exit --timeout 180000",
+    "test:fabric-epic": "mocha tests/hub.fabric.epic.e2e.test.js --exit --timeout 240000",
     "test:webrtc": "npm run test:bridge && npm run test:hub-webrtc",
     "todo": "npm run report:todo && cat reports/TODO.txt"
   },

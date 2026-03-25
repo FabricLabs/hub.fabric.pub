@@ -20,4 +20,28 @@ function isHubNetworkStatusShape (obj) {
   return false;
 }
 
-module.exports = { isHubNetworkStatusShape };
+/**
+ * When {@link GetNetworkStatus} has not arrived yet, explain whether the WebSocket is open
+ * (avoids implying the hub is down when the socket is up but RPC is slow).
+ * @param {object|null|undefined} bridgeInstance Bridge component instance (`bridgeRef.current`)
+ * @returns {string|null} User-facing line, or null to use a generic default
+ */
+function bridgeWebSocketLoadingHint (bridgeInstance) {
+  if (!bridgeInstance || typeof bridgeInstance.getConnectionStatus !== 'function') return null;
+  try {
+    const cs = bridgeInstance.getConnectionStatus();
+    const ws = cs && cs.websocket;
+    if (!ws) return null;
+    if (ws.connected && ws.readyState === 1) {
+      return 'WebSocket connected — waiting for network status from the hub.';
+    }
+    if (ws.readyState === 0) {
+      return 'Opening WebSocket to the hub…';
+    }
+    return 'Reconnecting to the hub…';
+  } catch (_) {
+    return null;
+  }
+}
+
+module.exports = { isHubNetworkStatusShape, bridgeWebSocketLoadingHint };

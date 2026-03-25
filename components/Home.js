@@ -31,7 +31,8 @@ const {
 } = require('semantic-ui-react');
 
 const NotificationsStream = require('./NotificationsStream');
-const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
+const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
@@ -40,8 +41,65 @@ class Home extends React.Component {
     super(props);
     this.state = {
       connectModalOpen: false,
-      connectPeerIdDraft: ''
+      connectPeerIdDraft: '',
+      /** Bumps when Bridge/network status updates over WS or HTTP so this page re-renders (Bridge is a sibling). */
+      networkStatusRenderTick: 0
     };
+    this._onNetworkStatusEvent = () => {
+      this.setState((s) => ({ networkStatusRenderTick: (s.networkStatusRenderTick || 0) + 1 }));
+    };
+    this._homeHttpFallbackTimer = null;
+    /** Avoid re-arming HTTP hydrate on every parent re-render when the hub never returns a valid snapshot. */
+    this._homeHttpHydrateAttempted = false;
+  }
+
+  componentDidMount () {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('networkStatusUpdate', this._onNetworkStatusEvent);
+    }
+    this._scheduleHomeNetworkHttpFallback();
+  }
+
+  componentWillUnmount () {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('networkStatusUpdate', this._onNetworkStatusEvent);
+    }
+    if (this._homeHttpFallbackTimer) {
+      clearTimeout(this._homeHttpFallbackTimer);
+      this._homeHttpFallbackTimer = null;
+    }
+  }
+
+  componentDidUpdate () {
+    this._scheduleHomeNetworkHttpFallback();
+  }
+
+  _scheduleHomeNetworkHttpFallback () {
+    if (typeof window === 'undefined') return;
+    if (this._homeHttpHydrateAttempted) return;
+    const ref = this.props.bridgeRef || this.props.bridge;
+    const current = ref && ref.current;
+    if (!current) return;
+    const ns = current.networkStatus || current.lastNetworkStatus;
+    if (isHubNetworkStatusShape(ns)) {
+      if (this._homeHttpFallbackTimer) {
+        clearTimeout(this._homeHttpFallbackTimer);
+        this._homeHttpFallbackTimer = null;
+      }
+      return;
+    }
+    if (this._homeHttpFallbackTimer) return;
+    this._homeHttpFallbackTimer = setTimeout(async () => {
+      this._homeHttpFallbackTimer = null;
+      this._homeHttpHydrateAttempted = true;
+      const r2 = this.props.bridgeRef || this.props.bridge;
+      const cur = r2 && r2.current;
+      if (!cur) return;
+      const n2 = cur.networkStatus || cur.lastNetworkStatus;
+      if (isHubNetworkStatusShape(n2)) return;
+      const origin = window.location && window.location.origin ? window.location.origin : '';
+      await hydrateHubNetworkStatusViaHttp(cur, origin);
+    }, 2500);
   }
 
   _openConnectModal = () => {
@@ -116,9 +174,11 @@ class Home extends React.Component {
         const tb = b.published ? new Date(b.published).getTime() : 0;
         return tb - ta;
       });
+    const networkStatusLoadingHint = bridgeWebSocketLoadingHint(current)
+      || 'Connecting to hub and fetching peers.';
     return (
       <fabric-hub-home class='fade-in'>
-        <Card fluid>
+        <Card fluid data-home-network-tick={this.state.networkStatusRenderTick}>
           <Card.Content>
             {networkStatus ? (
               <>
@@ -317,7 +377,7 @@ class Home extends React.Component {
                     <Header as='h4' style={{ marginTop: '1em', textAlign: 'center' }}>
                       Loading network status…
                       <Header.Subheader>
-                        Connecting to hub and fetching peers.
+                        {networkStatusLoadingHint}
                       </Header.Subheader>
                     </Header>
                     {typeof this.props.onRefreshNetworkStatus === 'function' && (

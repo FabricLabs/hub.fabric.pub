@@ -44,6 +44,7 @@ const Lightning = require('@fabric/core/services/lightning');
 const Beacon = require('../contracts/beacon');
 const PayjoinService = require('../services/payjoin');
 const PeeringService = require('../services/peering');
+const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
@@ -4344,7 +4345,7 @@ class Hub extends Service {
     if (envIf && String(envIf).trim()) return;
 
     const raw = this.setup.getSetting('HTTP_SHARED_MODE');
-    const shared = raw === true || raw === 'true' || raw === 1 || String(raw).toLowerCase() === 'true';
+    const shared = isHttpSharedModeEnabled(raw);
     const nextIf = shared ? '0.0.0.0' : '127.0.0.1';
 
     const cur = String(
@@ -9729,7 +9730,7 @@ class Hub extends Service {
               }
               return;
             }
-            console.warn('[HUB] INVENTORY_REQUEST cannot relay toward', logicalSeller, '(peer not connected)');
+            // Relay target not connected yet (common while multiple peers connect at once); drop quietly.
             return;
           }
 

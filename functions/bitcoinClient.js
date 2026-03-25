@@ -1242,7 +1242,7 @@ async function sendPayment (settings = {}, wallet = {}, payment = {}) {
 
   const adminToken = String(payment.adminToken || payment.token || '').trim();
   if (!adminToken) {
-    throw new Error('Admin token is required: POST /services/bitcoin/payments spends from the Hub node wallet (not from identity keys).');
+    throw new Error('Admin token is required: POST /services/bitcoin/payments spends from this hub\'s bitcoind wallet and broadcasts a real transaction (identity xpub selects wallet id for the request).');
   }
 
   const payload = {
