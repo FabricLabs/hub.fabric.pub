@@ -22,6 +22,16 @@ function hubAssetsDir () {
 function hubStoreRoot () {
   return process.env.FABRIC_HUB_USER_DATA || process.cwd();
 }
+
+/**
+ * Resolve an absolute path under the writable store root.
+ * @param {string} p
+ * @returns {string}
+ */
+function resolveStorePath (p) {
+  if (!p) return hubStoreRoot();
+  return path.isAbsolute(p) ? p : path.resolve(hubStoreRoot(), p);
+}
 const bs58check = require('bs58check');
 
 // Fabric Types
@@ -6646,6 +6656,46 @@ class Hub extends Service {
     return result;
   }
 
+  /**
+   * Managed regtest bitcoind can refuse to boot if `regtest/settings.json` is malformed
+   * after an unclean shutdown. Detect and quarantine the file before startup so the node
+   * can recreate defaults.
+   * @returns {void}
+   */
+  _repairManagedRegtestSettingsJsonIfCorrupt () {
+    try {
+      if (!this.bitcoin || !this.settings || !this.settings.bitcoin) return;
+      if (this.settings.bitcoin.managed !== true) return;
+      if (this.settings.bitcoin.network !== 'regtest') return;
+
+      const datadirRaw = this.settings.bitcoin.datadir || './stores/bitcoin-regtest';
+      const datadir = resolveStorePath(datadirRaw);
+      const settingsPath = path.join(datadir, 'regtest', 'settings.json');
+      if (!fs.existsSync(settingsPath)) return;
+
+      const raw = fs.readFileSync(settingsPath, 'utf8');
+      if (!raw || !raw.trim()) {
+        fs.unlinkSync(settingsPath);
+        console.warn('[HUB] Removed empty Bitcoin settings file:', settingsPath);
+        return;
+      }
+
+      try {
+        JSON.parse(raw);
+      } catch (parseError) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupPath = `${settingsPath}.corrupt-${stamp}.bak`;
+        fs.renameSync(settingsPath, backupPath);
+        console.warn('[HUB] Quarantined corrupt Bitcoin settings JSON:', settingsPath, '->', backupPath);
+      }
+    } catch (repairError) {
+      console.warn(
+        '[HUB] Could not preflight-repair managed regtest settings.json:',
+        repairError && repairError.message ? repairError.message : repairError
+      );
+    }
+  }
+
   async _startLightningServiceIfEnabled () {
     const bitcoin = this._getBitcoinService();
     if (!bitcoin || (bitcoin.settings && bitcoin.settings.network) !== 'regtest') {
@@ -6769,6 +6819,7 @@ class Hub extends Service {
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
         // Enable debug so bitcoind stdout and RPC wait progress are visible while startup takes time
         this.bitcoin.settings.debug = true;
+        this._repairManagedRegtestSettingsJsonIfCorrupt();
         console.log('[HUB] Starting Bitcoin (blocking until ready or timeout)...');
         const result = await this._startBitcoinServiceWithTimeout();
         if (result && result.started) {

@@ -90,7 +90,7 @@ function ContractList () {
       if (typeof draft.execName === 'string') setExecName(normalizeOptionalInputText(draft.execName));
       if (typeof draft.execJson === 'string' && draft.execJson.trim()) setExecJson(draft.execJson);
       if (draft.execAmountSats != null) setExecAmountSats(String(draft.execAmountSats));
-      if (typeof draft.execTxid === 'string') setExecTxid(draft.execTxid);
+      if (typeof draft.execTxid === 'string') setExecTxid(normalizeOptionalInputText(draft.execTxid));
       if (
         draft.execRegistryInvoice &&
         typeof draft.execRegistryInvoice === 'object' &&
@@ -867,8 +867,8 @@ function ContractList () {
                     <label htmlFor="fabric-exec-registry-txid">Funding txid (after you pay the invoice)</label>
                     <Form.Input
                       id="fabric-exec-registry-txid"
-                      value={execTxid}
-                      onChange={(e, d) => setExecTxid(d.value)}
+                      value={normalizeOptionalInputText(execTxid)}
+                      onChange={(e, d) => setExecTxid(normalizeOptionalInputText(d && d.value))}
                       placeholder="64-character transaction id"
                     />
                   </Form.Field>

@@ -391,14 +391,18 @@ class Bridge extends React.Component {
     };
 
     pc.onconnectionstatechange = () => {
-      console.debug('[BRIDGE]', 'RTCPeerConnection state for', peerId, pc.connectionState);
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'RTCPeerConnection state for', peerId, pc.connectionState);
+      }
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
         this.disconnectWebRTCPeer(peerId);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.debug('[BRIDGE]', 'ICE state for', peerId, pc.iceConnectionState);
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'ICE state for', peerId, pc.iceConnectionState);
+      }
     };
 
     return pc;
@@ -406,7 +410,9 @@ class Bridge extends React.Component {
 
   _attachDataChannelHandlers (peerId, dc) {
     dc.onopen = () => {
-      console.debug('[BRIDGE]', 'WebRTC data channel open to', peerId);
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'WebRTC data channel open to', peerId);
+      }
       const entry = this._rtcPeers.get(peerId);
       if (entry) entry.dc = dc;
       const existing = this.webrtcPeers.get(peerId) || {};
@@ -430,12 +436,13 @@ class Bridge extends React.Component {
     };
 
     dc.onmessage = (ev) => {
-      console.debug('[BRIDGE]', 'WebRTC data from', peerId, fabricDebugDescribePayload(ev.data));
       this.handleWebRTCPeerMessage(peerId, ev.data);
     };
 
     dc.onclose = () => {
-      console.debug('[BRIDGE]', 'WebRTC data channel closed for', peerId);
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'WebRTC data channel closed for', peerId);
+      }
       this.disconnectWebRTCPeer(peerId);
     };
 
@@ -1845,13 +1852,17 @@ class Bridge extends React.Component {
     }
 
     const wsUrl = this._websocketUrlWithAuth(path);
-    console.debug('[BRIDGE]', 'Opening connection to:', wsUrl);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'Opening connection to:', wsUrl);
+    }
     this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
 
     // Attach Event Handlers
     this.ws.onopen = () => {
-      console.debug('[BRIDGE]', 'Connection established');
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'Connection established');
+      }
       this._isConnected = true;  // Set internal state immediately
       this.setState({ isConnected: true }, () => {
         // Call onStateUpdate prop if provided for backward compatibility
@@ -1877,7 +1888,9 @@ class Bridge extends React.Component {
       // Flush any queued JSON-RPC payloads that were enqueued before the
       // WebSocket finished opening (for example, early WebRTC registration).
       if (Array.isArray(this._jsonRpcQueue) && this._jsonRpcQueue.length > 0) {
-        console.debug('[BRIDGE]', 'Flushing queued JSON-RPC payloads:', this._jsonRpcQueue.length);
+        if (this.settings.debug) {
+          console.debug('[BRIDGE]', 'Flushing queued JSON-RPC payloads:', this._jsonRpcQueue.length);
+        }
         const queue = this._jsonRpcQueue.slice();
         this._jsonRpcQueue = [];
         for (const payload of queue) {
@@ -1904,7 +1917,9 @@ class Bridge extends React.Component {
     };
 
     this.ws.onclose = (event) => {
-      console.debug('[BRIDGE]', 'WebSocket closed:', event.code, event.reason);
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'WebSocket closed:', event.code, event.reason);
+      }
       this._isConnected = false;
       this.setState({ isConnected: false }, () => {
         // Call onStateUpdate prop if provided for backward compatibility
@@ -1942,7 +1957,9 @@ class Bridge extends React.Component {
     this.peerId = `fabric-bridge-${sessionId}`;
     this._webrtcReady = true;
 
-    console.debug('[BRIDGE]', 'Initialized native WebRTC with peerId:', this.peerId);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'Initialized native WebRTC with peerId:', this.peerId);
+    }
 
     // Publish our presence to the Hub so other peers can discover us.
     this.publishWebRTCOffer();
@@ -2000,7 +2017,9 @@ class Bridge extends React.Component {
       return;
     }
 
-    console.debug('[BRIDGE]', 'Publishing WebRTC offer with peer ID:', this.peerId);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'Publishing WebRTC offer with peer ID:', this.peerId);
+    }
 
     // Send our peer info to the server via WebSocket RPC
     const meta = {
@@ -2044,11 +2063,11 @@ class Bridge extends React.Component {
     const maxPeers = this.settings.maxWebrtcPeers || 5;
 
     if (currentConnections >= maxPeers) {
-      console.debug('[BRIDGE]', `Already at max WebRTC peers (${currentConnections}/${maxPeers})`);
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', `Already at max WebRTC peers (${currentConnections}/${maxPeers})`);
+      }
       return;
     }
-
-    console.debug('[BRIDGE]', 'Discovering WebRTC peer candidates...');
 
     // Request peer list from the server
     const payload = {
@@ -2070,7 +2089,9 @@ class Bridge extends React.Component {
     // If WebRTC identity isn't ready yet, stash candidates and process them once
     // initialization completes.
     if (!this.peerId || !this._webrtcReady) {
-      console.debug('[BRIDGE]', 'Deferring WebRTC peer candidates until WebRTC is ready');
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'Deferring WebRTC peer candidates until WebRTC is ready');
+      }
       if (!Array.isArray(this._pendingPeerCandidates)) this._pendingPeerCandidates = [];
       this._pendingPeerCandidates.push(...candidates);
       return;
@@ -2086,7 +2107,9 @@ class Bridge extends React.Component {
     const slotsAvailable = Math.max(0, maxPeers - currentConnections);
 
     if (slotsAvailable === 0) {
-      console.debug('[BRIDGE]', 'No slots available for new WebRTC peers');
+      if (this.settings.debug) {
+        console.debug('[BRIDGE]', 'No slots available for new WebRTC peers');
+      }
       return;
     }
 
@@ -2125,8 +2148,6 @@ class Bridge extends React.Component {
 
     // Connect to peers up to available slots.
     const peersToConnect = eligiblePeers.slice(0, slotsAvailable);
-
-    console.debug('[BRIDGE]', `Connecting to ${peersToConnect.length} WebRTC peers (${currentConnections}/${maxPeers} current)`);
 
     for (const candidate of peersToConnect) {
       const peerId = candidate.id || candidate.peerId;
@@ -2190,7 +2211,9 @@ class Bridge extends React.Component {
       return;
     }
 
-    console.debug('[BRIDGE]', 'Initiating native WebRTC connection to peer:', peerId);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'Initiating native WebRTC connection to peer:', peerId);
+    }
 
     this._connectingPeers.add(peerId);
 
@@ -2246,7 +2269,9 @@ class Bridge extends React.Component {
       const timer = setTimeout(() => {
         const info = this.webrtcPeers.get(peerId);
         if (info && info.status === 'connected') return;
-        console.debug('[BRIDGE]', 'Timing out stale WebRTC connect attempt:', peerId);
+        if (this.settings.debug) {
+          console.debug('[BRIDGE]', 'Timing out stale WebRTC connect attempt:', peerId);
+        }
         this.disconnectWebRTCPeer(peerId);
       }, connectTimeoutMs);
       this._webrtcConnectTimers.set(peerId, timer);
@@ -2263,8 +2288,6 @@ class Bridge extends React.Component {
    */
   handleWebRTCPeerMessage (peerId, data) {
     try {
-      console.debug('[BRIDGE]', 'Processing message from WebRTC peer:', peerId);
-
       if (typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer) {
         this.onSocketMessage({ data });
         return;
@@ -2325,7 +2348,6 @@ class Bridge extends React.Component {
                 source: 'gossip'
               })).filter((c) => c.id && c.id !== this.peerId);
               if (candidates.length > 0) {
-                console.debug('[BRIDGE]', 'Received', P2P_PEER_GOSSIP, 'from', peerId, ':', candidates.length, 'peers');
                 this.handlePeerCandidates(candidates);
               }
             }
@@ -2606,7 +2628,6 @@ class Bridge extends React.Component {
     const count = this.broadcastToWebRTCPeersWithRecipients(this._buildWebRTCPeerGossipPayload()).length;
     if (count > 0) {
       this._lastWebRTCGossipAt = Date.now();
-      console.debug('[BRIDGE]', 'Gossiped peer list to', count, 'WebRTC peers');
     }
   }
 
@@ -2618,7 +2639,6 @@ class Bridge extends React.Component {
     const count = this.broadcastToWebRTCPeersWithRecipients(this._buildPeeringOfferPayload(slots)).length;
     if (count > 0) {
       this._lastPeeringOfferAt = Date.now();
-      console.debug('[BRIDGE]', 'Broadcast', P2P_PEERING_OFFER, '(', slots, 'slots) to', count, 'peers');
     }
   }
 
@@ -3318,7 +3338,9 @@ class Bridge extends React.Component {
 
               // WebRTC peer discovery response (does not touch networkStatus)
               if (result && typeof result === 'object' && result.type === 'ListWebRTCPeersResult' && Array.isArray(result.peers)) {
-                console.debug('[BRIDGE]', 'Received WebRTC peer candidates:', result.peers.length);
+                if (this.settings.debug) {
+                  console.debug('[BRIDGE]', 'Received WebRTC peer candidates:', result.peers.length);
+                }
                 this.handlePeerCandidates(result.peers);
               }
               // Native WebRTC signaling messages
