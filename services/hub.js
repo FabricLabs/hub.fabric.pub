@@ -5882,11 +5882,22 @@ class Hub extends Service {
           return res.status(400).json({ status: 'error', message: `Invalid Bitcoin address for this network. ${hint}` });
         }
 
-        const txid = await bitcoin._processSpendMessage({
-          destination: to,
-          amount: amountBTC,
-          comment: 'faucet'
-        });
+        // Regtest/playnet often has no smart-fee data (estimatesmartfee empty). Fabric's
+        // _processSpendMessage uses conf_target=1 + "conservative", which then fails coin
+        // selection with a misleading [-6] Insufficient funds. Use explicit fee_rate instead.
+        await bitcoin._loadWallet(bitcoin.walletName);
+        const txid = await bitcoin._makeWalletRequest('sendtoaddress', [
+          to,
+          amountBTC,
+          'faucet',
+          'faucet',
+          false,
+          true,
+          null,
+          'unset',
+          false,
+          1
+        ], bitcoin.walletName);
 
         try {
           if (txid) this._mergePersistedTxLabel(String(txid), 'faucet_payment', { destination: to });
