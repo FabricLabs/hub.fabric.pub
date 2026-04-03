@@ -24,9 +24,31 @@ function buildTabPayerDemoUrl (address, amountSats, origin) {
   if (Number.isFinite(n) && n > 0) {
     q.set('payAmountSats', String(Math.round(n)));
   }
-  return `${base}/services/bitcoin/payments?${q.toString()}#fabric-btc-make-payment-h4`;
+  return `${base}/payments?${q.toString()}#fabric-btc-make-payment-h4`;
+}
+
+/**
+ * Open Bitcoin Payments with a full BIP21 URI (e.g. Payjoin with <code>pj=</code>) in the Make Payment field.
+ * @param {string} bip21Uri - <code>bitcoin:</code>… URI
+ * @param {string} [origin]
+ * @returns {string}
+ */
+function buildTabPayerPayjoinUrl (bip21Uri, origin) {
+  const uri = String(bip21Uri || '').trim();
+  if (!uri || !/^bitcoin:/i.test(uri)) return '#';
+
+  let base = origin != null ? String(origin).replace(/\/$/, '') : '';
+  if (!base && typeof window !== 'undefined' && window.location && window.location.origin) {
+    base = String(window.location.origin).replace(/\/$/, '');
+  }
+  if (!base) return '#';
+
+  const q = new URLSearchParams();
+  q.set('bitcoinUri', uri);
+  return `${base}/payments?${q.toString()}#fabric-btc-make-payment-h4`;
 }
 
 module.exports = {
-  buildTabPayerDemoUrl
+  buildTabPayerDemoUrl,
+  buildTabPayerPayjoinUrl
 };

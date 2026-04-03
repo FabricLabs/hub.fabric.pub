@@ -4,7 +4,7 @@ const React = require('react');
 const { Input, Button } = require('semantic-ui-react');
 
 function ChatInput (props) {
-  const { value, onChange, onSubmit, placeholder, title, disabled } = props;
+  const { value, onChange, onSubmit, placeholder, title, disabled, inputId, ariaDescribedBy } = props;
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -30,7 +30,10 @@ function ChatInput (props) {
       title={title}
       disabled={!!disabled}
     >
-      <input />
+      <input
+        id={inputId || undefined}
+        aria-describedby={ariaDescribedBy || undefined}
+      />
       <Button
         type="button"
         icon="send"

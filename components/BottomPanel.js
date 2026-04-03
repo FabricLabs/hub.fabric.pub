@@ -6,7 +6,6 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
-const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   Segment,
   Icon
@@ -51,10 +50,7 @@ class BottomPanel extends React.Component {
     const { now, hubUiTick } = this.state;
     void hubUiTick;
     const uf = loadHubUiFeatureFlags();
-    const peerFooterLink = !!(
-      uf.peers &&
-      readHubAdminTokenFromBrowser(this.props && this.props.adminToken)
-    );
+    const peerFooterLink = !!uf.peers;
     const timeText = now.toLocaleTimeString();
     const iso = now.toISOString();
 
@@ -69,6 +65,7 @@ class BottomPanel extends React.Component {
 
     const rawPubkey = this.props.pubkey;
     const pubkeyText = formatPubkey(rawPubkey);
+    const publicHubVisitor = !!(this.props && this.props.publicHubVisitor);
 
     return (
       <Segment
@@ -100,7 +97,7 @@ class BottomPanel extends React.Component {
         <div style={{ flex: '1 1 auto', minWidth: 0, color: '#666' }}>
           {pubkeyText ? (
             <span title={rawPubkey}>
-              {peerFooterLink ? (
+              {peerFooterLink && !publicHubVisitor ? (
                 <Link
                   to={`/peers/${encodeURIComponent(rawPubkey)}`}
                   style={{ color: 'inherit', textDecoration: 'none' }}
@@ -108,7 +105,7 @@ class BottomPanel extends React.Component {
                   <code>{pubkeyText}</code>
                 </Link>
               ) : (
-                <code title="Peers detail requires hub admin token in this browser (paste under Admin)">
+                <code title={publicHubVisitor ? 'Hub node identity (sign in to use peer tools)' : 'Open Peers from the top bar'}>
                   {pubkeyText}
                 </code>
               )}

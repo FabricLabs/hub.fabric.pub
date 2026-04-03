@@ -13,7 +13,8 @@ const {
   Label
 } = require('semantic-ui-react');
 const { toast } = require('../functions/toast');
-const { sha256 } = require('@noble/hashes/sha256');
+const { fabricIdentityNeedFullKeyPlain } = require('../functions/hubIdentityUiHints');
+const { sha256 } = require('@noble/hashes/sha2.js');
 const {
   getSidechainState,
   submitSidechainStatePatch,
@@ -37,6 +38,7 @@ const {
   signDelivererClaimFromPsbtBase64,
   signInitiatorRefundFromPsbtBase64
 } = require('../functions/documentOfferTxBrowser');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { Link } = require('react-router-dom');
@@ -255,7 +257,10 @@ class SidechainHome extends React.Component {
       return;
     }
     if (!initiatorFabricId) {
-      toast.error('Unlock identity (or set Fabric id) so initiator is known — Settings → Fabric identity or top-bar Locked.');
+      toast.error(
+        `${fabricIdentityNeedFullKeyPlain(this.props.identity || {})} ` +
+        'An initiator Fabric id is required for this demo (connect to the hub if your id is still unknown).'
+      );
       return;
     }
     if (!this.state.sidechain) {
@@ -338,9 +343,7 @@ class SidechainHome extends React.Component {
   }
 
   _adminToken () {
-    return this.props.adminToken ||
-      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken')) ||
-      '';
+    return readHubAdminTokenFromBrowser(this.props.adminToken) || '';
   }
 
   _genEscrowPreimage () {
@@ -765,11 +768,14 @@ class SidechainHome extends React.Component {
             <Button as={Link} to="/contracts" basic size="small" title="Execution contracts and L1 registry">
               Contracts
             </Button>
+            <Button as={Link} to="/federations" basic size="small" icon="users" title="Multi-sig federation policy (k-of-n)">
+              Federations
+            </Button>
             <Button as={Link} to="/services/bitcoin" basic size="small" title="Bitcoin status, regtest, Lightning">
               Bitcoin
             </Button>
             {hubUi.bitcoinPayments ? (
-              <Button as={Link} to="/services/bitcoin/payments" basic size="small" title="Payjoin and payments">
+              <Button as={Link} to="/payments" basic size="small" title="Payjoin and payments">
                 Payments
               </Button>
             ) : null}

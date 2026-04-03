@@ -12,6 +12,7 @@ describe('bitcoinClient payjoin preferences', () => {
     assert.strictEqual(d.operatorDeposit, true);
     assert.strictEqual(d.paymentsReceive, true);
     assert.strictEqual(d.paymentsSend, true);
+    assert.strictEqual(d.receiveTaprootJoinmarket, true);
   });
 
   it('loadPayjoinPreferences returns defaults without window', () => {

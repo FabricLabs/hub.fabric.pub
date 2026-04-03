@@ -23,7 +23,7 @@ function HubRegtestAdminTokenPanel ({ network, adminTokenProp }) {
     <Message warning size="small" style={{ marginBottom: '1em' }} id="fabric-hub-admin-token-missing">
       <Message.Header>Regtest: Hub admin token</Message.Header>
       <p style={{ margin: '0.35em 0 0', color: '#333' }}>
-        Paste the token from first-time setup so this tab can broadcast from the Hub <code>bitcoind</code> wallet (Make Payment, Pay Now). Stored only in <code>localStorage</code> for this origin.
+        Paste the token from first-time setup so this tab can broadcast from the Hub <code>bitcoind</code> wallet (Make Payment, Pay Now). Stored in this origin&apos;s browser Fabric state store.
       </p>
       <Form
         style={{ marginTop: '0.75em', maxWidth: '28rem' }}

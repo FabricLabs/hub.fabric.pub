@@ -15,6 +15,12 @@ const txContractLabels = require('../functions/txContractLabels');
 const invoiceStore = require('../functions/invoiceStore');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const {
+  loadFederationSpendingPrefs,
+  mergePaymentMemoWithFederation,
+  subscribeFederationSpendingPrefs
+} = require('../functions/federationSpendingPrefs');
+const FederationWalletMultisigPanel = require('./FederationWalletMultisigPanel');
 
 class BitcoinTransactionsHome extends React.Component {
   constructor (props) {
@@ -31,9 +37,12 @@ class BitcoinTransactionsHome extends React.Component {
       paymentTo: '',
       paymentAmountSats: '',
       paymentMemo: '',
-      paymentResult: null
+      paymentResult: null,
+      recordFederationContext: false,
+      spendingPrefsTick: 0
     };
     this._refreshTimer = null;
+    this._fedPrefsUnsub = null;
   }
 
   async componentDidMount () {
@@ -116,10 +125,16 @@ class BitcoinTransactionsHome extends React.Component {
     }
 
     try {
+      const prefs = loadFederationSpendingPrefs();
+      const memo = mergePaymentMemoWithFederation(
+        this.state.paymentMemo,
+        prefs,
+        !!this.state.recordFederationContext
+      );
       const result = await sendPayment(this.state.upstream, this.state.wallet, {
         to: paymentTo,
         amountSats: paymentAmountSats,
-        memo: this.state.paymentMemo,
+        memo,
         adminToken
       });
       this.setState({
@@ -153,7 +168,7 @@ class BitcoinTransactionsHome extends React.Component {
               </Button>
               <Header as="h2" style={{ margin: 0 }}>
                 <Icon name="exchange" />
-                <Header.Content>Bitcoin Transactions</Header.Content>
+                <Header.Content>Transactions</Header.Content>
               </Header>
             </div>
             <Button basic size="small" onClick={() => this.refresh()}>
@@ -171,6 +186,13 @@ class BitcoinTransactionsHome extends React.Component {
             </div>
           </Message>
         </Segment>
+
+        <FederationWalletMultisigPanel
+          adminToken={this.props.adminToken}
+          recordFederationContext={this.state.recordFederationContext}
+          onRecordFederationContextChange={(v) => this.setState({ recordFederationContext: !!v })}
+          spendingPrefsTick={this.state.spendingPrefsTick}
+        />
 
         <Segment>
           <Header as="h3">Send Payment (Layer 1)</Header>

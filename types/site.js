@@ -24,7 +24,7 @@ class Site extends FabricSite {
       handle: 'fabric-site',
       authority: 'http://localhost:9332/services/fabric', // loopback service
       fabric: {
-        alias: '@sites/default'
+        alias: '@sites/fabric'
       },
       state: {
         title: 'Default Site'

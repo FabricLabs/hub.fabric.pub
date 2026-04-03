@@ -14,6 +14,7 @@ const { DEFAULT_SIGN_PROMPT } = require('../functions/fabricMessageEnvelope');
 const { fabricMessageSummaryFromHex } = require('../functions/fabricProtocolUrl');
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
+const { readStorageJSON } = require('../functions/fabricBrowserState');
 
 class DelegationSigningModal extends React.Component {
   constructor (props) {
@@ -149,9 +150,8 @@ class DelegationSigningModal extends React.Component {
 
   _getDelegationToken () {
     try {
-      const raw = window.localStorage.getItem(DELEGATION_STORAGE_KEY);
-      if (!raw) return null;
-      const d = JSON.parse(raw);
+      const d = readStorageJSON(DELEGATION_STORAGE_KEY, null);
+      if (!d) return null;
       return d && d.token ? String(d.token) : null;
     } catch (_) {
       return null;

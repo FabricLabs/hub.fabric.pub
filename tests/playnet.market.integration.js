@@ -499,7 +499,7 @@ function logPlaynetDesktopMcpHints (o) {
       '[PLAYNET:MCP] IDE browser — open the desktop Hub (same UI as Electron shell):',
       `  ${base}/`,
       `  ${base}/services/bitcoin`,
-      `  ${base}/services/bitcoin#bitcoin-explorer`,
+      `  ${base}/services/bitcoin/blocks`,
       tx0 && /^[0-9a-fA-F]{64}$/.test(tx0)
         ? `  ${base}/services/bitcoin/transactions/${tx0}  (sample tx from this run)`
         : null,

@@ -4,8 +4,11 @@ const crypto = require('crypto');
 const DistributedExecution = require('./fabricDistributedExecution');
 
 /**
- * Canonical JSON summary of a Bitcoin Core `getblock` (verbosity 2) result for Fabric Document storage.
- * Omits full verbose transactions to keep size bounded for large blocks.
+ * Immutable subset of Bitcoin Core `getblock` (verbosity 2) for Fabric Document identity + storage.
+ *
+ * Excludes RPC / index fields that can change without a new block (`confirmations`, `nextblockhash`),
+ * derived duplicates (`nTx`, `versionHex` vs `version`, `difficulty`, `chainwork`, `size`, `weight`,
+ * `strippedsize`), so document id and `DocumentPublish` / inventory preimage stay stable.
  *
  * @param {object} block — `getblock` JSON
  * @param {string|null} networkName
@@ -17,26 +20,17 @@ function buildBitcoinBlockSummary (block, networkName) {
   const txids = txs.map((t) => (typeof t === 'string' ? t : (t && t.txid) || '')).filter(Boolean);
   return {
     type: 'BitcoinBlock',
-    schemaVersion: 1,
+    schemaVersion: 3,
     network: networkName != null ? String(networkName) : null,
     hash: b.hash != null ? String(b.hash) : '',
     height: b.height != null ? Number(b.height) : null,
-    confirmations: b.confirmations != null ? Number(b.confirmations) : null,
     version: b.version != null ? Number(b.version) : null,
-    versionHex: b.versionHex != null ? String(b.versionHex) : null,
     merkleroot: b.merkleroot != null ? String(b.merkleroot) : null,
     time: b.time != null ? Number(b.time) : null,
     mediantime: b.mediantime != null ? Number(b.mediantime) : null,
     nonce: b.nonce != null ? Number(b.nonce) : null,
     bits: b.bits != null ? String(b.bits) : null,
-    difficulty: b.difficulty != null ? Number(b.difficulty) : null,
-    chainwork: b.chainwork != null ? String(b.chainwork) : null,
-    nTx: b.nTx != null ? Number(b.nTx) : txids.length,
     previousblockhash: b.previousblockhash != null ? String(b.previousblockhash) : null,
-    nextblockhash: b.nextblockhash != null ? String(b.nextblockhash) : null,
-    size: b.size != null ? Number(b.size) : null,
-    weight: b.weight != null ? Number(b.weight) : null,
-    strippedsize: b.strippedsize != null ? Number(b.strippedsize) : null,
     txids
   };
 }

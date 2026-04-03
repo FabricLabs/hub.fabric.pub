@@ -17,6 +17,8 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { featuresPageIdentityButtonLabelFromStorage } = require('../functions/hubIdentityUiHints');
+const { readStorageJSON } = require('../functions/fabricBrowserState');
 
 function FeaturesPage () {
   const [hubUiTick, setHubUiTick] = React.useState(0);
@@ -27,30 +29,20 @@ function FeaturesPage () {
       setIdentityButtonLabel('Log in');
       return;
     }
+    let sessionUnlocked = null;
     try {
       const unlockedRaw = window.sessionStorage && window.sessionStorage.getItem('fabric.identity.unlocked');
-      if (unlockedRaw) {
-        const unlocked = JSON.parse(unlockedRaw);
-        const xpub = unlocked && unlocked.xpub ? String(unlocked.xpub) : '';
-        if (xpub) {
-          setIdentityButtonLabel(`${xpub.slice(0, 8)}…${xpub.slice(-8)}`);
-          return;
-        }
-      }
-    } catch (_) {}
-
+      if (unlockedRaw) sessionUnlocked = JSON.parse(unlockedRaw);
+    } catch (_) {
+      sessionUnlocked = null;
+    }
+    let local = null;
     try {
-      const localRaw = window.localStorage && window.localStorage.getItem('fabric.identity.local');
-      if (localRaw) {
-        const local = JSON.parse(localRaw);
-        if (local && (local.xprv || local.id || local.xpub)) {
-          setIdentityButtonLabel('Locked');
-          return;
-        }
-      }
-    } catch (_) {}
-
-    setIdentityButtonLabel('Log in');
+      local = readStorageJSON('fabric.identity.local', null);
+    } catch (_) {
+      local = null;
+    }
+    setIdentityButtonLabel(featuresPageIdentityButtonLabelFromStorage(local, sessionUnlocked));
   }, []);
 
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -78,7 +70,7 @@ function FeaturesPage () {
         </Header>
         <p style={{ color: '#666', maxWidth: '42rem', lineHeight: 1.45 }}>
           <strong>{BRAND_NAME}</strong> — {BRAND_TAGLINE}. Identity and signing use standard Bitcoin cryptography (secp256k1; BIP32/BIP39-style keys in the browser). <strong>Distributed storage</strong> (publish, distribute, encrypted documents) and <strong>distributed execution</strong> (deterministic programs, optional L1-backed registry) live under Documents and Contracts. The{' '}
-          <Link to="/services/bitcoin">Bitcoin</Link> dashboard is always available; Activities, Features, and the block/tx explorer are always on. Peers management uses the hub admin token in this browser; sidechain demo and other Bitcoin sub-pages (payments, invoices, Lightning, crowdfund) follow toggles in{' '}
+          <Link to="/services/bitcoin">Bitcoin</Link> dashboard stays available; Notifications, the activity log, Features, block/tx explorer, and other areas follow toggles in{' '}
           <Link to="/settings/admin">Admin</Link> → Feature visibility. The shortcuts below match home and the <strong>More</strong> menu when those routes are enabled.
         </p>
       </Segment>
@@ -140,7 +132,19 @@ function FeaturesPage () {
 
       <Segment>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-          <Button as={Link} to="/settings/security" color="blue" icon labelPosition="left">
+          <Button
+            color="blue"
+            icon
+            labelPosition="left"
+            type="button"
+            title="Open the same Fabric identity manager as the top bar (create, import, unlock)"
+            aria-label={`Fabric identity — ${identityButtonLabel}`}
+            onClick={() => {
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
+              }
+            }}
+          >
             <Icon name="user" aria-hidden="true" />
             {identityButtonLabel}
           </Button>
@@ -158,10 +162,18 @@ function FeaturesPage () {
             <Icon name="file code" aria-hidden="true" />
             Contracts
           </Button>
-          <Button as={Link} to="/activities" basic icon labelPosition="left" title="Same as the bell in the top bar">
-            <Icon name="bell outline" aria-hidden="true" />
-            Activities
-          </Button>
+          {uf.activities ? (
+            <Button as={Link} to="/notifications" basic icon labelPosition="left" title="Wallet, Payjoin, and hub toasts (bell in the top bar)">
+              <Icon name="bell outline" aria-hidden="true" />
+              Notifications
+            </Button>
+          ) : null}
+          {uf.activities ? (
+            <Button as={Link} to="/activities" basic icon labelPosition="left" title="Hub message log, chat, Bitcoin blocks">
+              <Icon name="comments" aria-hidden="true" />
+              Activity log
+            </Button>
+          ) : null}
           {uf.sidechain ? (
             <Button as={Link} to="/sidechains" basic icon labelPosition="left">
               <Icon name="random" aria-hidden="true" />
@@ -182,9 +194,9 @@ function FeaturesPage () {
             </Button>
           ) : null}
           {uf.sidechain ? (
-            <Button as={Link} to="/settings/federation" basic icon labelPosition="left" title="Validator pubkeys and threshold">
+            <Button as={Link} to="/federations" basic icon labelPosition="left" title="Multi-sig validator policy (k-of-n)">
               <Icon name="users" aria-hidden="true" />
-              Distributed federation
+              Federations
             </Button>
           ) : null}
           <Button as={Link} to="/services/bitcoin" basic icon labelPosition="left">
@@ -192,7 +204,7 @@ function FeaturesPage () {
             Bitcoin
           </Button>
           {uf.bitcoinPayments ? (
-            <Button as={Link} to="/services/bitcoin/payments" basic icon labelPosition="left">
+            <Button as={Link} to="/payments" basic icon labelPosition="left">
               <Icon name="credit card outline" aria-hidden="true" />
               Payments
             </Button>
@@ -208,7 +220,7 @@ function FeaturesPage () {
             </Button>
           ) : null}
           {uf.bitcoinExplorer ? (
-            <Button as={Link} to="/services/bitcoin#bitcoin-explorer" basic icon labelPosition="left" title="Recent blocks and mempool transactions">
+            <Button as={Link} to="/services/bitcoin/blocks" basic icon labelPosition="left" title="Block explorer — recent blocks and mempool">
               <Icon name="search" aria-hidden="true" />
               Explorer
             </Button>

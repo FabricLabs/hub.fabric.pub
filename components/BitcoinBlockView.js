@@ -119,9 +119,9 @@ function BitcoinBlockView () {
           style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
           role="banner"
         >
-          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
+          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
             <Icon name="arrow left" aria-hidden="true" />
-            Explorer
+            Bitcoin
           </Button>
           <Header as="h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em', flexWrap: 'wrap' }}>
             <Icon name="cube" aria-hidden="true" />
@@ -165,7 +165,7 @@ function BitcoinBlockView () {
                   <Icon name='arrow right' style={{ marginLeft: '0.5em' }} />
                 </Button>
               ) : (
-                <Button disabled title='No known descendant (chain tip on this node)'>
+                <Button disabled title='No known descendant (chain tip on this hub)'>
                   Child block
                   <Icon name='arrow right' style={{ marginLeft: '0.5em' }} />
                 </Button>
@@ -178,10 +178,16 @@ function BitcoinBlockView () {
       {!rawHash && (
         <Message warning>
           <Message.Header>Missing block hash</Message.Header>
-          <p>Open a block from the Bitcoin explorer so the URL includes a 64-character hex block id.</p>
-          <Button as={Link} to="/services/bitcoin" primary style={{ marginTop: '0.75em' }}>
+          <p>Open a block from the block explorer so the URL includes a 64-character hex block id.</p>
+          <Button
+            as={Link}
+            to="/services/bitcoin/blocks"
+            primary
+            style={{ marginTop: '0.75em' }}
+            title="Open block explorer (recent blocks and mempool)"
+          >
             <Icon name="bitcoin" />
-            Bitcoin / explorer
+            Block Explorer
           </Button>
         </Message>
       )}
@@ -203,9 +209,15 @@ function BitcoinBlockView () {
                 <Icon name="refresh" />
                 Retry
               </Button>
-              <Button as={Link} to="/services/bitcoin" size="small" basic>
+              <Button
+                as={Link}
+                to="/services/bitcoin/blocks"
+                size="small"
+                basic
+                title="Open block explorer (recent blocks and mempool)"
+              >
                 <Icon name="list" />
-                Explorer
+                Block Explorer
               </Button>
             </div>
           ) : null}
@@ -215,16 +227,22 @@ function BitcoinBlockView () {
       {!!rawHash && !loading && !error && !block && (
         <Message warning>
           <Message.Header>Block not found</Message.Header>
-          <p>This node does not have that block, or the hash is unknown on this network.</p>
+          <p>This hub&apos;s Bitcoin node does not have that block, or the hash is unknown on this network.</p>
           {BLOCK_HASH_REGEX.test(rawHash) ? (
             <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
               <Button type="button" size="small" onClick={() => void loadBlock()}>
                 <Icon name="refresh" />
                 Retry
               </Button>
-              <Button as={Link} to="/services/bitcoin" size="small" basic>
+              <Button
+                as={Link}
+                to="/services/bitcoin/blocks"
+                size="small"
+                basic
+                title="Open block explorer (recent blocks and mempool)"
+              >
                 <Icon name="list" />
-                Explorer
+                Block Explorer
               </Button>
             </div>
           ) : null}

@@ -34,10 +34,22 @@ const {
   mergePublishedDocumentsFromHubStatus
 } = require('../functions/documentPublishSync');
 const { safeIdentityErr, safeDebugStatePreview, safeUrlForLog } = require('../functions/fabricSafeLog');
-
-const IDENTITY_UI_UNLOCK_SUFFIX = ' Use Settings → Fabric identity or the top-bar Locked control.';
-const MSG_IDENTITY_UNLOCK_CHAT = `Unlock identity to send chat messages.${IDENTITY_UI_UNLOCK_SUFFIX}`;
-const MSG_IDENTITY_UNLOCK_PEER = `Unlock identity to send peer messages.${IDENTITY_UI_UNLOCK_SUFFIX}`;
+const {
+  fabricIdentityChatDisabledReasonPlain,
+  fabricIdentityPeerDisabledReasonPlain
+} = require('../functions/hubIdentityUiHints');
+const { createFabricBrowserStore } = require('../functions/fabricBrowserStore');
+const { readStorageJSON } = require('../functions/fabricBrowserState');
+const BridgeMessageCollection = require('../types/bridgeMessageCollection');
+const {
+  HUB_FABRIC_SESSION_ID,
+  SESSION_KIND_HUB,
+  SESSION_KIND_WEBRTC,
+  fabricWireBodyIntegrityOk,
+  HEADER_SIZE: FABRIC_WIRE_HEADER_SIZE,
+  BRIDGE_INBOUND_WIRE_MAX_BYTES,
+  FabricTransportSession
+} = require('../functions/fabricTransportSession');
 
 /**
  * Describe inbound/outbound payloads for debug logs without printing raw bytes or bodies (privacy).
@@ -120,6 +132,39 @@ class Bridge extends React.Component {
       peerTopologyGossip: { byReporter: {} }
     };
 
+    // Canonical browser-side Fabric state store (offline-first baseline).
+    this._fabricStore = createFabricBrowserStore({
+      storageKey: 'fabric:state',
+      initialState: this.globalState
+    });
+    const restoredUnified = this._fabricStore.GET('/');
+    if (restoredUnified && typeof restoredUnified === 'object') {
+      this.globalState = {
+        ...this.globalState,
+        ...restoredUnified,
+        conversations: {
+          ...(this.globalState.conversations || {}),
+          ...((restoredUnified && restoredUnified.conversations) || {})
+        },
+        messages: {
+          ...(this.globalState.messages || {}),
+          ...((restoredUnified && restoredUnified.messages) || {})
+        },
+        documents: {
+          ...(this.globalState.documents || {}),
+          ...((restoredUnified && restoredUnified.documents) || {})
+        },
+        distributeProposals: {
+          ...(this.globalState.distributeProposals || {}),
+          ...((restoredUnified && restoredUnified.distributeProposals) || {})
+        },
+        peerTopologyGossip: {
+          ...(this.globalState.peerTopologyGossip || {}),
+          ...((restoredUnified && restoredUnified.peerTopologyGossip) || {})
+        }
+      };
+    }
+
     this.attempts = 1;
     this.messageQueue = [];
     this.webrtcMessageQueue = [];
@@ -161,6 +206,14 @@ class Bridge extends React.Component {
     this._lastWebRTCChatDeliveryCount = null;
     this._lastWebRTCChatSentAt = 0;
     this._lastWebRTCRecipientPeerIds = [];
+    /** Throttle identity unlock UI opens when several guarded actions fire in one burst. */
+    this._lastIdentityUnlockUiNotifyAt = 0;
+
+    /** Per Fabric transport leg: hub WebSocket + each WebRTC peer — Tree, chain, reputation. */
+    this._fabricTransportSessions = new Map();
+    /** After hub wire misbehavior exhaustion, skip auto-reconnect (operator must refresh). */
+    this._fabricHubReconnectSuspended = false;
+    this._peerListUiRefreshTimer = null;
 
     this._walletBalanceBaseline = new Set();
     this._lastWalletBalanceTotal = Object.create(null);
@@ -192,9 +245,10 @@ class Bridge extends React.Component {
     if (Array.isArray(restoredPeerQueue)) this.peerMessageQueue = restoredPeerQueue;
 
     const restoredMessages = this._readJSONFromStorage('fabric:messages', null);
-    if (restoredMessages && typeof restoredMessages === 'object') {
-      this.globalState.messages = restoredMessages;
-    }
+    this._messageCollection = new BridgeMessageCollection({
+      data: (restoredMessages && typeof restoredMessages === 'object') ? restoredMessages : {}
+    });
+    this.globalState.messages = this._messageCollection.exportMap();
 
     // Restore documents (unified store: all docs with content; publish adds ref to hub index)
     const docs = {};
@@ -217,6 +271,8 @@ class Bridge extends React.Component {
       this.globalState.distributeProposals = restoredProposals;
     }
 
+    this._persistGlobalState();
+
     return this;
   }
 
@@ -238,14 +294,20 @@ class Bridge extends React.Component {
    * @returns {Array} Array of WebRTC peer objects with id, status, direction, connectedAt
    */
   get localWebrtcPeers () {
-    const peers = Array.from(this.webrtcPeers.values()).map(p => ({
-      id: p.id,
-      status: p.status,
-      direction: p.direction,
-      connectedAt: p.connectedAt,
-      error: p.error,
-      lastSeen: p.lastSeen
-    }));
+    const peers = Array.from(this.webrtcPeers.values()).map((p) => {
+      const id = p && p.id != null ? String(p.id) : '';
+      const sess = id && this._fabricTransportSessions && this._fabricTransportSessions.get(id);
+      return {
+        id: p.id,
+        status: p.status,
+        direction: p.direction,
+        connectedAt: p.connectedAt,
+        error: p.error,
+        lastSeen: p.lastSeen,
+        score: sess && sess.score != null ? sess.score : 100,
+        misbehavior: sess && sess.misbehavior != null ? sess.misbehavior : 0
+      };
+    });
 
     // Also include peers that are currently connecting
     for (const peerId of this._connectingPeers) {
@@ -328,6 +390,33 @@ class Bridge extends React.Component {
         signal
       }]
     });
+  }
+
+  _hubReportWebRTCPeerConnected (remotePeerId, direction) {
+    if (!this.peerId || !remotePeerId) return;
+    try {
+      this._sendJSONRPC({
+        method: 'WebRTCPeerConnected',
+        params: [{
+          selfPeerId: this.peerId,
+          remotePeerId: String(remotePeerId),
+          direction: direction || null
+        }]
+      });
+    } catch (_) { /* ignore */ }
+  }
+
+  _hubReportWebRTCPeerDisconnected (remotePeerId) {
+    if (!this.peerId || !remotePeerId) return;
+    try {
+      this._sendJSONRPC({
+        method: 'WebRTCPeerDisconnected',
+        params: [{
+          selfPeerId: this.peerId,
+          remotePeerId: String(remotePeerId)
+        }]
+      });
+    } catch (_) { /* ignore */ }
   }
 
   _newRTCSessionId (peerId) {
@@ -431,6 +520,8 @@ class Bridge extends React.Component {
       }
       this._webrtcConnected = true;
       this.setState({ webrtcConnected: true });
+      this._webrtcRewardPeer(peerId, 3, 'data-channel-open');
+      this._hubReportWebRTCPeerConnected(peerId, (entry && entry.initiator) ? 'outbound' : 'inbound');
       // Gossip our peer list to the new peer so cross-cluster discovery can begin
       setTimeout(() => this._sendWebRTCPeerGossip(peerId), 500);
     };
@@ -722,11 +813,17 @@ class Bridge extends React.Component {
 
   updateGlobalState (patchMessage) {
     try {
-      const jsonPatch = [patchMessage];
-      const result = applyPatch(this.globalState, jsonPatch, true, false);
+      let next = null;
+      if (this._fabricStore && typeof this._fabricStore.PATCH === 'function') {
+        next = this._fabricStore.PATCH(patchMessage);
+      } else {
+        const jsonPatch = [patchMessage];
+        const result = applyPatch(this.globalState, jsonPatch, true, false);
+        next = result && result.newDocument;
+      }
 
-      if (result.newDocument) {
-        this.globalState = result.newDocument;
+      if (next) {
+        this.globalState = next;
 
         // Persist messages when patch touches /messages
         const path = patchMessage && patchMessage.path;
@@ -762,7 +859,7 @@ class Bridge extends React.Component {
           });
         }
       } else {
-        console.error('[BRIDGE]', 'Failed to apply JSON-Patch:', safeIdentityErr(result));
+        console.error('[BRIDGE]', 'Failed to apply JSON-Patch.');
       }
 
     } catch (error) {
@@ -813,9 +910,21 @@ class Bridge extends React.Component {
     }
   }
 
+  _persistGlobalState () {
+    if (!this._fabricStore || typeof this._fabricStore.PUT !== 'function') return;
+    try {
+      this._fabricStore.PUT('/', this.globalState, { persist: true });
+    } catch (e) {}
+  }
+
   _persistDocuments () {
     const docs = this.globalState.documents || {};
     this._writeJSONToStorage('fabric:documents', docs);
+    if (this._fabricStore && typeof this._fabricStore.PUT === 'function') {
+      try {
+        this._fabricStore.PUT('/documents', docs, { persist: true });
+      } catch (e) {}
+    }
   }
 
   /**
@@ -853,6 +962,11 @@ class Bridge extends React.Component {
     this.globalState.distributeProposals = this.globalState.distributeProposals || {};
     this.globalState.distributeProposals[proposal.id] = proposal;
     this._writeJSONToStorage('fabric:distributeProposals', this.globalState.distributeProposals);
+    if (this._fabricStore && typeof this._fabricStore.PUT === 'function') {
+      try {
+        this._fabricStore.PUT('/distributeProposals', this.globalState.distributeProposals, { persist: true });
+      } catch (e) {}
+    }
     window.dispatchEvent(new CustomEvent('distributeProposalReceived', { detail: { proposal } }));
     window.dispatchEvent(new CustomEvent('globalStateUpdate', {
       detail: {
@@ -978,17 +1092,26 @@ class Bridge extends React.Component {
     return this._hasUnlockedIdentity();
   }
 
-  _notifyIdentityUnlockRequired (message = MSG_IDENTITY_UNLOCK_CHAT) {
+  _notifyIdentityUnlockRequired (message) {
+    const auth = this.props && this.props.auth;
+    const resolved = typeof message === 'string' && message.trim()
+      ? message
+      : fabricIdentityChatDisabledReasonPlain(auth);
     try {
       window.dispatchEvent(new CustomEvent('fabric:chatWarning', {
         detail: {
           reason: 'identity-locked',
-          message
+          message: resolved
         }
       }));
     } catch (e) {}
 
     if (this.props && typeof this.props.onRequireUnlock === 'function') {
+      const now = Date.now();
+      if (this._lastIdentityUnlockUiNotifyAt && now - this._lastIdentityUnlockUiNotifyAt < 2500) {
+        return;
+      }
+      this._lastIdentityUnlockUiNotifyAt = now;
       try {
         this.props.onRequireUnlock();
       } catch (e) {}
@@ -1306,7 +1429,15 @@ class Bridge extends React.Component {
           return ta - tb;
         }).slice(-500).map((k) => [k, filtered[k]]))
       : filtered;
-    this._writeJSONToStorage('fabric:messages', toStore);
+    if (!this._messageCollection) this._messageCollection = new BridgeMessageCollection();
+    this._messageCollection.loadMap(toStore);
+    this.globalState.messages = this._messageCollection.exportMap();
+    this._writeJSONToStorage('fabric:messages', this.globalState.messages);
+    if (this._fabricStore && typeof this._fabricStore.PUT === 'function') {
+      try {
+        this._fabricStore.PUT('/messages', this.globalState.messages, { persist: true });
+      } catch (e) {}
+    }
   }
 
   _onClientBalanceUpdate (ev) {
@@ -1477,7 +1608,7 @@ class Bridge extends React.Component {
         kind,
         title,
         subtitle,
-        href: uf.bitcoinPayments ? '/services/bitcoin/payments' : undefined,
+        href: uf.bitcoinPayments ? '/payments' : undefined,
         copyText: txid || undefined
       });
     } catch (e) { /* ignore */ }
@@ -1928,6 +2059,13 @@ class Bridge extends React.Component {
         }
       });
 
+      if (this._fabricHubReconnectSuspended) {
+        if (this.settings.debug) {
+          console.debug('[BRIDGE]', 'Hub reconnect suspended (fabric transport penalty); clear in UI or reload.');
+        }
+        return;
+      }
+
       // Attempt to reconnect after a delay
       if (this.attempts < 5) {
         const delay = this.generateInterval(this.attempts);
@@ -1976,15 +2114,19 @@ class Bridge extends React.Component {
   /**
    * Handle messages received via WebRTC
    */
-  handleWebRTCMessage (data) {
+  handleWebRTCMessage (data, sourcePeerId = null) {
     try {
       console.debug('[BRIDGE]', 'Processing WebRTC message:', fabricDebugDescribePayload(data));
+
+      const transport = sourcePeerId != null && String(sourcePeerId)
+        ? { sessionId: String(sourcePeerId), kind: SESSION_KIND_WEBRTC }
+        : { sessionId: HUB_FABRIC_SESSION_ID, kind: SESSION_KIND_HUB };
 
       // Handle our structured WebRTC messages
       if (data && typeof data === 'object' && data.type === 'fabric-message') {
         // Decode the base64 data back to Buffer
         const messageData = Buffer.from(data.data, 'base64');
-        this.onSocketMessage({ data: messageData });
+        this.onSocketMessage({ data: messageData, _fabricTransport: transport });
         return;
       }
 
@@ -2000,7 +2142,7 @@ class Bridge extends React.Component {
       }
 
       // Process the message using the existing WebSocket message handler
-      this.onSocketMessage({ data: messageData });
+      this.onSocketMessage({ data: messageData, _fabricTransport: transport });
 
     } catch (error) {
       console.error('[BRIDGE]', 'Error handling WebRTC message:', safeIdentityErr(error));
@@ -2281,6 +2423,109 @@ class Bridge extends React.Component {
     }
   }
 
+  _resetHubFabricTransportSession () {
+    this._fabricTransportSessions.set(
+      HUB_FABRIC_SESSION_ID,
+      new FabricTransportSession(HUB_FABRIC_SESSION_ID, SESSION_KIND_HUB)
+    );
+  }
+
+  /**
+   * @param {string} sessionId
+   * @param {'hub_websocket'|'webrtc_mesh'} kind
+   * @returns {FabricTransportSession|null}
+   */
+  _getFabricTransportSession (sessionId, kind) {
+    const id = sessionId != null ? String(sessionId) : '';
+    if (!id) return null;
+    let s = this._fabricTransportSessions.get(id);
+    if (!s) {
+      s = new FabricTransportSession(id, kind);
+      this._fabricTransportSessions.set(id, s);
+    }
+    return s;
+  }
+
+  _fabricRewardTransport (sessionId, kind, delta, _reason) {
+    const s = this._getFabricTransportSession(sessionId, kind);
+    if (!s) return;
+    s.reward(delta);
+    this._notifyPeerListUiRefresh();
+  }
+
+  _fabricPenalizeTransport (sessionId, kind, penalty, reason) {
+    const s = this._getFabricTransportSession(sessionId, kind);
+    if (!s) return;
+    const { disconnect } = s.penalize(penalty);
+    if (this.settings.debug) {
+      console.debug('[BRIDGE]', 'Fabric transport penalized:', sessionId, kind, reason, 'score', s.score, 'misbehavior', s.misbehavior);
+    }
+    if (disconnect) {
+      if (kind === SESSION_KIND_HUB && sessionId === HUB_FABRIC_SESSION_ID) {
+        try {
+          toast.warning(
+            `Disconnected from hub${reason ? ` (${reason})` : ''}. Fabric transport reputation exhausted (score ${s.score}).`,
+            { header: 'Hub' }
+          );
+        } catch (_) { /* ignore */ }
+        this._fabricDisconnectHubTransport(reason || 'transport-reputation');
+      } else {
+        try {
+          toast.warning(
+            `Disconnected browser mesh peer${reason ? ` (${reason})` : ''}. Reputation exhausted (score ${s.score}, misbehavior ${s.misbehavior}).`,
+            { header: 'Mesh peer' }
+          );
+        } catch (_) { /* ignore */ }
+        this.disconnectWebRTCPeer(sessionId);
+      }
+      return;
+    }
+    this._notifyPeerListUiRefresh();
+  }
+
+  _fabricDisconnectHubTransport (reason) {
+    this._fabricHubReconnectSuspended = true;
+    if (!this.ws) return;
+    try {
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        this.ws.close(4002, String(reason || 'fabric-transport').slice(0, 120));
+      }
+    } catch (e) {
+      console.warn('[BRIDGE]', 'Error closing WebSocket after transport penalty:', safeIdentityErr(e));
+    }
+  }
+
+  /**
+   * @param {string} peerId
+   * @returns {{ score: number, misbehavior: number }}
+   */
+  getWebRTCPeerReputation (peerId) {
+    const id = peerId != null ? String(peerId) : '';
+    const s = id ? this._fabricTransportSessions.get(id) : null;
+    if (!s) return { score: 100, misbehavior: 0 };
+    return { score: Number(s.score) || 0, misbehavior: Number(s.misbehavior) || 0 };
+  }
+
+  _notifyPeerListUiRefresh () {
+    if (typeof window === 'undefined') return;
+    if (this._peerListUiRefreshTimer) return;
+    this._peerListUiRefreshTimer = setTimeout(() => {
+      this._peerListUiRefreshTimer = null;
+      try {
+        const ns = this.state.networkStatus || this.state.lastNetworkStatus;
+        window.dispatchEvent(new CustomEvent('networkStatusUpdate', { detail: { networkStatus: ns } }));
+      } catch (_) { /* ignore */ }
+    }, 200);
+  }
+
+  _webrtcRewardPeer (peerId, delta, reason) {
+    this._fabricRewardTransport(peerId, SESSION_KIND_WEBRTC, delta, reason);
+  }
+
+  _webrtcPenalizePeer (peerId, penalty, reason) {
+    this._fabricPenalizeTransport(peerId, SESSION_KIND_WEBRTC, penalty, reason);
+  }
+
   /**
    * Handle messages received from a WebRTC peer (not the server).
    * @param {string} peerId - The peer ID that sent the message
@@ -2288,18 +2533,51 @@ class Bridge extends React.Component {
    */
   handleWebRTCPeerMessage (peerId, data) {
     try {
+      const WEBRTC_MAX_TEXT = 256 * 1024;
+      const WEBRTC_MAX_BINARY = 8 * 1024 * 1024;
+
+      if (typeof data === 'string' && data.length > WEBRTC_MAX_TEXT) {
+        this._webrtcPenalizePeer(peerId, 50, 'oversized-text-frame');
+        return;
+      }
+
       if (typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer) {
-        this.onSocketMessage({ data });
+        if (data.byteLength > WEBRTC_MAX_BINARY) {
+          this._webrtcPenalizePeer(peerId, 50, 'oversized-binary-frame');
+          return;
+        }
+        this.onSocketMessage({
+          data,
+          _fabricTransport: { sessionId: peerId, kind: SESSION_KIND_WEBRTC }
+        });
         return;
       }
       if (typeof Uint8Array !== 'undefined' && data instanceof Uint8Array) {
         const u8 = data;
-        this.onSocketMessage({ data: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) });
+        if (u8.byteLength > WEBRTC_MAX_BINARY) {
+          this._webrtcPenalizePeer(peerId, 50, 'oversized-binary-frame');
+          return;
+        }
+        this.onSocketMessage({
+          data: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength),
+          _fabricTransport: { sessionId: peerId, kind: SESSION_KIND_WEBRTC }
+        });
         return;
       }
       if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        if (typeof data.size === 'number' && data.size > WEBRTC_MAX_BINARY) {
+          this._webrtcPenalizePeer(peerId, 50, 'oversized-binary-frame');
+          return;
+        }
         data.arrayBuffer().then((ab) => {
-          this.onSocketMessage({ data: ab });
+          if (ab.byteLength > WEBRTC_MAX_BINARY) {
+            this._webrtcPenalizePeer(peerId, 50, 'oversized-binary-frame');
+            return;
+          }
+          this.onSocketMessage({
+            data: ab,
+            _fabricTransport: { sessionId: peerId, kind: SESSION_KIND_WEBRTC }
+          });
         }).catch((err) => console.error('[BRIDGE]', 'WebRTC Blob read failed:', safeIdentityErr(err)));
         return;
       }
@@ -2312,7 +2590,10 @@ class Bridge extends React.Component {
           try {
             payload = JSON.parse(trimmed);
           } catch (parseError) {
-            // Keep raw payload for app-level listeners; typed handlers require objects.
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              this._webrtcPenalizePeer(peerId, 12, 'invalid-json');
+              return;
+            }
             payload = data;
           }
         }
@@ -2329,12 +2610,21 @@ class Bridge extends React.Component {
         switch (payload.type) {
           case 'ping':
             this.sendToWebRTCPeer(peerId, { type: 'pong', timestamp: Date.now() });
+            this._webrtcRewardPeer(peerId, 1, 'answered-ping');
             break;
           case 'P2P_PEER_GOSSIP':
           case 'webrtc-peer-gossip': {
             const peers = Array.isArray(payload.object && payload.object.peers)
               ? payload.object.peers
               : (Array.isArray(payload.peers) ? payload.peers : []);
+            if (peers.length > 128) {
+              this._webrtcPenalizePeer(peerId, 30, 'gossip-list-oversized');
+              break;
+            }
+            if (peers.some((p) => !p || (p.id == null && p.peerId == null))) {
+              this._webrtcPenalizePeer(peerId, 25, 'gossip-malformed-entry');
+              break;
+            }
             if (peers.length > 0) {
               this._recordPeerGossipTopology(
                 { actor: payload.actor || { id: peerId }, object: { peers } },
@@ -2350,6 +2640,7 @@ class Bridge extends React.Component {
               if (candidates.length > 0) {
                 this.handlePeerCandidates(candidates);
               }
+              this._webrtcRewardPeer(peerId, 1, 'valid-gossip');
             }
             break;
           }
@@ -2363,6 +2654,7 @@ class Bridge extends React.Component {
                 console.debug('[BRIDGE]', 'Received', P2P_PEERING_OFFER, 'from', peerId, '- attempting connect');
                 this.handlePeerCandidates([{ id: offererId, peerId: offererId, lastSeen: Date.now(), source: 'peeringOffer' }]);
               }
+              this._webrtcRewardPeer(peerId, 1, 'peering-offer');
             }
             break;
           }
@@ -2373,11 +2665,20 @@ class Bridge extends React.Component {
               peerInfo.lastSeen = Date.now();
               this.webrtcPeers.set(peerId, peerInfo);
             }
+            this._webrtcRewardPeer(peerId, 1, 'pong');
             break;
           }
           case 'fabric-message': {
             // Signed Fabric Message (base64); relay with original preserved for onion routing.
             const base64 = payload.data;
+            if (typeof base64 !== 'string' || !base64.length) {
+              this._webrtcPenalizePeer(peerId, 20, 'fabric-message-empty');
+              break;
+            }
+            if (base64.length > Math.floor(1.5 * 1024 * 1024)) {
+              this._webrtcPenalizePeer(peerId, 40, 'fabric-message-oversized');
+              break;
+            }
             if (base64 && this._isConnected && this.ws && this.ws.readyState === 1) {
               const envelope = {
                 original: base64,
@@ -2389,7 +2690,8 @@ class Bridge extends React.Component {
                 params: [{ fromPeerId: peerId, envelope }]
               });
             }
-            this.handleWebRTCMessage(payload);
+            this.handleWebRTCMessage(payload, peerId);
+            this._webrtcRewardPeer(peerId, 1, 'fabric-message');
             break;
           }
           case 'P2P_DISTRIBUTE_PROPOSAL': {
@@ -2491,6 +2793,7 @@ class Bridge extends React.Component {
                   params: [{ fromPeerId: peerId, envelope }]
                 });
               }
+              this._webrtcRewardPeer(peerId, 1, 'chat');
             } catch (e) {
               console.warn('[BRIDGE]', 'Could not create local WebRTC chat message:', safeIdentityErr(e));
             }
@@ -2498,7 +2801,7 @@ class Bridge extends React.Component {
           }
           default:
             // Pass through to the general WebRTC message handler
-            this.handleWebRTCMessage(payload);
+            this.handleWebRTCMessage(payload, peerId);
         }
       }
     } catch (error) {
@@ -2649,6 +2952,11 @@ class Bridge extends React.Component {
   disconnectWebRTCPeer (peerId) {
     if (!peerId) return;
 
+    const existingInfo = this.webrtcPeers.get(peerId);
+    if (existingInfo && existingInfo.status === 'connected') {
+      this._hubReportWebRTCPeerDisconnected(peerId);
+    }
+
     if (this._webrtcConnectTimers && this._webrtcConnectTimers.has(peerId)) {
       clearTimeout(this._webrtcConnectTimers.get(peerId));
       this._webrtcConnectTimers.delete(peerId);
@@ -2684,6 +2992,9 @@ class Bridge extends React.Component {
     this.webrtcPeers.delete(peerId);
     this._rtcPeers.delete(peerId);
     this._rtcPendingIce.delete(peerId);
+    if (this._fabricTransportSessions && this._fabricTransportSessions.has(peerId)) {
+      this._fabricTransportSessions.delete(peerId);
+    }
     if (this._connectingPeers && this._connectingPeers.has(peerId)) {
       this._connectingPeers.delete(peerId);
     }
@@ -2703,6 +3014,14 @@ class Bridge extends React.Component {
   disconnectAllWebRTCPeers () {
     try {
       for (const [peerId, peerInfo] of this.webrtcPeers) {
+        if (peerInfo && peerInfo.status === 'connected') {
+          this._hubReportWebRTCPeerDisconnected(peerId);
+        }
+      }
+    } catch (e) {}
+
+    try {
+      for (const [peerId, peerInfo] of this.webrtcPeers) {
         if (peerInfo && peerInfo.connection) {
           try {
             peerInfo.connection.close();
@@ -2716,6 +3035,11 @@ class Bridge extends React.Component {
     this.webrtcPeers.clear();
     this._rtcPeers.clear();
     this._rtcPendingIce.clear();
+    if (this._fabricTransportSessions) {
+      const hub = this._fabricTransportSessions.get(HUB_FABRIC_SESSION_ID);
+      this._fabricTransportSessions.clear();
+      if (hub) this._fabricTransportSessions.set(HUB_FABRIC_SESSION_ID, hub);
+    }
     if (this._connectingPeers && this._connectingPeers.size) {
       this._connectingPeers.clear();
     }
@@ -2732,6 +3056,7 @@ class Bridge extends React.Component {
     try {
       this.forceUpdate();
     } catch (e) {}
+    this._notifyPeerListUiRefresh();
   }
 
   /**
@@ -2850,6 +3175,10 @@ class Bridge extends React.Component {
     if (this._peerDiscoveryTimer) {
       clearTimeout(this._peerDiscoveryTimer);
       this._peerDiscoveryTimer = null;
+    }
+    if (this._peerListUiRefreshTimer) {
+      clearTimeout(this._peerListUiRefreshTimer);
+      this._peerListUiRefreshTimer = null;
     }
 
     // Clean up WebSocket
@@ -2985,20 +3314,9 @@ class Bridge extends React.Component {
    * @returns {Promise<{ signature: string, publicKey: string }|null>}
    */
   async signArbitraryTextDelegated (text) {
-    if (typeof window === 'undefined' || !window.localStorage) return null;
-    let raw;
-    try {
-      raw = window.localStorage.getItem(DELEGATION_STORAGE_KEY);
-    } catch (e) {
-      return null;
-    }
-    if (!raw) return null;
-    let d;
-    try {
-      d = JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
+    if (typeof window === 'undefined') return null;
+    const d = readStorageJSON(DELEGATION_STORAGE_KEY, null);
+    if (!d) return null;
     const token = d && d.token;
     if (!token && d && d.externalSigning === false) return null;
     if (!token) return null;
@@ -3296,12 +3614,43 @@ class Bridge extends React.Component {
         return;
       }
 
-      // Create Fabric Message from buffer
-      const message = Message.fromBuffer(buffer);
-      if (!message) {
-        console.debug('[BRIDGE]', 'Failed to create message from buffer');
+      const transportMeta = (msg && msg._fabricTransport) || {
+        sessionId: HUB_FABRIC_SESSION_ID,
+        kind: SESSION_KIND_HUB
+      };
+      const tSessionId = transportMeta.sessionId;
+      const tKind = transportMeta.kind;
+
+      if (buffer.length > BRIDGE_INBOUND_WIRE_MAX_BYTES) {
+        this._fabricPenalizeTransport(tSessionId, tKind, 50, 'oversized-wire-frame');
         return;
       }
+      if (buffer.length < FABRIC_WIRE_HEADER_SIZE) {
+        this._fabricPenalizeTransport(tSessionId, tKind, 35, 'truncated-wire-header');
+        return;
+      }
+
+      let message;
+      try {
+        message = Message.fromBuffer(buffer);
+      } catch (parseErr) {
+        if (this.settings.debug) {
+          console.debug('[BRIDGE]', 'Message.fromBuffer failed:', safeIdentityErr(parseErr));
+        }
+        this._fabricPenalizeTransport(tSessionId, tKind, 40, 'wire-parse-error');
+        return;
+      }
+      if (!message) {
+        this._fabricPenalizeTransport(tSessionId, tKind, 35, 'wire-null-message');
+        return;
+      }
+      if (!fabricWireBodyIntegrityOk(message)) {
+        this._fabricPenalizeTransport(tSessionId, tKind, 45, 'body-hash-mismatch');
+        return;
+      }
+
+      const sess = this._getFabricTransportSession(tSessionId, tKind);
+      if (sess) sess.commitWireMessage(message);
 
       // Handle message based on type
       switch (message.type) {
@@ -3732,7 +4081,13 @@ class Bridge extends React.Component {
             if (!original || !originalType) break;
             if (originalType === 'fabric-message') {
               const buf = Buffer.from(original, 'base64');
-              this.onSocketMessage({ data: buf });
+              const firstHop = envelope && Array.isArray(envelope.hops) && envelope.hops[0] && envelope.hops[0].from;
+              const relId = firstHop != null ? String(firstHop) : HUB_FABRIC_SESSION_ID;
+              const relKind = firstHop != null ? SESSION_KIND_WEBRTC : SESSION_KIND_HUB;
+              this.onSocketMessage({
+                data: buf,
+                _fabricTransport: { sessionId: relId, kind: relKind }
+              });
               break;
             }
             if (originalType === P2P_PEER_GOSSIP) {
@@ -3954,6 +4309,8 @@ class Bridge extends React.Component {
   }
 
   async onSocketOpen () {
+    this._fabricHubReconnectSuspended = false;
+    this._resetHubFabricTransportSession();
     this.attempts = 1;
     const now = Date.now();
 
@@ -4126,7 +4483,7 @@ class Bridge extends React.Component {
 
     if (!this._hasUnlockedIdentity()) {
       console.warn('[BRIDGE]', 'submitChatMessage called without an unlocked identity; message will not be sent.');
-      this._notifyIdentityUnlockRequired(MSG_IDENTITY_UNLOCK_CHAT);
+      this._notifyIdentityUnlockRequired();
       return false;
     }
     const identityId = this._getIdentityId();
@@ -4265,7 +4622,7 @@ class Bridge extends React.Component {
     if (!text) return;
     if (!this._hasUnlockedIdentity()) {
       console.warn('[BRIDGE]', 'sendSubmitChatMessageRequest called without an unlocked identity; message will not be sent.');
-      this._notifyIdentityUnlockRequired(MSG_IDENTITY_UNLOCK_CHAT);
+      this._notifyIdentityUnlockRequired();
       return;
     }
     const created = body && body.created ? body.created : Date.now();
@@ -4530,7 +4887,7 @@ class Bridge extends React.Component {
     if (!resolved || !resolvedText) return;
     if (!this._hasUnlockedIdentity()) {
       console.warn('[BRIDGE]', 'sendPeerMessageRequest called without an unlocked identity; message will not be sent.');
-      this._notifyIdentityUnlockRequired(MSG_IDENTITY_UNLOCK_PEER);
+      this._notifyIdentityUnlockRequired(fabricIdentityPeerDisabledReasonPlain(this.props && this.props.auth));
       return;
     }
     const created = Date.now();
@@ -4681,6 +5038,45 @@ class Bridge extends React.Component {
       }, 400);
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending RequestFabricPeerResync:', safeIdentityErr(error));
+    }
+  }
+
+  /**
+   * Operator: send `P2P_FLUSH_CHAIN` to connected peers above the hub's trusted registry score.
+   * @param {{ snapshotBlockHash: string, network?: string, label?: string }} object
+   * @param {string} adminToken - hub admin token (required by JSON-RPC)
+   */
+  sendFlushChainToTrustedPeersRequest (object, adminToken) {
+    const snap = object && object.snapshotBlockHash ? String(object.snapshotBlockHash).trim() : '';
+    if (!/^[0-9a-fA-F]{64}$/.test(snap)) {
+      console.warn('[BRIDGE] sendFlushChainToTrustedPeersRequest: snapshotBlockHash must be 64 hex');
+      return;
+    }
+    const token = adminToken != null ? String(adminToken).trim() : '';
+    if (!token) {
+      console.warn('[BRIDGE] sendFlushChainToTrustedPeersRequest: adminToken required');
+      return;
+    }
+    try {
+      const param = {
+        snapshotBlockHash: snap.toLowerCase(),
+        adminToken: token
+      };
+      if (object.network != null && String(object.network).trim()) param.network = String(object.network).trim();
+      if (object.label != null && String(object.label).trim()) param.label = String(object.label).trim();
+      const payload = {
+        method: 'SendFlushChainToTrustedPeers',
+        params: [param]
+      };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+      setTimeout(() => {
+        try {
+          if (typeof this.sendNetworkStatusRequest === 'function') this.sendNetworkStatusRequest();
+        } catch (e) {}
+      }, 400);
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending SendFlushChainToTrustedPeers:', safeIdentityErr(error));
     }
   }
 

@@ -39,6 +39,7 @@ const {
   postPayjoinProposalWithDesktopFallback
 } = require('../functions/payjoinBrowserWallet');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const { fabricIdentityNeedFullKeyPlain } = require('../functions/hubIdentityUiHints');
 const txContractLabels = require('../functions/txContractLabels');
 const invoiceStore = require('../functions/invoiceStore');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
@@ -46,6 +47,10 @@ const QrScannerModal = require('./QrScannerModal');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const {
+  loadFederationSpendingPrefs,
+  mergePaymentMemoWithFederation
+} = require('../functions/federationSpendingPrefs');
 const { safeBriefMessage } = require('../functions/fabricSafeLog');
 const { hasExternalSigningDelegation } = require('../functions/fabricDelegationLocal');
 
@@ -159,6 +164,7 @@ class BitcoinPaymentsHome extends React.Component {
       payjoinCapabilities: { available: false },
       payjoinPreferReceive: !!pjPref.paymentsReceive,
       payjoinPreferSend: !!pjPref.paymentsSend,
+      payjoinReceiveUseJoinmarket: pjPref.receiveTaprootJoinmarket !== false,
       receivePayjoinAmountSats: '',
       payjoinReceiveBusy: false,
       payjoinReceiveResult: null,
@@ -168,7 +174,8 @@ class BitcoinPaymentsHome extends React.Component {
       acpPayjoinResult: null,
       lightningSummary: {},
       lightningChannels: [],
-      lightningOutputs: []
+      lightningOutputs: [],
+      recordFederationPayment: false
     };
   }
 
@@ -413,10 +420,15 @@ class BitcoinPaymentsHome extends React.Component {
     }
 
     try {
+      const memo = mergePaymentMemoWithFederation(
+        this.state.memo,
+        loadFederationSpendingPrefs(),
+        !!this.state.recordFederationPayment
+      );
       const result = await sendPayment(this.state.upstream, wallet, {
         to,
         amountSats,
-        memo: this.state.memo,
+        memo,
         adminToken
       });
       const paidTxid = (result && result.payment && result.payment.txid) || (result && result.txid);
@@ -504,11 +516,13 @@ class BitcoinPaymentsHome extends React.Component {
   }
 
   async handleCreatePayjoinReceiveLink () {
+    const useJm = !!this.state.payjoinReceiveUseJoinmarket;
     const addr = String(this.state.receiveAddress || '').trim();
-    if (!addr) {
+    if (!useJm && !addr) {
+      const id = (this.props && this.props.identity) || {};
       this.setState({
         payjoinReceiveResult: {
-          error: 'Receive address is required. Unlock identity (Settings → Fabric identity or top-bar Locked) or refresh.'
+          error: `Receive address is required. ${fabricIdentityNeedFullKeyPlain(id)} Or refresh.`
         }
       });
       return;
@@ -517,7 +531,9 @@ class BitcoinPaymentsHome extends React.Component {
     try {
       const receiveWallet = getNextReceiveWalletContext((this.props && this.props.identity) || {});
       const session = await createPayjoinDeposit(this.state.upstream, receiveWallet, {
-        address: addr,
+        ...(useJm
+          ? { receiveTemplate: 'joinmarket_taproot_v1' }
+          : { address: addr }),
         amountSats: Number(this.state.receivePayjoinAmountSats || 0),
         label: 'Payments receive',
         memo: ''
@@ -531,7 +547,7 @@ class BitcoinPaymentsHome extends React.Component {
             kind: 'payjoin',
             title: 'Payjoin receive link ready',
             subtitle: session.amountSats ? `${session.amountSats} sats` : 'BIP21 + pj',
-            href: `/services/bitcoin/payments?payjoinSession=${encodeURIComponent(sid)}`,
+            href: `/payments?payjoinSession=${encodeURIComponent(sid)}`,
             copyText: session.bip21Uri || session.proposalURL || sid
           });
         }
@@ -572,7 +588,11 @@ class BitcoinPaymentsHome extends React.Component {
     const xprv = String(w.xprv || '').trim();
     const xpub = String(w.xpub || '').trim();
     if (!xprv || !xpub) {
-      this.setState({ localPayjoinResult: { error: 'Unlock your identity (local signing material) to pay Payjoin in the app. Keys are not sent to the Hub.' } });
+      this.setState({
+        localPayjoinResult: {
+          error: `${fabricIdentityNeedFullKeyPlain(identity)} Local Payjoin signing uses keys in this tab only — they are not sent to the Hub.`
+        }
+      });
       return;
     }
     const parsed = parseBitcoinUriForPayjoin(this.state.to);
@@ -675,7 +695,11 @@ class BitcoinPaymentsHome extends React.Component {
     const xprv = String(w.xprv || '').trim();
     const xpub = String(w.xpub || '').trim();
     if (!xprv || !xpub) {
-      this.setState({ acpPayjoinResult: { error: 'Unlock your identity to sign locally (xprv never leaves the browser).' } });
+      this.setState({
+        acpPayjoinResult: {
+          error: `${fabricIdentityNeedFullKeyPlain(identity)} xprv never leaves the browser.`
+        }
+      });
       return;
     }
     const parsed = parseBitcoinUriForPayjoin(this.state.to);
@@ -796,7 +820,7 @@ class BitcoinPaymentsHome extends React.Component {
             kind: 'payjoin_proposal',
             title: 'Payjoin proposal submitted',
             subtitle: sessionId,
-            href: `/services/bitcoin/payments?payjoinSession=${encodeURIComponent(sessionId)}`,
+            href: `/payments?payjoinSession=${encodeURIComponent(sessionId)}`,
             copyText: sessionId
           });
         }
@@ -861,13 +885,13 @@ class BitcoinPaymentsHome extends React.Component {
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5em' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
+                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
                     <Icon name="arrow left" aria-hidden="true" />
-                    Explorer
+                    Bitcoin
                   </Button>
                   <Header as="h2" id="fabric-bitcoin-payments-h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em' }}>
                     <Icon name="credit card outline" aria-hidden="true" />
-                    <Header.Content>{transactionsOnly ? 'Bitcoin Transactions' : 'Bitcoin Payments'}</Header.Content>
+                    <Header.Content>{transactionsOnly ? 'Transactions' : 'Payments'}</Header.Content>
                   </Header>
                 </div>
                 <div role="toolbar" aria-label="Related Bitcoin pages" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
@@ -900,7 +924,7 @@ class BitcoinPaymentsHome extends React.Component {
                   <strong>Single Payjoin receiver &amp; Lightning path</strong>
                 </p>
                 <p style={{ margin: '0.35em 0 0', color: '#555' }}>
-                  This Hub exposes one <strong>Payjoin</strong> endpoint (BIP77 deposit sessions; <code>pj=</code> is a standard BIP78 receiver URL for compatible wallets). <strong>Lightning</strong> uses the Hub&apos;s managed node.
+                  This Hub exposes one <strong>Payjoin</strong> REST base under <code>/services/payjoin</code> (BIP78-shaped POST; <code>fabricProtocol.asyncPayjoinRoadmap</code> is BIP77; <code>/payments/payjoin</code> is an optional mirror). <strong>Lightning</strong> uses the Hub&apos;s managed node.
                   On-chain <strong>receive</strong> and <strong>send</strong> default to Payjoin-oriented flows below; turn either off with the toggles when you want a plain address or a simple broadcast.
                 </p>
               </Message>
@@ -994,7 +1018,7 @@ class BitcoinPaymentsHome extends React.Component {
             </Header>
             <p id="fabric-bitcoin-wealth-stack-summary" style={{ margin: '0 0 0.85em', opacity: 0.88, fontSize: '0.92em', lineHeight: 1.45 }}>
               Three rails for accumulating and routing value: <strong style={{ color: '#9fd89f' }}>Fabric</strong> contracts and document exchange,
-              {' '}Payjoin deposit coordination (BIP77 deposits + BIP78 <code>pj=</code>),
+              {' '}Payjoin deposit coordination (BIP78 HTTP + BIP21 <code>pj=</code>; BIP77 async via <code>fabricProtocol</code> roadmap),
               and <strong style={{ color: '#7ec8e8' }}>Lightning</strong> channels on the Hub node.
               As the network grows, each rail can move real sats: documents tie to distribute / inventory flows; Payjoin sessions aggregate deposits; Lightning routes instant settlement.
             </p>
@@ -1020,11 +1044,11 @@ class BitcoinPaymentsHome extends React.Component {
               </div>
               <div style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid #5a5a32', borderRadius: 6, padding: '0.65rem 0.75rem' }}>
                 <div style={{ fontSize: '0.7rem', letterSpacing: '0.12em', color: '#e8e070', marginBottom: '0.35em' }}>② COORDINATION</div>
-                <div style={{ fontSize: '0.88em' }}>Payjoin sessions (BIP77) with live receiver state and proposal activity.</div>
+                <div style={{ fontSize: '0.88em' }}>Payjoin sessions with live receiver state and proposal activity.</div>
                 <div style={{ fontSize: '0.8em', color: '#aaa', marginTop: '0.35em' }}>
                   Receiver: {this.state.payjoinCapabilities && this.state.payjoinCapabilities.available ? <Label size="mini" color="green" horizontal>up</Label> : <Label size="mini" color="grey" horizontal>down</Label>}
                 </div>
-                <Button as={Link} to="/services/bitcoin/payments#wealth-payjoin-board" size="small" basic inverted style={{ marginTop: '0.5em' }} icon labelPosition="left">
+                <Button as={Link} to="/payments#wealth-payjoin-board" size="small" basic inverted style={{ marginTop: '0.5em' }} icon labelPosition="left">
                   <Icon name="shield alternate" /> Session board
                 </Button>
               </div>
@@ -1082,7 +1106,7 @@ class BitcoinPaymentsHome extends React.Component {
               <Button as={Link} to="/services/lightning" size="small" basic icon labelPosition="left">
                 <Icon name="bolt" /> Lightning channels
               </Button>
-              <Button as={Link} to="/services/bitcoin/payments#wealth-payjoin-board" size="small" basic icon labelPosition="left">
+              <Button as={Link} to="/payments#wealth-payjoin-board" size="small" basic icon labelPosition="left">
                 <Icon name="shield alternate" /> Payjoin sessions
               </Button>
               <Button as={Link} to="/settings/bitcoin-wallet" size="small" basic icon labelPosition="left">
@@ -1102,7 +1126,8 @@ class BitcoinPaymentsHome extends React.Component {
                 Request Payment
               </Header>
               <p id="fabric-btc-request-payment-desc" style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.5em' }}>
-                Default: offer a <strong>Payjoin</strong> BIP21 link (BIP78-compatible). Plain address stays available for legacy wallets.
+                Default: <strong>Joinmarket-style</strong> Payjoin — Hub mints a P2TR deposit (operator leaf + beacon federation reserve leaf);{' '}
+                <code>pj=</code> and proposal POST follow BIP78-shaped sync semantics (see capabilities <code>fabricProtocol</code>). Use classic P2WPKH receive if you need the address line below.
               </p>
               <div style={{ marginBottom: '0.65em' }}>
                 <Checkbox
@@ -1115,6 +1140,19 @@ class BitcoinPaymentsHome extends React.Component {
                     this.setState({ payjoinPreferReceive: v });
                   }}
                   label="Use Payjoin for this receive (on by default)"
+                />
+              </div>
+              <div style={{ marginBottom: '0.65em' }}>
+                <Checkbox
+                  toggle
+                  checked={!!this.state.payjoinReceiveUseJoinmarket}
+                  disabled={!(this.state.payjoinCapabilities && this.state.payjoinCapabilities.available)}
+                  onChange={(e, data) => {
+                    const v = !!(data && data.checked);
+                    savePayjoinPreferences({ receiveTaprootJoinmarket: v });
+                    this.setState({ payjoinReceiveUseJoinmarket: v, payjoinReceiveResult: null });
+                  }}
+                  label="Taproot Joinmarket-style receive (default — federation leaf pluggable via hub env)"
                 />
               </div>
               {this.state.payjoinPreferReceive && this.state.payjoinCapabilities && this.state.payjoinCapabilities.available && (
@@ -1131,7 +1169,7 @@ class BitcoinPaymentsHome extends React.Component {
                   <Button
                     primary
                     loading={this.state.payjoinReceiveBusy}
-                    disabled={!this.state.receiveAddress}
+                    disabled={!this.state.payjoinReceiveUseJoinmarket && !this.state.receiveAddress}
                     onClick={() => this.handleCreatePayjoinReceiveLink()}
                   >
                     <Icon name="shield alternate" />
@@ -1158,7 +1196,7 @@ class BitcoinPaymentsHome extends React.Component {
                           >
                             <Icon name="copy outline" /> Copy BIP21
                           </Button>
-                          <Button as={Link} size="mini" primary to={this.state.payjoinReceiveResult.id ? `/services/bitcoin/payments?payjoinSession=${encodeURIComponent(this.state.payjoinReceiveResult.id)}` : '/services/bitcoin/payments'} style={{ marginLeft: '0.35em' }}>
+                          <Button as={Link} size="mini" primary to={this.state.payjoinReceiveResult.id ? `/payments?payjoinSession=${encodeURIComponent(this.state.payjoinReceiveResult.id)}` : '/payments'} style={{ marginLeft: '0.35em' }}>
                             Open PSBT panel
                           </Button>
                         </div>
@@ -1232,6 +1270,18 @@ class BitcoinPaymentsHome extends React.Component {
                     this.setState({ payjoinPreferSend: v });
                   }}
                   label="Prefer Payjoin-compatible outgoing (on by default)"
+                />
+              </div>
+              <div style={{ marginBottom: '0.65em' }}>
+                <Checkbox
+                  checked={!!this.state.recordFederationPayment}
+                  onChange={(_, data) => this.setState({ recordFederationPayment: !!(data && data.checked) })}
+                  label={
+                    <span>
+                      Record as federation-related payment (append spending criteria from{' '}
+                      <Link to="/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel">Wallet → Federation</Link>)
+                    </span>
+                  }
                 />
               </div>
               <Form>
@@ -1585,7 +1635,7 @@ class BitcoinPaymentsHome extends React.Component {
         >
           <section aria-labelledby="fabric-btc-jm-board-h4" aria-describedby="fabric-btc-jm-board-desc">
           <Header as="h4" id="fabric-btc-jm-board-h4" style={{ fontFamily: 'inherit', color: '#f5e6a6', marginBottom: '0.5em' }}>
-            Payjoin deposit session dashboard (BIP77)
+            Payjoin deposit session dashboard
           </Header>
           <p id="fabric-btc-jm-board-desc" style={{ color: '#7a9e7a', fontSize: '0.82rem', marginBottom: '0.65em' }}>
             Each row is a receiver deposit endpoint with current status, amount target, and proposal activity (<code>N_PROP</code>).
@@ -1614,7 +1664,7 @@ class BitcoinPaymentsHome extends React.Component {
         {!transactionsOnly ? (
           <Segment>
           <section aria-labelledby="fabric-btc-pj-proposals-h3" aria-describedby="fabric-btc-pj-proposals-intro">
-          <Header as='h3' id="fabric-btc-pj-proposals-h3">Payjoin Proposals (BIP77)</Header>
+          <Header as='h3' id="fabric-btc-pj-proposals-h3">Payjoin proposals (BIP78 receiver)</Header>
           <div id="fabric-btc-pj-proposals-intro">
           <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge:</strong> Hub Payjoin service.</p>
           <p style={{ color: '#666' }}>
@@ -1719,7 +1769,7 @@ class BitcoinPaymentsHome extends React.Component {
                             as={Link}
                             primary
                             disabled={!s.id}
-                            to={s.id ? `/services/bitcoin/payments?payjoinSession=${encodeURIComponent(s.id)}` : '/services/bitcoin/payments'}
+                            to={s.id ? `/payments?payjoinSession=${encodeURIComponent(s.id)}` : '/payments'}
                             title="Fill the proposal form with this session"
                           >
                             Use for PSBT

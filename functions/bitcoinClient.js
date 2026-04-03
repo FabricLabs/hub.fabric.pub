@@ -4,6 +4,13 @@ const crypto = require('crypto');
 const BIP32 = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
 const payments = require('bitcoinjs-lib/src/payments');
+const {
+  readStorageJSON,
+  writeStorageJSON,
+  readStorageString,
+  writeStorageString,
+  removeStorageKey
+} = require('./fabricBrowserState');
 
 const SETTINGS_KEY = 'fabric.bitcoin.upstream';
 const PAYJOIN_PREFS_KEY = 'fabric.bitcoin.payjoinPreferences';
@@ -38,10 +45,9 @@ function loadSpendXpubWatchForIdentity (identity = {}) {
   const fabricId = identity && identity.id ? String(identity.id).trim() : '';
   const masterXpub = identity && identity.xpub ? String(identity.xpub).trim() : '';
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return null;
-    const raw = window.localStorage.getItem(SPEND_XPUB_WATCH_KEY);
-    if (!raw) return null;
-    const p = JSON.parse(raw);
+    if (typeof window === 'undefined') return null;
+    const p = readStorageJSON(SPEND_XPUB_WATCH_KEY, null);
+    if (!p) return null;
     if (!p || typeof p !== 'object' || !p.spendAccountXpub) return null;
     const spendX = String(p.spendAccountXpub).trim();
     if (!spendX) return null;
@@ -62,19 +68,19 @@ function saveSpendXpubWatchForIdentity (identity = {}, wallet = {}) {
   const spendAccountXpub = wallet && wallet.xpub ? String(wallet.xpub).trim() : '';
   if (!spendAccountXpub || !String(identity.xprv || '').trim()) return;
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(SPEND_XPUB_WATCH_KEY, JSON.stringify({
+    if (typeof window === 'undefined') return;
+    writeStorageJSON(SPEND_XPUB_WATCH_KEY, {
       fabricIdentityId: fabricId || null,
       masterXpub: masterXpub || null,
       spendAccountXpub,
       walletId: wallet.walletId ? String(wallet.walletId) : null
-    }));
+    });
   } catch (_) {}
 }
 
 function clearSpendXpubWatch () {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) window.localStorage.removeItem(SPEND_XPUB_WATCH_KEY);
+    if (typeof window !== 'undefined') removeStorageKey(SPEND_XPUB_WATCH_KEY);
   } catch (_) {}
 }
 
@@ -117,17 +123,16 @@ function normalizeBaseUrl (value) {
 function loadUpstreamSettings () {
   const defaults = {
     explorerBaseUrl: '/services/bitcoin',
-    paymentsBaseUrl: '/services/bitcoin/payments',
+    paymentsBaseUrl: '/payments',
     lightningBaseUrl: '/services/lightning',
     payjoinBaseUrl: '/services/payjoin',
     apiToken: ''
   };
 
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return defaults;
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return defaults;
-    const parsed = JSON.parse(raw);
+    if (typeof window === 'undefined') return defaults;
+    const parsed = readStorageJSON(SETTINGS_KEY, null);
+    if (!parsed || typeof parsed !== 'object') return defaults;
     return {
       explorerBaseUrl: normalizeBaseUrl(parsed && parsed.explorerBaseUrl) || defaults.explorerBaseUrl,
       paymentsBaseUrl: normalizePaymentsBaseUrl(parsed && parsed.paymentsBaseUrl),
@@ -148,17 +153,18 @@ function defaultPayjoinPreferences () {
   return {
     operatorDeposit: true,
     paymentsReceive: true,
-    paymentsSend: true
+    paymentsSend: true,
+    /** Default Payjoin deposit address: Hub-built P2TR (operator + beacon federation reserve leaves). BIP77 unchanged. */
+    receiveTaprootJoinmarket: true
   };
 }
 
 function loadPayjoinPreferences () {
   const d = defaultPayjoinPreferences();
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return { ...d };
-    const raw = window.localStorage.getItem(PAYJOIN_PREFS_KEY);
-    if (!raw) return { ...d };
-    const p = JSON.parse(raw);
+    if (typeof window === 'undefined') return { ...d };
+    const p = readStorageJSON(PAYJOIN_PREFS_KEY, null);
+    if (!p) return { ...d };
     if (!p || typeof p !== 'object') return { ...d };
     return { ...d, ...p };
   } catch (e) {
@@ -169,8 +175,8 @@ function loadPayjoinPreferences () {
 function savePayjoinPreferences (patch = {}) {
   const next = Object.assign(loadPayjoinPreferences(), patch);
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(PAYJOIN_PREFS_KEY, JSON.stringify(next));
+    if (typeof window !== 'undefined') {
+      writeStorageJSON(PAYJOIN_PREFS_KEY, next);
     }
   } catch (e) {}
   return next;
@@ -186,8 +192,8 @@ function saveUpstreamSettings (settings = {}) {
   };
 
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    if (typeof window !== 'undefined') {
+      writeStorageJSON(SETTINGS_KEY, next);
     }
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
       try {
@@ -255,9 +261,9 @@ function _bip44IndexFromStoredString (raw) {
  */
 function loadPersistedDefaultBip44Raw (role) {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return null;
+    if (typeof window === 'undefined') return null;
     const key = role === 'receive' ? LOCAL_BIP44_RECEIVE_DEFAULT_KEY : LOCAL_BIP44_SEND_DEFAULT_KEY;
-    const v = window.localStorage.getItem(key);
+    const v = readStorageString(key);
     if (v == null || !String(v).trim()) return null;
     return String(v).trim();
   } catch (_) {
@@ -281,17 +287,17 @@ function savePersistedDefaultBip44Account (role, value) {
   const key = role === 'receive' ? LOCAL_BIP44_RECEIVE_DEFAULT_KEY : LOCAL_BIP44_SEND_DEFAULT_KEY;
   try {
     migrateLegacyBip44IfNeeded();
-    if (typeof window === 'undefined' || !window.localStorage) return false;
+    if (typeof window === 'undefined') return false;
     if (value === null || value === undefined || value === '') {
-      window.localStorage.removeItem(key);
+      removeStorageKey(key);
     } else {
       const s = typeof value === 'string' ? value.trim().toLowerCase() : value;
       if (s === 'master' || s === 'legacy') {
-        window.localStorage.setItem(key, 'master');
+        writeStorageString(key, 'master');
       } else {
         const n = Number(value);
-        if (!Number.isFinite(n) || n < 0) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, String(Math.floor(n)));
+        if (!Number.isFinite(n) || n < 0) removeStorageKey(key);
+        else writeStorageString(key, String(Math.floor(n)));
       }
     }
   } catch (_) {
@@ -552,10 +558,8 @@ function getNetworkForBitcoinJs (networkName = '') {
 
 function loadBalanceCache () {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return {};
-    const raw = window.localStorage.getItem(BALANCE_CACHE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
+    if (typeof window === 'undefined') return {};
+    const parsed = readStorageJSON(BALANCE_CACHE_KEY, {});
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     return parsed;
   } catch (e) {
@@ -565,8 +569,8 @@ function loadBalanceCache () {
 
 function saveBalanceCache (store = {}) {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(BALANCE_CACHE_KEY, JSON.stringify(store || {}));
+    if (typeof window !== 'undefined') {
+      writeStorageJSON(BALANCE_CACHE_KEY, store || {});
     }
   } catch (e) {}
 }
@@ -624,10 +628,8 @@ function clearBalanceCache (walletId = '') {
 
 function loadLocalWalletStore () {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return {};
-    const raw = window.localStorage.getItem(LOCAL_WALLET_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
+    if (typeof window === 'undefined') return {};
+    const parsed = readStorageJSON(LOCAL_WALLET_KEY, {});
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     return parsed;
   } catch (e) {
@@ -637,8 +639,8 @@ function loadLocalWalletStore () {
 
 function saveLocalWalletStore (store = {}) {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(LOCAL_WALLET_KEY, JSON.stringify(store || {}));
+    if (typeof window !== 'undefined') {
+      writeStorageJSON(LOCAL_WALLET_KEY, store || {});
     }
   } catch (e) {}
 }
@@ -911,6 +913,7 @@ function resolveBaseUrl (value, fallback = '/services/bitcoin') {
 function normalizeWalletsBaseUrl (value) {
   const normalized = normalizeBaseUrl(value);
   if (!normalized) return '/services/bitcoin/wallets';
+  if (normalized === '/payments') return '/services/bitcoin/wallets';
   if (/\/services\/bitcoin$/i.test(normalized)) return `${normalized}/wallets`;
   if (/\/services\/bitcoin\/payments$/i.test(normalized)) return normalized.replace(/\/payments$/i, '/wallets');
   if (/\/wallet$/i.test(normalized)) return normalized.replace(/\/wallet$/i, '/wallets');
@@ -919,9 +922,12 @@ function normalizeWalletsBaseUrl (value) {
 
 function normalizePaymentsBaseUrl (value) {
   const normalized = normalizeBaseUrl(value);
-  if (!normalized) return '/services/bitcoin/payments';
-  if (/\/services\/bitcoin$/i.test(normalized)) return `${normalized}/payments`;
-  if (/\/services\/bitcoin\/wallets$/i.test(normalized)) return normalized.replace(/\/wallets$/i, '/payments');
+  if (!normalized) return '/payments';
+  if (normalized === '/services/bitcoin/payments') return '/payments';
+  if (/\/services\/bitcoin\/payments$/i.test(normalized)) return '/payments';
+  if (/\/services\/bitcoin$/i.test(normalized)) return '/payments';
+  if (/\/services\/bitcoin\/wallets$/i.test(normalized)) return '/payments';
+  if (normalized === '/payments') return '/payments';
   return normalized;
 }
 
@@ -945,9 +951,13 @@ function normalizeLightningBaseUrl (value) {
 function normalizePayjoinBaseUrl (value) {
   const normalized = normalizeBaseUrl(value);
   if (!normalized) return '/services/payjoin';
+  if (normalized === '/services/payjoin') return '/services/payjoin';
+  if (/\/services\/payjoin$/i.test(normalized)) return '/services/payjoin';
+  if (/\/payments\/payjoin$/i.test(normalized)) return '/services/payjoin';
   if (/\/services\/bitcoin\/payjoin$/i.test(normalized)) return '/services/payjoin';
   if (/\/services\/bitcoin$/i.test(normalized)) return '/services/payjoin';
   if (/\/services\/bitcoin\/payments$/i.test(normalized)) return '/services/payjoin';
+  if (normalized === '/payments') return '/services/payjoin';
   return normalized;
 }
 
@@ -1242,7 +1252,7 @@ async function sendPayment (settings = {}, wallet = {}, payment = {}) {
 
   const adminToken = String(payment.adminToken || payment.token || '').trim();
   if (!adminToken) {
-    throw new Error('Admin token is required: POST /services/bitcoin/payments spends from this hub\'s bitcoind wallet and broadcasts a real transaction (identity xpub selects wallet id for the request).');
+    throw new Error('Admin token is required: POST /payments (or legacy POST /services/bitcoin/payments) spends from this hub\'s bitcoind wallet and broadcasts a real transaction (identity xpub selects wallet id for the request).');
   }
 
   const payload = {
@@ -1567,11 +1577,11 @@ function buildCrowdfundFunderBitcoinUri (address, amountBtc) {
 function buildCrowdfundPaymentsDeepLink (opts = {}) {
   const payTo = String(opts.payTo || opts.address || '').trim();
   const amountSats = Math.round(Number(opts.amountSats != null ? opts.amountSats : opts.payAmountSats || 0));
-  if (!payTo) return '/services/bitcoin/payments';
+  if (!payTo) return '/payments';
   const qs = new URLSearchParams();
   qs.set('payTo', payTo);
   if (Number.isFinite(amountSats) && amountSats > 0) qs.set('payAmountSats', String(amountSats));
-  return `/services/bitcoin/payments?${qs.toString()}`;
+  return `/payments?${qs.toString()}`;
 }
 
 /**
@@ -1602,6 +1612,7 @@ async function createPayjoinDeposit (settings = {}, wallet = {}, options = {}) {
   const baseUrl = normalizePayjoinBaseUrl(settings.payjoinBaseUrl || settings.explorerBaseUrl);
   if (!baseUrl) throw new Error('Payjoin API base URL is not configured.');
 
+  const receiveTemplate = String(options.receiveTemplate || '').trim();
   const payload = {
     walletId: wallet.walletId,
     xpub: wallet.xpub,
@@ -1611,6 +1622,9 @@ async function createPayjoinDeposit (settings = {}, wallet = {}, options = {}) {
     memo: options.memo || '',
     expiresInSeconds: Number(options.expiresInSeconds || 0) || undefined
   };
+  if (receiveTemplate) payload.receiveTemplate = receiveTemplate;
+  const fed = String(options.federationXOnlyHex || '').trim();
+  if (fed) payload.federationXOnlyHex = fed;
 
   const result = await tryRequests(baseUrl, [
     { method: 'POST', path: '/sessions', body: payload }

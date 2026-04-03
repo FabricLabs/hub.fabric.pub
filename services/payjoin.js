@@ -4,6 +4,8 @@ const Service = require('@fabric/core/types/service');
 const Actor = require('@fabric/core/types/actor');
 const Tree = require('@fabric/core/types/tree');
 const psbtFabric = require('../functions/psbtFabric');
+const payjoinJoinmarketTaproot = require('../functions/payjoinJoinmarketTaproot');
+const { buildFabricPayjoinProtocolProfile } = require('../functions/payjoinFabricProtocol');
 
 class PayjoinService extends Service {
   constructor (settings = {}) {
@@ -15,7 +17,9 @@ class PayjoinService extends Service {
       network: 'mainnet',
       endpointBasePath: '/services/payjoin',
       defaultSessionTTLSeconds: 1800,
-      maxOpenSessions: 256
+      maxOpenSessions: 256,
+      /** Optional 64-hex x-only federation pubkey for joinmarket taproot reserve leaf (mainnet recommended). */
+      beaconFederationXOnlyHex: ''
     }, settings);
 
     this.fs = null;
@@ -57,12 +61,34 @@ class PayjoinService extends Service {
   getCapabilities () {
     const now = Date.now();
     const sessions = this.listSessions({ includeExpired: false, limit: 10 });
+    const joinmarketTaprootTemplate = {
+      template: payjoinJoinmarketTaproot.TEMPLATE_ID,
+      contractVersion: payjoinJoinmarketTaproot.JOINMARKET_TAPROOT_CONTRACT_VERSION,
+      description:
+        'NUMS-internal P2TR with two tapleaves: hub operator checksig (default Joinmarket-style / ACP path) + beacon federation reserve checksig. BIP21 pj= unchanged.',
+      requiresHubIdentityKey: true,
+      beaconFederationXOnlyConfigured: !!(
+        String(this.settings.beaconFederationXOnlyHex || '').trim() ||
+        String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '').trim()
+      )
+    };
+    const fabricProtocol = buildFabricPayjoinProtocolProfile({
+      endpointBasePath: this.settings.endpointBasePath,
+      joinmarketTaprootTemplate: true,
+      beaconFederationLeafConfigured: !!(
+        String(this.settings.beaconFederationXOnlyHex || '').trim() ||
+        String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '').trim()
+      )
+    });
     return {
       available: this.settings.enable !== false,
       service: 'payjoin',
-      bip: 'BIP77',
+      bip: 'BIP78',
+      asyncPayjoinRoadmap: 'BIP77',
       network: this.settings.network,
       endpointBasePath: this.settings.endpointBasePath,
+      fabricProtocol,
+      joinmarketTaprootTemplate,
       acpHubBoost: {
         description: 'SIGHASH_ALL|ANYONECANPAY payer PSBT + POST .../sessions/:id/acp-hub-boost (admin) appends Hub wallet input; outputs unchanged.',
         pathTemplate: `${this.settings.endpointBasePath}/sessions/:sessionId/acp-hub-boost`
@@ -102,14 +128,48 @@ class PayjoinService extends Service {
   }
 
   async createDepositSession (input = {}) {
-    const address = String(input.address || '').trim();
+    const receiveTemplate = String(input.receiveTemplate || '').trim().toLowerCase();
+    let address = String(input.address || '').trim();
+    let receiveContract = null;
+
+    if (receiveTemplate === 'joinmarket_taproot_v1') {
+      if (!this.key || typeof this.key.pubkey !== 'string' || !this.key.pubkey) {
+        throw new Error('Hub identity key is required for joinmarket taproot receive sessions.');
+      }
+      const opBuf = Buffer.from(String(this.key.pubkey).trim(), 'hex');
+      if (opBuf.length !== 33) {
+        throw new Error('Hub identity pubkey must be a 33-byte compressed key.');
+      }
+      const federationX = payjoinJoinmarketTaproot.resolveBeaconFederationXOnly({
+        explicitHex: input.federationXOnlyHex,
+        configHex: this.settings.beaconFederationXOnlyHex,
+        networkName: this.settings.network
+      });
+      const built = payjoinJoinmarketTaproot.buildPayjoinJoinmarketTaproot({
+        networkName: this.settings.network,
+        operatorPubkeyCompressed: opBuf,
+        federationXOnly: federationX
+      });
+      address = built.address;
+      receiveContract = {
+        template: built.template,
+        contractVersion: built.contractVersion,
+        network: built.network,
+        operatorPubkeyCompressedHex: built.operatorPubkeyCompressedHex,
+        federationXOnlyHex: built.federationXOnlyHex,
+        internalPubkeyHex: built.internalPubkeyHex,
+        leafOrder: built.leafOrder,
+        leaves: built.leaves
+      };
+    }
+
     const walletId = String(input.walletId || '').trim() || 'default';
     const amountSats = Number(input.amountSats || 0);
     const label = String(input.label || input.memo || '').trim();
     const memo = String(input.memo || '').trim();
     const ttlSeconds = Math.max(30, Math.min(86400, Number(input.expiresInSeconds || this.settings.defaultSessionTTLSeconds || 1800)));
 
-    if (!address) throw new Error('Address is required for a Payjoin deposit session.');
+    if (!address) throw new Error('Address is required for a Payjoin deposit session (or use receiveTemplate joinmarket_taproot_v1).');
 
     const openSessions = this.listSessions({ includeExpired: false, limit: 1000 });
     if (openSessions.length >= Number(this.settings.maxOpenSessions || 256)) {
@@ -153,6 +213,8 @@ class PayjoinService extends Service {
       memo,
       bip21Uri,
       proposalURL,
+      receiveTemplate: receiveTemplate || undefined,
+      receiveContract: receiveContract || undefined,
       proposals: {},
       events: [createdEvent],
       merkle: {
@@ -320,6 +382,8 @@ class PayjoinService extends Service {
       memo: session.memo,
       bip21Uri: session.bip21Uri,
       proposalURL: session.proposalURL,
+      receiveTemplate: session.receiveTemplate,
+      receiveContract: session.receiveContract,
       proposalCount: Object.keys(session.proposals || {}).length,
       merkle: session.merkle || {},
       proposals: proposalRows

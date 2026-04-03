@@ -5,37 +5,9 @@ const { Link, useSearchParams } = require('react-router-dom');
 const { Button, Header, Icon, Segment } = require('semantic-ui-react');
 const ActivityStream = require('./ActivityStream');
 const {
-  readUiNotifications,
-  clearUiNotifications,
-  removeUiNotification,
-  copyToClipboard,
-  UPDATED_EVENT,
-  STORAGE_KEY
-} = require('../functions/uiNotifications');
-const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
-
-/** Hide deep links when the matching Bitcoin sub-flag is off (avoids redirect-to-home). */
-function notificationOpenHref (href, uf) {
-  if (!href || !uf) return href || null;
-  const h = String(href);
-  const path = h.split(/[?#]/)[0];
-  if (path === '/services/bitcoin') return href;
-  if (path.startsWith('/services/bitcoin/payments')) return uf.bitcoinPayments ? href : null;
-  if (path.startsWith('/services/bitcoin/invoices')) return uf.bitcoinInvoices ? href : null;
-  if (path.startsWith('/services/bitcoin/resources')) return uf.bitcoinResources ? href : null;
-  if (path.startsWith('/services/bitcoin/blocks') || path.startsWith('/services/bitcoin/transactions')) {
-    return uf.bitcoinExplorer ? href : null;
-  }
-  if (path.startsWith('/services/bitcoin/channels')) return uf.bitcoinLightning ? href : null;
-  if (path.startsWith('/services/bitcoin/crowdfunding') || path.startsWith('/services/bitcoin/crowdfunds')) {
-    return uf.bitcoinCrowdfund ? href : null;
-  }
-  if (path.startsWith('/services/bitcoin/')) return href;
-  return href;
-}
 
 const ACTIVITY_FILTERS = [
   { value: 'all', label: 'All', icon: 'list layout' },
@@ -132,6 +104,7 @@ function ActivitiesHome (props) {
   const ref = props.bridgeRef || props.bridge;
   const adminToken = props.adminToken;
   const onRequireUnlock = props.onRequireUnlock;
+  const identity = props.identity;
   const [searchParams, setSearchParams] = useSearchParams();
   const [flagTick, setFlagTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setFlagTick((n) => n + 1)), []);
@@ -156,6 +129,19 @@ function ActivitiesHome (props) {
           <Button basic as={Link} to="/" size="small" icon labelPosition="left" aria-label="Back to home">
             <Icon name="arrow left" aria-hidden="true" />
             Home
+          </Button>
+          <Button
+            as={Link}
+            to="/notifications"
+            basic
+            size="small"
+            icon
+            labelPosition="left"
+            title="Wallet, Payjoin, and hub toasts (same as the bell)"
+            aria-label="Notifications — in-app toasts"
+          >
+            <Icon name="bell outline" aria-hidden="true" />
+            Notifications
           </Button>
           <Button
             basic
@@ -183,7 +169,7 @@ function ActivitiesHome (props) {
             Bitcoin
           </Button>
           {uf.bitcoinPayments ? (
-            <Button as={Link} to="/services/bitcoin/payments" basic size="small" title="Payjoin and payments">
+            <Button as={Link} to="/payments" basic size="small" title="Payjoin and payments">
               Payments
             </Button>
           ) : null}
@@ -209,9 +195,9 @@ function ActivitiesHome (props) {
             Activities
           </Header>
           <p id="activities-page-summary" style={{ color: '#666' }}>
-            Hub message log, chat, Bitcoin blocks, and network events. Wallet, Payjoin, and other toasts appear in <strong>In-app notifications</strong> above when present (same list as the bell in the top bar).
+            Hub message log, chat, Bitcoin blocks, and network events. Wallet, Payjoin, and other short toasts live on{' '}
+            <Link to="/notifications">Notifications</Link> (same list as the bell in the top bar).
           </p>
-          <ActivitiesUiNotifications uf={uf} />
           <div
             role="toolbar"
             aria-label="Activity type filter"
@@ -244,6 +230,7 @@ function ActivitiesHome (props) {
             bridge={ref}
             bridgeRef={ref}
             adminToken={adminToken}
+            identity={identity}
             onRequireUnlock={onRequireUnlock}
             includeHeader={false}
             entryTypeFilter={entryTypeFilter}

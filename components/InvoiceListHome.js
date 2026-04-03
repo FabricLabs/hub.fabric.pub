@@ -15,7 +15,7 @@ const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 
 /**
- * InvoiceListHome: create invoices and store them in localStorage (not global state).
+ * InvoiceListHome: create invoices and store them in the browser Fabric state store.
  * Each invoice gets a fresh receive address from the user's wallet.
  */
 class InvoiceListHome extends React.Component {
@@ -156,9 +156,9 @@ class InvoiceListHome extends React.Component {
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5em' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
+                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
                     <Icon name="arrow left" aria-hidden="true" />
-                    Explorer
+                    Bitcoin
                   </Button>
                   <Header as="h2" id="invoices-page-heading" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em' }}>
                     <Icon name="file alternate outline" aria-hidden="true" />
@@ -166,7 +166,7 @@ class InvoiceListHome extends React.Component {
                   </Header>
                 </div>
                 <div role="toolbar" aria-label="Account-to-account shortcuts" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
-                  <Button as={Link} to="/services/bitcoin/payments#fabric-payments-tab-demo" basic size="small" title="Payer tab walkthrough">
+                  <Button as={Link} to="/payments#fabric-payments-tab-demo" basic size="small" title="Payer tab walkthrough">
                     <Icon name="credit card outline" aria-hidden="true" />
                     Payments
                   </Button>
@@ -205,14 +205,17 @@ class InvoiceListHome extends React.Component {
               </List.Item>
               <List.Item>
                 <strong>Tab 2 (payer):</strong> On the invoice row, click <strong>Open payer tab (prefilled)</strong> (adds <code>payTo</code> and <code>payAmountSats</code>, scrolls to Make Payment). Or open{' '}
-                <Link to="/services/bitcoin/payments#fabric-payments-tab-demo">Payments (full walkthrough)</Link>
+                <Link to="/payments#fabric-payments-tab-demo">Payments (full walkthrough)</Link>
                 {' '}or{' '}
-                <Link to="/services/bitcoin/payments#fabric-btc-make-payment-h4">jump to Make Payment</Link>
+                <Link to="/payments#fabric-btc-make-payment-h4">jump to Make Payment</Link>
                 {' '}and paste address and amount. Spends and receives both use account 0 under the same identity. On-chain send uses the Hub node wallet and needs your setup <strong>admin token</strong> (if missing, use the yellow <strong>Regtest: Hub admin token</strong> panel below or on Payments).
               </List.Item>
               <List.Item>
+                <strong>Joinmarket / Payjoin (advanced):</strong> On each invoice card header, the <Icon name="setting" /> control opens <strong>three BTC pool targets</strong> (default 0.05 → 0.005 → 0.0005) for operator liquidity planning, and an optional <strong>Payjoin BIP21</strong> mint for this invoice address (<code>pj=</code>) that opens in Payments for local sign or ACP Hub boost.
+              </List.Item>
+              <List.Item>
                 <strong>Confirm:</strong> Return here — on the invoice card use <strong>Confirm payment</strong> with the txid, or verify via{' '}
-                <Link to="/services/bitcoin/resources">Resources → L1 payment verification</Link>. The invoice list lives in <code>localStorage</code> for this site, so both tabs see the same rows.
+                <Link to="/services/bitcoin/resources">Resources → L1 payment verification</Link>. The invoice list lives in the browser Fabric state store for this origin, so both tabs see the same rows.
               </List.Item>
               <List.Item>
                 <strong>Desktop / delegation:</strong> If you use <strong>Log in with Fabric Hub (desktop)</strong>, manage tokens and open per-token audit under{' '}
@@ -301,7 +304,7 @@ class InvoiceListHome extends React.Component {
               icon
               labelPosition="left"
               onClick={() => this.refresh()}
-              title="Reload list from localStorage (e.g. after another tab created an invoice)"
+              title="Reload list from browser store (e.g. after another tab created an invoice)"
             >
               <Icon name="refresh" />
               Refresh list

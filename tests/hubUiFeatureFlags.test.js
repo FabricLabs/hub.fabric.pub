@@ -52,4 +52,21 @@ describe('hubUiFeatureFlags', function () {
     assert.strictEqual(result.persisted, false);
     assert.strictEqual(flags.loadHubUiFeatureFlags().bitcoinPayments, true, 'local cache still updates');
   });
+
+  it('normalizeFlags honors peers false and explicit false for former always-on keys (UI-58)', function () {
+    setupWindowStorage();
+    flags.saveHubUiFeatureFlags({
+      peers: false,
+      features: false,
+      activities: false,
+      bitcoinExplorer: false,
+      bitcoinInvoices: false
+    });
+    const f = flags.loadHubUiFeatureFlags();
+    assert.strictEqual(f.peers, false);
+    assert.strictEqual(f.features, false);
+    assert.strictEqual(f.activities, false);
+    assert.strictEqual(f.bitcoinExplorer, false);
+    assert.strictEqual(f.bitcoinInvoices, false);
+  });
 });

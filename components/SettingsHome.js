@@ -81,13 +81,25 @@ function SettingsHome () {
           </Card>
         ) : null}
         {uf.activities ? (
+          <Card as={Link} to="/notifications" style={{ cursor: 'pointer' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name="bell outline" aria-hidden="true" /> Notifications
+              </Card.Header>
+              <Card.Description>
+                Wallet, Payjoin, and hub toasts (same list as the bell in the top bar).
+              </Card.Description>
+            </Card.Content>
+          </Card>
+        ) : null}
+        {uf.activities ? (
           <Card as={Link} to="/activities" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
-                <Icon name="bell outline" aria-hidden="true" /> Activities
+                <Icon name="comments" aria-hidden="true" /> Activity log
               </Card.Header>
               <Card.Description>
-                Hub message log, chat, Bitcoin blocks, optional feed filters, and in-app toasts (same as the bell in the top bar).
+                Hub message log, chat, Bitcoin blocks, and optional feed filters.
               </Card.Description>
             </Card.Content>
           </Card>
@@ -189,13 +201,13 @@ function SettingsHome () {
           </Card>
         ) : null}
         {uf.sidechain ? (
-          <Card as={Link} to="/settings/federation" style={{ cursor: 'pointer' }}>
+          <Card as={Link} to="/federations" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
-                <Icon name="users" aria-hidden="true" /> Distributed federation
+                <Icon name="users" aria-hidden="true" /> Federations
               </Card.Header>
               <Card.Description>
-                Configure validator pubkeys and threshold for sidechain patches and beacon epochs (when not overridden by environment).
+                Multi-sig validator policy for sidechain patches and beacon epochs (when not overridden by environment). Same form under Settings → Distributed federation.
                 For L1-bound epochs and reproducible Schnorr witnesses, see{' '}
                 <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>
                 {' '}

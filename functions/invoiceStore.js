@@ -1,6 +1,16 @@
 'use strict';
 
+const { createFabricBrowserStore } = require('./fabricBrowserStore');
+
 const INVOICES_KEY = 'fabric.bitcoin.invoices';
+const FABRIC_STATE_KEY = 'fabric:state';
+
+function getStore () {
+  return createFabricBrowserStore({
+    storageKey: FABRIC_STATE_KEY,
+    initialState: { invoices: [] }
+  });
+}
 
 /**
  * Load all invoices from localStorage. Not in global state.
@@ -9,14 +19,24 @@ const INVOICES_KEY = 'fabric.bitcoin.invoices';
 function loadInvoices () {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return [];
+    const store = getStore();
+    const unified = store.GET('/invoices');
+    if (Array.isArray(unified)) {
+      return unified.map((inv) => ({
+        ...inv,
+        txids: Array.isArray(inv.txids) ? inv.txids : []
+      }));
+    }
     const raw = window.localStorage.getItem(INVOICES_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((inv) => ({
+    const migrated = parsed.map((inv) => ({
       ...inv,
       txids: Array.isArray(inv.txids) ? inv.txids : []
     }));
+    store.PUT('/invoices', migrated);
+    return migrated;
   } catch (e) {
     return [];
   }
@@ -29,7 +49,10 @@ function loadInvoices () {
 function saveInvoices (invoices = []) {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(INVOICES_KEY, JSON.stringify(Array.isArray(invoices) ? invoices : []));
+      const normalized = Array.isArray(invoices) ? invoices : [];
+      getStore().PUT('/invoices', normalized);
+      // Keep legacy key for compatibility with older builds.
+      window.localStorage.setItem(INVOICES_KEY, JSON.stringify(normalized));
     }
   } catch (e) {}
 }

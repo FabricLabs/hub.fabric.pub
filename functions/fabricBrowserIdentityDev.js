@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  readStorageJSON,
+  writeStorageJSON
+} = require('./fabricBrowserState');
+
 /**
  * Store an unlocked Fabric browser identity from a BIP39 mnemonic (and optional BIP39 passphrase).
  * Used by HubInterface dev bootstrap and IdentityManager "import mnemonic" flow.
@@ -11,14 +16,14 @@
  * @returns {{ ok: boolean, error?: string, identity?: { id: string, xpub: string, xprv: string } }}
  */
 function storeUnlockedIdentityFromMnemonic (opts = {}) {
-  if (typeof window === 'undefined' || !window.localStorage) {
+  if (typeof window === 'undefined') {
     return { ok: false, error: 'localStorage unavailable' };
   }
   const phrase = String(opts.seed || '').trim();
   if (!phrase) return { ok: false, error: 'Missing mnemonic' };
   const force = !!opts.force;
   try {
-    if (!force && window.localStorage.getItem('fabric.identity.local')) {
+    if (!force && readStorageJSON('fabric.identity.local', null)) {
       return { ok: false, error: 'Identity already stored (use force to replace)' };
     }
   } catch (e) {
@@ -36,10 +41,12 @@ function storeUnlockedIdentityFromMnemonic (opts = {}) {
     if (!xprv || !xpub) return { ok: false, error: 'Key derivation failed' };
     const idStr = String(ident.id);
     const payload = { id: idStr, xpub, xprv, passwordProtected: false };
-    window.localStorage.setItem('fabric.identity.local', JSON.stringify(payload));
+    writeStorageJSON('fabric.identity.local', payload);
     try {
       if (window.sessionStorage) {
         window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify({
+          id: idStr,
+          xpub,
           xprv,
           passwordProtected: false
         }));

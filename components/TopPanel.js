@@ -24,6 +24,7 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { readStorageJSON } = require('../functions/fabricBrowserState');
 
 function TopPanel (props) {
   const location = useLocation();
@@ -50,6 +51,7 @@ function TopPanel (props) {
   const hasHubAdminPeerNav = !!(
     readHubAdminTokenFromBrowser(adminTokenProp)
   );
+  const publicHubVisitor = !!(props && props.publicHubVisitor);
 
   const formatIdentityValue = (value) => {
     if (value == null) return '';
@@ -68,15 +70,14 @@ function TopPanel (props) {
     (localIdentity && localIdentity.xprv)
   );
   const isAuthed = hasPrivate;
+  const showSignedInControls = isAuthed;
   // Fallback for short-lived parent state gaps right after identity create/login:
   // if props lag for a render, derive id/xpub from persisted local storage so the
   // chip does not flash back to "Login".
   const persistedIdentity = React.useMemo(() => {
     try {
-      if (typeof window === 'undefined' || !window.localStorage) return null;
-      const raw = window.localStorage.getItem('fabric.identity.local');
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
+      if (typeof window === 'undefined') return null;
+      const parsed = readStorageJSON('fabric.identity.local', null);
       if (!parsed || (!parsed.id && !parsed.xpub)) return null;
       return {
         id: parsed.id ? String(parsed.id) : undefined,
@@ -88,15 +89,20 @@ function TopPanel (props) {
   }, [hasLocalIdentity, localIdentity && localIdentity.xpub, auth && auth.xpub]);
   const identitySource = localIdentity || auth || persistedIdentity;
   const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
-  // Treat any local identity without private material as locked, even if
-  // hasLockedIdentity lags behind after route transitions.
-  const isLockedState = hasAnyLocalIdentity && !isAuthed && (hasLockedIdentity || !!identitySource);
+  // Password-protected identity without xprv in memory → show Locked (unlock flow).
+  // xpub / watch-only (no password) → show Watch-only (upgrade/import path), not "Locked".
+  const passwordProtectedIdentity = !!(localIdentity && localIdentity.passwordProtected);
+  const isPasswordLocked = hasAnyLocalIdentity && !isAuthed && (hasLockedIdentity || passwordProtectedIdentity);
+  const isWatchOnlyIdentity = hasAnyLocalIdentity && !isAuthed && !passwordProtectedIdentity && !!identitySource;
+  const isLockedState = isPasswordLocked || isWatchOnlyIdentity;
   /** True when we can derive a client wallet id and show a live balance in the chip. */
   const canShowClientBalance = !!(
     identitySource &&
     identitySource.xpub &&
     (hasAnyLocalIdentity || isAuthed)
   );
+  /** Password-locked identities may still have xpub in memory; do not imply a live balance until unlock. */
+  const showLiveBalanceInChip = canShowClientBalance && !isPasswordLocked;
   const identityLabel = (() => {
     if (!identitySource) return 'Login';
     if (identitySource.username) return identitySource.username;
@@ -118,7 +124,7 @@ function TopPanel (props) {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
   const uiFlags = loadHubUiFeatureFlags();
   void uiTick;
-  const balanceChipHref = '/services/bitcoin/transactions?scope=wallet#fabric-btc-tx-client-h3';
+  const balanceChipHref = '/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel';
 
   React.useEffect(() => {
     const sync = () => setNotifList(readUiNotifications());
@@ -152,34 +158,45 @@ function TopPanel (props) {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
         <Header as='h3' style={{ margin: 0 }}>
-          <Link to='/'><code>hub.fabric.pub</code></Link>
+          <Link to="/" aria-label="Hub home, hub.fabric.pub">
+            <code>hub.fabric.pub</code>
+          </Link>
         </Header>
 
-        <Button.Group size='small'>
-          <Button as={Link} to="/" basic={!active('/')} primary={active('/')}>
+        <Button.Group size='small' role="navigation" aria-label="Primary hub sections">
+          <Button as={Link} to="/" basic={!active('/')} primary={active('/')} aria-current={active('/') ? 'page' : undefined}>
             <Icon name="home" />
             Home
           </Button>
-          {uiFlags.peers && hasHubAdminPeerNav ? (
-            <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')}>
+          {uiFlags.peers && !publicHubVisitor ? (
+            <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')} aria-current={active('/peers') ? 'page' : undefined}>
               <Icon name="sitemap" />
               Peers
             </Button>
           ) : null}
-          <Button as={Link} to="/documents" basic={!active('/documents')} primary={active('/documents')}>
+          <Button as={Link} to="/documents" basic={!active('/documents')} primary={active('/documents')} aria-current={active('/documents') ? 'page' : undefined}>
             <Icon name="file outline" />
             Documents
           </Button>
-          <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')}>
-            <Icon name="file code" />
-            Contracts
-          </Button>
+          {!publicHubVisitor ? (
+            <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')} aria-current={active('/contracts') ? 'page' : undefined}>
+              <Icon name="file code" />
+              Contracts
+            </Button>
+          ) : null}
         </Button.Group>
+        {!publicHubVisitor ? (
         <Dropdown
           item
           trigger={
-            <Button size="small" basic title="More services">
-              <Icon name="ellipsis horizontal" />
+            <Button
+              size="small"
+              basic
+              title="More services — Bitcoin, Settings, Admin, and other pages"
+              aria-label="More hub pages and tools"
+              aria-haspopup="menu"
+            >
+              <Icon name="ellipsis horizontal" aria-hidden="true" />
               More
             </Button>
           }
@@ -189,36 +206,61 @@ function TopPanel (props) {
             {uiFlags.features ? (
               <Dropdown.Item as={Link} to="/features" icon="info circle" text="Features" />
             ) : null}
-            {uiFlags.activities ? (
+            {uiFlags.activities && !publicHubVisitor ? (
+              <Dropdown.Item
+                as={Link}
+                to="/notifications"
+                icon="bell outline"
+                text="Notifications"
+                active={pathname === '/notifications'}
+              />
+            ) : null}
+            {uiFlags.activities && !publicHubVisitor ? (
               <Dropdown.Item
                 as={Link}
                 to="/activities"
-                icon="bell outline"
-                text="Activities"
+                icon="comments"
+                text="Activity log"
                 active={pathname === '/activities'}
               />
             ) : null}
-            <Dropdown.Item as={Link} to="/services/bitcoin" icon="bitcoin" text="Bitcoin" />
-            {uiFlags.bitcoinPayments ? (
-              <Dropdown.Item as={Link} to="/services/bitcoin/payments" icon="credit card outline" text="Payments" />
+            {!publicHubVisitor ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin" icon="bitcoin" text="Bitcoin" />
             ) : null}
-            {uiFlags.bitcoinInvoices ? (
+            {!publicHubVisitor && (uiFlags.bitcoinPayments || uiFlags.bitcoinLightning) ? (
+              <Dropdown.Item
+                as={Link}
+                to={{
+                  pathname: '/services/bitcoin',
+                  hash: uiFlags.bitcoinPayments ? 'fabric-bitcoin-payjoin' : 'fabric-bitcoin-lightning'
+                }}
+                icon="shield alternate"
+                text="Treasury (Payjoin / Lightning)"
+                title="Hub-managed deposits: Payjoin when Payments are enabled; otherwise Lightning section"
+              />
+            ) : null}
+            {uiFlags.bitcoinPayments && !publicHubVisitor ? (
+              <Dropdown.Item as={Link} to="/payments" icon="credit card outline" text="Payments" />
+            ) : null}
+            {uiFlags.bitcoinInvoices && !publicHubVisitor ? (
               <Dropdown.Item as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" icon="file alternate outline" text="Invoices" />
             ) : null}
-            {uiFlags.bitcoinLightning ? (
+            {uiFlags.bitcoinLightning && !publicHubVisitor ? (
               <Dropdown.Item as={Link} to="/services/lightning" icon="bolt" text="Lightning" />
             ) : null}
-            {uiFlags.bitcoinExplorer ? (
+            {uiFlags.bitcoinExplorer && !publicHubVisitor ? (
               <Dropdown.Item as={Link} to="/services/bitcoin/blocks" icon="search" text="Explorer" />
             ) : null}
-            <Dropdown.Item as={Link} to="/services/bitcoin/faucet" icon="tint" text="Faucet" />
-            {uiFlags.bitcoinResources ? (
+            {!publicHubVisitor ? (
+              <Dropdown.Item as={Link} to="/services/bitcoin/faucet" icon="tint" text="Faucet" />
+            ) : null}
+            {uiFlags.bitcoinResources && !publicHubVisitor ? (
               <Dropdown.Item as={Link} to="/services/bitcoin/resources" icon="code" text="Bitcoin HTTP resources" />
             ) : null}
-            {uiFlags.bitcoinCrowdfund ? (
+            {uiFlags.bitcoinCrowdfund && !publicHubVisitor ? (
               <Dropdown.Item as={Link} to="/services/bitcoin/crowdfunds" icon="heart outline" text="Crowdfunds" />
             ) : null}
-            {uiFlags.sidechain ? (
+            {uiFlags.sidechain && !publicHubVisitor ? (
               <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Sidechain & demo" />
             ) : null}
             {hasHubAdminPeerNav ? (
@@ -230,7 +272,7 @@ function TopPanel (props) {
                 active={pathname === '/settings/admin' || pathname.startsWith('/settings/admin/')}
               />
             ) : null}
-            {uiFlags.sidechain ? (
+            {uiFlags.sidechain && hasHubAdminPeerNav ? (
               <Dropdown.Item
                 as={Link}
                 to="/settings/admin/beacon-federation"
@@ -246,11 +288,17 @@ function TopPanel (props) {
               text="Settings"
               active={pathname === '/settings'}
             />
-            {uiFlags.sidechain ? (
-              <Dropdown.Item as={Link} to="/settings/federation" icon="users" text="Distributed federation" />
+            {uiFlags.sidechain && !publicHubVisitor ? (
+              <Dropdown.Item
+                as={Link}
+                to="/federations"
+                icon="users"
+                text="Federations"
+                active={pathname === '/federations' || pathname === '/settings/federation'}
+              />
             ) : null}
             <Dropdown.Item as={Link} to="/settings/security" icon="shield" text="Security & delegation" />
-            {uiFlags.sidechain ? (
+            {uiFlags.sidechain && !publicHubVisitor ? (
               <React.Fragment>
                 <Dropdown.Divider />
                 <Dropdown.Item
@@ -273,79 +321,100 @@ function TopPanel (props) {
             ) : null}
           </Dropdown.Menu>
         </Dropdown>
+        ) : null}
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', display: 'inline-block' }}>
-          <Button
+        {showSignedInControls ? (
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <Button
+              as={Link}
+              to="/notifications"
+              size="small"
+              title={
+                notifList.length
+                  ? `${notifList.length} in-app notification(s) — open Notifications`
+                  : 'Notifications — wallet, Payjoin, and hub toasts (activity log is under More)'
+              }
+              aria-label="Notifications"
+              aria-current={pathname === '/notifications' ? 'page' : undefined}
+              primary={pathname === '/notifications'}
+              basic={pathname !== '/notifications'}
+              style={{
+                border: 'none',
+                boxShadow: 'none',
+                background: 'transparent',
+                padding: '0.45em 0.55em',
+                margin: 0
+              }}
+            >
+              <Icon name="bell outline" />
+            </Button>
+            {notifList.length > 0 && (
+              <Label
+                circular
+                color="red"
+                size="mini"
+                style={{ position: 'absolute', top: -6, right: -6, margin: 0, minWidth: '1.5em' }}
+                title={`${notifList.length} notification(s)`}
+              >
+                {notifList.length > 99 ? '99+' : String(notifList.length)}
+              </Label>
+            )}
+          </div>
+        ) : null}
+        {(showSignedInControls || isLockedState) ? (
+          <Label
             as={Link}
-            to="/activities"
+            to={balanceChipHref}
             size="small"
-            title={
-              notifList.length
-                ? `${notifList.length} in-app notification(s) — open Activities to manage`
-                : 'Activities — hub log, chat, and in-app notifications'
+            basic
+            aria-label={
+              !showLiveBalanceInChip
+                ? (isPasswordLocked
+                    ? 'Wallet — unlock identity to show balance'
+                    : isWatchOnlyIdentity
+                      ? 'Wallet — open Bitcoin transactions (watch-only)'
+                      : 'Wallet — log in to track balance')
+                : clientBalanceLoading && clientBalance == null
+                  ? 'Wallet — loading balance'
+                  : 'Wallet — browser balance; opens transactions with federation multisig tools'
             }
-            aria-label="Activities and notifications"
-            primary={active('/activities')}
-            basic={!active('/activities')}
-            style={{
-              border: 'none',
-              boxShadow: 'none',
-              background: 'transparent',
-              padding: '0.45em 0.55em',
-              margin: 0
+            title={
+              !showLiveBalanceInChip
+                ? (isPasswordLocked
+                    ? 'Unlock your identity to show your browser wallet balance here'
+                    : isWatchOnlyIdentity
+                      ? 'Import a full key or unlock to track your browser wallet balance'
+                      : 'Log in or set a local identity to track your browser wallet balance')
+                : clientBalanceLoading && clientBalance == null
+                  ? 'Loading your browser wallet balance…'
+                  : 'Your browser wallet balance — hover to refresh; click opens Wallet (federation vault & tagged sends at top, activity below)'
+            }
+            style={{ cursor: 'pointer' }}
+            onMouseEnter={() => {
+              if (!onRefreshBalance || !showLiveBalanceInChip) return;
+              const now = Date.now();
+              if (now - balanceHoverRefreshAtRef.current < 8000) return;
+              balanceHoverRefreshAtRef.current = now;
+              try {
+                onRefreshBalance();
+              } catch (_) {}
             }}
           >
-            <Icon name="bell outline" />
-          </Button>
-          {notifList.length > 0 && (
-            <Label
-              circular
-              color="red"
-              size="mini"
-              style={{ position: 'absolute', top: -6, right: -6, margin: 0, minWidth: '1.5em' }}
-              title={`${notifList.length} notification(s)`}
-            >
-              {notifList.length > 99 ? '99+' : String(notifList.length)}
-            </Label>
-          )}
-        </div>
-        <Label
-          as={Link}
-          to={balanceChipHref}
-          size="small"
-          basic
-          title={
-            !canShowClientBalance
-              ? 'Open Bitcoin — log in or set a local identity to track your browser wallet balance here'
-              : clientBalanceLoading && clientBalance == null
-                ? 'Loading your browser wallet balance…'
-                : 'Your browser wallet balance (this identity / session) — hover to refresh, click for Bitcoin'
-          }
-          style={{ cursor: 'pointer' }}
-          onMouseEnter={() => {
-            if (!onRefreshBalance || !canShowClientBalance) return;
-            const now = Date.now();
-            if (now - balanceHoverRefreshAtRef.current < 8000) return;
-            balanceHoverRefreshAtRef.current = now;
-            try {
-              onRefreshBalance();
-            } catch (_) {}
-          }}
-        >
-          <Icon name="bitcoin" color="orange" />
-          {!canShowClientBalance
-            ? 'Wallet'
-            : (clientBalanceLoading && clientBalance == null
-                ? '…'
-                : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
-                    ? (clientBalance.balanceSats >= 100000000
-                        ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
-                        : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
-                    : '—'))}
-        </Label>
-        {bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
+            <Icon name="bitcoin" color={showLiveBalanceInChip ? 'orange' : 'grey'} />
+            {!showLiveBalanceInChip
+              ? (isPasswordLocked ? 'Unlock for balance' : 'Wallet')
+              : (clientBalanceLoading && clientBalance == null
+                  ? '…'
+                  : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
+                      ? (clientBalance.balanceSats >= 100000000
+                          ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
+                          : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
+                      : '—'))}
+          </Label>
+        ) : null}
+        {!publicHubVisitor && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
           <Label
             as={Link}
             to="/services/bitcoin"
@@ -407,10 +476,23 @@ function TopPanel (props) {
                 onLogin();
               }
             }}
-            title={isLockedState ? 'Unlock identity' : 'Log in'}
+            title={
+              isPasswordLocked
+                ? 'Unlock identity — enter your encryption password'
+                : isWatchOnlyIdentity
+                  ? 'Watch-only identity — open to import a full key or use desktop signing'
+                  : 'Log in'
+            }
+            aria-label={
+              isPasswordLocked
+                ? 'Locked — unlock Fabric identity'
+                : isWatchOnlyIdentity
+                  ? 'Watch-only Fabric identity — open options'
+                  : 'Log in or create Fabric identity'
+            }
           >
-            <Icon name={isLockedState ? 'lock' : 'user circle'} />
-            {isLockedState ? 'Locked' : identityLabel}
+            <Icon name={isPasswordLocked ? 'lock' : isWatchOnlyIdentity ? 'eye' : 'user circle'} aria-hidden="true" />
+            {isPasswordLocked ? 'Locked' : isWatchOnlyIdentity ? 'Watch-only' : identityLabel}
           </Button>
         )}
         {!isAuthed && (
@@ -419,9 +501,10 @@ function TopPanel (props) {
             basic
             icon
             title="Settings"
+            aria-label="Open settings"
             onClick={() => onOpenSettings && onOpenSettings()}
           >
-            <Icon name="cog" />
+            <Icon name="cog" aria-hidden="true" />
           </Button>
         )}
       </div>

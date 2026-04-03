@@ -25,15 +25,39 @@ describe('bitcoinBlockDocument', function () {
     weight: 1140
   };
 
-  it('buildBitcoinBlockSummary maps header fields and txids only', function () {
+  it('buildBitcoinBlockSummary keeps consensus header + txids only', function () {
     const s = buildBitcoinBlockSummary(block, 'regtest');
     assert.strictEqual(s.type, 'BitcoinBlock');
-    assert.strictEqual(s.schemaVersion, 1);
+    assert.strictEqual(s.schemaVersion, 3);
     assert.strictEqual(s.network, 'regtest');
     assert.strictEqual(s.hash, block.hash);
     assert.strictEqual(s.height, 7);
     assert.deepStrictEqual(s.txids, ['bb'.repeat(32), 'cc'.repeat(32)]);
-    assert.strictEqual(s.nTx, 2);
+    assert.strictEqual(s.confirmations, undefined);
+    assert.strictEqual(s.nextblockhash, undefined);
+    assert.strictEqual(s.nTx, undefined);
+    assert.strictEqual(s.difficulty, undefined);
+    assert.strictEqual(s.chainwork, undefined);
+    assert.strictEqual(s.size, undefined);
+    assert.strictEqual(s.weight, undefined);
+    assert.strictEqual(s.versionHex, undefined);
+  });
+
+  it('document id ignores chain-mutable and derived RPC fields', function () {
+    const a = { ...block, confirmations: 1 };
+    const b = {
+      ...block,
+      confirmations: 99,
+      nextblockhash: 'ff'.repeat(32),
+      difficulty: 999,
+      chainwork: 'ffff',
+      size: 99999,
+      weight: 99999,
+      strippedsize: 1,
+      nTx: 99,
+      versionHex: 'deadbeef'
+    };
+    assert.strictEqual(bitcoinBlockDocumentId(a, 'regtest'), bitcoinBlockDocumentId(b, 'regtest'));
   });
 
   it('produces stable document id for the same block', function () {

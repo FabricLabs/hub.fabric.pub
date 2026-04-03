@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  readStorageString,
+  writeStorageString
+} = require('./fabricBrowserState');
+
 /**
  * Hub setup admin token in the browser (localStorage). Used for regtest Hub-wallet sends.
  * @param {string|null|undefined} adminTokenProp - From HubInterface state when available
@@ -11,8 +16,8 @@ function readHubAdminTokenFromBrowser (adminTokenProp) {
     : '';
   if (fromProp) return fromProp;
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      return String(window.localStorage.getItem('fabric.hub.adminToken') || '').trim();
+    if (typeof window !== 'undefined') {
+      return readStorageString('fabric.hub.adminToken').trim();
     }
   } catch (e) {}
   return '';
@@ -27,8 +32,8 @@ function saveHubAdminTokenToBrowser (token) {
   const t = String(token || '').trim();
   if (!t) return false;
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem('fabric.hub.adminToken', t);
+    if (typeof window !== 'undefined') {
+      writeStorageString('fabric.hub.adminToken', t);
       window.dispatchEvent(new CustomEvent('fabricHubAdminTokenSaved', { detail: { ok: true } }));
       return true;
     }

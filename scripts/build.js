@@ -1,6 +1,23 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
+require('../functions/patchLinkedFabricNodePath');
+
 require('@babel/register');
+
+(function ensureConfigLocalJs () {
+  const target = path.join(__dirname, '..', 'assets', 'config.local.js');
+  const example = path.join(__dirname, '..', 'assets', 'config.local.example.js');
+  try {
+    if (!fs.existsSync(target) && fs.existsSync(example)) {
+      fs.copyFileSync(example, target);
+    }
+  } catch (e) {
+    console.warn('[BUILD:SITE] Could not seed assets/config.local.js from example:', e && e.message ? e.message : e);
+  }
+})();
 
 const React = require('react');
 const ReactDOM = require('react-dom');
@@ -14,15 +31,21 @@ const settings = require('../settings/local');
 // const Compiler = require('@fabric/http/types/compiler');
 
 const Compiler = require('../types/compiler');
-const webpackConfig = require('../webpack.config');
+const webpackConfigModule = require('../webpack.config');
 
 // Components
 const HubInterface = require('../components/HubInterface');
 
+function resolveWebpackConfig () {
+  return typeof webpackConfigModule === 'function'
+    ? webpackConfigModule({}, { mode: 'development' })
+    : webpackConfigModule;
+}
+
 // Program Body
 async function main (input = {}) {
   const site = new HubInterface(input);
-  const buildWebpackConfig = Object.assign({}, webpackConfig, { watch: false });
+  const buildWebpackConfig = Object.assign({}, resolveWebpackConfig(), { watch: false });
   const compiler = new Compiler({
     document: site,
     webpack: buildWebpackConfig,

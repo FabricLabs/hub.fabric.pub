@@ -36,7 +36,7 @@ function hubPaymentsPathFromBitcoinUri (uriStr) {
   }
   const qs = params.toString();
   return {
-    relativePath: `/services/bitcoin/payments${qs ? `?${qs}` : ''}#fabric-btc-make-payment-h4`
+    relativePath: `/payments${qs ? `?${qs}` : ''}#fabric-btc-make-payment-h4`
   };
 }
 

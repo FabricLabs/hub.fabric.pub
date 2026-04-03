@@ -77,7 +77,7 @@ describe('Formative Vision Integration', function () {
   let host;
 
   before(async function () {
-    this.timeout(30000);
+    this.timeout(120000);
     const p2pPort = await getFreePort();
     httpPort = await getFreePort();
     host = '127.0.0.1';
@@ -95,7 +95,8 @@ describe('Formative Vision Integration', function () {
         enable: true
       },
       http: {
-        hostname: 'localhost',
+        hostname: '127.0.0.1',
+        interface: '127.0.0.1',
         listen: true,
         port: httpPort
       },

@@ -176,10 +176,11 @@ class BitcoinResourcesHome extends React.Component {
       { method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}/utxos` : '/services/bitcoin/wallets/:walletId/utxos', note: 'UTXOs' },
       { method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}/transactions` : '/services/bitcoin/wallets/:walletId/transactions', note: 'Wallet txs' },
       { method: 'GET', path: '/services/bitcoin/addresses', note: 'Receive address helper' },
-      { method: 'GET', path: '/services/bitcoin/payments', note: 'Outbound payments list' },
-      { method: 'GET', path: '/services/payjoin', note: 'Payjoin capabilities' },
+      { method: 'GET', path: '/payments', note: 'Canonical outbound payments list (legacy GET /services/bitcoin/payments)' },
+      { method: 'POST', path: '/payments', note: 'Canonical Hub-wallet spend POST (legacy POST /services/bitcoin/payments)' },
+      { method: 'GET', path: '/services/payjoin', note: 'Payjoin capabilities (+ fabricProtocol); mirror: /payments/payjoin' },
       { method: 'GET', path: '/services/payjoin/sessions', note: 'List sessions' },
-      { method: 'POST', path: '/services/payjoin/sessions', note: 'Create deposit session (body: walletId, amountSats, address, …)' },
+      { method: 'POST', path: '/services/payjoin/sessions', note: 'Create deposit session (body: walletId, amountSats, address?, receiveTemplate?, federationXOnlyHex?)' },
       { method: 'POST', path: '/services/payjoin/sessions/:sessionId/proposals', note: 'Submit Payjoin proposal (body: psbt / txhex)' },
       { method: 'POST', path: '/services/payjoin/sessions/:sessionId/acp-hub-boost', note: 'Admin Bearer: append+sign Hub wallet input on ANYONECANPAY|ALL payer PSBT (outputs unchanged)' },
       { method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns', note: 'List Taproot crowdfunds (goal/min committed in tapscript; 2-of-2 payout)' },
@@ -221,11 +222,11 @@ class BitcoinResourcesHome extends React.Component {
             role="banner"
           >
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-              <Button as={Link} to="/services/bitcoin" basic aria-label="Back to Bitcoin explorer">
+              <Button as={Link} to="/services/bitcoin" basic aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
                 <Icon name="arrow left" aria-hidden="true" />
-                Explorer
+                Bitcoin
               </Button>
-              <Button as={Link} to="/services/bitcoin/payments" basic>
+              <Button as={Link} to="/payments" basic>
                 <Icon name="credit card outline" aria-hidden="true" />
                 Payments UI
               </Button>

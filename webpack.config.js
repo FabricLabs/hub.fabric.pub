@@ -1,12 +1,34 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const webpack = require('webpack');
+
+/** When @fabric/* is npm-linked, transitive deps live under the clone; webpack must see them too. */
+function linkedFabricResolvePaths () {
+  const hubs = path.join(__dirname, 'node_modules');
+  const out = [];
+  for (const pkg of ['@fabric/core', '@fabric/http']) {
+    let p = path.join(hubs, pkg);
+    try {
+      p = fs.realpathSync(p);
+    } catch (_) {
+      continue;
+    }
+    const nested = path.join(p, 'node_modules');
+    if (fs.existsSync(nested)) out.push(nested);
+  }
+  return out;
+}
 const TerserPlugin = require('terser-webpack-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 
-module.exports = {
-  mode: 'development',
+module.exports = (env, argv) => {
+  const mode = argv.mode || 'development';
+  const hubProxyOrigin = process.env.FABRIC_HUB_DEV_PROXY
+    || `http://127.0.0.1:${process.env.FABRIC_HUB_PORT || 8080}`;
+  return {
+  mode,
   devtool: 'eval-source-map',
   entry: './scripts/browser.js',
   // Sequential processing to avoid intermittent race conditions (concatenateModules
@@ -64,33 +86,18 @@ module.exports = {
     // Prefer hub's node_modules so linked @fabric/core uses the same copies of
     // readable-stream, hash-base, md5.js, etc. Avoids "call is not a function"
     // from duplicate or mis-resolved modules when npm linking.
-    modules: [path.resolve(__dirname, 'node_modules'), 'node_modules'],
-    // Explicit aliases so fabric's ecc.js (from ../fabric) and any consumers
-    // (like elliptic via browserify-sign) can resolve @noble/curves regardless
-    // of subpath form used in requires.
+    modules: [path.resolve(__dirname, 'node_modules'), ...linkedFabricResolvePaths(), 'node_modules'],
+    // Match @fabric/core: Hub pins @noble/hashes@2 (see package.json). bitcoinjs-lib, bip32, and
+    // bs58check still require @noble/hashes/* entrypoints that existed in noble-hashes@1 only;
+    // map those names to the v2 modules (no duplicate noble versions).
     alias: {
-      // Force @noble/hashes to use browser crypto (avoids node:crypto UnhandledSchemeError)
-      '@noble/hashes/crypto': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
-      // Redirect cryptoNode.js when package exports resolve to it (e.g. from nested @noble/hashes in elliptic)
-      '@noble/hashes/esm/cryptoNode.js': path.resolve(__dirname, 'node_modules/@noble/hashes/esm/crypto.js'),
-      // Ensure sha2.js subpath is always resolvable for @fabric/core's hash256.js and taggedHash.js,
-      // independent of how webpack interprets @noble/hashes exports or conditions.
-      '@noble/hashes/sha2.js': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
-      '@noble/hashes/sha2': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
-      // node: scheme imports - must resolve to browser polyfills
+      '@noble/hashes/sha256': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
+      '@noble/hashes/sha512': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
+      '@noble/hashes/hmac': path.resolve(__dirname, 'node_modules/@noble/hashes/hmac.js'),
+      '@noble/hashes/ripemd160': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
+      '@noble/hashes/sha1': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
       'node:crypto': require.resolve('crypto-browserify'),
-      // Use browser build of react-dom/server (avoids TextEncoder error from Node build)
-      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js'),
-      // Use ESM build to avoid CJS "exports is not defined" (CJS file uses exports at top level)
-      '@noble/curves/secp256k1': path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js'),
-      '@noble/curves/secp256k1.js': path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js'),
-      // NIST curves shim for noble-curves v1.x
-      '@noble/curves/nist': path.resolve(__dirname, 'shims/noble-nist.js'),
-      '@noble/curves/nist.js': path.resolve(__dirname, 'shims/noble-nist.js'),
-      // ed25519 curve module
-      '@noble/curves/ed25519.js': path.resolve(__dirname, 'node_modules/@noble/curves/ed25519.js'),
-      // utils shim used by @soatok/elliptic
-      '@noble/curves/utils.js': path.resolve(__dirname, 'shims/noble-utils.js')
+      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js')
     },
     fallback: {
       // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle
@@ -119,22 +126,11 @@ module.exports = {
     ],
     // Proxy backend services when running via webpack-dev-server
     // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
-    proxy: {
-      '/services': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-        ws: true
-      },
-      '/api': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-        ws: true
-      },
-      '/settings': {
-        target: 'http://localhost:8080',
-        changeOrigin: true
-      }
-    },
+    proxy: [
+      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true },
+      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true },
+      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true }
+    ],
     // Watch source directories for changes to rebuild
     watchFiles: [
       'components/**/*.js',
@@ -163,21 +159,24 @@ module.exports = {
   },
   plugins: [
     new webpack.DefinePlugin({
-      'process.env.NODE_ENV': JSON.stringify('production')
+      // Must match `mode` or webpack reports conflicting process.env.NODE_ENV
+      'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development')
     }),
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],
       process: 'process/browser'
     }),
-    // Force ESM build for secp256k1 regardless of resolution path (avoids CJS "exports is not defined")
+    // Stub optional fabric.node (dynamic require). Matches npm package and file:../fabric-clean symlink layout.
     new webpack.NormalModuleReplacementPlugin(
-      /[\\/]@noble[\\/]curves[\\/]secp256k1(\.js)?$/,
-      path.resolve(__dirname, 'node_modules/@noble/curves/esm/secp256k1.js')
+      /[\\/](@fabric[\\/]core|fabric-clean)[\\/]functions[\\/]fabricNativeAccel\.js$/,
+      path.resolve(__dirname, 'shims/fabricNativeAccel.browser.js')
     ),
     new BundleAnalyzerPlugin({
       analyzerMode: process.env.ANALYZE ? 'server' : 'disabled',
       openAnalyzer: true
     })
   ],
-  watch: true
+  // devServer handles watching; avoid watch:true with `webpack serve` (webpack-cli warning).
+  watch: false
+  };
 };

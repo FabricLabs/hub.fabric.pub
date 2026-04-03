@@ -10,6 +10,10 @@ const { isDelegationSignatureRequestActivity } = require('../functions/messageTy
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const {
+  classifyHubBrowserIdentity,
+  fabricIdentityChatDisabledReasonPlain
+} = require('../functions/hubIdentityUiHints');
 
 const MESSAGE_PAGE_SIZE = 10;
 
@@ -195,8 +199,7 @@ class ActivityStreamElement extends React.Component {
     const activeBridgeRef = this.props.bridgeRef || this.props.bridge;
     const bridgeInstance = activeBridgeRef && activeBridgeRef.current;
     if (!bridgeInstance || typeof bridgeInstance.emitTombstone !== 'function') return;
-    const token = (this.props && this.props.adminToken) ||
-      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    const token = readHubAdminTokenFromBrowser(this.props && this.props.adminToken);
     bridgeInstance.emitTombstone({
       messageId: mk || undefined,
       documentId: docId || undefined,
@@ -206,8 +209,7 @@ class ActivityStreamElement extends React.Component {
 
   _renderPurgeButton (entry) {
     if (entry && entry.object && entry.object.localOnly) return null;
-    const adminToken = (this.props && this.props.adminToken) ||
-      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    const adminToken = readHubAdminTokenFromBrowser(this.props && this.props.adminToken);
     if (!adminToken || !entry || !entry.messageKey) return null;
     const docId = this._tombstoneDocumentId(entry);
     const title = docId
@@ -327,7 +329,7 @@ class ActivityStreamElement extends React.Component {
       event.detail &&
       typeof event.detail.message === 'string' &&
       event.detail.message.trim()
-    ) || 'Unlock identity to send chat messages. Use Settings → Fabric identity or the top-bar Locked control.';
+    ) || fabricIdentityChatDisabledReasonPlain(this.props.identity || this.props.auth);
 
     this.setState({ chatWarning: message });
 
@@ -395,10 +397,15 @@ class ActivityStreamElement extends React.Component {
       bridgeInstance &&
       typeof bridgeInstance.hasUnlockedIdentity === 'function'
     ) ? bridgeInstance.hasUnlockedIdentity() : true;
+    const idHint = this.props.identity || this.props.auth;
     const chatDisabledReason = canSubmitChat
       ? null
-      : 'Unlock identity to send chat messages. Use Settings → Fabric identity or the top-bar Locked control.';
+      : fabricIdentityChatDisabledReasonPlain(idHint);
     const streamPreset = this.props.streamPreset || 'default';
+    const hasComposeChannel = (
+      (typeof this.props.onSubmitChat === 'function') ||
+      (bridgeInstance && typeof bridgeInstance.submitChatMessage === 'function')
+    );
     const uf = loadHubUiFeatureFlags();
     const peerDetailNav = !!(
       uf.peers &&
@@ -730,7 +737,7 @@ class ActivityStreamElement extends React.Component {
               {uf.activities ? (
                 <>
                   {' '}Wallet, Payjoin, and other short toasts are listed on the{' '}
-                  <Link to="/activities">Activities</Link>
+                  <Link to="/notifications">Notifications</Link>
                   {' '}page (bell in the top bar).
                 </>
               ) : (
@@ -778,8 +785,39 @@ class ActivityStreamElement extends React.Component {
               )}
             </div>
           )}
-          {showChatChrome && ((typeof this.props.onSubmitChat === 'function') || (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
+          {showChatChrome && hasComposeChannel && !canSubmitChat && (
+            <p
+              id="fabric-chat-compose-hint"
+              style={{ marginBottom: '0.5em', fontSize: '0.85em', color: '#666', lineHeight: 1.45 }}
+            >
+              {(() => {
+                const mode = classifyHubBrowserIdentity(idHint);
+                if (mode === 'password_locked') {
+                  return (
+                    <>
+                      <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, or the top-bar <strong>Locked</strong> control, unlocks chat signing (encryption password).
+                    </>
+                  );
+                }
+                if (mode === 'watch_only') {
+                  return (
+                    <>
+                      Chat needs a signing key in this browser. Open <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or the top-bar identity menu to import a full key or use desktop signing (watch-only cannot sign).
+                    </>
+                  );
+                }
+                return (
+                  <>
+                    Create or restore a key: <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, or <strong>Log in</strong> in the top bar.
+                  </>
+                );
+              })()}
+            </p>
+          )}
+          {showChatChrome && hasComposeChannel && (
             <ChatInput
+              inputId="fabric-chat-compose-input"
+              ariaDescribedBy={!canSubmitChat ? 'fabric-chat-compose-hint' : undefined}
               value={this.state.chatInput}
               onChange={(value) => this.setState({ chatInput: value })}
               onSubmit={(text) => {
@@ -798,13 +836,6 @@ class ActivityStreamElement extends React.Component {
               title={chatDisabledReason || 'Send chat message'}
               disabled={!canSubmitChat}
             />
-          )}
-          {showChatChrome && !canSubmitChat &&
-            ((typeof this.props.onSubmitChat === 'function') ||
-              (this.props.bridge && this.props.bridge.current && typeof this.props.bridge.current.submitChatMessage === 'function')) && (
-            <p style={{ marginTop: '0.35em', marginBottom: 0, fontSize: '0.85em', color: '#666' }}>
-              <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> (or the top-bar <strong>Locked</strong> control) unlocks chat signing.
-            </p>
           )}
         </div>
       </fabric-activity-stream>

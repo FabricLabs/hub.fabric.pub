@@ -22,7 +22,7 @@ const BeaconAdminPanel = require('./BeaconAdminPanel');
 const UI_FLAG_LABELS = {
   peers: 'Peers & WebRTC (nav, routes, home network card)',
   peersAdmin: 'Peers (hub admin token required in this browser)',
-  activities: 'Activities & notifications (bell, feed, home sections)',
+  activities: 'Notifications (bell), activity log, feed, home sections',
   features: 'Features tour (/features, More menu, home shortcut)',
   sidechain: 'Sidechain demo, federation settings, beacon federation nav',
   bitcoinPayments: 'Bitcoin — Payments & Payjoin (page, nav links, balance chip)',
@@ -138,13 +138,21 @@ function AdminHome (props) {
 
   React.useLayoutEffect(() => {
     const s = location.state;
-    if (!s || typeof s.featureFlagBlocked !== 'string') return;
-    const path = typeof s.blockedPath === 'string' ? s.blockedPath : '';
-    setRouteBlockedHint({ flag: s.featureFlagBlocked, path });
-    navigate(
-      { pathname: location.pathname, search: location.search || '', hash: location.hash || '' },
-      { replace: true, state: {} }
-    );
+    if (s && typeof s.featureFlagBlocked === 'string') {
+      const path = typeof s.blockedPath === 'string' ? s.blockedPath : '';
+      setRouteBlockedHint({ flag: s.featureFlagBlocked, path });
+      navigate(
+        { pathname: location.pathname, search: location.search || '', hash: location.hash || '' },
+        { replace: true, state: {} }
+      );
+      return;
+    }
+    const qs = new URLSearchParams(location.search || '');
+    const qFlag = String(qs.get('blockedFlag') || '').trim();
+    const qPath = String(qs.get('blockedPath') || '').trim();
+    if (qFlag) {
+      setRouteBlockedHint({ flag: qFlag, path: qPath });
+    }
   }, [location.state, location.pathname, location.search, location.hash, navigate]);
 
   React.useEffect(() => {
@@ -581,6 +589,7 @@ function AdminHome (props) {
           <Checkbox
             toggle
             label="HTTP shared mode (bind all interfaces)"
+            aria-label="HTTP shared mode (bind all interfaces)"
             checked={httpShared}
             disabled={httpSharedLoading || httpSharedSaving || !hasAdmin}
             onChange={(_, d) => persistHttpShared(!!d.checked)}
@@ -599,7 +608,8 @@ function AdminHome (props) {
         Optional areas of the UI are <strong>off by default</strong>. When a toggle is off, that area is hidden for{' '}
         <strong>everyone</strong> using this browser profile (including operators) until you turn it back on.
         Home, Documents, Contracts, Settings, Security, and this Admin page stay available.
-        Choices are cached in <code>localStorage</code> and, with admin token, persisted to hub settings on disk and restored at startup.
+        Toggles below take effect when saved (including Activities, Features, explorer, and Invoices).
+        Choices are cached in the browser Fabric state store and, with admin token, persisted to hub settings on disk and restored at startup.
       </p>
       {uiFlagsPersistMsg ? (
         <Message info size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setUiFlagsPersistMsg(null)}>
@@ -607,16 +617,24 @@ function AdminHome (props) {
         </Message>
       ) : null}
       <Form>
-        {FLAG_KEYS.map((key) => (
-          <Form.Field key={key}>
-            <Checkbox
-              toggle
-              label={UI_FLAG_LABELS[key] || key}
-              checked={!!uiFlags[key]}
-              onChange={(_, d) => syncUiFlag(key, !!d.checked)}
-            />
-          </Form.Field>
-        ))}
+        {FLAG_KEYS.map((key) => {
+          const labelText = UI_FLAG_LABELS[key] || key;
+          const flagInputId = `fabric-hub-ui-flag-${key}`;
+          return (
+            <Form.Field key={key}>
+              <Checkbox
+                toggle
+                id={flagInputId}
+                label={labelText}
+                checked={!!uiFlags[key]}
+                aria-label={`${labelText} — hub UI feature flag ${key}`}
+                onChange={(_, d) => {
+                  syncUiFlag(key, !!d.checked);
+                }}
+              />
+            </Form.Field>
+          );
+        })}
       </Form>
 
           {(uiFlags.sidechain || anyBitcoinSubFeatureEnabled(uiFlags)) ? (
@@ -635,10 +653,10 @@ function AdminHome (props) {
                     </Card.Description>
                   </Card.Content>
                 </Card>
-                <Card as={Link} to="/settings/federation" style={{ cursor: 'pointer' }}>
+                <Card as={Link} to="/federations" style={{ cursor: 'pointer' }}>
                   <Card.Content>
                     <Card.Header>
-                      <Icon name="sliders horizontal" aria-hidden="true" /> Validator list &amp; threshold
+                      <Icon name="sliders horizontal" aria-hidden="true" /> Federations (validators)
                     </Card.Header>
                     <Card.Description>
                       Edit distributed federation pubkeys persisted on this hub (when not overridden by environment).

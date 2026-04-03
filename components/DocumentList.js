@@ -19,7 +19,7 @@ const {
   Segment
 } = require('semantic-ui-react');
 
-const { sha256: sha256Hash } = require('@noble/hashes/sha256');
+const { sha256: sha256Hash } = require('@noble/hashes/sha2.js');
 
 // Fabric Types
 const Actor = require('@fabric/core/types/actor');
@@ -27,6 +27,10 @@ const DistributeProposalsList = require('./DistributeProposalsList');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
+const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const HubPagination = require('./HubPagination');
+const { useHubListPagination } = require('../functions/hubListPagination');
+const { compareDocumentsByHostOfferThenPurchasePrice } = require('../functions/sortDocumentsByHostOfferThenPrice');
 
 function shortHexId (value) {
   const s = String(value || '');
@@ -79,6 +83,7 @@ function DocumentsPage (props) {
   const [, setNetworkStatusTick] = React.useState(0);
   const [catalogHttpFallbackError, setCatalogHttpFallbackError] = React.useState(null);
   const [docsState, setDocsState] = React.useState({});
+  const [distributeProposalsState, setDistributeProposalsState] = React.useState({});
 
   const navigate = useNavigate();
 
@@ -246,11 +251,18 @@ function DocumentsPage (props) {
 
   const docs = Object.values(docsById)
     .filter((d) => d && d.id)
-    .sort((a, b) => {
-      const ta = a.created ? new Date(a.created).getTime() : 0;
-      const tb = b.created ? new Date(b.created).getTime() : 0;
-      return tb - ta;
-    });
+    .sort((a, b) => compareDocumentsByHostOfferThenPurchasePrice(a, b, distributeProposalsState));
+
+  const docsResetKey = `${docs.length}:${docs[0] && docs[0].id}:${docs[docs.length - 1] && docs[docs.length - 1].id}`;
+  const {
+    slice: docsSlice,
+    page: docsListActivePage,
+    totalPages: docsTotalPages,
+    rangeFrom: docsRangeFrom,
+    rangeTo: docsRangeTo,
+    total: docsListTotal,
+    setPage: setDocsListPage
+  } = useHubListPagination(docs, docsResetKey);
 
   const onPickFile = async (f) => {
     setError(null);
@@ -406,16 +418,36 @@ function DocumentsPage (props) {
           </Message>
         )}
 
-        {!hasEncryptionKey && (
-          <Message info style={{ marginBottom: '1em' }}>
-            <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Private key not loaded</p>
-            <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-              Use the <strong>Identity</strong> control in the top bar (it shows <strong>Locked</strong> when your signing key is not in memory), or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> for the same unlock/import modal. Open the menu, enter your decryption password, and choose <strong>Unlock private key</strong> to create or upload encrypted documents.{' '}
-              <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> explains how the same identity drives Hub L1 addresses.
-              For local dev use the same phrase as the hub (<code>FABRIC_SEED</code> if set, else <code>FABRIC_MNEMONIC</code>): <code>window.FABRIC_DEV_BROWSER_SEED</code> in <code>assets/config.local.js</code>, optional <code>window.FABRIC_DEV_BROWSER_PASSPHRASE</code> for BIP39 extension, or hub <code>FABRIC_DEV_PUSH_BROWSER_IDENTITY=1</code> (never on exposed hosts). For RPC-only automation see <code>npm run test:e2e-document-purchase</code>.
-            </p>
-          </Message>
-        )}
+        {!hasEncryptionKey && (() => {
+          const idMode = classifyHubBrowserIdentity(props.identity || {});
+          const title = idMode === 'watch_only'
+            ? 'Signing key not loaded (watch-only)'
+            : idMode === 'password_locked'
+              ? 'Private key not loaded'
+              : 'Private key not loaded';
+          return (
+            <Message info style={{ marginBottom: '1em' }}>
+              <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>{title}</p>
+              <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                {idMode === 'watch_only' ? (
+                  <>
+                    This browser only has a public key. To create or upload <strong>encrypted</strong> documents, import a full key: top-bar identity menu or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>.{' '}
+                  </>
+                ) : idMode === 'password_locked' ? (
+                  <>
+                    Use the top-bar <strong>Locked</strong> control (encryption password) or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, then <strong>Unlock private key</strong>, to create or upload encrypted documents.{' '}
+                  </>
+                ) : (
+                  <>
+                    Create or restore a key: <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or <strong>Log in</strong> in the top bar. Then you can create or upload encrypted documents.{' '}
+                  </>
+                )}
+                <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> explains how the same identity drives Hub L1 addresses.
+                For local dev use the same phrase as the hub (<code>FABRIC_SEED</code> if set, else <code>FABRIC_MNEMONIC</code>): <code>window.FABRIC_DEV_BROWSER_SEED</code> in <code>assets/config.local.js</code>, optional <code>window.FABRIC_DEV_BROWSER_PASSPHRASE</code> for BIP39 extension, or hub <code>FABRIC_DEV_PUSH_BROWSER_IDENTITY=1</code> (never on exposed hosts). For RPC-only automation see <code>npm run test:e2e-document-purchase</code>.
+              </p>
+            </Message>
+          );
+        })()}
 
         {hasEncryptionKey && (
           <Segment loading={busy}>
@@ -423,7 +455,7 @@ function DocumentsPage (props) {
             <p style={{ color: '#666' }}>
               Select a file or create a document from text. <strong>Publish</strong> adds the doc to the hub catalog (free).
               <strong> Distribute</strong> (long-term storage contracts) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
-              <Link to="/services/bitcoin">Bitcoin</Link> (or <Link to="/services/bitcoin/payments">Payments</Link> when enabled in Admin).
+              <Link to="/services/bitcoin">Bitcoin</Link> (or <Link to="/payments">Payments</Link> when enabled in Admin).
             </p>
             <Button
               size="small"
@@ -524,8 +556,9 @@ function DocumentsPage (props) {
               </div>
             </Segment>
           ) : (
+            <>
             <List divided relaxed style={{ marginTop: '1em' }}>
-              {docs.map((doc) => {
+              {docsSlice.map((doc) => {
                 const labels = [];
                 if (doc.isPublished) {
                   labels.push(
@@ -583,6 +616,23 @@ function DocumentsPage (props) {
                     >
                       <Icon name="cube" />
                       L1 block
+                    </Label>
+                  );
+                }
+
+                const isBitcoinTxDoc = doc.mime === 'application/x-fabric-bitcoin-transaction+json'
+                  || String(doc.name || '').startsWith('Bitcoin tx ');
+                if (isBitcoinTxDoc) {
+                  labels.push(
+                    <Label
+                      key="bitcoin-tx"
+                      size="mini"
+                      color="orange"
+                      style={{ marginLeft: '0.25em' }}
+                      title="Auto-published L1 transaction from an indexed block (optional; pruned nodes may drop from local inventory)"
+                    >
+                      <Icon name="exchange" />
+                      L1 tx
                     </Label>
                   );
                 }
@@ -700,6 +750,30 @@ function DocumentsPage (props) {
                 </List.Item>
               )}
             </List>
+            {docsListTotal > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '0.5em',
+                  marginTop: '0.75em'
+                }}
+              >
+                <span style={{ color: '#666', fontSize: '0.88em' }}>
+                  Showing {docsRangeFrom}–{docsRangeTo} of {docsListTotal}
+                </span>
+                <HubPagination
+                  activePage={docsListActivePage}
+                  totalPages={docsTotalPages}
+                  onPageChange={(e, d) => setDocsListPage(d.activePage)}
+                  disabled={busy}
+                  style={{ marginTop: 0, flex: '1 1 auto', minWidth: 0 }}
+                />
+              </div>
+            )}
+            </>
           )}
         </Segment>
       </Segment>

@@ -1,11 +1,15 @@
 'use strict';
 
+const {
+  readStorageJSON,
+  writeStorageJSON
+} = require('./fabricBrowserState');
+
 /**
- * Browser-only feature visibility for the hub SPA (localStorage). **activities**, **features**,
- * and **bitcoinExplorer** are always treated as enabled (see `normalizeFlags`). **peers** defaults
- * true (Fabric peering is on) but the Peers nav and routes require the hub admin token.
- * **bitcoinInvoices** is always treated as enabled (see `normalizeFlags`). Bitcoin dashboard stays routable;
- * other sub-areas use bitcoinPayments, bitcoinResources, etc.
+ * Browser-only feature visibility for the hub SPA (localStorage). Stored values are honored after
+ * normalize (including explicit `false` for any flag key). **peers** defaults true; explicit
+ * **`peers: false`** hides Peers nav/routes. Bitcoin dashboard stays routable; sub-areas use
+ * bitcoinPayments, bitcoinResources, etc.
  */
 const STORAGE_KEY = 'fabric.hub.uiFeatureFlags';
 const CHANGED_EVENT = 'fabricHubUiFeatureFlagsChanged';
@@ -27,6 +31,9 @@ const FLAG_KEYS = [
   'sidechain',
   ...BITCOIN_UI_FLAG_KEYS
 ];
+
+/** @deprecated No keys are forced on; kept as an empty list for older callers. */
+const ALWAYS_ON_FLAG_KEYS = [];
 
 function defaultFlags () {
   return {
@@ -50,21 +57,19 @@ function normalizeFlags (raw) {
     for (const k of BITCOIN_UI_FLAG_KEYS) d[k] = true;
   }
   for (const k of FLAG_KEYS) {
-    if (raw[k] === true) d[k] = true;
+    if (Object.prototype.hasOwnProperty.call(raw, k)) {
+      d[k] = !!raw[k];
+    }
   }
-  d.activities = true;
-  d.features = true;
-  d.bitcoinExplorer = true;
-  d.bitcoinInvoices = true;
   return d;
 }
 
 function loadHubUiFeatureFlags () {
   if (typeof window === 'undefined') return defaultFlags();
   try {
-    const s = window.localStorage.getItem(STORAGE_KEY);
+    const s = readStorageJSON(STORAGE_KEY, null);
     if (!s) return defaultFlags();
-    return normalizeFlags(JSON.parse(s));
+    return normalizeFlags(s);
   } catch (e) {
     return defaultFlags();
   }
@@ -73,7 +78,7 @@ function loadHubUiFeatureFlags () {
 function saveHubUiFeatureFlags (flags) {
   if (typeof window === 'undefined') return;
   const next = normalizeFlags(flags);
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  writeStorageJSON(STORAGE_KEY, next);
   try {
     window.dispatchEvent(new CustomEvent(CHANGED_EVENT, { detail: next }));
   } catch (e) { /* ignore */ }
@@ -182,6 +187,7 @@ function anyBitcoinSubFeatureEnabled (f) {
 
 module.exports = {
   FLAG_KEYS,
+  ALWAYS_ON_FLAG_KEYS,
   BITCOIN_UI_FLAG_KEYS,
   loadHubUiFeatureFlags,
   saveHubUiFeatureFlags,

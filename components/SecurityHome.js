@@ -19,16 +19,18 @@ const {
   notifyDelegationStorageChanged
 } = require('../functions/fabricDelegationLocal');
 const {
+  readStorageJSON,
+  removeStorageKey
+} = require('../functions/fabricBrowserState');
+const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 
 function readDelegation () {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return null;
-    const raw = window.localStorage.getItem(DELEGATION_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
+    if (typeof window === 'undefined') return null;
+    return readStorageJSON(DELEGATION_STORAGE_KEY, null);
   } catch (e) {
     return null;
   }
@@ -147,7 +149,7 @@ function SecurityHome () {
         return;
       }
       try {
-        window.localStorage.removeItem(DELEGATION_STORAGE_KEY);
+        removeStorageKey(DELEGATION_STORAGE_KEY);
       } catch (e) {}
       notifyDelegationStorageChanged();
       setDelegation(null);
@@ -178,7 +180,7 @@ function SecurityHome () {
       await refreshSessions();
       if (token === tokenId) {
         try {
-          window.localStorage.removeItem(DELEGATION_STORAGE_KEY);
+          removeStorageKey(DELEGATION_STORAGE_KEY);
         } catch (e) {}
         notifyDelegationStorageChanged();
         setDelegation(null);
@@ -206,7 +208,7 @@ function SecurityHome () {
         <p style={{ color: '#666', marginTop: '0.65em' }}>
           Related:{' '}
           {uf.bitcoinPayments ? (
-            <><Link to="/services/bitcoin/payments">Bitcoin Payments</Link> (receive vs Hub-wallet send vs Payjoin),{' '}</>
+            <><Link to="/payments">Bitcoin Payments</Link> (receive vs Hub-wallet send vs Payjoin),{' '}</>
           ) : (
             <>Bitcoin Payments (enable <strong>Bitcoin — Payments</strong> in Admin → Feature visibility for a nav link),{' '}</>
           )}

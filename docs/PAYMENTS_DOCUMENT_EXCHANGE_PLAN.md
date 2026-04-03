@@ -8,6 +8,7 @@ This document extends [PAYMENTS_PROTOCOL.md](../PAYMENTS_PROTOCOL.md) with a con
 **Shipped in this branch (high level)**
 | Area | What changed |
 |------|----------------|
+| **L1 Bitcoin → Fabric document market** | Each new tip (when `documentBlocks` on): compact **block** document (`application/x-fabric-bitcoin-block+json`) with **immutable** canonical JSON (**schemaVersion 3**, `functions/bitcoinBlockDocument.js`). Optional **per-tx** documents (`documentTransactions` / `FABRIC_BITCOIN_DOCUMENT_TX=1`, `functions/bitcoinTransactionDocument.js` — body = **`network` + consensus `hex`** only). Default **`purchasePriceSats`** for inventory (`documentInventoryBlockPriceSats`, `documentInventoryTransactionPriceSats`, env `FABRIC_BITCOIN_DOC_*`). **Pruned** Core: unpublish + delete local files below **`pruneheight`**; status **`bitcoinPruned`** / **`bitcoinPruneHeight`**; Bitcoin dashboard copy. Inventory items carry **`bitcoinHeight`** / block hash / txid for peers. |
 | **L1 verification** | `_l1PaymentVerificationDetail`, `GET .../transactions/:txid?address=&amountSats=` / RPC / WS with `confirmations`, `inMempool`, `matchedSats`. |
 | **Bitcoin status** | Public sanitizer exposes `mempoolTxCount` where available. |
 | **Invoice UX** | Confirmation vs mempool, polling, tx deep links. |
@@ -43,8 +44,9 @@ This document extends [PAYMENTS_PROTOCOL.md](../PAYMENTS_PROTOCOL.md) with a con
 - Longer term: a single **`PaymentStatus`** object in JSON-RPC results `{ txid, confirmations, inMempool, matchedSats }` for invoices, contracts, and HTLC confirmations.
 
 ## Backend / test outstanding
-- **Unit tests:** [`tests/hub.l1PaymentVerification.detail.test.js`](../tests/hub.l1PaymentVerification.detail.test.js) covers `_l1PaymentVerificationDetail` with a mocked Bitcoin service.
+- **Unit tests:** [`tests/hub.l1PaymentVerification.detail.test.js`](../tests/hub.l1PaymentVerification.detail.test.js) covers `_l1PaymentVerificationDetail` with a mocked Bitcoin service. **Bitcoin index / preimage:** [`tests/bitcoinBlockDocument.test.js`](../tests/bitcoinBlockDocument.test.js), [`tests/bitcoinTransactionDocument.test.js`](../tests/bitcoinTransactionDocument.test.js), [`tests/bitcoinPruneInventory.test.js`](../tests/bitcoinPruneInventory.test.js).
 - **L1 verify REST:** `GET /services/bitcoin/transactions/:txid?address=&amountSats=` (same path as raw tx; query selects proof). [`functions/bitcoinClient.js`](../functions/bitcoinClient.js) `verifyL1Payment`; UI **`/services/bitcoin/resources`**.
+- **E2E:** Dedicated browser/automation path for “buy L1-indexed block/tx doc via inventory HTLC across two hubs” remains a **Phase E** acceptance item ([PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md)).
 
 ## Testing
 - Regtest: pay → mempool UI → **Generate block** (admin) → confirmed.

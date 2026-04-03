@@ -11,6 +11,7 @@ const {
   BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX,
   getSpendWalletContext
 } = require('../functions/bitcoinClient');
+const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
 
 function trimMiddle (s, left = 14, right = 10) {
   const t = String(s || '');
@@ -75,14 +76,35 @@ function SettingsBitcoinWallet ({ identity }) {
         </Message>
       ) : (
         <Message warning size="small" style={{ marginBottom: '1em' }}>
-          Unlock your identity from the header (<strong>Locked</strong> → password), or open <Link to="/settings">Settings</Link> and use <strong>Fabric identity</strong>, to show the master xpub and payment account ids.
+          {(() => {
+            const m = classifyHubBrowserIdentity(identity || {});
+            if (m === 'watch_only') {
+              return (
+                <>
+                  Import a full key from the top-bar identity menu or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> to show the master xpub and payment account ids (watch-only does not derive spend keys here).
+                </>
+              );
+            }
+            if (m === 'password_locked') {
+              return (
+                <>
+                  Unlock from the header (<strong>Locked</strong> → encryption password), or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, to show the master xpub and payment account ids.
+                </>
+              );
+            }
+            return (
+              <>
+                Create or restore a Fabric identity: <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or <strong>Log in</strong> in the top bar, to show the master xpub and payment account ids.
+              </>
+            );
+          })()}
         </Message>
       )}
 
       <Message size="small" style={{ marginBottom: '1em' }}>
         <p style={{ margin: 0, fontSize: '0.88em', lineHeight: 1.45, color: '#555' }}>
           <strong>Documents &amp; L1:</strong> publishing is free; <strong>distribute</strong> and paid retrieval use invoices you pay from{' '}
-          <Link to="/services/bitcoin">Bitcoin</Link> or <Link to="/services/bitcoin/payments">Payments</Link>. Verify on-chain activity under{' '}
+          <Link to="/services/bitcoin">Bitcoin</Link> or <Link to="/payments">Payments</Link>. Verify on-chain activity under{' '}
           <Link to="/services/bitcoin/resources">Resources</Link> or the explorer on the Bitcoin page.
         </p>
       </Message>
@@ -96,7 +118,7 @@ function SettingsBitcoinWallet ({ identity }) {
         {' · '}
         <Link to="/services/bitcoin/invoices">Invoices</Link>
         {' · '}
-        <Link to="/services/bitcoin/payments">Payments</Link>
+        <Link to="/payments">Payments</Link>
       </p>
     </Segment>
   );

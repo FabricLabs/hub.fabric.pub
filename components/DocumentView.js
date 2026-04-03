@@ -30,6 +30,11 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
+const {
+  classifyHubBrowserIdentity,
+  fabricIdentityNeedFullKeyPlain
+} = require('../functions/hubIdentityUiHints');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
 const DEFAULT_PUBLISH_PRICE_SATS = '25';
 const TXID_HEX_64 = /^[a-fA-F0-9]{64}$/;
@@ -76,13 +81,7 @@ function fabricTcpPeersFromNetworkStatus (ns) {
 function getAdminTokenFromProps (props) {
   const t = props && props.adminToken;
   if (t && String(t).trim()) return String(t).trim();
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const s = window.localStorage.getItem('fabric.hub.adminToken');
-      if (s && String(s).trim()) return String(s).trim();
-    }
-  } catch (e) {}
-  return '';
+  return readHubAdminTokenFromBrowser();
 }
 
 function DocumentDetail (props) {
@@ -737,18 +736,14 @@ function DocumentDetail (props) {
   }, [fabricPeersForOffer]);
 
   const adminTokenResolved = String(
-    (props.adminToken != null && props.adminToken) ||
-      (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken')) ||
-      ''
+    readHubAdminTokenFromBrowser(props.adminToken)
   ).trim();
   const canAdminUnpublish = !!(adminTokenResolved && doc && isPublishedInStore && id);
 
   const handleConfirmTombstone = React.useCallback(async () => {
     if (!id) return;
     const token = String(
-      (props.adminToken != null && props.adminToken) ||
-        (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken')) ||
-        ''
+      readHubAdminTokenFromBrowser(props.adminToken)
     ).trim();
     if (!token) {
       setTombstoneError('Admin token required.');
@@ -970,7 +965,9 @@ function DocumentDetail (props) {
   const handlePayDistributeFromBridge = React.useCallback(async () => {
     if (!distributeInvoice || !id) return;
     if (!props.hasDocumentKey) {
-      setDistributeError('Unlock your Fabric identity first — distribute bonding from this browser requires an unlocked session.');
+      setDistributeError(
+        `${fabricIdentityNeedFullKeyPlain(props.identity || {})} Distribute bonding from this browser needs an unlocked signing session.`
+      );
       return;
     }
     const token = getAdminTokenFromProps(props);
@@ -1031,7 +1028,9 @@ function DocumentDetail (props) {
   const handlePayPurchaseFromBridge = React.useCallback(async () => {
     if (!purchaseInvoice || !id) return;
     if (!props.hasDocumentKey) {
-      setPurchaseError('Unlock your Fabric identity first — purchase bonding from this browser requires an unlocked session.');
+      setPurchaseError(
+        `${fabricIdentityNeedFullKeyPlain(props.identity || {})} Purchase bonding from this browser needs an unlocked signing session.`
+      );
       return;
     }
     const token = getAdminTokenFromProps(props);
@@ -1322,26 +1321,54 @@ function DocumentDetail (props) {
                   </Button>
                 </div>
               )}
-              {needsIdentityUnlock && (
-                <Message info size="small" style={{ marginTop: '0.75em' }}>
-                  <Message.Header>Unlock Fabric identity</Message.Header>
-                  <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
-                    Use the top bar identity control (it shows <strong>Locked</strong> until you enter your password) or{' '}
-                    <Link to="/settings">Settings</Link>
-                    {' → '}
-                    <strong>Fabric identity</strong>. <strong>Publish</strong>, <strong>Purchase</strong> (HTLC invoice/claim), and <strong>Distribute</strong> only run while unlocked so hub requests are Schnorr-signed and document bytes are available.
-                    Pay-to-distribute and hub-wallet <strong>Pay Now</strong> use <strong>real Bitcoin transactions</strong>: <strong>Pay Now</strong> and <strong>Pay from hub wallet</strong> broadcast via this hub&apos;s <code>bitcoind</code> (admin token where required); you can also pay from any external wallet and paste the txid.
-                    {needsIdentityKeyForEncryptedBody ? ' Encrypted documents also need unlock to preview or download.' : ''}{' '}
-                    <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> ties this identity to L1 receive/send paths.
-                  </p>
-                  {typeof props.onRequestUnlock === 'function' && (
-                    <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
-                      <Icon name="key" />
-                      Open identity unlock
-                    </Button>
-                  )}
-                </Message>
-              )}
+              {needsIdentityUnlock && (() => {
+                const idMode = classifyHubBrowserIdentity(props.identity || {});
+                const header = idMode === 'watch_only'
+                  ? 'Signing key required'
+                  : idMode === 'password_locked'
+                    ? 'Unlock Fabric identity'
+                    : 'Fabric identity required';
+                return (
+                  <Message info size="small" style={{ marginTop: '0.75em' }}>
+                    <Message.Header>{header}</Message.Header>
+                    <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
+                      {idMode === 'watch_only' ? (
+                        <>
+                          This browser only has a <strong>watch-only</strong> identity (public key). <strong>Publish</strong>, <strong>Purchase</strong>, and <strong>Distribute</strong> need a full key: open the top-bar identity menu or{' '}
+                          <Link to="/settings">Settings</Link>
+                          {' → '}
+                          <strong>Fabric identity</strong> to import a signing key or use desktop signing.
+                        </>
+                      ) : idMode === 'password_locked' ? (
+                        <>
+                          Use the top-bar <strong>Locked</strong> control (encryption password) or{' '}
+                          <Link to="/settings">Settings</Link>
+                          {' → '}
+                          <strong>Fabric identity</strong>. <strong>Publish</strong>, <strong>Purchase</strong> (HTLC invoice/claim), and <strong>Distribute</strong> only run while unlocked so hub requests are Schnorr-signed and document bytes are available.
+                        </>
+                      ) : (
+                        <>
+                          Create or restore a key: <Link to="/settings">Settings</Link>
+                          {' → '}
+                          <strong>Fabric identity</strong>, or <strong>Log in</strong> in the top bar.
+                          {' '}
+                          <strong>Publish</strong>, <strong>Purchase</strong>, and <strong>Distribute</strong> require Schnorr signing from this browser when you use those flows here.
+                        </>
+                      )}
+                      {' '}
+                      Pay-to-distribute and hub-wallet <strong>Pay Now</strong> use <strong>real Bitcoin transactions</strong>: <strong>Pay Now</strong> and <strong>Pay from hub wallet</strong> broadcast via this hub&apos;s <code>bitcoind</code> (admin token where required); you can also pay from any external wallet and paste the txid.
+                      {needsIdentityKeyForEncryptedBody ? ' Encrypted documents also need unlock to preview or download.' : ''}{' '}
+                      <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> ties this identity to L1 receive/send paths.
+                    </p>
+                    {typeof props.onRequestUnlock === 'function' && (
+                      <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
+                        <Icon name="key" />
+                        Open Fabric identity
+                      </Button>
+                    )}
+                  </Message>
+                );
+              })()}
             </Card.Description>
           </Card.Content>
           <Card.Content extra>

@@ -10,8 +10,8 @@ const {
 } = require('react-router-dom');
 
 const {
+  Accordion,
   Button,
-  Card,
   Checkbox,
   Divider,
   Form,
@@ -23,7 +23,9 @@ const {
   Message,
   Modal,
   Segment,
-  Loader
+  Loader,
+  Menu,
+  Table
 } = require('semantic-ui-react');
 
 const ChatInput = require('./ChatInput');
@@ -33,22 +35,16 @@ const { peerNeighborhoodToDot } = require('../functions/peerTopologyDot');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
-const { shortenPublicId } = require('../functions/peerIdentity');
+const { shortenPublicId, fabricPeerBech32Id, peerConnectionPubkeyAtHostPort } = require('../functions/peerIdentity');
 const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 
-function getAdminTokenFromProps (props) {
-  const t = props && props.adminToken;
-  if (t && String(t).trim()) return String(t).trim();
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const s = window.localStorage.getItem('fabric.hub.adminToken');
-      if (s && String(s).trim()) return String(s).trim();
-    }
-  } catch (e) {}
-  return '';
+/** Hub admin token for operator-only controls; only passed from `/settings/admin/peers/:id`. */
+function getAdminPeerToolsTokenFromProps (props) {
+  const t = props && props.adminPeerToolsToken;
+  return t && String(t).trim() ? String(t).trim() : '';
 }
 
 async function hubJsonRpc (method, params) {
@@ -131,6 +127,8 @@ function PeerDetail (props) {
   const [nickDraft, setNickDraft] = React.useState('');
   const [inviteNoteModalOpen, setInviteNoteModalOpen] = React.useState(false);
   const [inviteNoteDraft, setInviteNoteDraft] = React.useState('');
+  const [peerOpsAccordionOpen, setPeerOpsAccordionOpen] = React.useState(false);
+  const [peerWorkspaceTab, setPeerWorkspaceTab] = React.useState(0);
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -170,7 +168,7 @@ function PeerDetail (props) {
   const hasPeerRow = !!peer;
   const status = peer && peer.status ? peer.status : 'unknown';
   const isConnected = status === 'connected';
-  const adminTokenPresent = !!getAdminTokenFromProps(props);
+  const adminTokenPresent = !!getAdminPeerToolsTokenFromProps(props);
 
   React.useEffect(() => {
     const bi = props.bridgeRef && props.bridgeRef.current;
@@ -315,6 +313,10 @@ function PeerDetail (props) {
     return () => window.removeEventListener('globalStateUpdate', handler);
   }, [id, props.bridgeRef]);
 
+  React.useEffect(() => {
+    setPeerWorkspaceTab(0);
+  }, [id]);
+
   const routeLooksLikeXpub = isLikelyBip32ExtendedKey(id);
   const xpubOnlyNoPeer = routeLooksLikeXpub && !peer;
   const [peerResolveSlow, setPeerResolveSlow] = React.useState(false);
@@ -331,7 +333,9 @@ function PeerDetail (props) {
   const webrtcXpub = webrtcMeta && webrtcMeta.xpub && isLikelyBip32ExtendedKey(String(webrtcMeta.xpub))
     ? String(webrtcMeta.xpub).trim()
     : '';
-  const title = (peer && (peer.nickname || peer.alias || peer.id || peer.address))
+  const bech32Headline = peer ? fabricPeerBech32Id(peer) : '';
+  const title = (bech32Headline ? shortenPublicId(bech32Headline, 18, 14) : null)
+    || (peer && (peer.nickname || peer.alias || peer.id || peer.address))
     || (webrtcXpub ? shortenPublicId(webrtcXpub, 14, 12) : null)
     || (routeLooksLikeXpub && id
       ? (id.length > 40 ? `${id.slice(0, 16)}…${id.slice(-14)}` : id)
@@ -420,7 +424,7 @@ function PeerDetail (props) {
   }, []);
 
   const submitInviteToContract = React.useCallback(async () => {
-    const token = getAdminTokenFromProps(props);
+    const token = getAdminPeerToolsTokenFromProps(props);
     if (!token || !id) return;
     const note = inviteNoteDraft && String(inviteNoteDraft).trim()
       ? String(inviteNoteDraft).trim().slice(0, 500)
@@ -456,56 +460,55 @@ function PeerDetail (props) {
   return (
     <fabric-peer-detail class='fade-in'>
       <Segment>
-        <Header
-          as='h2'
+        <div
           style={{
             display: 'flex',
-            alignItems: 'center',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
             justifyContent: 'space-between',
-            gap: '0.75em',
-            flexWrap: 'wrap'
+            gap: '0.65rem',
+            marginBottom: '0.35rem'
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap', minWidth: 0, flex: '1 1 16rem' }}>
             <Button
               basic
-              size='small'
+              size="small"
               as={Link}
               to="/peers"
-              title="Back to peers"
               aria-label="Back to peers list"
             >
               <Icon name="arrow left" aria-hidden="true" />
               Peers
             </Button>
-            <div>
-              <div>{title}</div>
-              {resolvedAddress && (
-                <div style={{ fontSize: '0.85em', color: '#666' }}>
-                  {host && <span>{host}</span>}
-                  {port && <span>{host ? ':' : ''}{port}</span>}
+            <div style={{ minWidth: 0 }}>
+              <Header as="h3" style={{ margin: 0, fontWeight: 600, lineHeight: 1.25 }}>
+                {title}
+              </Header>
+              {resolvedAddress && (host || port) ? (
+                <div style={{ fontSize: '0.82rem', color: '#767676', marginTop: '0.15rem' }}>
+                  {host}{port ? `:${port}` : ''}
                 </div>
-              )}
-              {webrtcRegistration && (
-                <div style={{ fontSize: '0.82em', color: '#555', marginTop: '0.35em', maxWidth: '42rem' }}>
-                  <Label size="tiny" basic color="blue" style={{ marginRight: '0.35em' }}>WebRTC signaling</Label>
+              ) : null}
+              {webrtcRegistration ? (
+                <div style={{ fontSize: '0.78rem', color: '#555', marginTop: '0.25rem', maxWidth: '38rem' }}>
+                  <Label size="mini" basic color="blue">WebRTC</Label>
                   {webrtcXpub ? (
-                    <div style={{ marginTop: '0.25em' }}>
-                      <Icon name="key" aria-hidden="true" />{' '}
-                      <span title={webrtcXpub}>xpub {shortenPublicId(webrtcXpub, 18, 14)}</span>
-                    </div>
+                    <span style={{ marginLeft: '0.35rem' }} title={webrtcXpub}>
+                      xpub {shortenPublicId(webrtcXpub, 14, 12)}
+                    </span>
                   ) : null}
                   {webrtcMeta && webrtcMeta.fabricPeerId ? (
-                    <div style={{ marginTop: '0.2em', wordBreak: 'break-all' }}>
-                      Fabric id: <code style={{ fontSize: '0.92em' }}>{String(webrtcMeta.fabricPeerId)}</code>
+                    <div style={{ marginTop: '0.2rem', wordBreak: 'break-all' }}>
+                      <code style={{ fontSize: '0.85em' }}>{String(webrtcMeta.fabricPeerId)}</code>
                     </div>
                   ) : null}
                 </div>
-              )}
+              ) : null}
             </div>
             {xpubOnlyNoPeer ? (
               <Label size="small" color="blue" title="BIP32 extended public key (not a TCP peer socket)">
-                <Icon name="key" /> Identity reference
+                <Icon name="key" /> Identity ref
               </Label>
             ) : !hasPeerRow && webrtcRegistration ? (
               <Label size="small" color="blue" title="Registered for WebRTC signaling; TCP peer row not loaded yet">
@@ -516,149 +519,149 @@ function PeerDetail (props) {
                 <Icon name="clock outline" /> Resolving…
               </Label>
             ) : (
-              <Label
-                size='small'
-                color={isConnected ? 'green' : 'grey'}
-                title={status}
-              >
+              <Label size="small" color={isConnected ? 'green' : 'grey'} title={status}>
                 {isConnected ? (
-                  <><Icon name='check circle' /> Connected</>
+                  <><Icon name="check circle" /> On</>
                 ) : (
-                  <><Icon name='minus circle' /> Disconnected</>
+                  <><Icon name="minus circle" /> Off</>
                 )}
               </Label>
             )}
           </div>
-          <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
-            {!xpubOnlyNoPeer && (
-            <>
-            <Button
-              size="small"
-              icon
-              title="Refresh peer info"
-              basic
-              onClick={() => {
-                if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
-                if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
-              }}
+          {!xpubOnlyNoPeer && (
+            <Button.Group size="small" basic style={{ flexShrink: 0 }}>
+              <Button
+                icon
+                title="Refresh peer info"
+                onClick={() => {
+                  if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
+                  if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
+                }}
+              >
+                <Icon name="refresh" />
+              </Button>
+              {hasPeerRow && id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
+                <Button
+                  icon
+                  onClick={() => props.onAddPeer({ address: peer.address })}
+                  title={`Reconnect to ${peer.address}`}
+                >
+                  <Icon name="plug" />
+                </Button>
+              )}
+              {hasPeerRow && id && isConnected && typeof props.onDisconnectPeer === 'function' && (
+                <Button
+                  icon
+                  color="red"
+                  onClick={() => props.onDisconnectPeer(id)}
+                  title={`Disconnect ${id}`}
+                >
+                  <Icon name="remove" />
+                </Button>
+              )}
+              {hasPeerRow && canRequestFabricResync && typeof props.onFabricPeerResync === 'function' && (
+                <Button
+                  icon
+                  title="Fabric chain resync (inventory + BitcoinBlock replay)"
+                  onClick={() => props.onFabricPeerResync(tcpKeyForFabricResync)}
+                >
+                  <Icon name="sync" />
+                </Button>
+              )}
+              {hasPeerRow && id && typeof props.onSetPeerNickname === 'function' && (
+                <Button icon onClick={openNicknameModal} title="Set nickname">
+                  <Icon name="tag" />
+                </Button>
+              )}
+            </Button.Group>
+          )}
+        </div>
+
+        {!xpubOnlyNoPeer && hasPeerRow && id && isConnected && (
+          (bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function') ||
+          adminTokenPresent
+        ) ? (
+          <Accordion styled fluid style={{ marginBottom: '0.65rem' }}>
+            <Accordion.Title
+              active={peerOpsAccordionOpen}
+              index={0}
+              onClick={() => setPeerOpsAccordionOpen(!peerOpsAccordionOpen)}
             >
-              <Icon name="refresh" />
-            </Button>
-            {hasPeerRow && id && !isConnected && typeof props.onAddPeer === 'function' && (peer && peer.address) && (
-              <Button
-                size="small"
-                basic
-                onClick={() => props.onAddPeer({ address: peer.address })}
-                title={`Reconnect to ${peer.address}`}
-              >
-                <Icon name="plug" />
-                Reconnect
-              </Button>
-            )}
-            {hasPeerRow && id && isConnected && typeof props.onDisconnectPeer === 'function' && (
-              <Button
-                size="small"
-                basic
-                color="red"
-                onClick={() => props.onDisconnectPeer(id)}
-                title={`Disconnect ${id}`}
-              >
-                <Icon name="remove" />
-                Disconnect
-              </Button>
-            )}
-            {hasPeerRow && canRequestFabricResync && typeof props.onFabricPeerResync === 'function' && (
-              <Button
-                size="small"
-                basic
-                title="Fabric ChainSyncRequest: exchange document inventories and replay BitcoinBlock messages from the peer hub"
-                onClick={() => props.onFabricPeerResync(tcpKeyForFabricResync)}
-              >
-                <Icon name="sync" />
-                Resync
-              </Button>
-            )}
-            {hasPeerRow && id && isConnected && bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' && (
-              <>
-                <Input
-                  size="small"
-                  placeholder="Relay: seller Fabric ID (optional)"
-                  title="When this connection is a relay, set the seller’s Fabric id so the hub forwards INVENTORY_REQUEST"
-                  value={inventoryRelayTarget}
-                  onChange={(e, { value }) => setInventoryRelayTarget(value)}
-                  style={{ minWidth: '10em', maxWidth: '14em' }}
-                />
-                <Button
-                  size="small"
-                  basic
-                  onClick={() => {
-                    const t = (inventoryRelayTarget || '').trim();
-                    const opts = t ? { inventoryTarget: t } : {};
-                    sendInventoryRequest('documents', opts);
-                  }}
-                  title="Request document inventory from this peer"
-                >
-                  <Icon name="list alternate outline" />
-                  Docs
-                </Button>
-                {typeof bridgeRef.current.getHtlcRefundPublicKeyHex === 'function' && bridgeRef.current.getHtlcRefundPublicKeyHex() && (
-                  <Button
-                    size="small"
-                    basic
-                    onClick={() => {
-                      const refundPk = bridgeRef.current.getHtlcRefundPublicKeyHex();
-                      const t = (inventoryRelayTarget || '').trim();
-                      const opts = { buyerRefundPublicKey: refundPk };
-                      if (t) opts.inventoryTarget = t;
-                      sendInventoryRequest('documents', opts);
-                    }}
-                    title="Inventory with P2TR HTLC on priced items (your identity pubkey = refund path)"
-                  >
-                    <Icon name="bitcoin" />
-                    Docs+HTLC
-                  </Button>
-                )}
-              </>
-            )}
-            {hasPeerRow && id && typeof props.onSetPeerNickname === 'function' && (
-              <Button
-                size="small"
-                basic
-                onClick={openNicknameModal}
-                title={`Set node-local nickname for ${id}`}
-              >
-                <Icon name="tag" />
-                Nick
-              </Button>
-            )}
-            {adminTokenPresent && hasPeerRow && id && isConnected && (
-              <>
-                <Input
-                  size="small"
-                  placeholder="Execution contract id (optional)"
-                  value={federationContractId}
-                  onChange={(e, { value }) => setFederationContractId(value)}
-                  style={{ minWidth: '12em', maxWidth: '18em' }}
-                  title="Optional execution contract id included in the invite (see Contracts)"
-                />
-                <Button
-                  size="small"
-                  basic
-                  primary
-                  loading={inviteBusy}
-                  disabled={inviteBusy}
-                  title="Admin only: send a federation / execution-contract invite as structured P2P chat (Fabric message log on this hub)"
-                  onClick={launchInviteNoteModal}
-                >
-                  <Icon name="users" />
-                  Invite to contract
-                </Button>
-              </>
-            )}
-            </>
-            )}
-          </div>
-        </Header>
+              <Icon name="dropdown" />
+              Inventory, HTLC, federation (advanced)
+            </Accordion.Title>
+            <Accordion.Content active={peerOpsAccordionOpen}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                {bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' ? (
+                  <>
+                    <Input
+                      size="small"
+                      placeholder="Relay: seller Fabric id (optional)"
+                      title="When this connection is a relay, set the seller’s Fabric id so the hub forwards INVENTORY_REQUEST"
+                      value={inventoryRelayTarget}
+                      onChange={(e, { value }) => setInventoryRelayTarget(value)}
+                      style={{ minWidth: '12em', maxWidth: '18rem', flex: '1 1 12em' }}
+                    />
+                    <Button
+                      size="small"
+                      basic
+                      onClick={() => {
+                        const t = (inventoryRelayTarget || '').trim();
+                        const opts = t ? { inventoryTarget: t } : {};
+                        sendInventoryRequest('documents', opts);
+                      }}
+                      title="Request document inventory from this peer"
+                    >
+                      <Icon name="list alternate outline" />
+                      Docs
+                    </Button>
+                    {typeof bridgeRef.current.getHtlcRefundPublicKeyHex === 'function' && bridgeRef.current.getHtlcRefundPublicKeyHex() ? (
+                      <Button
+                        size="small"
+                        basic
+                        onClick={() => {
+                          const refundPk = bridgeRef.current.getHtlcRefundPublicKeyHex();
+                          const t = (inventoryRelayTarget || '').trim();
+                          const opts = { buyerRefundPublicKey: refundPk };
+                          if (t) opts.inventoryTarget = t;
+                          sendInventoryRequest('documents', opts);
+                        }}
+                        title="Inventory with P2TR HTLC on priced items (your identity pubkey = refund path)"
+                      >
+                        <Icon name="bitcoin" />
+                        Docs+HTLC
+                      </Button>
+                    ) : null}
+                  </>
+                ) : null}
+                {adminTokenPresent ? (
+                  <>
+                    <Input
+                      size="small"
+                      placeholder="Execution contract id (optional)"
+                      value={federationContractId}
+                      onChange={(e, { value }) => setFederationContractId(value)}
+                      style={{ minWidth: '10em', maxWidth: '16rem', flex: '1 1 10em' }}
+                      title="Optional execution contract id included in the invite (see Contracts)"
+                    />
+                    <Button
+                      size="small"
+                      basic
+                      primary
+                      loading={inviteBusy}
+                      disabled={inviteBusy}
+                      title="Admin: send federation / execution-contract invite"
+                      onClick={launchInviteNoteModal}
+                    >
+                      <Icon name="users" />
+                      Invite
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+            </Accordion.Content>
+          </Accordion>
+        ) : null}
 
         {inviteError ? (
           <Message negative size="small" onDismiss={() => setInviteError(null)} style={{ marginTop: '0.5em' }}>
@@ -673,166 +676,171 @@ function PeerDetail (props) {
 
         <Divider />
 
-        {peer && neighborDot ? (
-          <Segment style={{ marginBottom: '1em' }}>
-            <Header as="h3">Gossip neighborhood</Header>
-            <p style={{ color: '#666', marginBottom: '0.75em' }}>
-              Fabric ids this peer last advertised in <code>P2P_PEER_GOSSIP</code> (from Bridge cache). Use <strong>Docs</strong> above to request <code>INVENTORY_REQUEST</code> through this TCP link; open a row below to pre-fill the relay field on that peer&apos;s page when you need a hop.
-            </p>
-            <GraphDocumentPreview dotSource={neighborDot} skipIdentityGate />
-            <List relaxed size="small" style={{ marginTop: '0.75em' }}>
-              {gossipNeighbors.map((nid) => {
-                const n = String(nid || '').trim();
-                if (!n) return null;
-                return (
-                  <List.Item key={n}>
-                    <List.Content>
-                      <Link to={`/peers/${encodeURIComponent(n)}`} title="Open peer detail (may require Add Peer if not in snapshot)">
-                        <code style={{ fontSize: '0.88em' }}>{n.length > 36 ? `${n.slice(0, 14)}…${n.slice(-10)}` : n}</code>
-                      </Link>
-                      <Button
-                        size="mini"
-                        basic
-                        style={{ marginLeft: '0.5em' }}
-                        type="button"
-                        title="Copy Fabric id into relay field for inventory via this peer"
-                        onClick={() => setInventoryRelayTarget(n)}
-                      >
-                        Set relay →
-                      </Button>
-                    </List.Content>
-                  </List.Item>
-                );
-              })}
-            </List>
-            <details style={{ marginTop: '0.75rem' }}>
-              <summary style={{ cursor: 'pointer', color: '#555' }}>DOT source</summary>
-              <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.75rem', background: '#f7f7f7', padding: '0.5rem', borderRadius: 4 }}>{neighborDot}</pre>
-            </details>
-          </Segment>
-        ) : null}
+        <Menu pointing secondary compact style={{ margin: '0 0 0.65rem', flexWrap: 'wrap' }}>
+          <Menu.Item active={peerWorkspaceTab === 0} onClick={() => setPeerWorkspaceTab(0)}>
+            Overview
+          </Menu.Item>
+          <Menu.Item
+            active={peerWorkspaceTab === 1}
+            onClick={() => peer && setPeerWorkspaceTab(1)}
+            disabled={!peer}
+          >
+            Chat{peer && peerChats.length > 0 ? ` (${peerChats.length})` : ''}
+          </Menu.Item>
+          <Menu.Item
+            active={peerWorkspaceTab === 2}
+            onClick={() => peer && setPeerWorkspaceTab(2)}
+            disabled={!peer}
+          >
+            Inventory{peer && inventoryDocs.length > 0 ? ` (${inventoryDocs.length})` : ''}
+          </Menu.Item>
+        </Menu>
 
-        <Card fluid>
-          <Card.Content>
-            <Card.Header>Peer Details</Card.Header>
-            <Card.Description>
-              {peer ? (
-                <List divided relaxed size="small">
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Address</List.Header>
-                      <List.Description>{resolvedAddress || 'unknown'}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Host</List.Header>
-                      <List.Description>{host || 'unknown'}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Port</List.Header>
-                      <List.Description>{port || '—'}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>ID</List.Header>
-                      <List.Description>{(peer && peer.id) || 'unknown'}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Nickname (node-local)</List.Header>
-                      <List.Description>{(peer && peer.nickname) || ''}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Alias (peer-provided)</List.Header>
-                      <List.Description>{(peer && peer.alias) || ''}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Score</List.Header>
-                      <List.Description>{peer && peer.score != null ? String(peer.score) : ''}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>First seen</List.Header>
-                      <List.Description>{formatMaybeDate(peer && peer.firstSeen)}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  <List.Item>
-                    <List.Content>
-                      <List.Header>Last seen</List.Header>
-                      <List.Description>{formatMaybeDate(peer && (peer.lastSeen || peer.lastMessage))}</List.Description>
-                    </List.Content>
-                  </List.Item>
-                  {peer && peer.connection && (
-                    <List.Item>
-                      <List.Content>
-                        <List.Header>Connection</List.Header>
-                        <List.Description>
+        {peerWorkspaceTab === 0 && (
+          <Segment basic style={{ padding: 0, marginBottom: '0.75rem', boxShadow: 'none', border: 'none' }}>
+            {peer ? (
+              <>
+                <Table compact definition striped size="small" style={{ marginBottom: '0.65rem' }}>
+                  <Table.Body>
+                    {(() => {
+                      const connStr = typeof window !== 'undefined'
+                        ? peerConnectionPubkeyAtHostPort(peer, window.location.host)
+                        : peerConnectionPubkeyAtHostPort(peer, '');
+                      if (!connStr) return null;
+                      return (
+                        <Table.Row>
+                          <Table.Cell collapsing>Id @ endpoint</Table.Cell>
+                          <Table.Cell>
+                            <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{connStr}</code>
+                          </Table.Cell>
+                        </Table.Row>
+                      );
+                    })()}
+                    <Table.Row>
+                      <Table.Cell collapsing>Bech32</Table.Cell>
+                      <Table.Cell>
+                        <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{fabricPeerBech32Id(peer) || '—'}</code>
+                      </Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>Address</Table.Cell>
+                      <Table.Cell>
+                        <code style={{ fontSize: '0.86em' }}>{resolvedAddress || '—'}</code>
+                        {(host || port) ? (
+                          <span style={{ color: '#767676', fontSize: '0.82em', marginLeft: '0.5em' }}>
+                            ({host}{port ? `:${port}` : ''})
+                          </span>
+                        ) : null}
+                      </Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>Fabric id</Table.Cell>
+                      <Table.Cell style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{(peer && peer.id) || '—'}</Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>Nickname</Table.Cell>
+                      <Table.Cell>{(peer && peer.nickname) || '—'}</Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>Alias</Table.Cell>
+                      <Table.Cell>{(peer && peer.alias) || '—'}</Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>Score</Table.Cell>
+                      <Table.Cell>{peer && peer.score != null ? String(peer.score) : '—'}</Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>First seen</Table.Cell>
+                      <Table.Cell>{formatMaybeDate(peer && peer.firstSeen) || '—'}</Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
+                      <Table.Cell collapsing>Last seen</Table.Cell>
+                      <Table.Cell>{formatMaybeDate(peer && (peer.lastSeen || peer.lastMessage)) || '—'}</Table.Cell>
+                    </Table.Row>
+                    {peer && peer.connection ? (
+                      <Table.Row>
+                        <Table.Cell collapsing>Socket</Table.Cell>
+                        <Table.Cell style={{ fontSize: '0.86em' }}>
                           {peer.connection.remoteAddress ? `${peer.connection.remoteAddress}:${peer.connection.remotePort || ''}` : 'connected'}
-                          {peer.connection.lastMessage ? ` — last message: ${formatMaybeDate(peer.connection.lastMessage)}` : ''}
-                          {peer.connection.failureCount != null ? ` — failures: ${peer.connection.failureCount}` : ''}
-                        </List.Description>
-                      </List.Content>
-                    </List.Item>
-                  )}
-                </List>
-              ) : routeLooksLikeXpub ? (
-                <Message info style={{ margin: 0 }}>
-                  <Message.Header>Extended public key (BIP32)</Message.Header>
-                  <p style={{ margin: '0.35em 0 0' }}>
-                    This URL uses an <code>xpub</code>/<code>tpub</code>-style identifier — often the display form of an
-                    activity sender — not a Fabric TCP peer. Peer chat and inventory use a connected node
-                    (<code>host:port</code> or Fabric id from <Link to="/peers">Peers</Link>).
-                  </p>
-                </Message>
-              ) : (
-                <Segment placeholder basic style={{ padding: '1.25em' }}>
-                  <Header as="h4">
-                    Waiting for peer record…
-                  </Header>
-                  <p style={{ color: '#666', margin: '0.35em 0 0.75em' }}>
-                    No matching entry in the current hub snapshot yet. Use <strong>Refresh</strong> above, or open{' '}
-                    <Link to="/peers">Peers</Link> and add <code>host:port</code> (e.g. <code>127.0.0.1:7777</code>). After{' '}
-                    <code>GetPeer</code> returns, details fill in here.
-                  </p>
-                  <Loader active inline="centered" />
-                  {peerResolveSlow && (
-                    <Message warning style={{ marginTop: '1em', textAlign: 'left' }}>
-                      <Message.Header>Taking longer than expected</Message.Header>
-                      <p style={{ margin: '0.35em 0 0' }}>
-                        Check that the Bridge is connected to the hub. If this id was typed manually, add the peer from the list page, then open this link again.
-                      </p>
-                    </Message>
-                  )}
-                </Segment>
-              )}
-            </Card.Description>
-          </Card.Content>
-          <Card.Content extra>
-            <Button
-              size="small"
-              basic
-              onClick={() => navigate('/peers')}
-              title="Back to list"
-            >
-              <Icon name="list" />
-              Peers list
-            </Button>
-          </Card.Content>
-        </Card>
+                          {peer.connection.lastMessage ? ` · last msg ${formatMaybeDate(peer.connection.lastMessage)}` : ''}
+                          {peer.connection.failureCount != null ? ` · failures ${peer.connection.failureCount}` : ''}
+                        </Table.Cell>
+                      </Table.Row>
+                    ) : null}
+                  </Table.Body>
+                </Table>
+                {neighborDot ? (
+                  <Segment secondary style={{ marginTop: '0.35rem' }}>
+                    <Header as="h4" style={{ marginBottom: '0.35rem' }}>Gossip neighborhood</Header>
+                    <p style={{ color: '#666', marginBottom: '0.5rem', fontSize: '0.9em', lineHeight: 1.45 }}>
+                      Fabric ids from <code>P2P_PEER_GOSSIP</code>. Use <strong>Inventory</strong> tab → Docs (or the advanced panel) for <code>INVENTORY_REQUEST</code>.
+                    </p>
+                    <GraphDocumentPreview dotSource={neighborDot} skipIdentityGate />
+                    <List relaxed size="small" style={{ marginTop: '0.5rem' }}>
+                      {gossipNeighbors.map((nid) => {
+                        const n = String(nid || '').trim();
+                        if (!n) return null;
+                        return (
+                          <List.Item key={n}>
+                            <List.Content>
+                              <Link to={`/peers/${encodeURIComponent(n)}`} title="Open peer detail">
+                                <code style={{ fontSize: '0.85em' }}>{n.length > 36 ? `${n.slice(0, 14)}…${n.slice(-10)}` : n}</code>
+                              </Link>
+                              <Button
+                                size="mini"
+                                basic
+                                style={{ marginLeft: '0.35em' }}
+                                type="button"
+                                title="Set as inventory relay target"
+                                onClick={() => setInventoryRelayTarget(n)}
+                              >
+                                Relay →
+                              </Button>
+                            </List.Content>
+                          </List.Item>
+                        );
+                      })}
+                    </List>
+                    <details style={{ marginTop: '0.5rem' }}>
+                      <summary style={{ cursor: 'pointer', color: '#555', fontSize: '0.88em' }}>DOT source</summary>
+                      <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.72rem', background: '#f5f5f5', padding: '0.45rem', borderRadius: 4 }}>{neighborDot}</pre>
+                    </details>
+                  </Segment>
+                ) : null}
+              </>
+            ) : routeLooksLikeXpub ? (
+              <Message info style={{ margin: 0 }}>
+                <Message.Header>Extended public key (BIP32)</Message.Header>
+                <p style={{ margin: '0.35em 0 0' }}>
+                  This URL uses an <code>xpub</code>/<code>tpub</code>-style identifier — often the display form of an
+                  activity sender — not a Fabric TCP peer. Peer chat and inventory use a connected node
+                  (<code>host:port</code> or Fabric id from <Link to="/peers">Peers</Link>).
+                </p>
+              </Message>
+            ) : (
+              <Segment placeholder basic style={{ padding: '1rem' }}>
+                <Header as="h4">Waiting for peer record…</Header>
+                <p style={{ color: '#666', margin: '0.35em 0 0.65em', fontSize: '0.92em' }}>
+                  No matching entry in the hub snapshot yet. Use <strong>Refresh</strong>, or open{' '}
+                  <Link to="/peers">Peers</Link> and add <code>host:port</code>. After <code>GetPeer</code> returns, details appear here.
+                </p>
+                <Loader active inline="centered" size="small" />
+                {peerResolveSlow ? (
+                  <Message warning style={{ marginTop: '0.85em', textAlign: 'left' }} size="small">
+                    <Message.Header>Slow to resolve</Message.Header>
+                    <p style={{ margin: '0.25em 0 0', fontSize: '0.9em' }}>
+                      Check that the Bridge is connected. Add the peer from the list page, then reopen this link.
+                    </p>
+                  </Message>
+                ) : null}
+              </Segment>
+            )}
+          </Segment>
+        )}
 
-        {peer && (
-          <Segment style={{ marginTop: '1em' }}>
-            <Header as="h3">Chat</Header>
+        {peerWorkspaceTab === 1 && peer && (
+          <Segment style={{ marginTop: 0 }}>
+            <Header as="h4" style={{ marginTop: 0 }}>Chat</Header>
             {!hasUnlockedIdentity && (
               <Message warning size="small" style={{ marginBottom: '0.75em' }}>
                 <Message.Header>Identity locked</Message.Header>
@@ -848,7 +856,7 @@ function PeerDetail (props) {
               </Message>
             )}
             {peerChats.length > 0 ? (
-              <List divided relaxed size="small">
+              <List divided size="small">
                 {peerChats.map((chat, index) => {
                   const created = (chat.object && chat.object.created) || Date.now();
                   const bridgeInstance = props.bridgeRef?.current || props.bridge?.current;
@@ -909,10 +917,10 @@ function PeerDetail (props) {
           </Segment>
         )}
 
-        {peer && (
-          <Segment style={{ marginTop: '1em' }}>
-            <Header as="h3">Publisher inventory</Header>
-            <p style={{ color: '#666', marginBottom: '0.75em' }}>
+        {peerWorkspaceTab === 2 && peer && (
+          <Segment style={{ marginTop: 0 }}>
+            <Header as="h4" style={{ marginTop: 0 }}>Publisher inventory</Header>
+            <p style={{ color: '#666', marginBottom: '0.65em', fontSize: '0.92em', lineHeight: 1.45 }}>
               Documents offered by this <strong>publisher</strong>
               {id ? <> (Fabric peer <code style={{ fontSize: '0.9em' }}>{id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-8)}` : id}</code>)</> : ''}.
               <strong> Author</strong> is the creator&apos;s document id when known (lineage). Use <strong>Docs</strong> while connected to send <code>INVENTORY_REQUEST</code>; responses are merged under this peer&apos;s Fabric id and TCP address keys.
@@ -1041,7 +1049,7 @@ function PeerDetail (props) {
                                       loading={bridgePaySettlementId === doc.htlc.settlementId}
                                       disabled={bridgePaySettlementId === doc.htlc.settlementId}
                                       onClick={async () => {
-                                        const token = getAdminTokenFromProps(props);
+                                        const token = getAdminPeerToolsTokenFromProps(props);
                                         const h = doc.htlc;
                                         if (!token || !h || !h.paymentAddress) return;
                                         setBridgePaySettlementId(h.settlementId);

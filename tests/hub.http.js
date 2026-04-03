@@ -697,8 +697,8 @@ describe('@fabric/hub', function () {
           assert.ok(String(response.body.message || '').toLowerCase().includes('bitcoin'), 'error mentions Bitcoin');
         });
 
-        it('POST /services/bitcoin/payments returns 403 without admin token (Hub wallet spend)', async function () {
-          const response = await makeRequest('POST', '/services/bitcoin/payments', {
+        it('POST /payments returns 403 without admin token (Hub wallet spend)', async function () {
+          const response = await makeRequest('POST', '/payments', {
             walletId: 'fabric-test-wallet',
             to: 'bcrt1qtest000000000000000000000000000000000000000',
             amountSats: 1000,
@@ -710,6 +710,17 @@ describe('@fabric/hub', function () {
             String(response.body.message || '').toLowerCase().includes('admin'),
             'error mentions admin token'
           );
+        });
+
+        it('POST /services/bitcoin/payments still aliases POST /payments (legacy path)', async function () {
+          const response = await makeRequest('POST', '/services/bitcoin/payments', {
+            walletId: 'fabric-test-wallet',
+            to: 'bcrt1qtest000000000000000000000000000000000000000',
+            amountSats: 1000,
+            memo: 'hub.http legacy payments path'
+          }, jsonApi);
+          assert.strictEqual(response.status, 403);
+          assert.strictEqual(response.body.status, 'error');
         });
       });
 

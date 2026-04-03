@@ -1,30 +1,34 @@
 'use strict';
 
+/**
+ * Fetch Sensemaker theme Arvo latin woff2 files from Google Fonts (static gstatic URLs).
+ * Run after cloning or if `libraries/semantic/src/themes/sensemaker/assets/fonts/arvo-*.woff2` are missing/corrupt.
+ */
+
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const fonts = [
-  {
-    name: 'Arvo',
-    weights: ['400', '700'],
-    styles: ['normal', 'italic'],
-    formats: ['woff2', 'woff', 'ttf']
-  }
-];
-
 const fontDir = path.join(__dirname, '..', 'libraries', 'semantic', 'src', 'themes', 'sensemaker', 'assets', 'fonts');
 
-// Create font directory if it doesn't exist
-if (!fs.existsSync(fontDir)) {
-  fs.mkdirSync(fontDir, { recursive: true });
-}
+/** v23 latin woff2 from https://fonts.googleapis.com/css2?family=Arvo (Chrome UA) */
+const ARVO_WOFF2 = [
+  ['arvo-normal-400.woff2', 'https://fonts.gstatic.com/s/arvo/v23/tDbD2oWUg0MKqScQ7Q.woff2'],
+  ['arvo-normal-700.woff2', 'https://fonts.gstatic.com/s/arvo/v23/tDbM2oWUg0MKoZw1-LPK8w.woff2'],
+  ['arvo-italic-400.woff2', 'https://fonts.gstatic.com/s/arvo/v23/tDbN2oWUg0MKqSIg75Tv.woff2'],
+  ['arvo-italic-700.woff2', 'https://fonts.gstatic.com/s/arvo/v23/tDbO2oWUg0MKqSIoVLH68dr_.woff2']
+];
 
-// Download a file from URL
 function downloadFile (url, filepath) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(filepath);
-    https.get(url, (response) => {
+    https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0' } }, (response) => {
+      if (response.statusCode !== 200) {
+        file.close();
+        fs.unlink(filepath, () => {});
+        reject(new Error(`HTTP ${response.statusCode} for ${url}`));
+        return;
+      }
       response.pipe(file);
       file.on('finish', () => {
         file.close();
@@ -37,28 +41,18 @@ function downloadFile (url, filepath) {
   });
 }
 
-// Download all font files
 async function downloadFonts () {
-  for (const font of fonts) {
-    for (const weight of font.weights) {
-      for (const style of font.styles) {
-        for (const format of font.formats) {
-          const styleParam = style === 'italic' ? '1' : '0';
-          const url = `https://fonts.gstatic.com/s/arvo/v20/tDbD2oWUg0MKqScQ6A.${format}`;
-          const filename = `${font.name.toLowerCase()}-${style}-${weight}.${format}`;
-          const filepath = path.join(fontDir, filename);
-          
-          console.log(`Downloading ${filename}...`);
-          try {
-            await downloadFile(url, filepath);
-            console.log(`Downloaded ${filename}`);
-          } catch (err) {
-            console.error(`Error downloading ${filename}:`, err);
-          }
-        }
-      }
+  fs.mkdirSync(fontDir, { recursive: true });
+  for (const [filename, url] of ARVO_WOFF2) {
+    const filepath = path.join(fontDir, filename);
+    process.stdout.write(`Downloading ${filename}... `);
+    try {
+      await downloadFile(url, filepath);
+      console.log('ok');
+    } catch (err) {
+      console.error(err.message || err);
     }
   }
 }
 
-downloadFonts().catch(console.error); 
+downloadFonts().catch(console.error);

@@ -643,14 +643,18 @@ class BitcoinHome extends React.Component {
 
   async handleCreatePayjoinDeposit () {
     if (!this.state.payjoinEnabled) {
-      this.setState({ payjoinResult: { error: 'Enable Payjoin first to create an optional BIP77 deposit request.' } });
+      this.setState({ payjoinResult: { error: 'Enable Payjoin first to create an optional payjoin deposit request.' } });
       return;
     }
 
     try {
       const receiveWallet = getNextReceiveWalletContext(this.getIdentity());
+      const pjPref = loadPayjoinPreferences();
+      const useJm = pjPref.receiveTaprootJoinmarket !== false;
       const session = await createPayjoinDeposit(this.state.upstream, receiveWallet, {
-        address: this.state.wallet.address,
+        ...(useJm
+          ? { receiveTemplate: 'joinmarket_taproot_v1' }
+          : { address: this.state.wallet.address }),
         amountSats: Number(this.state.payjoinAmountSats || 0),
         label: this.state.payjoinLabel,
         memo: this.state.payjoinMemo
@@ -673,7 +677,7 @@ class BitcoinHome extends React.Component {
             kind: 'payjoin',
             title: 'Payjoin deposit session ready',
             subtitle: amt,
-            href: `/services/bitcoin/payments?payjoinSession=${encodeURIComponent(sid)}`,
+            href: `/payments?payjoinSession=${encodeURIComponent(sid)}`,
             copyText: session.bip21Uri || session.proposalURL || sid
           });
         }
@@ -709,6 +713,7 @@ class BitcoinHome extends React.Component {
     const hasUpstream = !!(this.state.upstream.explorerBaseUrl || this.state.upstream.paymentsBaseUrl || this.state.upstream.lightningBaseUrl);
     const bitcoinReady = !!(this.state.bitcoinStatus && this.state.bitcoinStatus.available);
     const bitcoinNetwork = String((this.state.bitcoinStatus && this.state.bitcoinStatus.network) || '').toLowerCase();
+    const isRegtest = bitcoinNetwork === 'regtest';
     const hasAdminToken = !!readHubAdminTokenFromBrowser(this.props.adminToken);
     const canGenerateBlocks = bitcoinReady && bitcoinNetwork === 'regtest';
     const canShowGenerateBlock = canGenerateBlocks && hasAdminToken;
@@ -778,13 +783,28 @@ class BitcoinHome extends React.Component {
                   Refresh
                 </Button>
                 {canShowGenerateBlock && (
-                  <Button basic onClick={() => this.handleGenerateBlock()} title="Generate one regtest block">
+                  <Button
+                    basic
+                    onClick={() => this.handleGenerateBlock()}
+                    title="Mine one block: coinbase pays this node’s Hub bitcoind wallet only — not your browser wallet chip. Use Faucet to send from the Hub to your receive address, then mine again to confirm."
+                  >
                     <Icon name="cube" aria-hidden="true" />
                     Generate Block
                   </Button>
                 )}
+                {canGenerateBlocks ? (
+                  <Button
+                    as={Link}
+                    to="/services/bitcoin/faucet"
+                    basic
+                    title="Request regtest coins from the Hub wallet to your Fabric receive address (updates the top-bar balance after a confirm block)"
+                  >
+                    <Icon name="tint" aria-hidden="true" />
+                    Faucet
+                  </Button>
+                ) : null}
                 {hubUi.bitcoinPayments ? (
-                  <Button as={Link} to="/services/bitcoin/payments" basic title="Open wallet payments manager">
+                  <Button as={Link} to="/payments" basic title="Open wallet payments manager">
                     <Icon name="credit card outline" aria-hidden="true" />
                     Payments
                   </Button>
@@ -828,10 +848,18 @@ class BitcoinHome extends React.Component {
           >
             <strong>Your browser wallet</strong> (Fabric identity) powers invoices, client-signed sends, and the balance chip — see{' '}
             <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>.
-            <strong> Hub wallet</strong> is this node&apos;s <code>bitcoind</code> (mining on regtest, admin spends, Payjoin); it is not your identity&apos;s key.
+            <strong> Hub wallet</strong> is this node&apos;s <code>bitcoind</code>{' '}
+            ({isRegtest ? 'mining on regtest, ' : ''}admin spends, Payjoin); it is not your identity&apos;s key.
+            {isRegtest ? (
+              <>
+                {' '}
+                <strong>Regtest:</strong> <strong>Generate Block</strong> only increases the Hub wallet; it does not credit your browser balance.
+                Use the <Link to="/services/bitcoin/faucet">Faucet</Link> (or a paid invoice / Payjoin / peer payment) to move value to your receive address, then mine a block so it confirms.
+              </>
+            ) : null}
           </p>
           <HubRegtestAdminTokenPanel
-            network={bitcoinNetwork || 'regtest'}
+            network={bitcoinNetwork || 'mainnet'}
             adminTokenProp={this.props && this.props.adminToken}
           />
           <BitcoinWalletBranchBar identity={(this.props && this.props.identity) || {}} />
@@ -884,7 +912,7 @@ class BitcoinHome extends React.Component {
                 <Table.Row>
                   <Table.Cell><strong>Hub wallet (operator)</strong></Table.Cell>
                   <Table.Cell>{formatSatsDisplay(hubWalletSats)} sats</Table.Cell>
-                  <Table.Cell style={{ color: '#666' }}>Node operations (regtest mining/admin spends/settlement staging).</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>Node operations ({isRegtest ? 'regtest mining/' : ''}admin spends/settlement staging).</Table.Cell>
                 </Table.Row>
                 <Table.Row>
                   <Table.Cell><strong>Shared sessions (managed)</strong></Table.Cell>
@@ -906,7 +934,7 @@ class BitcoinHome extends React.Component {
               <Button as={Link} to="/services/lightning" size="small" basic icon labelPosition="left">
                 <Icon name="bolt" /> Manage Lightning channels
               </Button>
-              <Button as={Link} to="/services/bitcoin/payments#wealth-payjoin-board" size="small" basic icon labelPosition="left">
+              <Button as={Link} to="/payments#wealth-payjoin-board" size="small" basic icon labelPosition="left">
                 <Icon name="shield alternate" /> Manage Payjoin sessions
               </Button>
               <Button as={Link} to="/settings/bitcoin-wallet" size="small" basic icon labelPosition="left">
@@ -927,7 +955,8 @@ class BitcoinHome extends React.Component {
           <Message info>
             <Message.Header>Hub Bitcoin backend unavailable</Message.Header>
             <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', lineHeight: 1.45 }}>
-              Explorer lists and the Hub wallet balance stay empty until this Hub can reach <code>bitcoind</code> (or enable managed regtest).
+              Explorer lists and the Hub wallet balance stay empty until this Hub can reach <code>bitcoind</code>
+              {isRegtest ? ' (or enable managed regtest).' : '.'}{' '}
               Your <strong>identity wallet</strong> may still show receive addresses when the Payments API is up. Check server logs and{' '}
               <Link to="/settings/admin">Admin</Link>.
             </p>
@@ -938,9 +967,12 @@ class BitcoinHome extends React.Component {
           <Message size="small" style={{ marginBottom: '0.75em' }}>
             <Message.Header>Operator deposits checklist</Message.Header>
             <List bulleted style={{ margin: '0.35em 0 0', fontSize: '0.88em', color: '#555' }}>
-              <List.Item>Save the <strong>admin token</strong> (first-time setup / Settings → Admin) for regtest block tools and hub-wallet sends.</List.Item>
               <List.Item>
-                <strong>Payjoin (BIP77):</strong> ensure <code>GET /services/payjoin</code> reports available; create sessions below when <strong>Bitcoin → Payments</strong> is enabled in feature flags.
+                Save the <strong>admin token</strong> (first-time setup / Settings → Admin) for{' '}
+                {isRegtest ? 'regtest block tools and ' : ''}hub-wallet sends{isRegtest ? '' : ' and other admin RPC actions'}.
+              </List.Item>
+              <List.Item>
+                <strong>Payjoin:</strong> ensure <code>GET /services/payjoin</code> reports available (mirror: <code>/payments/payjoin</code>); create sessions below when <strong>Bitcoin → Payments</strong> is enabled in feature flags. Capabilities include <code>fabricProtocol</code> (BIP78 receiver today; BIP77 async roadmap).
               </List.Item>
               <List.Item>
                 <strong>Lightning:</strong> Service Health should show L2 when Core Lightning is configured (or stub in dev).
@@ -978,16 +1010,34 @@ class BitcoinHome extends React.Component {
             {' · '}
             <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">GET manifest</a>
           </p>
-          <div><strong>Bitcoin:</strong> {this.state.bitcoinStatus && this.state.bitcoinStatus.status ? this.state.bitcoinStatus.status : 'unknown'}{bitcoinNetwork ? ` (${bitcoinNetwork})` : ''}</div>
-          <div style={{ color: '#666', marginBottom: '0.5em' }}>{this.state.bitcoinStatus && this.state.bitcoinStatus.message ? this.state.bitcoinStatus.message : ''}</div>
-          {this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null && (
-            <div><strong>Hub wallet balance:</strong> {Number(this.state.bitcoinStatus.balance || 0).toFixed(8)} BTC (regtest block rewards go here)</div>
+          <div><strong>Bitcoin (RPC):</strong>{' '}
+            {this.state.loading || this.state.refreshing
+              ? 'Checking…'
+              : bitcoinReady
+                ? `${this.state.bitcoinStatus && this.state.bitcoinStatus.status ? this.state.bitcoinStatus.status : 'available'}${bitcoinNetwork ? ` (${bitcoinNetwork})` : ''}`
+                : `unavailable${(this.state.bitcoinStatus && this.state.bitcoinStatus.status) ? ` — ${this.state.bitcoinStatus.status}` : ''}`}
+          </div>
+          <div style={{ color: '#666', marginBottom: '0.5em', lineHeight: 1.45 }}>
+            {bitcoinReady && this.state.bitcoinStatus && this.state.bitcoinStatus.message
+              ? this.state.bitcoinStatus.message
+              : null}
+            {!bitcoinReady && !this.state.loading && !this.state.refreshing ? (
+              <span>
+                The hub is not serving live chain data until <code>bitcoind</code> is reachable (or managed regtest is enabled). Balances below may be stale or zero.
+              </span>
+            ) : null}
+          </div>
+          {bitcoinReady && this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null && (
+            <div>
+              <strong>Hub wallet balance:</strong> {Number(this.state.bitcoinStatus.balance || 0).toFixed(8)} BTC{' '}
+              {isRegtest ? '(regtest block rewards go here)' : '(on-chain wallet balance)'}
+            </div>
           )}
-          {this.state.bitcoinStatus && this.state.bitcoinStatus.beacon && (
+          {bitcoinReady && this.state.bitcoinStatus && this.state.bitcoinStatus.beacon && (
             <div><strong>Beacon core balance:</strong> {this.satsToBTC(this.state.bitcoinStatus.beacon.balanceSats || 0)} BTC (epoch {this.state.bitcoinStatus.beacon.clock || 0})</div>
           )}
           <div><strong>Lightning:</strong> {this.state.lightningStatus && this.state.lightningStatus.status === 'NOT_CONFIGURED'
-            ? 'runs with regtest'
+            ? (isRegtest ? 'runs with regtest' : 'not configured')
             : (this.state.lightningStatus && this.state.lightningStatus.status === 'STUB')
               ? 'stub (UI testing)'
               : (this.state.lightningStatus && this.state.lightningStatus.status ? this.state.lightningStatus.status : 'unknown')}</div>
@@ -1030,6 +1080,20 @@ class BitcoinHome extends React.Component {
                     : '—'}
                 </Table.Cell>
               </Table.Row>
+              {(this.state.bitcoinStatus.bitcoinPruned || (bc && bc.pruned)) ? (
+                <Table.Row>
+                  <Table.Cell><strong>Prune</strong></Table.Cell>
+                  <Table.Cell colSpan={3} style={{ fontSize: '0.92em', lineHeight: 1.45 }}>
+                    Pruned <code>bitcoind</code> — block files below height{' '}
+                    <strong>
+                      {this.state.bitcoinStatus.bitcoinPruneHeight != null
+                        ? this.state.bitcoinStatus.bitcoinPruneHeight
+                        : (bc && bc.pruneheight != null ? bc.pruneheight : '—')}
+                    </strong>{' '}
+                    are not available over RPC. This hub removes matching Bitcoin block/tx documents from its <em>local</em> published catalog only; Fabric <code>BitcoinBlock</code> / Beacon epochs still track the chain tip, and peers can offer older blocks via inventory.
+                  </Table.Cell>
+                </Table.Row>
+              ) : null}
             </Table.Body>
           </Table>
 
@@ -1155,7 +1219,31 @@ class BitcoinHome extends React.Component {
                 {bitcoinReady
                   ? (
                     <>
-                      No Bitcoin P2P peers connected (<code>getpeerinfo</code> empty). On managed regtest with <code>listen=0</code> this is usual until an outbound peer connects; use the Playnet P2P <code>addnode</code> targets above or <code>npm run bitcoin:addnode</code>.
+                      {ni && Number(ni.connections) > 0
+                        ? (
+                          <span>
+                            <code>getnetworkinfo</code> reports {Number(ni.connections)} P2P connection(s), but the peer table did not load
+                            (<code>GET /services/bitcoin/peers</code> may have failed in this browser tab). Try <strong>Refresh peer list</strong> or your regular browser.
+                          </span>
+                          )
+                        : (
+                          <span>
+                            No Bitcoin P2P peers in <code>getpeerinfo</code>.
+                            {isRegtest
+                              ? (
+                                <>
+                                  {' '}
+                                  On managed regtest with <code>listen=0</code> this is usual until an outbound peer connects; use the <strong>Playnet P2P</strong>{' '}
+                                  <code>addnode</code> targets above or <code>npm run bitcoin:addnode</code>.
+                                  {' '}
+                                  After you have peers, you can pull regtest coins from another operator&apos;s hub wallet — e.g. open{' '}
+                                  <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">hub.fabric.pub/services/bitcoin/faucet</a>
+                                  {' '}and paste your receive address, then <strong>Generate block</strong> here to confirm.
+                                </>
+                                )
+                              : ' Check connectivity, firewall, and addnode/connect settings on this Core node.'}
+                          </span>
+                          )}
                     </>
                     )
                   : (
@@ -1300,12 +1388,13 @@ class BitcoinHome extends React.Component {
         <Segment loading={this.state.loading}>
           <Header as='h3'>Wallet</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <strong>Client:</strong> identity fingerprint, xpub, receive index, and client balance (matches the top-bar chip). <strong>Bridge:</strong> Hub node wallet — regtest block rewards, optional admin spends, Payjoin receiver. <strong>Documents:</strong> publishing is free; paid <Link to="/documents">distribute</Link> uses L1 invoices tied to your identity.
+            <strong>Client:</strong> identity fingerprint, xpub, receive index, and client balance (matches the top-bar chip). <strong>Bridge:</strong> Hub node wallet —{' '}
+            {isRegtest ? 'regtest block rewards, ' : 'on-chain balance, '}optional admin spends, Payjoin receiver. <strong>Documents:</strong> publishing is free; paid <Link to="/documents">distribute</Link> uses L1 invoices tied to your identity.
             {(hubUi.bitcoinPayments || hubUi.bitcoinLightning) ? (
               <span>
                 {' '}This Hub runs{' '}
                 {hubUi.bitcoinPayments ? (
-                  <><strong>one Payjoin receiver</strong> (BIP77 deposit sessions; the <code>pj=</code> URL is a standard payjoin receiver for wallets that speak BIP78)</>
+                  <><strong>one Payjoin receiver</strong> (BIP78-shaped HTTP POST; <code>pj=</code> in BIP21; <code>asyncPayjoinRoadmap: BIP77</code> in JSON capabilities)</>
                 ) : null}
                 {hubUi.bitcoinPayments && hubUi.bitcoinLightning ? ' and ' : null}
                 {hubUi.bitcoinLightning ? <><strong>one Lightning</strong> service path</> : null}
@@ -1377,7 +1466,7 @@ class BitcoinHome extends React.Component {
         <Segment>
           <Header as='h3'>Look Up Address Balance</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <Icon name='search' /> Query balance for any on-chain address. <strong>Server does not hold keys</strong> — uses scantxoutset. Requires txindex.
+            <Icon name='search' /> Query balance for any on-chain address. <strong>Server does not hold keys</strong> — uses <code>scantxoutset</code> (UTXO scan). Works on pruned nodes; does not require <code>txindex</code>.
           </p>
           <Form>
             <Form.Field>
@@ -1447,7 +1536,7 @@ class BitcoinHome extends React.Component {
 
         {hubUi.bitcoinPayments ? (
         <Segment id="fabric-bitcoin-payjoin">
-          <Header as='h3'>Payjoin Deposit (BIP77)</Header>
+          <Header as='h3'>Payjoin deposit</Header>
           {this.state.payjoinSessionsSnapshot ? (
             <Message
               id="fabric-bitcoin-payjoin-sessions-strip"
@@ -1462,7 +1551,7 @@ class BitcoinHome extends React.Component {
                 <> — {this.state.payjoinSessionsSnapshot.awaitingCompletion} still in progress</>
               ) : null}
               .{' '}
-              <Link to="/services/bitcoin/payments">Payments</Link>
+              <Link to="/payments">Payments</Link>
               {' '}lists sessions and payer tools.
             </Message>
           ) : null}
@@ -1544,8 +1633,8 @@ class BitcoinHome extends React.Component {
                     size="small"
                     primary
                     to={this.state.payjoinResult.id
-                      ? `/services/bitcoin/payments?payjoinSession=${encodeURIComponent(this.state.payjoinResult.id)}`
-                      : '/services/bitcoin/payments'}
+                      ? `/payments?payjoinSession=${encodeURIComponent(this.state.payjoinResult.id)}`
+                      : '/payments'}
                   >
                     <Icon name="credit card outline" />
                     Open Payments (submit PSBT)
@@ -1565,6 +1654,8 @@ class BitcoinHome extends React.Component {
             <strong>Bridge:</strong> draws from Beacon/Hub wallet (regtest only). Max 1,000,000 sats per request.
             {bitcoinNetwork && <span> Use addresses for <strong>{bitcoinNetwork}</strong> (e.g. {addressPlaceholder}).</span>}
             {' '}Choose <strong>Use my receive address</strong> so funds go to your wallet; otherwise balance will not update.
+            {' '}
+            <strong>Note:</strong> mining with <strong>Generate Block</strong> tops up the Hub wallet, not your browser chip — this flow is how you transfer from Hub to identity.
           </p>
           <div style={{ marginBottom: '0.5em' }}>
             <strong>Network:</strong> {bitcoinNetwork || 'unknown'}
@@ -1662,9 +1753,9 @@ class BitcoinHome extends React.Component {
         <Segment>
           <Header as='h3'>Send Payment (Layer 1)</Header>
           <p style={{ color: '#666', marginBottom: 0 }}>
-            This section moved to the dedicated wallet transactions screen.
+            This section moved to the dedicated wallet transactions screen (includes federation multisig vault tools).
             {' '}
-            <Link to="/services/bitcoin/transactions">Open Bitcoin Transactions</Link>.
+            <Link to="/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel">Open wallet &amp; federation</Link>.
           </p>
         </Segment>
         ) : null}

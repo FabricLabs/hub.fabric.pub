@@ -1,5 +1,11 @@
 'use strict';
 
+const {
+  readStorageJSON,
+  writeStorageJSON,
+  removeStorageKey
+} = require('./fabricBrowserState');
+
 /** @typedef {{ id: string, kind?: string, title: string, subtitle?: string, href?: string, copyText?: string, ts?: number }} UiNotification */
 
 const STORAGE_KEY = 'fabric:uiNotifications';
@@ -11,10 +17,8 @@ const UPDATED_EVENT = 'fabric:uiNotificationsUpdated';
  */
 function readUiNotifications () {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return [];
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const p = JSON.parse(raw);
+    if (typeof window === 'undefined') return [];
+    const p = readStorageJSON(STORAGE_KEY, []);
     return Array.isArray(p) ? p : [];
   } catch (e) {
     return [];
@@ -26,8 +30,8 @@ function readUiNotifications () {
  */
 function writeUiNotifications (list) {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(list.slice(0, MAX_ITEMS)));
+    if (typeof window === 'undefined') return;
+    writeStorageJSON(STORAGE_KEY, list.slice(0, MAX_ITEMS));
   } catch (e) { /* quota */ }
 }
 
@@ -61,7 +65,7 @@ function pushUiNotification (item) {
 function clearUiNotifications () {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    removeStorageKey(STORAGE_KEY);
   } catch (e) {}
   emitUpdated([]);
 }

@@ -5,16 +5,30 @@ const { Link } = require('react-router-dom');
 const QRCode = require('qrcode');
 const {
   Button,
+  Divider,
+  Form,
+  Header,
   Icon,
   Input,
-  Message
+  Message,
+  Modal
 } = require('semantic-ui-react');
 const {
   loadUpstreamSettings,
   getSpendWalletContext,
+  getNextReceiveWalletContext,
   sendPayment,
-  verifyL1Payment
+  verifyL1Payment,
+  createPayjoinDeposit
 } = require('../functions/bitcoinClient');
+const { buildTabPayerPayjoinUrl } = require('../functions/tabPayerDemoUrl');
+const {
+  loadJoinmarketPoolSizesBtc,
+  saveJoinmarketPoolSizesBtc,
+  poolLabels,
+  btcToSats,
+  DEFAULT_POOLS_BTC
+} = require('../functions/joinmarketPoolPreferences');
 const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSats');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
@@ -75,6 +89,11 @@ function Invoice (props) {
   const [qrDataUrl, setQrDataUrl] = React.useState(null);
   const [copied, setCopied] = React.useState(false);
   const [chainStatus, setChainStatus] = React.useState(null);
+  const [advancedOpen, setAdvancedOpen] = React.useState(false);
+  const [poolBtc, setPoolBtc] = React.useState(() => [...DEFAULT_POOLS_BTC]);
+  const [joinmarketBusy, setJoinmarketBusy] = React.useState(false);
+  const [joinmarketErr, setJoinmarketErr] = React.useState(null);
+  const [joinmarketUri, setJoinmarketUri] = React.useState('');
 
   const upstream = React.useMemo(() => loadUpstreamSettings(), []);
   const idXpub = identity && identity.xpub ? String(identity.xpub) : '';
@@ -227,6 +246,42 @@ function Invoice (props) {
     }
   }, [externalTxid, address, amountSats, upstream, onPaid, onError]);
 
+  React.useEffect(() => {
+    if (!advancedOpen) return;
+    setPoolBtc(loadJoinmarketPoolSizesBtc());
+    setJoinmarketErr(null);
+    setJoinmarketUri('');
+  }, [advancedOpen]);
+
+  const handleSavePools = React.useCallback(() => {
+    setPoolBtc(saveJoinmarketPoolSizesBtc(poolBtc));
+  }, [poolBtc]);
+
+  const handleCreateInvoicePayjoin = React.useCallback(async () => {
+    setJoinmarketBusy(true);
+    setJoinmarketErr(null);
+    setJoinmarketUri('');
+    try {
+      const w = getNextReceiveWalletContext(identity);
+      const session = await createPayjoinDeposit(upstream, w, {
+        address,
+        amountSats: Number(amountSats),
+        label: label || 'Invoice Payjoin',
+        memo: String(memo || `invoice-joinmarket:${invoiceId || 'local'}`).slice(0, 200)
+      });
+      const uri = session && (session.bip21Uri || '');
+      if (!uri || !/^bitcoin:/i.test(String(uri))) {
+        throw new Error('Payjoin session did not return a valid BIP21 URI (check Hub payjoin service).');
+      }
+      setJoinmarketUri(String(uri));
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      setJoinmarketErr(msg);
+    } finally {
+      setJoinmarketBusy(false);
+    }
+  }, [upstream, identity, address, amountSats, label, memo, invoiceId]);
+
   const handleCopy = React.useCallback((text) => {
     try {
       if (text && navigator && navigator.clipboard) {
@@ -320,7 +375,11 @@ function Invoice (props) {
     color: '#fff',
     padding: '0.75em 1em',
     fontSize: '0.95em',
-    fontWeight: 600
+    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.5em'
   };
 
   const bodyStyle = {
@@ -331,27 +390,42 @@ function Invoice (props) {
   return (
     <div style={cardStyle}>
       <div style={headerStyle}>
-        {isConfirmed ? (
-          <>
-            <Icon name="check circle" /> Payment confirmed
-          </>
-        ) : isMempoolPaid ? (
-          <>
-            <Icon name="clock" /> Awaiting confirmation
-          </>
-        ) : headerWaiting ? (
-          <>
-            <Icon name="sync" /> Verifying payment…
-          </>
-        ) : isPaid ? (
-          <>
-            <Icon name="warning circle" /> Paid — confirmation pending
-          </>
-        ) : (
-          <>
-            <Icon name="bitcoin" /> Pay with Bitcoin
-          </>
-        )}
+        <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+          {isConfirmed ? (
+            <>
+              <Icon name="check circle" /> Payment confirmed
+            </>
+          ) : isMempoolPaid ? (
+            <>
+              <Icon name="clock" /> Awaiting confirmation
+            </>
+          ) : headerWaiting ? (
+            <>
+              <Icon name="sync" /> Verifying payment…
+            </>
+          ) : isPaid ? (
+            <>
+              <Icon name="warning circle" /> Paid — confirmation pending
+            </>
+          ) : (
+            <>
+              <Icon name="bitcoin" /> Pay with Bitcoin
+            </>
+          )}
+        </div>
+        <Button
+          type="button"
+          icon
+          basic
+          inverted
+          compact
+          size="small"
+          aria-label="Advanced: Joinmarket pool targets and optional Payjoin BIP21 for this invoice"
+          title="Joinmarket pools & Payjoin"
+          onClick={() => setAdvancedOpen(true)}
+        >
+          <Icon name="setting" />
+        </Button>
       </div>
 
       <div style={bodyStyle}>
@@ -578,6 +652,106 @@ function Invoice (props) {
           </Message>
         )}
       </div>
+
+      <Modal
+        closeIcon
+        open={advancedOpen}
+        onClose={() => setAdvancedOpen(false)}
+        size="small"
+      >
+        <Modal.Header>Advanced — Joinmarket &amp; pools</Modal.Header>
+        <Modal.Content scrolling>
+          <p style={{ color: '#555', fontSize: '0.9em', lineHeight: 1.45, marginBottom: '0.75em' }}>
+            Three local <strong>pool</strong> targets (BTC) for operator reference when staging hub-wallet liquidity for{' '}
+            <strong>ACP / Payjoin</strong>-style flows. They do not move coins by themselves. Optional: mint a{' '}
+            <strong>BIP77</strong> deposit session for <em>this invoice address</em> so payers can use a <code>bitcoin:</code> URI with{' '}
+            <code>pj=</code> (Payjoin v2-compatible receiver); then open Payments to sign or boost.
+          </p>
+          <Header as="h4" style={{ marginTop: 0 }}>Pool sizes (BTC)</Header>
+          <Form>
+            {poolLabels().map((lbl, i) => (
+              <Form.Field key={lbl}>
+                <label>{lbl}</label>
+                <Input
+                  type="number"
+                  step="any"
+                  min="1e-8"
+                  value={poolBtc[i] != null ? String(poolBtc[i]) : ''}
+                  onChange={(e, { value }) => {
+                    const next = [...poolBtc];
+                    next[i] = Number(value);
+                    setPoolBtc(next);
+                  }}
+                />
+                <span style={{ fontSize: '0.85em', color: '#888' }}>
+                  ≈ {btcToSats(poolBtc[i] != null ? poolBtc[i] : 0).toLocaleString()} sats
+                </span>
+              </Form.Field>
+            ))}
+            <Button type="button" size="small" onClick={handleSavePools}>
+              Save pool targets
+            </Button>
+          </Form>
+
+          <Divider />
+
+          <Header as="h4">Optional Payjoin withdrawal to this invoice</Header>
+          <p style={{ color: '#555', fontSize: '0.88em' }}>
+            Creates a Hub <strong>Payjoin</strong> session paying this card&apos;s address (same on-chain destination as the QR above). Uses standard BIP21 + <code>pj=</code>; no Taproot template swap on the invoice address.
+          </p>
+          {!isPaid && (
+            <Button
+              type="button"
+              color="violet"
+              loading={joinmarketBusy}
+              disabled={joinmarketBusy}
+              onClick={handleCreateInvoicePayjoin}
+            >
+              Create Payjoin BIP21 for this invoice
+            </Button>
+          )}
+          {isPaid && (
+            <Message info size="tiny">Invoice already has a payment recorded — Payjoin session creation is hidden.</Message>
+          )}
+          {joinmarketErr && (
+            <Message negative size="small" style={{ marginTop: '0.75em' }}>
+              {joinmarketErr}
+            </Message>
+          )}
+          {joinmarketUri && (
+            <div style={{ marginTop: '0.75em' }}>
+              <Message success size="small">
+                <p style={{ margin: '0 0 0.5em', wordBreak: 'break-all', fontSize: '0.85em' }}>
+                  <code>{joinmarketUri}</code>
+                </p>
+                <Button
+                  type="button"
+                  size="small"
+                  basic
+                  icon="copy"
+                  content="Copy BIP21"
+                  onClick={() => handleCopy(joinmarketUri)}
+                />
+                <Button
+                  as="a"
+                  size="small"
+                  primary
+                  icon="external alternate"
+                  content="Open Payments (Payjoin URI)"
+                  href={buildTabPayerPayjoinUrl(joinmarketUri)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                />
+              </Message>
+            </div>
+          )}
+        </Modal.Content>
+        <Modal.Actions>
+          <Button type="button" onClick={() => setAdvancedOpen(false)}>
+            Close
+          </Button>
+        </Modal.Actions>
+      </Modal>
     </div>
   );
 }

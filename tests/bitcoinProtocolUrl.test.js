@@ -12,6 +12,7 @@ describe('bitcoinProtocolUrl', function () {
     assert.ok(r.relativePath.includes('payTo=bcrt1q8u5g6cmhrla7vpaqm7pjwe0sc6jckm9z7a68xz'));
     assert.ok(r.relativePath.includes('payAmountSats=5000'));
     assert.ok(r.relativePath.includes('#fabric-btc-make-payment-h4'));
+    assert.ok(r.relativePath.startsWith('/payments'), 'canonical Payments SPA path');
   });
 
   it('maps pj= to full bitcoinUri query param', function () {
@@ -20,6 +21,7 @@ describe('bitcoinProtocolUrl', function () {
     assert.ok(r);
     assert.ok(r.relativePath.includes('bitcoinUri='));
     assert.ok(!r.relativePath.includes('payTo='));
+    assert.ok(r.relativePath.startsWith('/payments'));
   });
 
   it('returns null for non-bitcoin schemes', function () {

@@ -5,7 +5,9 @@ const {
   parseFederationContractInvite,
   parseFederationContractInviteResponse,
   buildFederationContractInviteJson,
-  buildFederationContractInviteResponseJson
+  buildFederationContractInviteResponseJson,
+  normalizeSpendingTerms,
+  formatFederationInviteSpendingSummary
 } = require('../functions/federationContractInvite');
 
 describe('federationContractInvite', () => {
@@ -23,6 +25,28 @@ describe('federationContractInvite', () => {
     assert.strictEqual(p.contractId, 'c1');
     assert.strictEqual(p.note, 'hello');
     assert.strictEqual(p.invitedAt, 99);
+    assert.strictEqual(p.v, 1);
+  });
+
+  it('round-trips extended co-signer invite (v2)', () => {
+    const json = buildFederationContractInviteJson({
+      inviteId: 'sess-1',
+      inviterHubId: 'hubpk',
+      note: 'join us',
+      spendingTerms: { mode: 'percent', value: 25 },
+      termsSummary: 'Treasury rules…',
+      proposedPolicy: {
+        validators: ['03' + 'a'.repeat(64), '02' + 'b'.repeat(64)],
+        threshold: 2
+      },
+      publishSessionId: 'sess-1'
+    });
+    const p = parseFederationContractInvite(json);
+    assert.strictEqual(p.v, 2);
+    assert.deepStrictEqual(normalizeSpendingTerms(p.spendingTerms), { mode: 'percent', value: 25 });
+    assert.strictEqual(formatFederationInviteSpendingSummary(p), 'Spending cap: 25% of treasury per agreement');
+    assert.strictEqual(p.proposedPolicy.threshold, 2);
+    assert.strictEqual(p.proposedPolicy.validators.length, 2);
   });
 
   it('round-trips response JSON', () => {
@@ -42,6 +66,7 @@ describe('federationContractInvite', () => {
   it('rejects malformed payloads', () => {
     assert.strictEqual(parseFederationContractInvite('not json'), null);
     assert.strictEqual(parseFederationContractInvite('{}'), null);
+    assert.strictEqual(parseFederationContractInvite('{"type":"FederationContractInvite","v":0,"inviteId":"x"}'), null);
     assert.strictEqual(parseFederationContractInviteResponse('{"type":"FederationContractInviteResponse","v":1}'), null);
   });
 });

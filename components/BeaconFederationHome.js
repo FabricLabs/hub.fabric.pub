@@ -99,7 +99,7 @@ function BeaconFederationHome () {
 
       <Header as="h3">Operator checklist</Header>
       <List bulleted relaxed>
-        <List.Item>Configure validator pubkeys and threshold under <Link to="/settings/federation">Settings → Distributed federation</Link>.</List.Item>
+        <List.Item>Configure validator pubkeys and threshold under <Link to="/federations">Federations</Link> (or <Link to="/settings/federation">Settings → Distributed federation</Link>).</List.Item>
         <List.Item>Confirm epoch stream: <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">GET /services/distributed/epoch</a>; vault: <a href="/services/distributed/vault" target="_blank" rel="noopener noreferrer">GET /services/distributed/vault</a> and <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">UTXOs</a>.</List.Item>
         <List.Item>Compare epoch block height/hash to L1 and spot-check witness bytes in CI using <code>@fabric/core</code> helpers (see design doc).</List.Item>
         <List.Item>
@@ -109,7 +109,10 @@ function BeaconFederationHome () {
         </List.Item>
         <List.Item>
           Sidechain head and patches: <Link to="/sidechains">Sidechain &amp; demo</Link>;
-          <> <Link to="/activities">Activities</Link> (bell) shows <strong>Bitcoin blocks</strong> and hub log events.</>
+          <>
+            {' '}
+            <Link to="/activities">Activity log</Link> shows <strong>Bitcoin blocks</strong> and hub log events; <Link to="/notifications">Notifications</Link> (bell) lists wallet and Payjoin toasts.
+          </>
         </List.Item>
         <List.Item>
           Further reading:{' '}

@@ -381,13 +381,13 @@ class CrowdfundingHome extends React.Component {
             kind: 'payjoin',
             title: 'Payjoin → crowdfund vault',
             subtitle: `${amountSats} sats`,
-            href: `/services/bitcoin/payments?bitcoinUri=${encodeURIComponent(uri)}`,
+            href: `/payments?bitcoinUri=${encodeURIComponent(uri)}`,
             copyText: uri
           });
         } catch (e) { /* ignore */ }
         const nav = this.props.navigate;
         if (typeof nav === 'function') {
-          nav(`/services/bitcoin/payments?bitcoinUri=${encodeURIComponent(uri)}`);
+          nav(`/payments?bitcoinUri=${encodeURIComponent(uri)}`);
         }
       }
       await this.refresh();
@@ -610,19 +610,19 @@ class CrowdfundingHome extends React.Component {
               Contracts
             </Button>
             {hubUi.bitcoinPayments ? (
-              <Button as={Link} to="/services/bitcoin/payments" basic>Payments</Button>
+              <Button as={Link} to="/payments" basic>Payments</Button>
             ) : null}
           </div>
           <p style={{ color: '#666' }}>Taproot campaign vaults on this Hub. Campaigns are stored locally on this node (not synced to other hubs).</p>
         </Segment>
         <Segment id="fabric-bitcoin-crowdfunding">
-          <Header as='h3'>Taproot crowdfund · ACP · Payjoin to vault</Header>
+          <Header as='h3'>Crowdfund · ACP · Payjoin to vault</Header>
           <p style={{ color: '#666', marginBottom: '0.75em' }}>
             <strong>Step A — ACP:</strong> outputs-only PSBT paying the campaign vault; donors add UTXOs and sign with{' '}
             <code>SIGHASH_ALL|ANYONECANPAY</code> (0x81), merge until fees clear, broadcast.
             {' '}<strong>Step B — Payjoin:</strong> a BIP77 deposit session uses the <em>same</em> vault address so payers can use{' '}
             {hubUi.bitcoinPayments ? (
-              <Link to="/services/bitcoin/payments#fabric-btc-make-payment-h4">Payments</Link>
+              <Link to="/payments#fabric-btc-make-payment-h4">Payments</Link>
             ) : (
               <strong>Payments</strong>
             )}{' '}(e.g. local Payjoin or <strong>ACP + Hub boost</strong>).
@@ -768,7 +768,7 @@ class CrowdfundingHome extends React.Component {
                   as={Link}
                   size="small"
                   primary
-                  to={`/services/bitcoin/payments?bitcoinUri=${encodeURIComponent(this.state.cfPayjoinBip21)}`}
+                  to={`/payments?bitcoinUri=${encodeURIComponent(this.state.cfPayjoinBip21)}`}
                 >
                   Open Payments (prefill)
                 </Button>

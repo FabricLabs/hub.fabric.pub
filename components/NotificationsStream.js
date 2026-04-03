@@ -5,7 +5,7 @@ const ActivityStream = require('./ActivityStream');
 
 /**
  * Delegation signature requests only (same row layout as chat; see ActivityStream).
- * The main Activities feed excludes these; wallet/Payjoin toasts live on /activities (bell).
+ * The main activity log excludes these; wallet/Payjoin toasts live on /notifications (bell).
  */
 function NotificationsStream (props) {
   const { includeHeader, ...rest } = props;

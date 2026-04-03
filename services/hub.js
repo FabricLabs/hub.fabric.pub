@@ -33,6 +33,7 @@ function resolveStorePath (p) {
   return path.isAbsolute(p) ? p : path.resolve(hubStoreRoot(), p);
 }
 const bs58check = require('bs58check');
+const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
 
 // Fabric Types
 const Chain = require('@fabric/core/types/chain'); // fabric chains
@@ -54,7 +55,9 @@ const Lightning = require('@fabric/core/services/lightning');
 const Beacon = require('../contracts/beacon');
 const PayjoinService = require('../services/payjoin');
 const PeeringService = require('../services/peering');
+const ChallengeService = require('../services/challenge');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
 
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
@@ -70,6 +73,10 @@ const {
 
 // Hard limits and validation patterns
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
+const FABRIC_BITCOIN_BLOCK_DOC_MIME = 'application/x-fabric-bitcoin-block+json';
+const FABRIC_BITCOIN_TX_DOC_MIME = 'application/x-fabric-bitcoin-transaction+json';
+/** Skip per-tx Fabric documents when a block has more than this many txs (mainnet safety). */
+const BITCOIN_TX_DOC_INDEX_MAX_TXS = 2000;
 const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SATS || 1000);
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
@@ -206,11 +213,16 @@ class Hub extends Service {
         enable: process.env.FABRIC_PAYJOIN_ENABLE ? process.env.FABRIC_PAYJOIN_ENABLE !== 'false' : true,
         endpointBasePath: process.env.FABRIC_PAYJOIN_BASE_PATH || '/services/payjoin',
         defaultSessionTTLSeconds: Number(process.env.FABRIC_PAYJOIN_SESSION_TTL_SECONDS || 1800),
-        maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256)
+        maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256),
+        beaconFederationXOnlyHex: String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '')
       },
       peering: {
         enable: process.env.FABRIC_PEERING_ENABLE ? process.env.FABRIC_PEERING_ENABLE !== 'false' : true,
         endpointBasePath: process.env.FABRIC_PEERING_BASE_PATH || '/services/peering'
+      },
+      challenge: {
+        enable: process.env.FABRIC_CHALLENGE_ENABLE ? process.env.FABRIC_CHALLENGE_ENABLE !== 'false' : true,
+        persistPath: process.env.FABRIC_CHALLENGE_PERSIST_PATH || 'fabric/storage-challenges.json'
       },
       distributed: {
         enable: process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE ? process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE !== 'false' : true,
@@ -252,6 +264,10 @@ class Hub extends Service {
           },
           peering: {
             available: false
+          },
+          challenge: {
+            available: false,
+            count: 0
           }
         }
       },
@@ -312,6 +328,7 @@ class Hub extends Service {
     this.bitcoin = null;
     this.lightning = null;
     this.payjoin = null;
+    this.challenge = null;
     this._lightningRpcQueue = Promise.resolve();
     this._bitcoinStatusCache = { value: null, updatedAt: 0 };
     this._bitcoinCacheTTL = 15000;
@@ -409,6 +426,10 @@ class Hub extends Service {
 
     this.peering = new PeeringService({
       ...this.settings.peering
+    });
+
+    this.challenge = new ChallengeService({
+      ...this.settings.challenge
     });
 
     this.distributedHttp = new FabricDistributedExecutionHTTP({
@@ -897,6 +918,12 @@ class Hub extends Service {
       const purchasePriceSats = c && Number(c.purchasePriceSats) > 0
         ? Math.round(Number(c.purchasePriceSats))
         : undefined;
+      const bitcoinHeightRaw = (c && c.bitcoinHeight != null) ? c.bitcoinHeight : meta.bitcoinHeight;
+      const bitcoinHeight = bitcoinHeightRaw != null && Number.isFinite(Number(bitcoinHeightRaw))
+        ? Math.round(Number(bitcoinHeightRaw))
+        : undefined;
+      const bitcoinBlockHash = (c && c.bitcoinBlockHash) || meta.bitcoinBlockHash;
+      const bitcoinTxid = (c && c.bitcoinTxid) || meta.bitcoinTxid;
       return {
         id,
         sha256: meta.sha256 || id,
@@ -905,7 +932,10 @@ class Hub extends Service {
         size: meta.size,
         created: meta.created,
         published,
-        ...(purchasePriceSats ? { purchasePriceSats } : {})
+        ...(purchasePriceSats ? { purchasePriceSats } : {}),
+        ...(bitcoinHeight != null ? { bitcoinHeight } : {}),
+        ...(bitcoinBlockHash ? { bitcoinBlockHash: String(bitcoinBlockHash) } : {}),
+        ...(bitcoinTxid ? { bitcoinTxid: String(bitcoinTxid) } : {})
       };
     }).filter(Boolean);
   }
@@ -940,7 +970,12 @@ class Hub extends Service {
           lineage: it.lineage || id,
           parent: it.parent != null ? it.parent : null,
           revision: it.revision != null ? Number(it.revision) : 1,
-          edited: it.edited || it.created || now
+          edited: it.edited || it.created || now,
+          ...(it.bitcoinHeight != null && Number.isFinite(Number(it.bitcoinHeight))
+            ? { bitcoinHeight: Math.round(Number(it.bitcoinHeight)) }
+            : {}),
+          ...(it.bitcoinBlockHash ? { bitcoinBlockHash: String(it.bitcoinBlockHash) } : {}),
+          ...(it.bitcoinTxid ? { bitcoinTxid: String(it.bitcoinTxid) } : {})
         };
       }
       const loc = this._state.documents[id];
@@ -959,7 +994,12 @@ class Hub extends Service {
         published: pubVal,
         ...(Number.isFinite(Number(it.purchasePriceSats)) && Number(it.purchasePriceSats) > 0
           ? { purchasePriceSats: Math.round(Number(it.purchasePriceSats)) }
-          : {})
+          : {}),
+        ...(it.bitcoinHeight != null && Number.isFinite(Number(it.bitcoinHeight))
+          ? { bitcoinHeight: Math.round(Number(it.bitcoinHeight)) }
+          : {}),
+        ...(it.bitcoinBlockHash ? { bitcoinBlockHash: String(it.bitcoinBlockHash) } : {}),
+        ...(it.bitcoinTxid ? { bitcoinTxid: String(it.bitcoinTxid) } : {})
       };
       if (!existed) {
         this._state.content.counts = this._state.content.counts || {};
@@ -1758,6 +1798,12 @@ class Hub extends Service {
     if (!this.peering) return null;
     if (this.settings && this.settings.peering && this.settings.peering.enable === false) return null;
     return this.peering;
+  }
+
+  _getChallengeService () {
+    if (!this.challenge) return null;
+    if (this.settings && this.settings.challenge && this.settings.challenge.enable === false) return null;
+    return this.challenge;
   }
 
   /**
@@ -3756,8 +3802,84 @@ class Hub extends Service {
       ...(mempoolBytes != null && Number.isFinite(mempoolBytes) ? { mempoolBytes } : {}),
       ...(Array.isArray(p2pTargets) && p2pTargets.length
         ? { p2pAddNodeTargets: p2pTargets.slice(0, 16) }
-        : {})
+        : {}),
+      ...(full.bitcoinPruned != null ? { bitcoinPruned: !!full.bitcoinPruned } : {}),
+      ...(Number.isFinite(full.bitcoinPruneHeight) ? { bitcoinPruneHeight: Math.round(full.bitcoinPruneHeight) } : {})
     };
+  }
+
+  /**
+   * Positive sats listed on Bitcoin block/tx Fabric documents for inventory HTLC (`purchasePriceSats`).
+   * @param {'block'|'transaction'} kind
+   * @returns {number|undefined}
+   */
+  _resolveBitcoinDocumentInventoryPriceSats (kind) {
+    const b = this.settings && this.settings.bitcoin ? this.settings.bitcoin : {};
+    let raw;
+    if (kind === 'block') {
+      raw = b.documentInventoryBlockPriceSats;
+    } else if (kind === 'transaction') {
+      raw = b.documentInventoryTransactionPriceSats;
+    } else {
+      return undefined;
+    }
+    const n = raw != null && raw !== '' ? Number(raw) : NaN;
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.round(n);
+  }
+
+  /**
+   * Unpublish and delete on-disk Bitcoin index documents whose `bitcoinHeight` is below Core `pruneheight`.
+   * Local-only: does not append Fabric `Tombstone` (catalogs may diverge; Beacon + P2P `BitcoinBlock` stay aligned).
+   */
+  async _dropLocalPublishedBitcoinIndexBelowPruneHeight (pruneHeight) {
+    const { isDocumentHeightPruned } = require('../functions/bitcoinPruneInventory');
+    if (pruneHeight == null || !Number.isFinite(pruneHeight)) return { dropped: 0 };
+    this._ensureResourceCollections();
+    const coll = this._state.content.collections.documents || {};
+    const docs = this._state.documents || {};
+    const ids = Object.keys(coll).filter((id) => {
+      const c = coll[id];
+      const d = docs[id];
+      const mime = (d && d.mime) || (c && c.mime) || '';
+      if (mime !== FABRIC_BITCOIN_BLOCK_DOC_MIME && mime !== FABRIC_BITCOIN_TX_DOC_MIME) return false;
+      const h = (d && d.bitcoinHeight != null) ? d.bitcoinHeight : (c && c.bitcoinHeight);
+      return isDocumentHeightPruned(pruneHeight, h);
+    });
+    let dropped = 0;
+    for (const id of ids) {
+      const unp = this._unpublishDocument(id);
+      if (!unp.ok) continue;
+      try {
+        if (this.fs && typeof this.fs.delete === 'function') this.fs.delete(`documents/${id}.json`);
+      } catch (e) {
+        console.warn('[HUB:BITCOIN] prune doc file delete:', id, e && e.message ? e.message : e);
+      }
+      if (this._state.documents[id]) delete this._state.documents[id];
+      dropped++;
+    }
+    if (dropped > 0) {
+      this._refreshChainState('bitcoin-prune-inventory');
+      this.commit();
+      if (typeof this._pushNetworkStatus === 'function') {
+        try {
+          this._pushNetworkStatus();
+        } catch (_) { /* optional */ }
+      }
+      console.log(
+        '[HUB:BITCOIN] dropped', dropped,
+        'local Bitcoin block/tx documents below prune height', pruneHeight,
+        '(restore via peers / Document Market; chain tips still follow Beacon / P2P)'
+      );
+    }
+    return { dropped };
+  }
+
+  async _syncPrunedBitcoinIndexDocuments (status) {
+    if (!status || !status.available || !status.blockchain) return;
+    const { pruned, pruneHeight } = require('../functions/bitcoinPruneInventory').pruneStatusFromBlockchainInfo(status.blockchain);
+    if (!pruned || pruneHeight == null) return;
+    await this._dropLocalPublishedBitcoinIndexBelowPruneHeight(pruneHeight);
   }
 
   async _collectBitcoinStatus (options = {}) {
@@ -3865,10 +3987,12 @@ class Hub extends Service {
 
       const trusted = balances && balances.mine && balances.mine.trusted != null ? balances.mine.trusted : 0;
       const beacon = this._beaconEpochState || null;
+      const { pruned: bitcoinPruned, pruneHeight: bitcoinPruneHeight } = require('../functions/bitcoinPruneInventory').pruneStatusFromBlockchainInfo(blockchain);
       const summary = {
         available: true,
         status: 'ONLINE',
         network: bitcoin.network,
+        ...(walletName ? { walletName: String(walletName) } : {}),
         blockchain,
         networkInfo,
         bestHash,
@@ -3881,7 +4005,9 @@ class Hub extends Service {
         recentTransactions: mempoolTxs,
         balance: trusted,
         beacon: beacon || undefined,
-        p2pAddNodeTargets: this._bitcoinP2pAddNodesList()
+        p2pAddNodeTargets: this._bitcoinP2pAddNodesList(),
+        bitcoinPruned,
+        ...(bitcoinPruneHeight != null ? { bitcoinPruneHeight } : {})
       };
 
       this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic(summary);
@@ -4036,11 +4162,24 @@ class Hub extends Service {
           const bitcoinSvc = this._getBitcoinService();
           if (bitcoinSvc && typeof bitcoinSvc._makeRPCRequest === 'function') {
             const fullBlock = await bitcoinSvc._makeRPCRequest('getblock', [tip, 2]);
-            if (fullBlock) await this._ensureBitcoinBlockPublishedDocument(fullBlock, status.network);
+            if (fullBlock) {
+              await this._ensureBitcoinBlockPublishedDocument(fullBlock, status.network);
+              const docTxCfg = this.settings.bitcoin && this.settings.bitcoin.documentTransactions;
+              const documentTxEnabled = docTxCfg === true || docTxCfg === 'true' || docTxCfg === 1 || docTxCfg === '1';
+              if (documentTxEnabled) {
+                await this._ensureBitcoinTransactionPublishedDocuments(fullBlock, status.network);
+              }
+            }
           }
         } catch (docErr) {
           console.warn('[HUB:BITCOIN] block document index:', docErr && docErr.message ? docErr.message : docErr);
         }
+      }
+
+      try {
+        await this._syncPrunedBitcoinIndexDocuments(status);
+      } catch (pruneErr) {
+        console.warn('[HUB:BITCOIN] prune inventory sync:', pruneErr && pruneErr.message ? pruneErr.message : pruneErr);
       }
 
       await this._maybeScanSidechainBlock(tip, Number.isFinite(height) ? height : null);
@@ -4074,7 +4213,9 @@ class Hub extends Service {
     const now = new Date().toISOString();
     const h = String(block.hash);
     const name = `Bitcoin block ${summary.height != null && Number.isFinite(Number(summary.height)) ? summary.height : '?'} (${h.slice(0, 10)}…)`;
-    const mime = 'application/x-fabric-bitcoin-block+json';
+    const mime = FABRIC_BITCOIN_BLOCK_DOC_MIME;
+    const blockPriceSats = this._resolveBitcoinDocumentInventoryPriceSats('block');
+    const heightNorm = summary.height != null && Number.isFinite(Number(summary.height)) ? Number(summary.height) : null;
 
     this._ensureResourceCollections();
     this._state.documents = this._state.documents || {};
@@ -4089,6 +4230,7 @@ class Hub extends Service {
     let parsed;
 
     if (!existingRaw) {
+      // Persist only envelope-whitelisted document fields + content; prune/listing metadata lives on `collections.documents` only.
       const meta = {
         id,
         sha256: id,
@@ -4099,9 +4241,7 @@ class Hub extends Service {
         lineage: id,
         parent: null,
         revision: 1,
-        edited: now,
-        bitcoinBlockHash: h,
-        bitcoinHeight: summary.height
+        edited: now
       };
       try {
         await this.fs.publish(`documents/${id}.json`, {
@@ -4155,7 +4295,10 @@ class Hub extends Service {
       parent: parsed.parent != null ? parsed.parent : null,
       revision: parsed.revision || 1,
       edited: parsed.edited || parsed.created || pubNow,
-      published: pubNow
+      published: pubNow,
+      bitcoinBlockHash: h,
+      ...(heightNorm != null ? { bitcoinHeight: heightNorm } : {}),
+      ...(blockPriceSats != null ? { purchasePriceSats: blockPriceSats } : {})
     };
     if (!exists) {
       this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
@@ -4193,6 +4336,150 @@ class Hub extends Service {
         target: { type: 'Collection', name: 'documents' }
       });
     } catch (_) { /* optional */ }
+  }
+
+  /**
+   * Publish verbose transactions from a `getblock` … 2 result as Fabric documents (optional; see `documentTransactions`).
+   * @param {object} block
+   * @param {string|null} networkName
+   */
+  async _ensureBitcoinTransactionPublishedDocuments (block, networkName) {
+    const {
+      bitcoinTransactionDocumentBuffer,
+      bitcoinTransactionDocumentId
+    } = require('../functions/bitcoinTransactionDocument');
+    if (!block || typeof block !== 'object' || !block.hash) return;
+    const txs = Array.isArray(block.tx) ? block.tx : [];
+    if (txs.length === 0) return;
+    if (txs.length > BITCOIN_TX_DOC_INDEX_MAX_TXS) {
+      if (this.settings.debug) {
+        console.debug('[HUB:BITCOIN] skip tx document index: too many txs in block', txs.length);
+      }
+      return;
+    }
+    const bh = String(block.hash);
+    const bheight = block.height != null && Number.isFinite(Number(block.height)) ? Number(block.height) : null;
+    const txPriceSats = this._resolveBitcoinDocumentInventoryPriceSats('transaction');
+
+    for (const tx of txs) {
+      if (!tx || typeof tx !== 'object') continue;
+      const buffer = bitcoinTransactionDocumentBuffer(tx, bh, bheight, networkName);
+      if (!buffer) {
+        if (this.settings.debug) {
+          const tid = tx.txid != null ? String(tx.txid).slice(0, 16) : '';
+          console.debug('[HUB:BITCOIN] tx document skip (no canonical hex):', tid);
+        }
+        continue;
+      }
+      const sizeErr = this._validateDocumentSize(buffer);
+      if (sizeErr) {
+        console.warn('[HUB:BITCOIN] tx document:', sizeErr.message);
+        continue;
+      }
+      const id = bitcoinTransactionDocumentId(tx, bh, bheight, networkName);
+      if (!id) continue;
+      const txid = tx.txid != null ? String(tx.txid) : '';
+      const shortTx = txid ? txid.slice(0, 10) : '?';
+      const name = `Bitcoin tx ${shortTx}… (block ${bheight != null ? bheight : '?'})`;
+      const mime = FABRIC_BITCOIN_TX_DOC_MIME;
+      const now = new Date().toISOString();
+
+      this._ensureResourceCollections();
+      this._state.documents = this._state.documents || {};
+      this._state.content.collections.documents = this._state.content.collections.documents || {};
+      const coll = this._state.content.collections.documents;
+
+      if (coll[id] && coll[id].published) continue;
+
+      const existingRaw = this.fs.readFile(`documents/${id}.json`);
+      let parsed;
+      if (!existingRaw) {
+        const meta = {
+          id,
+          sha256: id,
+          name,
+          mime,
+          size: buffer.length,
+          created: now,
+          lineage: id,
+          parent: null,
+          revision: 1,
+          edited: now
+        };
+        try {
+          await this.fs.publish(`documents/${id}.json`, {
+            ...meta,
+            contentBase64: buffer.toString('base64')
+          });
+        } catch (e) {
+          console.error('[HUB:BITCOIN] tx document persist failed:', e && e.message ? e.message : e);
+          continue;
+        }
+        this._state.documents[id] = { ...meta };
+        this._refreshChainState('bitcoin-tx-document');
+        parsed = meta;
+      } else {
+        try {
+          parsed = JSON.parse(existingRaw);
+        } catch (e) {
+          console.error('[HUB:BITCOIN] tx document corrupt:', id, e && e.message ? e.message : e);
+          continue;
+        }
+        if (!this._state.documents[id]) {
+          this._state.documents[id] = {
+            id: parsed.id || id,
+            sha256: parsed.sha256 || id,
+            name: parsed.name || name,
+            mime: parsed.mime || mime,
+            size: parsed.size != null ? parsed.size : buffer.length,
+            created: parsed.created || now,
+            lineage: parsed.lineage || id,
+            parent: parsed.parent || null,
+            revision: parsed.revision || 1,
+            edited: parsed.edited || now
+          };
+        }
+      }
+
+      if (coll[id] && coll[id].published) continue;
+
+      const pubNow = new Date().toISOString();
+      const exists = !!coll[id];
+      coll[id] = {
+        id,
+        document: id,
+        name: parsed.name || name,
+        mime: parsed.mime || mime,
+        size: parsed.size != null ? parsed.size : buffer.length,
+        sha256: parsed.sha256 || id,
+        created: parsed.created || pubNow,
+        lineage: parsed.lineage || id,
+        parent: parsed.parent != null ? parsed.parent : null,
+        revision: parsed.revision || 1,
+        edited: parsed.edited || parsed.created || pubNow,
+        published: pubNow,
+        bitcoinBlockHash: bh,
+        ...(bheight != null ? { bitcoinHeight: bheight } : {}),
+        ...(txid ? { bitcoinTxid: txid } : {}),
+        ...(txPriceSats != null ? { purchasePriceSats: txPriceSats } : {})
+      };
+      if (!exists) {
+        this._state.content.counts = this._state.content.counts || {};
+        this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
+      }
+
+      try {
+        await this._appendFabricMessage('PublishDocument', {
+          id,
+          name: coll[id].name,
+          mime: coll[id].mime
+        });
+      } catch (e) {
+        console.error('[HUB:BITCOIN] tx PublishDocument message failed:', e && e.message ? e.message : e);
+      }
+      this._refreshChainState('publish-bitcoin-tx-document');
+      this.commit();
+    }
   }
 
   /**
@@ -4248,6 +4535,17 @@ class Hub extends Service {
         ? { ...status, balance: status.balance != null ? status.balance : 0, beacon: status.beacon || { balanceSats: 0, clock: 0 } }
         : { available: false, status: 'UNAVAILABLE', balance: 0, beacon: { balanceSats: 0, clock: 0 }, message: 'Bitcoin status unknown.' };
       return res.status(200).json(body);
+    });
+  }
+
+  _handleHubUiConfigRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const { normalizeHubUiAlerts } = require('../functions/hubUiAlerts');
+      const raw = this.settings.ui && Array.isArray(this.settings.ui.alerts)
+        ? this.settings.ui.alerts
+        : [];
+      const alerts = normalizeHubUiAlerts(raw);
+      return res.status(200).json({ success: true, alerts });
     });
   }
 
@@ -5701,6 +5999,31 @@ class Hub extends Service {
     });
   }
 
+  _handleChallengeServiceRequest (req, res) {
+    return this._jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) {
+        return res.status(503).json({
+          available: false,
+          service: 'challenge',
+          message: 'Challenge service is disabled on this Hub node.'
+        });
+      }
+      const caps = challenge.getCapabilities();
+      const body = {
+        ...caps,
+        challenges: challenge.list()
+      };
+      if (this._state && this._state.content && this._state.content.services) {
+        this._state.content.services.challenge = {
+          available: !!caps.available,
+          count: Number(caps.count) || 0
+        };
+      }
+      return res.json(body);
+    });
+  }
+
   _handlePayjoinDepositRequest (req, res) {
     return this._jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
@@ -5713,8 +6036,15 @@ class Hub extends Service {
       const label = String(body.label || body.memo || '').trim();
       const memo = String(body.memo || '').trim();
       const expiresInSeconds = Number(body.expiresInSeconds || 0) || undefined;
-      const address = String(body.address || '').trim() || (bitcoin ? await bitcoin.getUnusedAddress() : '');
-      if (!address) return res.status(400).json({ status: 'error', message: 'Deposit address is required.' });
+      const receiveTemplate = String(body.receiveTemplate || '').trim();
+      const federationXOnlyHex = String(body.federationXOnlyHex || '').trim();
+      let address = String(body.address || '').trim();
+      if (!receiveTemplate) {
+        address = address || (bitcoin ? await bitcoin.getUnusedAddress() : '');
+      }
+      if (!receiveTemplate && !address) {
+        return res.status(400).json({ status: 'error', message: 'Deposit address is required.' });
+      }
 
       const session = await payjoin.createDepositSession({
         walletId,
@@ -5722,7 +6052,9 @@ class Hub extends Service {
         label,
         memo,
         expiresInSeconds,
-        address
+        address,
+        receiveTemplate,
+        federationXOnlyHex: federationXOnlyHex || undefined
       });
 
       this._state.content.services.payjoin = this._state.content.services.payjoin || {};
@@ -5731,7 +6063,8 @@ class Hub extends Service {
 
       return res.json({
         service: 'payjoin',
-        bip: 'BIP77',
+        bip: 'BIP78',
+        asyncPayjoinRoadmap: 'BIP77',
         status: 'success',
         session
       });
@@ -5796,7 +6129,7 @@ class Hub extends Service {
   }
 
   /**
-   * POST /services/payjoin/sessions/:sessionId/acp-hub-boost
+   * POST /services/payjoin/sessions/:sessionId/acp-hub-boost (mirrors: /payments/payjoin/…, /services/bitcoin/payjoin/…)
    * Payer PSBT must use SIGHASH_ALL|ANYONECANPAY on their input(s) so Hub can append + sign a wallet UTXO
    * without changing outputs (extra sats increase miner fee). Admin token required.
    */
@@ -6069,15 +6402,22 @@ class Hub extends Service {
       case 'createpayjoindeposit': {
         const payjoin = this._getPayjoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
-        const address = String(params.address || '').trim() || (bitcoin ? await bitcoin.getUnusedAddress() : '');
-        if (!address) return { status: 'error', message: 'address is required' };
+        const receiveTemplate = String(params.receiveTemplate || '').trim();
+        const federationXOnlyHex = String(params.federationXOnlyHex || '').trim();
+        let address = String(params.address || '').trim();
+        if (!receiveTemplate) {
+          address = address || (bitcoin ? await bitcoin.getUnusedAddress() : '');
+        }
+        if (!receiveTemplate && !address) return { status: 'error', message: 'address is required' };
         return payjoin.createDepositSession({
           walletId: String(params.walletId || (bitcoin && bitcoin.walletName) || ''),
           amountSats: Number(params.amountSats || 0),
           label: String(params.label || params.memo || ''),
           memo: String(params.memo || ''),
           expiresInSeconds: Number(params.expiresInSeconds || 0) || undefined,
-          address
+          address,
+          receiveTemplate,
+          federationXOnlyHex: federationXOnlyHex || undefined
         });
       }
       case 'listpayjoinsessions': {
@@ -6113,6 +6453,20 @@ class Hub extends Service {
 
   _handleBitcoinRPCRequest (req, res) {
     const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+    // Bitcoind-compatible JSON-RPC 2.0 (params array) — passthrough + local verifymessage.
+    if (body.jsonrpc === '2.0' && typeof body.method === 'string') {
+      return Promise.resolve()
+        .then(() => this._hubBitcoindJsonRpc(body, res))
+        .catch((error) => {
+          const id = Object.prototype.hasOwnProperty.call(body, 'id') ? body.id : null;
+          res.setHeader('Content-Type', 'application/json');
+          return res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: error && error.message ? error.message : String(error) },
+            id
+          });
+        });
+    }
     const method = body.method || body.action || '';
     const params = (body.params && typeof body.params === 'object') ? body.params : body;
     return Promise.resolve()
@@ -6127,6 +6481,60 @@ class Hub extends Service {
           message: error && error.message ? error.message : String(error)
         });
       });
+  }
+
+  /**
+   * POST /services/bitcoin with body { jsonrpc: '2.0', method, params: [], id }.
+   * - verifymessage: implemented locally (no bitcoind) using tiny-secp256k1 + bitcoinjs-lib.
+   * - other methods: forwarded to Fabric Bitcoin service RPC when available (passthrough to bitcoind).
+   */
+  async _hubBitcoindJsonRpc (body, res) {
+    const method = String(body.method || '').trim();
+    const params = Array.isArray(body.params) ? body.params : [];
+    const id = Object.prototype.hasOwnProperty.call(body, 'id') ? body.id : null;
+    const reply = (err, result) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (err) {
+        const msg = err && err.message ? err.message : String(err);
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          error: { code: typeof err.code === 'number' ? err.code : -1, message: msg },
+          id
+        });
+      }
+      return res.status(200).json({ jsonrpc: '2.0', result, id });
+    };
+
+    const bitcoin = this._getBitcoinService();
+    const netName = (bitcoin && bitcoin.settings && bitcoin.settings.network) || 'regtest';
+
+    if (method === 'verifymessage') {
+      const [addr, sig, msg] = params;
+      if (addr == null || sig == null || msg === undefined) {
+        return reply(Object.assign(new Error('verifymessage requires address, signature, message'), { code: -32602 }));
+      }
+      try {
+        const ok = bitcoinCoreMessage.verifyMessage(String(addr), String(sig), String(msg), netName);
+        return reply(null, ok);
+      } catch (e) {
+        return reply(e);
+      }
+    }
+
+    if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') {
+      return reply(new Error('Bitcoin RPC unavailable (Hub has no upstream bitcoind)'));
+    }
+
+    try {
+      const result = await bitcoin._makeRPCRequest(method, params);
+      return reply(null, result);
+    } catch (e) {
+      const err = e && (e.message || e.code) ? e : new Error(String(e));
+      if (err && typeof err === 'object' && err.code !== undefined && !err.message) {
+        return reply(Object.assign(new Error(JSON.stringify(err)), { code: err.code }));
+      }
+      return reply(err);
+    }
   }
 
   _serializedLightningRpc (fn) {
@@ -6950,13 +7358,30 @@ class Hub extends Service {
                 lineage: entry.lineage || entry.id || id,
                 parent: entry.parent || null,
                 revision: entry.revision || 1,
-                edited: entry.edited || entry.created || null
+                edited: entry.edited || entry.created || null,
+                ...(entry.bitcoinHeight != null && Number.isFinite(Number(entry.bitcoinHeight))
+                  ? { bitcoinHeight: Math.round(Number(entry.bitcoinHeight)) }
+                  : {}),
+                ...(entry.bitcoinBlockHash ? { bitcoinBlockHash: String(entry.bitcoinBlockHash) } : {}),
+                ...(entry.bitcoinTxid ? { bitcoinTxid: String(entry.bitcoinTxid) } : {})
               };
             }
           }
         }
       } catch (err) {
         console.error('[HUB] Failed to seed documents index from content store:', err);
+      }
+
+      if (this.challenge && this.settings.challenge && this.settings.challenge.enable !== false) {
+        this.challenge.attach({ hub: this, fs: this.fs });
+        await this.challenge.start();
+        if (this._state.content.services) {
+          const caps = this.challenge.getCapabilities();
+          this._state.content.services.challenge = {
+            available: !!caps.available,
+            count: Number(caps.count) || 0
+          };
+        }
       }
 
       await this._ensureGenesisMessage();
@@ -6968,6 +7393,15 @@ class Hub extends Service {
       // TODO: retrieve contract ID, add to local state
       this.contract.deploy();
       this.commit();
+
+      if (this.bitcoin) {
+        try {
+          const st = await this._collectBitcoinStatus({ force: true });
+          await this._syncPrunedBitcoinIndexDocuments(st);
+        } catch (e) {
+          console.warn('[HUB:BITCOIN] startup prune inventory sync:', e && e.message ? e.message : e);
+        }
+      }
 
       // Load HTML document from disk to serve from memory
       try {
@@ -7033,6 +7467,7 @@ class Hub extends Service {
 
       this.http._addRoute('POST', '/services/rpc', this._handleHttpJsonRpcRequest.bind(this));
       this.http._addRoute('GET', '/services/operator/health', this._handleOperatorHealthRequest.bind(this));
+      this.http._addRoute('GET', '/services/ui-config', this._handleHubUiConfigRequest.bind(this));
 
       // Bitcoin service surface:
       // - GET routes are browser-friendly (HTML shell or JSON by Accept header)
@@ -7058,6 +7493,8 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/bitcoin/wallets/:walletId/transactions', this._handleBitcoinWalletTransactionsRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/payments', this._handleBitcoinPaymentsListRequest.bind(this));
       this.http._addRoute('POST', '/services/bitcoin/payments', this._handleBitcoinWalletSendRequest.bind(this));
+      this.http._addRoute('GET', '/payments', this._handleBitcoinPaymentsListRequest.bind(this));
+      this.http._addRoute('POST', '/payments', this._handleBitcoinWalletSendRequest.bind(this));
       this.http._addRoute('POST', '/services/bitcoin/faucet', this._handleBitcoinFaucetRequest.bind(this));
       /* Taproot crowdfunding (2-of-2 payout + CLTV arbiter refund); see functions/crowdfundingTaproot.js */
       this.http._addRoute('GET', '/services/bitcoin/crowdfunding/campaigns/:campaignId/acp-donation-psbt', this._handleBitcoinCrowdfundingAcpDonationPsbtRequest.bind(this));
@@ -7080,6 +7517,11 @@ class Hub extends Service {
       for (const [method, route, handler] of payjoinRoutes) {
         this.http._addRoute(method, route, handler);
       }
+      // Alternate path (same handlers) for older clients / stored BIP21 `pj=` URLs.
+      for (const [method, route, handler] of payjoinRoutes) {
+        const paymentsMirror = route.replace(/^\/services\/payjoin/, '/payments/payjoin');
+        if (paymentsMirror !== route) this.http._addRoute(method, paymentsMirror, handler);
+      }
       // Legacy paths (same handlers) — persisted proposalURL values may still reference these.
       for (const [method, route, handler] of payjoinRoutes) {
         const legacy = route.replace(/^\/services\/payjoin/, '/services/bitcoin/payjoin');
@@ -7088,6 +7530,7 @@ class Hub extends Service {
       /* Peering: Fabric P2P + WebRTC discovery; OracleAttestation over Hub identity key */
       this.http._addRoute('GET', '/services/peering', this._handlePeeringServiceRequest.bind(this));
       this.http._addRoute('GET', '/services/peering/attestation', this._handlePeeringAttestationRequest.bind(this));
+      this.http._addRoute('GET', '/services/challenges', this._handleChallengeServiceRequest.bind(this));
       /* Distributed execution: manifest + beacon epoch status (@fabric/core + @fabric/http) */
       if (this.settings.distributed && this.settings.distributed.enable !== false && this.distributedHttp) {
         this.distributedHttp.bind(this.http);
@@ -7247,21 +7690,34 @@ class Hub extends Service {
         }
       });
 
+      this.http._registerMethod('GetChallengeStatus', async () => {
+        const ch = this._getChallengeService();
+        if (!ch) return { status: 'error', message: 'Challenge service unavailable' };
+        return ch.getCapabilities();
+      });
+
       this.http._registerMethod('CreatePayjoinDeposit', async (...params) => {
         const payjoin = this._getPayjoinService();
         const bitcoin = this._getBitcoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
         const body = params[0] || {};
         const walletId = String(body.walletId || (bitcoin && bitcoin.walletName) || '').trim();
-        const address = String(body.address || '').trim() || (bitcoin ? await bitcoin.getUnusedAddress() : '');
-        if (!address) return { status: 'error', message: 'address is required' };
+        const receiveTemplate = String(body.receiveTemplate || '').trim();
+        const federationXOnlyHex = String(body.federationXOnlyHex || '').trim();
+        let address = String(body.address || '').trim();
+        if (!receiveTemplate) {
+          address = address || (bitcoin ? await bitcoin.getUnusedAddress() : '');
+        }
+        if (!receiveTemplate && !address) return { status: 'error', message: 'address is required' };
         return payjoin.createDepositSession({
           walletId,
           amountSats: Number(body.amountSats || 0),
           label: String(body.label || body.memo || ''),
           memo: String(body.memo || ''),
           expiresInSeconds: Number(body.expiresInSeconds || 0) || undefined,
-          address
+          address,
+          receiveTemplate,
+          federationXOnlyHex: federationXOnlyHex || undefined
         });
       });
 
@@ -7391,6 +7847,44 @@ class Hub extends Service {
         } catch (err) {
           console.error('[HUB] RequestFabricPeerResync error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'send failed' };
+        }
+      });
+
+      // Federation / playnet: sign and send P2P_FLUSH_CHAIN to peers above registry score threshold.
+      // Params: { snapshotBlockHash, network?, label?, adminToken|token }
+      this.http._registerMethod('SendFlushChainToTrustedPeers', (...params) => {
+        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const token = String(req.adminToken || req.token || '').trim();
+        if (!this.setup.verifyAdminToken(token)) {
+          return { status: 'error', message: 'adminToken required' };
+        }
+        const snapshotBlockHash = String(req.snapshotBlockHash || '').trim().toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(snapshotBlockHash)) {
+          return { status: 'error', message: 'snapshotBlockHash must be 64 hex characters' };
+        }
+        const agent = this.agent;
+        if (!agent || typeof agent.sendFlushChainToTrustedPeers !== 'function') {
+          return { status: 'error', message: 'FlushChain not available on this hub Peer (upgrade @fabric/core)' };
+        }
+        const body = { snapshotBlockHash };
+        const net = req.network != null ? String(req.network).trim() : '';
+        const label = req.label != null ? String(req.label).trim() : '';
+        if (net) body.network = net;
+        if (label) body.label = label;
+        try {
+          const peersNotified = agent.sendFlushChainToTrustedPeers(body);
+          console.debug('[HUB] SendFlushChainToTrustedPeers:', { peersNotified, snapshotBlockHash, network: body.network });
+          return {
+            status: 'success',
+            type: 'SendFlushChainToTrustedPeersResult',
+            peersNotified,
+            snapshotBlockHash,
+            network: body.network || null,
+            label: body.label || null
+          };
+        } catch (err) {
+          console.error('[HUB] SendFlushChainToTrustedPeers error:', err);
+          return { status: 'error', message: err && err.message ? err.message : String(err) };
         }
       });
 
@@ -8441,6 +8935,13 @@ class Hub extends Service {
             }
           });
 
+          try {
+            const ch = this._getChallengeService();
+            if (ch) await ch.registerFromStorageContract(this._state.content.collections.contracts[contractId]);
+          } catch (e) {
+            console.warn('[HUB] ChallengeService register failed:', e && e.message ? e.message : e);
+          }
+
           return {
             type: 'CreateStorageContractResult',
             id: contractId,
@@ -8450,6 +8951,26 @@ class Hub extends Service {
           console.error('[HUB] CreateStorageContract error:', err);
           return fail(err && err.message ? err.message : 'create storage contract failed');
         }
+      });
+
+      // Proof-of-storage challenge index (one row per StorageContract; see ChallengeService).
+      this.http._registerMethod('ListStorageChallenges', async () => {
+        const ch = this._getChallengeService();
+        if (!ch) {
+          return { type: 'ListStorageChallengesResult', challenges: [], available: false };
+        }
+        return { type: 'ListStorageChallengesResult', challenges: ch.list(), available: true };
+      });
+
+      this.http._registerMethod('GetStorageChallenge', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        const contractId = req.contractId || params[0];
+        if (!contractId) return { status: 'error', message: 'contractId required' };
+        const ch = this._getChallengeService();
+        if (!ch) return { status: 'error', message: 'Challenge service unavailable' };
+        const row = ch.getByContractId(contractId);
+        if (!row) return { type: 'GetStorageChallengeResult', challenge: null };
+        return { type: 'GetStorageChallengeResult', challenge: row };
       });
 
       // L1 pay-to-register for execution contracts (when Bitcoin service is enabled).
@@ -8987,8 +9508,8 @@ class Hub extends Service {
             address: this.http.agent.listenAddress,
             listening: this.http.agent.listening
           },
-          // Use the Peer's persistent known-peers list (scores, metadata) with current status.
-          peers: this.agent.knownPeers,
+          // TCP known peers plus browser WebRTC registrations (Fabric ids via metadata.fabricPeerId).
+          peers: mergeFabricPeersWithWebRtcRegistry(this.agent.knownPeers, this.http.webrtcPeerList || []),
           // Browser WebRTC mesh peers (registered via RegisterWebRTCPeer / Bridge)
           webrtcPeers: this.http.webrtcPeerList || [],
           // settings: this.settings,
@@ -9336,8 +9857,14 @@ class Hub extends Service {
             status: 'registered',
             metadata: info.metadata || {},
             registeredAt: now,
-            lastSeen: now
+            lastSeen: now,
+            meshSessionCount: 0
           });
+        }
+        const cur = this.http.webrtcPeers.get(peerId);
+        if (cur && (cur.meshSessionCount == null || Number.isNaN(Number(cur.meshSessionCount)))) {
+          cur.meshSessionCount = 0;
+          this.http.webrtcPeers.set(peerId, cur);
         }
 
         pushNetworkStatus();
@@ -9398,22 +9925,51 @@ class Hub extends Service {
             lastSeen: Number(p.lastSeen || p.registeredAt || p.connectedAt || 0) || undefined,
             registeredAt: Number(p.registeredAt || p.connectedAt || 0) || undefined,
             status: p.status,
-            metadata: p.metadata
+            metadata: p.metadata,
+            meshSessionCount: Number(p.meshSessionCount || 0) || 0
           }))
         };
       });
 
-      // Track when browsers establish direct WebRTC connections
+      const bumpWebRtcMeshSession = (pid) => {
+        const id = pid != null ? String(pid) : '';
+        if (!id || !this.http.webrtcPeers.has(id)) return;
+        const e = this.http.webrtcPeers.get(id);
+        e.meshSessionCount = Math.max(0, (Number(e.meshSessionCount) || 0) + 1);
+        e.meshLastAt = Date.now();
+        this.http.webrtcPeers.set(id, e);
+      };
+
+      const decWebRtcMeshSession = (pid) => {
+        const id = pid != null ? String(pid) : '';
+        if (!id || !this.http.webrtcPeers.has(id)) return;
+        const e = this.http.webrtcPeers.get(id);
+        e.meshSessionCount = Math.max(0, (Number(e.meshSessionCount) || 0) - 1);
+        e.meshLastAt = Date.now();
+        this.http.webrtcPeers.set(id, e);
+      };
+
+      // Track when browsers establish direct WebRTC connections (updates GetNetworkStatus.peers mesh flags).
       this.http._registerMethod('WebRTCPeerConnected', (...params) => {
-        const info = params[0] || {};
-        console.debug('[HUB] WebRTCPeerConnected:', info.peerId, 'direction:', info.direction);
+        const info = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const remote = info.remotePeerId != null ? String(info.remotePeerId) : (info.peerId != null ? String(info.peerId) : '');
+        const selfId = info.selfPeerId != null ? String(info.selfPeerId) : (info.localPeerId != null ? String(info.localPeerId) : '');
+        if (remote) bumpWebRtcMeshSession(remote);
+        if (selfId) bumpWebRtcMeshSession(selfId);
+        console.debug('[HUB] WebRTCPeerConnected:', { remote, selfId, direction: info.direction });
+        pushNetworkStatus();
         return { status: 'success' };
       });
 
-      // Track when browsers disconnect from direct WebRTC connections
+      // Track when browsers disconnect mesh data channels.
       this.http._registerMethod('WebRTCPeerDisconnected', (...params) => {
-        const info = params[0] || {};
-        console.debug('[HUB] WebRTCPeerDisconnected:', info.peerId);
+        const info = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const remote = info.remotePeerId != null ? String(info.remotePeerId) : (info.peerId != null ? String(info.peerId) : '');
+        const selfId = info.selfPeerId != null ? String(info.selfPeerId) : (info.localPeerId != null ? String(info.localPeerId) : '');
+        if (remote) decWebRtcMeshSession(remote);
+        if (selfId) decWebRtcMeshSession(selfId);
+        console.debug('[HUB] WebRTCPeerDisconnected:', { remote, selfId });
+        pushNetworkStatus();
         return { status: 'success' };
       });
 

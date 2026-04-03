@@ -1,5 +1,9 @@
 'use strict';
 
+const {
+  readStorageJSON
+} = require('./fabricBrowserState');
+
 /**
  * Browser localStorage key for Hub delegation token + same-tab sync event
  * (IdentityManager writes; SecurityHome and others listen).
@@ -17,11 +21,10 @@ function notifyDelegationStorageChanged () {
 
 /** True after desktop browser login: Hub signs by delegation; browser holds xpub + token only. */
 function hasExternalSigningDelegation () {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
+  if (typeof window === 'undefined') return false;
   try {
-    const raw = window.localStorage.getItem(DELEGATION_STORAGE_KEY);
-    if (!raw) return false;
-    const d = JSON.parse(raw);
+    const d = readStorageJSON(DELEGATION_STORAGE_KEY, null);
+    if (!d) return false;
     return !!(d && d.token && d.externalSigning);
   } catch (e) {
     return false;

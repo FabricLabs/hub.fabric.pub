@@ -85,9 +85,9 @@ function BitcoinTransactionView () {
           role="banner"
         >
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-            <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin explorer">
+            <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
               <Icon name="arrow left" aria-hidden="true" />
-              Explorer
+              Bitcoin
             </Button>
             {TXHASH_REGEX.test(hash) && (
               <Button
@@ -149,9 +149,15 @@ function BitcoinTransactionView () {
                 <Icon name="refresh" />
                 Retry
               </Button>
-              <Button as={Link} to="/services/bitcoin" size="small" basic>
+              <Button
+                as={Link}
+                to="/services/bitcoin/blocks"
+                size="small"
+                basic
+                title="Open block explorer (recent blocks and mempool)"
+              >
                 <Icon name="list" />
-                Explorer
+                Block Explorer
               </Button>
             </div>
           ) : null}
@@ -169,9 +175,15 @@ function BitcoinTransactionView () {
               <Icon name="refresh" />
               Retry
             </Button>
-            <Button as={Link} to="/services/bitcoin" size="small" basic>
+            <Button
+              as={Link}
+              to="/services/bitcoin/blocks"
+              size="small"
+              basic
+              title="Open block explorer (recent blocks and mempool)"
+            >
               <Icon name="list" />
-              Explorer
+              Block Explorer
             </Button>
             <Button as={Link} to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`} size="small" basic>
               <Icon name="check circle outline" />

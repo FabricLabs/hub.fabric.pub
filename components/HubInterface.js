@@ -13,12 +13,16 @@ const {
 } = require('../functions/fabricDelegationLocal');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const {
+  readStorageString,
+  readStorageJSON,
+  writeStorageString,
+  removeStorageKey
+} = require('../functions/fabricBrowserState');
+const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags,
   fetchPersistedHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
-const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
-
 // Dependencies
 const React = require('react');
 const ReactDOMServer = require('react-dom/server');
@@ -50,6 +54,20 @@ const BitcoinBlockView = require('./BitcoinBlockView');
 const BitcoinPaymentsHome = require('./BitcoinPaymentsHome');
 const BitcoinTransactionsHome = require('./BitcoinTransactionsHome');
 
+function NavigatePaymentsLegacyToCanonical () {
+  const loc = useLocation();
+  return (
+    <Navigate
+      to={{
+        pathname: '/payments',
+        search: loc.search || '',
+        hash: loc.hash || ''
+      }}
+      replace
+    />
+  );
+}
+
 function BitcoinPaymentsHomeRoute (props) {
   const [searchParams, setSearchParams] = useSearchParams();
   React.useEffect(() => {
@@ -76,6 +94,23 @@ function BitcoinPaymentsHomeRoute (props) {
   );
 }
 
+function buildAdminGateNavigate (location, flag) {
+  const blockedPath = `${location.pathname || ''}${location.search || ''}`;
+  const qs = new URLSearchParams();
+  qs.set('blockedFlag', String(flag || ''));
+  qs.set('blockedPath', blockedPath || '/');
+  return {
+    to: {
+      pathname: '/settings/admin',
+      search: `?${qs.toString()}`
+    },
+    state: {
+      featureFlagBlocked: flag,
+      blockedPath
+    }
+  };
+}
+
 /** Legacy singular `/document/...` → plural canonical `/documents/...`. */
 function NavigateDocumentsDetailAlias () {
   const { id } = useParams();
@@ -89,14 +124,12 @@ function NavigatePeerDetailAlias () {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f.peers) {
+    const blocked = buildAdminGateNavigate(location, 'peers');
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: 'peers',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
@@ -110,14 +143,12 @@ function NavigatePeerRootAlias () {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f.peers) {
+    const blocked = buildAdminGateNavigate(location, 'peers');
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: 'peers',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
@@ -128,14 +159,12 @@ function NavigateActivityToActivities () {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f.activities) {
+    const blocked = buildAdminGateNavigate(location, 'activities');
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: 'activities',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
@@ -146,45 +175,29 @@ function UiFlagRoute ({ flag, children }) {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f[flag]) {
+    const blocked = buildAdminGateNavigate(location, flag);
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: flag,
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
   return children;
 }
 
-/** Peers routes: feature flag on, and hub admin token in this browser (operator-only UI). */
-function PeersAdminRoute ({ children, adminToken }) {
+/** Peers routes: UI feature flag only (no hub admin token required). */
+function PeersFeatureRoute ({ children }) {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f.peers) {
+    const blocked = buildAdminGateNavigate(location, 'peers');
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: 'peers',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
-      />
-    );
-  }
-  if (!readHubAdminTokenFromBrowser(adminToken)) {
-    return (
-      <Navigate
-        to="/settings/admin"
-        replace
-        state={{
-          featureFlagBlocked: 'peersAdmin',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
@@ -196,14 +209,12 @@ function NavigateLegacyBitcoinTxAlias () {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f.bitcoinExplorer) {
+    const blocked = buildAdminGateNavigate(location, 'bitcoinExplorer');
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: 'bitcoinExplorer',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
@@ -218,21 +229,19 @@ function NavigateLegacyBitcoinBlockAlias () {
   const f = loadHubUiFeatureFlags();
   const location = useLocation();
   if (!f.bitcoinExplorer) {
+    const blocked = buildAdminGateNavigate(location, 'bitcoinExplorer');
     return (
       <Navigate
-        to="/settings/admin"
+        to={blocked.to}
         replace
-        state={{
-          featureFlagBlocked: 'bitcoinExplorer',
-          blockedPath: `${location.pathname || ''}${location.search || ''}`
-        }}
+        state={blocked.state}
       />
     );
   }
   const { blockhash } = useParams();
   const raw = blockhash != null ? String(blockhash).trim() : '';
   if (!raw) {
-    return <Navigate to={{ pathname: '/services/bitcoin', hash: 'bitcoin-explorer' }} replace />;
+    return <Navigate to="/services/bitcoin/blocks" replace />;
   }
   return <Navigate to={`/services/bitcoin/blocks/${encodeURIComponent(raw)}`} replace />;
 }
@@ -244,124 +253,53 @@ function UnknownRouteShell () {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
-  const hasHubAdminForPeers = !!readHubAdminTokenFromBrowser(null);
   return (
     <Segment style={{ marginTop: '2em' }}>
       <Header as="h3">Page not found</Header>
-      <p style={{ color: '#666', marginBottom: '1em' }}>
+      <p style={{ color: '#666', marginBottom: '0.75em', lineHeight: 1.45 }}>
         No hub UI for{' '}
         <code style={{ wordBreak: 'break-all' }}>{full}</code>
-        . Use the nav above or open Home.
-        {uf.activities ? ' The activity feed and in-app toasts are under the bell (top bar).' : ''}
+        .
       </p>
-      <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }} role="navigation" aria-label="Suggested pages">
-        <Button as={Link} to="/" primary aria-label="Home">
-          <Icon name="home" />
-          Home
-        </Button>
-        {uf.peers && hasHubAdminForPeers ? (
-          <Button as={Link} to="/peers" basic aria-label="Peers">
-            <Icon name="sitemap" />
-            Peers
-          </Button>
-        ) : null}
-        <Button as={Link} to="/documents" basic aria-label="Documents">
-          <Icon name="file outline" />
-          Documents
-        </Button>
-        <Button as={Link} to="/contracts" basic aria-label="Contracts">
-          <Icon name="file code" />
-          Contracts
-        </Button>
-        {uf.features ? (
-          <Button as={Link} to="/features" basic aria-label="Features">
-            <Icon name="info circle" />
-            Features
-          </Button>
-        ) : null}
-        {uf.activities ? (
-          <Button as={Link} to="/activities" basic aria-label="Activities">
-            <Icon name="bell outline" />
-            Activities
-          </Button>
+      <p style={{ color: '#666', marginBottom: '0.5em', lineHeight: 1.45 }}>
+        Use the <strong>top navigation</strong> (Home, Documents, Contracts, and <strong>More</strong>) — it lists the same places without duplicating them here.
+        {uf.activities ? ' The bell opens Notifications (toasts); the activity log is under More → Activity log.' : ''}
+      </p>
+      <p style={{ color: '#666', lineHeight: 1.45 }}>
+        <Link to="/">Go to Home</Link>
+        {' · '}
+        <Link to="/settings">Settings</Link>
+        {(uf.bitcoinPayments || uf.bitcoinLightning) ? (
+          <>
+            {' · '}
+            <Link
+              to={{
+                pathname: '/services/bitcoin',
+                hash: uf.bitcoinPayments ? 'fabric-bitcoin-payjoin' : 'fabric-bitcoin-lightning'
+              }}
+            >
+              Treasury (Payjoin / Lightning)
+            </Link>
+          </>
         ) : null}
         {uf.sidechain ? (
-          <Button as={Link} to="/sidechains" basic aria-label="Sidechain and demo">
-            <Icon name="random" />
-            Sidechain
-          </Button>
+          <>
+            {' · '}
+            <Link to="/sidechains">Sidechain &amp; demo</Link>
+          </>
         ) : null}
-        {uf.sidechain ? (
-          <React.Fragment>
-            <Button as={Link} to="/settings/admin/beacon-federation" basic aria-label="Beacon Federation">
-              <Icon name="star" />
-              Beacon Federation
-            </Button>
-            <Button as={Link} to="/settings/federation" basic aria-label="Distributed federation">
-              <Icon name="users" />
-              Federation
-            </Button>
-          </React.Fragment>
-        ) : null}
-        <Button as={Link} to="/services/bitcoin" basic aria-label="Bitcoin">
-          <Icon name="bitcoin" />
-          Bitcoin
-        </Button>
-        {uf.bitcoinPayments ? (
-          <Button as={Link} to="/services/bitcoin/payments" basic aria-label="Payments">
-            <Icon name="credit card outline" />
-            Payments
-          </Button>
-        ) : null}
-        {uf.bitcoinInvoices ? (
-          <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic aria-label="Invoices">
-            <Icon name="file alternate outline" />
-            Invoices
-          </Button>
-        ) : null}
-        {uf.bitcoinLightning ? (
-          <Button as={Link} to="/services/lightning" basic aria-label="Lightning">
-            <Icon name="bolt" />
-            Lightning
-          </Button>
-        ) : null}
-        {uf.bitcoinExplorer ? (
-          <Button as={Link} to="/services/bitcoin/blocks" basic aria-label="Explorer">
-            <Icon name="search" />
-            Explorer
-          </Button>
-        ) : null}
-        <Button as={Link} to="/services/bitcoin/faucet" basic aria-label="Faucet">
-          <Icon name="tint" />
-          Faucet
-        </Button>
-        {uf.bitcoinResources ? (
-          <Button as={Link} to="/services/bitcoin/resources" basic aria-label="Bitcoin HTTP resources">
-            <Icon name="code" />
-            Bitcoin resources
-          </Button>
-        ) : null}
-        {uf.bitcoinCrowdfund ? (
-          <Button as={Link} to="/services/bitcoin/crowdfunds" basic aria-label="Crowdfunds">
-            <Icon name="heart outline" />
-            Crowdfunds
-          </Button>
-        ) : null}
-        <Button as={Link} to="/settings/admin" basic aria-label="Admin">
-          <Icon name="settings" />
-          Admin
-        </Button>
-        <Button as={Link} to="/settings" basic aria-label="Settings">
-          <Icon name="setting" />
-          Settings
-        </Button>
-        <Button as={Link} to="/settings/security" basic aria-label="Security and delegation">
-          <Icon name="shield" />
-          Security & delegation
-        </Button>
-      </div>
+      </p>
     </Segment>
   );
+}
+
+/** HTML shell: `/services/payjoin` SPA → canonical `/payments` Payjoin surface; JSON still on REST payjoin bases. */
+function NavigatePayjoinSpaAlias () {
+  const uf = loadHubUiFeatureFlags();
+  if (uf.bitcoinPayments) {
+    return <Navigate to={{ pathname: '/payments', hash: 'wealth-payjoin-board' }} replace />;
+  }
+  return <Navigate to={{ pathname: '/services/bitcoin', hash: 'fabric-bitcoin-payjoin' }} replace />;
 }
 
 const BitcoinResourcesHome = require('./BitcoinResourcesHome');
@@ -380,10 +318,21 @@ const DocumentList = require('./DocumentList');
 const DocumentView = require('./DocumentView');
 const Home = require('./Home');
 const ActivitiesHome = require('./ActivitiesHome');
+const NotificationsHome = require('./NotificationsHome');
 const IdentityManager = require('./IdentityManager');
 const PeerList = require('./PeerList');
 const PeerView = require('./PeerView');
 const TopPanel = require('./TopPanel');
+const HubAlertStack = require('./HubAlertStack');
+
+/** Alert dismiss PUT uses admin token only on admin settings routes (not on general pages). */
+function HubAlertStackLocationGate ({ adminToken }) {
+  const loc = useLocation();
+  const onAdmin = String(loc.pathname || '').startsWith('/settings/admin');
+  const token = (onAdmin && adminToken && String(adminToken).trim()) || '';
+  return <HubAlertStack adminToken={token || undefined} />;
+}
+
 const {
   getSpendWalletContext,
   fetchWalletSummaryWithCache,
@@ -397,6 +346,10 @@ const SecurityHome = require('./SecurityHome');
 const SecuritySessionHome = require('./SecuritySessionHome');
 const SettingsHome = require('./SettingsHome');
 const SettingsFederationHome = require('./SettingsFederationHome');
+const FederationsHome = require('./FederationsHome');
+const FederationInviteNotificationBanner = require('./FederationInviteNotificationBanner');
+const PublicVisitorGate = require('./PublicVisitorGate');
+const { computePublicHubVisitor } = require('../functions/hubPublicVisitor');
 const SettingsBitcoinWallet = require('./SettingsBitcoinWallet');
 const FederationContractInviteModal = require('./FederationContractInviteModal');
 const FeaturesPage = require('./FeaturesPage');
@@ -411,6 +364,15 @@ const BeaconFederationHome = require('./BeaconFederationHome');
  * @param {object|null|undefined} networkStatus
  * @returns {object|null}
  */
+function wrapPublicVisitorGate (isVisitor, onOpenIdentity, child) {
+  if (!isVisitor) return child;
+  return (
+    <PublicVisitorGate active onOpenIdentity={onOpenIdentity}>
+      {child}
+    </PublicVisitorGate>
+  );
+}
+
 function resolveBitcoinFromNetworkStatus (networkStatus) {
   if (!networkStatus || typeof networkStatus !== 'object') return null;
   const top = networkStatus.bitcoin;
@@ -510,8 +472,8 @@ class HubInterface extends React.Component {
 
     let initialHubAddress = '';
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        initialHubAddress = window.localStorage.getItem('fabric.hub.address') || '';
+      if (typeof window !== 'undefined') {
+        initialHubAddress = readStorageString('fabric.hub.address') || '';
       }
     } catch (e) {}
     if (!initialHubAddress) {
@@ -527,9 +489,9 @@ class HubInterface extends React.Component {
     let initialAdminToken = null;
     let initialAdminTokenExpiresAt = null;
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        initialAdminToken = window.localStorage.getItem('fabric.hub.adminToken') || null;
-        const raw = window.localStorage.getItem('fabric.hub.adminTokenExpiresAt');
+      if (typeof window !== 'undefined') {
+        initialAdminToken = readStorageString('fabric.hub.adminToken') || null;
+        const raw = readStorageString('fabric.hub.adminTokenExpiresAt');
         if (raw) initialAdminTokenExpiresAt = Number(raw) || null;
       }
     } catch (e) {}
@@ -537,7 +499,7 @@ class HubInterface extends React.Component {
     let initialLocalIdentity = null;
     let initialHasLockedIdentity = false;
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
+      if (typeof window !== 'undefined') {
         // Dev-only: window.FABRIC_DEV_BROWSER_SEED (+ optional FABRIC_DEV_BROWSER_PASSPHRASE) from
         // assets/config.local.js or hub HTML injection (FABRIC_DEV_PUSH_BROWSER_IDENTITY). Sharing the
         // node mnemonic with the browser is discouraged except for local regtest.
@@ -587,9 +549,8 @@ class HubInterface extends React.Component {
           }
         } catch (e) {}
 
-        const raw = window.localStorage.getItem('fabric.identity.local');
-        if (raw) {
-          const parsed = JSON.parse(raw);
+        const parsed = readStorageJSON('fabric.identity.local', null);
+        if (parsed) {
           if (parsed && parsed.xprv && !parsed.passwordProtected) {
             try {
               const ident = new Identity({ xprv: parsed.xprv });
@@ -664,13 +625,25 @@ class HubInterface extends React.Component {
       uiHasLockedIdentity: initialHasLockedIdentity,
       webrtcChatOnly: false,
       federationInviteModalOpen: false,
-      federationInviteDetail: null
+      federationInviteDetail: null,
+      federationInviteBannerDetail: null
     };
 
     this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
     this.responseCapture = this.responseCapture.bind(this);
     this.requestLogin = this.requestLogin.bind(this);
     this.openIdentityManager = this.openIdentityManager.bind(this);
+    this.openIdentityModalFromGatedAction = this.openIdentityModalFromGatedAction.bind(this);
+    this._handleIdentityManagerLocalChange = this._handleIdentityManagerLocalChange.bind(this);
+    this._handleIdentityManagerLockStateChange = this._handleIdentityManagerLockStateChange.bind(this);
+    this._handleIdentityManagerUnlockSuccess = this._handleIdentityManagerUnlockSuccess.bind(this);
+    this._handleIdentityManagerForget = this._handleIdentityManagerForget.bind(this);
+    this._openFederationInviteReview = this._openFederationInviteReview.bind(this);
+    this._dismissFederationInviteBanner = this._dismissFederationInviteBanner.bind(this);
+    this._openIdentityModalForUser = this._openIdentityModalForUser.bind(this);
+    this._closeHubIdentityModal = this._closeHubIdentityModal.bind(this);
+    /** Coalesce rapid Bridge / page unlock prompts so the identity modal does not strobe. */
+    this._openIdentityModalCoolDownUntil = 0;
 
     // Instantiate Bridge once here
     this.bridgeRef = React.createRef();
@@ -684,12 +657,22 @@ class HubInterface extends React.Component {
   }
 
   async _checkSetupStatus () {
+    const base = typeof window !== 'undefined' && window.location
+      ? `${window.location.protocol}//${window.location.host}`
+      : 'http://localhost:8080';
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutMs = 12000;
+    const timer = controller && typeof setTimeout === 'function'
+      ? setTimeout(() => {
+        try {
+          controller.abort();
+        } catch (abortErr) {}
+      }, timeoutMs)
+      : null;
     try {
-      const base = typeof window !== 'undefined' && window.location
-        ? `${window.location.protocol}//${window.location.host}`
-        : 'http://localhost:8080';
       const res = await fetch(`${base}/settings`, {
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
+        signal: controller ? controller.signal : undefined
       });
       if (res.ok) {
         const text = await res.text();
@@ -707,14 +690,16 @@ class HubInterface extends React.Component {
       }
     } catch (e) {
       this.setState({ setupChecked: true });
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
   async _refreshAdminTokenIfNeeded () {
-    const token = this.state.adminToken || (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    const token = this.state.adminToken || (typeof window !== 'undefined' && readStorageString('fabric.hub.adminToken'));
     if (!token) return;
-    const expiresAt = this.state.adminTokenExpiresAt || (typeof window !== 'undefined' && window.localStorage && (() => {
-      const raw = window.localStorage.getItem('fabric.hub.adminTokenExpiresAt');
+    const expiresAt = this.state.adminTokenExpiresAt || (typeof window !== 'undefined' && (() => {
+      const raw = readStorageString('fabric.hub.adminTokenExpiresAt');
       return raw ? Number(raw) : null;
     })());
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
@@ -738,11 +723,11 @@ class HubInterface extends React.Component {
       const result = JSON.parse(text);
       if (result && result.token) {
         this.setState({ adminToken: result.token, adminTokenExpiresAt: result.expiresAt });
-        if (typeof window !== 'undefined' && window.localStorage) {
+        if (typeof window !== 'undefined') {
           try {
-            window.localStorage.setItem('fabric.hub.adminToken', result.token);
+            writeStorageString('fabric.hub.adminToken', result.token);
             if (result.expiresAt != null) {
-              window.localStorage.setItem('fabric.hub.adminTokenExpiresAt', String(result.expiresAt));
+              writeStorageString('fabric.hub.adminTokenExpiresAt', String(result.expiresAt));
             }
           } catch (e) {}
         }
@@ -763,8 +748,17 @@ class HubInterface extends React.Component {
       return;
     }
 
-    // Fallback: open built-in IdentityManager modal.
+    this._openIdentityModalForUser();
+  }
+
+  /** User explicitly asked for the identity UI — always show (avoids “stuck closed” if state desyncs). */
+  _openIdentityModalForUser () {
     this.setState({ uiIdentityOpen: true });
+  }
+
+  /** Dismiss identity UI only from explicit chrome — ignore Semantic Modal / Portal onClose (mobile-safe). */
+  _closeHubIdentityModal () {
+    this.setState({ uiIdentityOpen: false });
   }
 
   openIdentityManager () {
@@ -773,7 +767,130 @@ class HubInterface extends React.Component {
       return;
     }
 
+    this._openIdentityModalForUser();
+  }
+
+  /** Bridge / background prompts — do not re-open if already visible (prevents mobile modal strobing). */
+  openIdentityModalFromGatedAction () {
+    if (this.state.uiIdentityOpen) return;
+    const now = Date.now();
+    if (now < this._openIdentityModalCoolDownUntil) return;
+    this._openIdentityModalCoolDownUntil = now + 2500;
     this.setState({ uiIdentityOpen: true });
+  }
+
+  _hubIdentityUiSnapshotKey (info) {
+    if (!info || (!info.id && !info.xpub)) return '';
+    const hasX = !!(info.xprv && String(info.xprv).trim());
+    return `${String(info.id || '')}|${String(info.xpub || '')}|${hasX ? '1' : '0'}|${info.passwordProtected ? '1' : '0'}|${info.linkedFromDesktop ? '1' : '0'}`;
+  }
+
+  _handleIdentityManagerLocalChange (info) {
+    this.setState((prev) => {
+      if (!info) {
+        try { clearSpendXpubWatch(); } catch (_) {}
+        if (!prev.uiLocalIdentity && !prev.uiHasLockedIdentity) return {};
+        return {
+          uiLocalIdentity: null,
+          uiHasLockedIdentity: false,
+          clientBalance: null,
+          clientBalanceLoading: false
+        };
+      }
+      const prevId = prev.uiLocalIdentity && prev.uiLocalIdentity.id != null
+        ? String(prev.uiLocalIdentity.id) : '';
+      const nextId = info.id != null ? String(info.id) : '';
+      const prevXpub = prev.uiLocalIdentity && prev.uiLocalIdentity.xpub != null
+        ? String(prev.uiLocalIdentity.xpub) : '';
+      const nextXpub = info.xpub != null ? String(info.xpub) : '';
+      const sameIdentity = !!prev.uiLocalIdentity && prevId === nextId && prevXpub === nextXpub;
+      if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv && !info.xprv && !sameIdentity) {
+        return {};
+      }
+      const hasXprv = !!(info.xprv && String(info.xprv).trim());
+      const passwordProtected = !!info.passwordProtected;
+      const linkedFromDesktop = info.linkedFromDesktop != null
+        ? !!info.linkedFromDesktop
+        : !!(prev.uiLocalIdentity && prev.uiLocalIdentity.linkedFromDesktop);
+      const nextIdentity = {
+        id: info.id,
+        xpub: info.xpub,
+        xprv: hasXprv ? info.xprv : undefined,
+        passwordProtected,
+        linkedFromDesktop
+      };
+      const nextHasLocked = !hasXprv && passwordProtected;
+      if (
+        this._hubIdentityUiSnapshotKey(prev.uiLocalIdentity) === this._hubIdentityUiSnapshotKey(nextIdentity) &&
+        !!prev.uiHasLockedIdentity === !!nextHasLocked
+      ) {
+        return {};
+      }
+      return {
+        uiLocalIdentity: nextIdentity,
+        uiHasLockedIdentity: nextHasLocked
+      };
+    });
+  }
+
+  _handleIdentityManagerLockStateChange (locked) {
+    this.setState((prev) => {
+      if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv) return {};
+      if (!!prev.uiHasLockedIdentity === !!locked) return {};
+      return { uiHasLockedIdentity: !!locked };
+    });
+    if (locked && this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearDecryptedDocuments === 'function') {
+      try {
+        this.bridgeRef.current.clearDecryptedDocuments();
+      } catch (e) {}
+    }
+  }
+
+  _handleIdentityManagerUnlockSuccess (identityInfo) {
+    if (identityInfo && typeof identityInfo === 'object' && (identityInfo.id || identityInfo.xpub)) {
+      const next = {
+        id: identityInfo.id,
+        xpub: identityInfo.xpub,
+        xprv: identityInfo.xprv || undefined,
+        passwordProtected: !!identityInfo.passwordProtected
+      };
+      this.setState({
+        uiLocalIdentity: next,
+        uiHasLockedIdentity: false,
+        uiIdentityOpen: false
+      });
+    } else {
+      this.setState({ uiIdentityOpen: false });
+    }
+  }
+
+  _handleIdentityManagerForget () {
+    try { clearSpendXpubWatch(); } catch (_) {}
+    this.setState({
+      uiLocalIdentity: null,
+      uiHasLockedIdentity: false,
+      clientBalance: null,
+      clientBalanceLoading: false
+    });
+    if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
+      try {
+        this.bridgeRef.current.clearAllDocuments();
+      } catch (e) {}
+    }
+  }
+
+  _openFederationInviteReview () {
+    const d = this.state.federationInviteBannerDetail;
+    if (!d || !d.inviteId) return;
+    this.setState({
+      federationInviteModalOpen: true,
+      federationInviteDetail: d,
+      federationInviteBannerDetail: null
+    });
+  }
+
+  _dismissFederationInviteBanner () {
+    this.setState({ federationInviteBannerDetail: null });
   }
 
   _handleFederationInviteResponse (d) {
@@ -782,14 +899,14 @@ class HubInterface extends React.Component {
       toastify.info('A peer declined your federation contract invite.', { transition: Slide });
       return;
     }
-    const admin = this.state.adminToken || (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('fabric.hub.adminToken'));
+    const admin = this.state.adminToken || (typeof window !== 'undefined' && readStorageString('fabric.hub.adminToken'));
     const pk = d.responderPubkey;
     if (!pk) {
       toastify.warning('Federation invite accepted but no responder pubkey was included.', { transition: Slide });
       return;
     }
     if (!admin) {
-      toastify.info(`Peer accepted federation invite (pubkey ${pk.slice(0, 10)}…). Use an admin session to add them under Settings → Federation.`, { transition: Slide, autoClose: 8000 });
+      toastify.info(`Peer accepted federation invite (pubkey ${pk.slice(0, 10)}…). Add their pubkey under More → Federations (or Settings → Distributed federation).`, { transition: Slide, autoClose: 8000 });
       return;
     }
     const self = this;
@@ -882,7 +999,7 @@ class HubInterface extends React.Component {
       window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
       this._onFabricHubAdminTokenSaved = () => {
         try {
-          const t = window.localStorage && window.localStorage.getItem('fabric.hub.adminToken');
+          const t = readStorageString('fabric.hub.adminToken');
           if (t) this.setState({ adminToken: t });
         } catch (e) {}
       };
@@ -1020,7 +1137,7 @@ class HubInterface extends React.Component {
           xpub: local.xpub,
           passwordProtected: !!local.passwordProtected
         },
-        uiHasLockedIdentity: true
+        uiHasLockedIdentity: !!local.passwordProtected
       });
     } catch (e) {
       console.error('[HUB]', 'Error locking identity:', safeIdentityErr(e));
@@ -1075,6 +1192,76 @@ class HubInterface extends React.Component {
     }
   }
 
+  /**
+   * @param {object} effectiveAuth
+   * @param {object} identity
+   * @param {string} [adminPeerToolsToken] - Hub admin token for operator-only peer tools; omit on `/peers/:id`.
+   */
+  _hubPeerView (effectiveAuth, identity, adminPeerToolsToken) {
+    return (
+      <PeerView
+        auth={effectiveAuth}
+        identity={identity}
+        bridge={this.props.bridge}
+        bridgeRef={this.bridgeRef}
+        onAddPeer={(peer) => {
+          if (!peer || !this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendAddPeerRequest === 'function') {
+            bridgeInstance.sendAddPeerRequest(peer);
+          }
+        }}
+        onRefreshPeers={() => {
+          if (!this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendListPeersRequest === 'function') {
+            bridgeInstance.sendListPeersRequest();
+          }
+          if (typeof bridgeInstance.sendNetworkStatusRequest === 'function') {
+            bridgeInstance.sendNetworkStatusRequest();
+          }
+        }}
+        onDisconnectPeer={(address) => {
+          if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendRemovePeerRequest === 'function') {
+            bridgeInstance.sendRemovePeerRequest(address);
+          }
+        }}
+        onSendPeerMessage={(address, text) => {
+          if (!address || !text || !this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendPeerMessageRequest === 'function') {
+            bridgeInstance.sendPeerMessageRequest(address, text);
+          }
+        }}
+        onFabricPeerResync={(idOrAddress) => {
+          if (!idOrAddress || !this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendFabricPeerResyncRequest === 'function') {
+            bridgeInstance.sendFabricPeerResyncRequest(idOrAddress);
+          }
+        }}
+        onSetPeerNickname={(address, nickname) => {
+          if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendSetPeerNicknameRequest === 'function') {
+            bridgeInstance.sendSetPeerNicknameRequest(address, nickname);
+          }
+        }}
+        onGetPeer={(address) => {
+          if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
+          const bridgeInstance = this.bridgeRef.current;
+          if (typeof bridgeInstance.sendGetPeerRequest === 'function') {
+            bridgeInstance.sendGetPeerRequest(address);
+          }
+        }}
+        {...this.props}
+        adminPeerToolsToken={adminPeerToolsToken}
+      />
+    );
+  }
+
   render () {
     // Prefer Bridge ref (live from WebSocket), then Redux, then local state
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
@@ -1089,6 +1276,12 @@ class HubInterface extends React.Component {
     const effectiveAuth = hasLocal ? local : this.props.auth;
     // Never show "locked" when we have the key in memory
     const effectiveHasLockedIdentity = (local && local.xprv) ? false : this.state.uiHasLockedIdentity;
+    const publicHubVisitor = computePublicHubVisitor({
+      localIdentity: local,
+      propsAuth: this.props.auth
+    });
+    const openIdentityForGate = () => this._openIdentityModalForUser();
+    const pv = (el) => wrapPublicVisitorGate(publicHubVisitor, openIdentityForGate, el);
 
     return (
       <fabric-interface id={this.id} class="fabric-site">
@@ -1121,7 +1314,7 @@ class HubInterface extends React.Component {
               auth={effectiveAuth}
               debug={this.state.debug}
               hubAddress={this.state.uiHubAddress}
-              onRequireUnlock={() => this.setState({ uiIdentityOpen: true })}
+              onRequireUnlock={this.openIdentityModalFromGatedAction}
               onStateUpdate={this.handleBridgeStateUpdate}
               responseCapture={this.responseCapture}
             />
@@ -1132,6 +1325,10 @@ class HubInterface extends React.Component {
               onClose={() => this.setState({ federationInviteModalOpen: false, federationInviteDetail: null })}
               getResponderPubkey={() => {
                 const b = this.bridgeRef && this.bridgeRef.current;
+                if (b && typeof b.getHtlcRefundPublicKeyHex === 'function') {
+                  const pk = b.getHtlcRefundPublicKeyHex();
+                  if (pk) return pk;
+                }
                 return (b && typeof b.getNodePubkey === 'function' && b.getNodePubkey()) || '';
               }}
               onSendPeerMessage={(toPeerId, text) => {
@@ -1140,13 +1337,19 @@ class HubInterface extends React.Component {
               }}
             />
             {(this.props.auth && this.props.auth.loading) ? (
-              <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '0.75em' }}>
                 <Loader active inline="centered" size='huge' />
+                <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>Loading session…</p>
               </div>
             ) : !this.state.setupChecked ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '1em' }}>
                 <Loader active inline="centered" size='large' />
-                <p style={{ color: '#666', margin: 0 }}>Connecting to Hub…</p>
+                <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>
+                  Checking hub configuration…
+                </p>
+                <p style={{ color: '#888', margin: 0, fontSize: '0.9em', textAlign: 'center', maxWidth: '24rem', lineHeight: 1.45 }}>
+                  Fetching setup status from this hub (not the WebSocket path).
+                </p>
               </div>
             ) : this.state.needsSetup ? (
               <Onboarding
@@ -1158,11 +1361,11 @@ class HubInterface extends React.Component {
                       adminTokenExpiresAt: result.expiresAt,
                       needsSetup: false
                     });
-                    if (typeof window !== 'undefined' && window.localStorage) {
+                    if (typeof window !== 'undefined') {
                       try {
-                        window.localStorage.setItem('fabric.hub.adminToken', result.token);
+                        writeStorageString('fabric.hub.adminToken', result.token);
                         if (result.expiresAt != null) {
-                          window.localStorage.setItem('fabric.hub.adminTokenExpiresAt', String(result.expiresAt));
+                          writeStorageString('fabric.hub.adminTokenExpiresAt', String(result.expiresAt));
                         }
                       } catch (e) {}
                     }
@@ -1186,13 +1389,12 @@ class HubInterface extends React.Component {
                   localIdentity={local}
                   hasLocalIdentity={!!hasLocal}
                   hasLockedIdentity={effectiveHasLockedIdentity}
+                  publicHubVisitor={publicHubVisitor}
                   bitcoin={bitcoin}
                   clientBalance={this.state.clientBalance}
                   clientBalanceLoading={this.state.clientBalanceLoading}
                   onRefreshBalance={() => this._refreshClientBalance(true)}
-                  onUnlockIdentity={() => {
-                    this.setState({ uiIdentityOpen: true });
-                  }}
+                  onUnlockIdentity={() => this._openIdentityModalForUser()}
                   onLockIdentity={() => this._handleLockIdentity()}
                   onLogin={this.requestLogin}
                   onManageIdentity={this.openIdentityManager}
@@ -1207,89 +1409,35 @@ class HubInterface extends React.Component {
                     });
                   }}
                 />
+                <HubAlertStackLocationGate adminToken={this.state.adminToken} />
+                {publicHubVisitor ? null : (
+                  <FederationInviteNotificationBanner
+                    detail={this.state.federationInviteBannerDetail}
+                    onReview={this._openFederationInviteReview}
+                    onDismiss={this._dismissFederationInviteBanner}
+                  />
+                )}
 
                 <Modal
                   size="large"
+                  closeOnDimmerClick={false}
+                  closeOnEscape={false}
                   open={!!this.state.uiIdentityOpen}
                   onClose={() => this.setState({ uiIdentityOpen: false })}
+                  aria-labelledby="fabric-identity-modal-heading"
                 >
                   <Modal.Content scrolling>
                     <IdentityManager
-                      key={this.state.uiIdentityOpen ? 'open' : 'closed'}
+                      key="fabric-identity-manager"
                       currentIdentity={this.state.uiLocalIdentity}
-                      onLocalIdentityChange={(info) => {
-                        this.setState((prev) => {
-                          if (!info) {
-                            try { clearSpendXpubWatch(); } catch (_) {}
-                            return {
-                              uiLocalIdentity: null,
-                              uiHasLockedIdentity: false,
-                              clientBalance: null,
-                              clientBalanceLoading: false
-                            };
-                          }
-                          // Never replace an unlocked identity (have xprv) with a locked one from the modal
-                          if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv && !info.xprv) {
-                            return {};
-                          }
-                          return {
-                            uiLocalIdentity: {
-                              id: info.id,
-                              xpub: info.xpub,
-                              xprv: info.xprv || undefined,
-                              passwordProtected: !!info.passwordProtected
-                            }
-                          };
-                        });
-                      }}
-                      onLockStateChange={(locked) => {
-                        this.setState((prev) => {
-                          // Never mark locked if we still have the key in memory
-                          if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv) return {};
-                          return { uiHasLockedIdentity: !!locked };
-                        });
-                        // When locking identity, wipe any decrypted document content
-                        // while preserving encrypted blobs, so re-unlocking is required
-                        // to view protected documents again.
-                        if (locked && this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearDecryptedDocuments === 'function') {
-                          try {
-                            this.bridgeRef.current.clearDecryptedDocuments();
-                          } catch (e) {}
-                        }
-                      }}
-                      onUnlockSuccess={(identityInfo) => {
-                        if (identityInfo && typeof identityInfo === 'object' && (identityInfo.id || identityInfo.xpub)) {
-                          const next = {
-                            id: identityInfo.id,
-                            xpub: identityInfo.xpub,
-                            xprv: identityInfo.xprv || undefined,
-                            passwordProtected: !!identityInfo.passwordProtected
-                          };
-                          this.setState({
-                            uiLocalIdentity: next,
-                            uiHasLockedIdentity: false,
-                            uiIdentityOpen: false
-                          });
-                        } else {
-                          this.setState({ uiIdentityOpen: false });
-                        }
-                      }}
-                      onForgetIdentity={() => {
-                        try { clearSpendXpubWatch(); } catch (_) {}
-                        this.setState({
-                          uiLocalIdentity: null,
-                          uiHasLockedIdentity: false,
-                          clientBalance: null,
-                          clientBalanceLoading: false
-                        });
-                        if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
-                          this.bridgeRef.current.clearAllDocuments();
-                        }
-                      }}
+                      onLocalIdentityChange={this._handleIdentityManagerLocalChange}
+                      onLockStateChange={this._handleIdentityManagerLockStateChange}
+                      onUnlockSuccess={this._handleIdentityManagerUnlockSuccess}
+                      onForgetIdentity={this._handleIdentityManagerForget}
                     />
                   </Modal.Content>
                   <Modal.Actions>
-                    <Button basic onClick={() => this.setState({ uiIdentityOpen: false })}>
+                    <Button basic onClick={this._closeHubIdentityModal}>
                       Close
                     </Button>
                   </Modal.Actions>
@@ -1338,8 +1486,8 @@ class HubInterface extends React.Component {
                         }
 
                         try {
-                          if (typeof window !== 'undefined' && window.localStorage) {
-                            window.localStorage.setItem('fabric.hub.address', raw);
+                          if (typeof window !== 'undefined') {
+                            writeStorageString('fabric.hub.address', raw);
                           }
                         } catch (e) {}
 
@@ -1561,13 +1709,11 @@ class HubInterface extends React.Component {
                         }
                         try {
                           if (typeof window !== 'undefined') {
-                            if (window.localStorage) window.localStorage.removeItem('fabric.identity.local');
-                            if (window.localStorage) {
-                              window.localStorage.removeItem(DELEGATION_STORAGE_KEY);
-                              notifyDelegationStorageChanged();
-                            }
+                            removeStorageKey('fabric.identity.local');
+                            removeStorageKey(DELEGATION_STORAGE_KEY);
+                            notifyDelegationStorageChanged();
                             if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
-                            if (window.localStorage) window.localStorage.removeItem('fabric:documents');
+                            removeStorageKey('fabric:documents');
                           }
                         } catch (e) {}
                         this.setState({
@@ -1591,6 +1737,7 @@ class HubInterface extends React.Component {
                     element={(
                       <Home
                         auth={effectiveAuth}
+                        publicHubVisitor={publicHubVisitor}
                         fetchContract={this.props.fetchContract}
                         contracts={this.props.contracts}
                         bridge={this.props.bridge}
@@ -1643,9 +1790,7 @@ class HubInterface extends React.Component {
                             bridgeInstance.setWebRTCChatOnly(flag);
                           }
                         }}
-                        onRequireUnlock={() => {
-                          this.setState({ uiIdentityOpen: true });
-                        }}
+                        onRequireUnlock={this.openIdentityModalFromGatedAction}
                         onRefreshNetworkStatus={() => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
@@ -1669,22 +1814,29 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/activities"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="activities">
                         <ActivitiesHome
                           bridge={this.props.bridge}
                           bridgeRef={this.bridgeRef}
                           adminToken={this.state.adminToken}
-                          onRequireUnlock={() => {
-                            this.setState({ uiIdentityOpen: true });
-                          }}
+                          identity={local || effectiveAuth}
+                          onRequireUnlock={this.openIdentityModalFromGatedAction}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
+                  />
+                  <Route
+                    path="/notifications"
+                    element={pv((
+                      <UiFlagRoute flag="activities">
+                        <NotificationsHome />
+                      </UiFlagRoute>
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin"
-                    element={(
+                    element={pv((
                       <BitcoinHomeWithNav
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -1694,11 +1846,12 @@ class HubInterface extends React.Component {
                         bitcoinPage="dashboard"
                         {...this.props}
                       />
-                    )}
+                    ))}
                   />
+                  <Route path="/services/payjoin" element={<NavigatePayjoinSpaAlias />} />
                   <Route
                     path="/services/bitcoin/blocks"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinExplorer">
                         <BitcoinBlockList
                           auth={effectiveAuth}
@@ -1710,11 +1863,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/faucet"
-                    element={(
+                    element={pv((
                       <FaucetHome
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -1724,11 +1877,11 @@ class HubInterface extends React.Component {
                         adminToken={this.state.adminToken}
                         {...this.props}
                       />
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/transactions"
-                    element={(
+                    element={pv((
                       <BitcoinTransactionsHome
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -1738,11 +1891,11 @@ class HubInterface extends React.Component {
                         adminToken={this.state.adminToken}
                         {...this.props}
                       />
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/blocks/:blockhash"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinExplorer">
                         <BitcoinBlockView
                           auth={effectiveAuth}
@@ -1752,11 +1905,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/resources"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinResources">
                         <BitcoinResourcesHome
                           auth={effectiveAuth}
@@ -1767,11 +1920,15 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/payments"
-                    element={(
+                    element={<NavigatePaymentsLegacyToCanonical />}
+                  />
+                  <Route
+                    path="/payments"
+                    element={pv((
                       <UiFlagRoute flag="bitcoinPayments">
                         <BitcoinPaymentsHomeRoute
                           auth={effectiveAuth}
@@ -1783,11 +1940,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/crowdfunds"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinCrowdfund">
                         <CrowdfundingHome
                           auth={effectiveAuth}
@@ -1796,15 +1953,15 @@ class HubInterface extends React.Component {
                           bridge={this.props.bridge}
                           bridgeRef={this.bridgeRef}
                           adminToken={this.state.adminToken}
-                          onRequireUnlock={() => this.setState({ uiIdentityOpen: true })}
+                          onRequireUnlock={this.openIdentityModalFromGatedAction}
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/invoices"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinInvoices">
                         <InvoiceListHomeRoute
                           auth={effectiveAuth}
@@ -1816,11 +1973,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/lightning"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinLightning">
                         <LightningHome
                           auth={effectiveAuth}
@@ -1832,11 +1989,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/lightning"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinLightning">
                         <LightningHome
                           auth={effectiveAuth}
@@ -1848,11 +2005,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/transactions/:txhash"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinExplorer">
                         <BitcoinTransactionView
                           auth={effectiveAuth}
@@ -1862,11 +2019,11 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/bitcoin/channels/:id"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="bitcoinLightning">
                         <ChannelView
                           auth={effectiveAuth}
@@ -1874,7 +2031,7 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/services/sidechain"
@@ -1894,7 +2051,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/sidechains"
-                    element={(
+                    element={pv((
                       <UiFlagRoute flag="sidechain">
                         <SidechainHome
                           auth={effectiveAuth}
@@ -1905,12 +2062,12 @@ class HubInterface extends React.Component {
                           {...this.props}
                         />
                       </UiFlagRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/peers"
-                    element={(
-                      <PeersAdminRoute adminToken={this.state.adminToken}>
+                    element={pv((
+                      <PeersFeatureRoute>
                         <PeerList
                         auth={effectiveAuth}
                         bridge={this.props.bridge}
@@ -2007,77 +2164,41 @@ class HubInterface extends React.Component {
                             });
                           }
                         }}
+                        adminPeerToolsToken={
+                          this.state.adminToken
+                          || (typeof window !== 'undefined' ? readStorageString('fabric.hub.adminToken') : '')
+                          || ''
+                        }
+                        onSendFlushChainToTrustedPeers={(body) => {
+                          const t = this.state.adminToken
+                            || (typeof window !== 'undefined' ? readStorageString('fabric.hub.adminToken') : '')
+                            || '';
+                          if (!t || !body || !this.bridgeRef || !this.bridgeRef.current) return;
+                          const bridgeInstance = this.bridgeRef.current;
+                          if (typeof bridgeInstance.sendFlushChainToTrustedPeersRequest === 'function') {
+                            bridgeInstance.sendFlushChainToTrustedPeersRequest(body, t);
+                          }
+                        }}
                         {...this.props}
                       />
-                      </PeersAdminRoute>
-                    )}
+                      </PeersFeatureRoute>
+                    ))}
                   />
                   <Route
                     path="/peers/:id"
-                    element={(
-                      <PeersAdminRoute adminToken={this.state.adminToken}>
-                        <PeerView
-                        auth={effectiveAuth}
-                        identity={local || effectiveAuth}
-                        bridge={this.props.bridge}
-                        bridgeRef={this.bridgeRef}
-                        onAddPeer={(peer) => {
-                          if (!peer || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendAddPeerRequest === 'function') {
-                            bridgeInstance.sendAddPeerRequest(peer);
-                          }
-                        }}
-                        onRefreshPeers={() => {
-                          if (!this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendListPeersRequest === 'function') {
-                            bridgeInstance.sendListPeersRequest();
-                          }
-                          if (typeof bridgeInstance.sendNetworkStatusRequest === 'function') {
-                            bridgeInstance.sendNetworkStatusRequest();
-                          }
-                        }}
-                        onDisconnectPeer={(address) => {
-                          if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendRemovePeerRequest === 'function') {
-                            bridgeInstance.sendRemovePeerRequest(address);
-                          }
-                        }}
-                        onSendPeerMessage={(address, text) => {
-                          if (!address || !text || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendPeerMessageRequest === 'function') {
-                            bridgeInstance.sendPeerMessageRequest(address, text);
-                          }
-                        }}
-                        onFabricPeerResync={(idOrAddress) => {
-                          if (!idOrAddress || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendFabricPeerResyncRequest === 'function') {
-                            bridgeInstance.sendFabricPeerResyncRequest(idOrAddress);
-                          }
-                        }}
-                        onSetPeerNickname={(address, nickname) => {
-                          if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendSetPeerNicknameRequest === 'function') {
-                            bridgeInstance.sendSetPeerNicknameRequest(address, nickname);
-                          }
-                        }}
-                        onGetPeer={(address) => {
-                          if (!address || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendGetPeerRequest === 'function') {
-                            bridgeInstance.sendGetPeerRequest(address);
-                          }
-                        }}
-                        {...this.props}
-                        adminToken={this.state.adminToken}
-                      />
-                      </PeersAdminRoute>
-                    )}
+                    element={pv((
+                      <PeersFeatureRoute>
+                        {this._hubPeerView(effectiveAuth, local || effectiveAuth, undefined)}
+                      </PeersFeatureRoute>
+                    ))}
+                  />
+                  <Route
+                    path="/settings/admin/peers/:id"
+                    element={pv((
+                      <PeersFeatureRoute>
+                        {this._hubPeerView(effectiveAuth, local || effectiveAuth, this.state.adminToken)}
+                      </PeersFeatureRoute>
+                    ))}
                   />
                   <Route
                     path="/documents"
@@ -2085,6 +2206,7 @@ class HubInterface extends React.Component {
                       <DocumentList
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
+                        identity={local || effectiveAuth}
                         onListDocuments={() => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
@@ -2130,9 +2252,7 @@ class HubInterface extends React.Component {
                             typeof bridgeInstance.hasDocumentEncryptionKey === 'function' &&
                             bridgeInstance.hasDocumentEncryptionKey())
                         }
-                        onRequestUnlock={() => {
-                          this.setState({ uiIdentityOpen: true });
-                        }}
+                        onRequestUnlock={this.openIdentityModalFromGatedAction}
                         onGetDocument={(id) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
@@ -2218,16 +2338,32 @@ class HubInterface extends React.Component {
                     element={<AdminHome adminToken={this.state.adminToken} />}
                   />
                   <Route
-                    path="/settings/federation"
+                    path="/federation"
                     element={(
                       <UiFlagRoute flag="sidechain">
-                        <SettingsFederationHome adminToken={this.state.adminToken} />
+                        <Navigate to="/federations" replace />
                       </UiFlagRoute>
                     )}
                   />
                   <Route
+                    path="/federations"
+                    element={pv((
+                      <UiFlagRoute flag="sidechain">
+                        <FederationsHome adminToken={this.state.adminToken} bridgeRef={this.bridgeRef} />
+                      </UiFlagRoute>
+                    ))}
+                  />
+                  <Route
+                    path="/settings/federation"
+                    element={pv((
+                      <UiFlagRoute flag="sidechain">
+                        <SettingsFederationHome adminToken={this.state.adminToken} bridgeRef={this.bridgeRef} />
+                      </UiFlagRoute>
+                    ))}
+                  />
+                  <Route
                     path="/settings/bitcoin-wallet"
-                    element={<SettingsBitcoinWallet identity={local || effectiveAuth} />}
+                    element={pv(<SettingsBitcoinWallet identity={local || effectiveAuth} />)}
                   />
                   <Route
                     path="/settings/security"
@@ -2286,14 +2422,6 @@ class HubInterface extends React.Component {
                     element={<Navigate to="/services/bitcoin" replace />}
                   />
                   <Route
-                    path="/payments"
-                    element={(
-                      <UiFlagRoute flag="bitcoinPayments">
-                        <Navigate to="/services/bitcoin/payments" replace />
-                      </UiFlagRoute>
-                    )}
-                  />
-                  <Route
                     path="/crowdfunds"
                     element={(
                       <UiFlagRoute flag="bitcoinCrowdfund">
@@ -2335,19 +2463,19 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/contracts"
-                    element={(
-                      <ContractList {...this.props} />
-                    )}
+                    element={pv(<ContractList {...this.props} />)}
                   />
                   <Route
                     path="/contracts/:id"
-                    element={(
-                      <ContractView {...this.props} adminToken={this.state.adminToken} />
-                    )}
+                    element={pv(<ContractView {...this.props} adminToken={this.state.adminToken} />)}
                   />
                   <Route path="*" element={<UnknownRouteShell />} />
                 </Routes>
-                <BottomPanel pubkey={nodePubkey} adminToken={this.state.adminToken} />
+                <BottomPanel
+                  pubkey={nodePubkey}
+                  adminToken={this.state.adminToken}
+                  publicHubVisitor={publicHubVisitor}
+                />
               </BrowserRouter>
             )}
           </fabric-react-component>

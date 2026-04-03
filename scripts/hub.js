@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 
+require('../functions/patchLinkedFabricNodePath');
+
 // Settings
 let settings = require('../settings/local');
 
@@ -22,7 +24,11 @@ const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const _hubDebugLog = installHubDebugFileLog({ userDataRoot });
 if (_hubDebugLog.active && _hubDebugLog.filePath) {
-  console.log('[FABRIC:HUB] ERROR/WARN mirror →', _hubDebugLog.filePath, '(FABRIC_HUB_DEBUG_LOG=0 off, =all unfiltered)');
+  console.log(
+    '[FABRIC:HUB] ERROR/WARN mirror →',
+    _hubDebugLog.filePath,
+    '(FABRIC_HUB_DEBUG_LOG=0 off, =all unfiltered; FABRIC_HUB_DEBUG_LOG_MAX_BYTES rotates, 0=unlimited)'
+  );
 }
 
 function bitcoinDataDirForNetwork (root, network) {
@@ -100,6 +106,28 @@ try {
   }
 } catch (e) {
   // Ignore; use defaults from local.js
+}
+
+// Explicit Bitcoin env wins over first-time setup (e.g. `npm run start:mainnet-local` while settings.json still says regtest).
+if (process.env.FABRIC_BITCOIN_NETWORK && String(process.env.FABRIC_BITCOIN_NETWORK).trim()) {
+  settings = {
+    ...settings,
+    bitcoin: {
+      ...settings.bitcoin,
+      network: String(process.env.FABRIC_BITCOIN_NETWORK).trim()
+    }
+  };
+}
+if (Object.prototype.hasOwnProperty.call(process.env, 'FABRIC_BITCOIN_MANAGED') && String(process.env.FABRIC_BITCOIN_MANAGED).trim() !== '') {
+  const v = String(process.env.FABRIC_BITCOIN_MANAGED).toLowerCase();
+  const managed = v !== 'false' && v !== '0';
+  settings = {
+    ...settings,
+    bitcoin: {
+      ...settings.bitcoin,
+      managed
+    }
+  };
 }
 
 // Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.json.

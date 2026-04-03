@@ -26,6 +26,8 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const HubPagination = require('./HubPagination');
+const { useHubListPagination } = require('../functions/hubListPagination');
 
 const FILTER_ALL = 'all';
 const FILTER_NEW = 'new';
@@ -313,6 +315,28 @@ function ContractList () {
     });
   }, [storageContracts, contractsByDoc, filter]);
 
+  const storageContractsResetKey = `${filter}:${filteredContracts.length}:${filteredContracts[0] && filteredContracts[0].id}:${filteredContracts[filteredContracts.length - 1] && filteredContracts[filteredContracts.length - 1].id}`;
+  const {
+    slice: storageContractsSlice,
+    page: storageListActivePage,
+    totalPages: storageTotalPages,
+    rangeFrom: storageRangeFrom,
+    rangeTo: storageRangeTo,
+    total: storageListTotal,
+    setPage: setStorageListPage
+  } = useHubListPagination(filteredContracts, storageContractsResetKey);
+
+  const executionResetKey = `${executionContracts.length}:${executionContracts[0] && executionContracts[0].id}:${executionContracts[executionContracts.length - 1] && executionContracts[executionContracts.length - 1].id}`;
+  const {
+    slice: executionContractsSlice,
+    page: executionListActivePage,
+    totalPages: executionTotalPages,
+    rangeFrom: executionRangeFrom,
+    rangeTo: executionRangeTo,
+    total: executionListTotal,
+    setPage: setExecutionListPage
+  } = useHubListPagination(executionContracts, executionResetKey);
+
   const requestExecutionRegistryInvoice = React.useCallback(async () => {
     setExecFeedback(null);
     if (execBitcoinLoading) {
@@ -433,7 +457,7 @@ function ContractList () {
         const needsPayHelp = /bitcoin is enabled|l1 payment verification failed|registry invoice|pay the invoice/i.test(msg);
         const payHint = loadHubUiFeatureFlags().bitcoinPayments ? (
           <span>
-            Pay from <Link to="/services/bitcoin/payments">Payments</Link> (regtest + admin token) or another wallet, then paste the funding txid and publish again.
+            Pay from <Link to="/payments">Payments</Link> (regtest + admin token) or another wallet, then paste the funding txid and publish again.
           </span>
         ) : (
           <span>
@@ -501,18 +525,21 @@ function ContractList () {
     <fabric-contracts class='fade-in'>
       <Segment>
         <section aria-labelledby="contracts-page-heading">
-        <div
-          style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
-          role="banner"
-        >
-          <Button basic size="small" as={Link} to="/" aria-label="Back to home">
-            <Icon name="arrow left" aria-hidden="true" />
-            Home
-          </Button>
-          <Header as="h2" id="contracts-page-heading" style={{ margin: 0 }}>
-            <Header.Content>Contracts</Header.Content>
-          </Header>
-        </div>
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.35em' }}
+            role="banner"
+          >
+            <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+              <Icon name="arrow left" aria-hidden="true" />
+              Home
+            </Button>
+            <Header as="h2" id="contracts-page-heading" style={{ margin: 0 }}>
+              <Header.Content>Contracts</Header.Content>
+            </Header>
+          </div>
+          <p style={{ margin: '0 0 1em', maxWidth: '48rem', lineHeight: 1.55, color: '#555' }}>
+            Bitcoin enables the automatic enforcement of financial contracts. Many forms of contract exist, from simple multi-user authentication to robust time-limited payouts.
+          </p>
         </section>
 
         <Segment>
@@ -538,7 +565,7 @@ function ContractList () {
               <section aria-labelledby="contracts-crowdfund-h4" aria-describedby="contracts-crowdfund-intro">
               <Header as="h4" id="contracts-crowdfund-h4">
                 <Icon name="heart outline" color="red" aria-hidden="true" />
-                Taproot crowdfunds (this hub)
+                Crowdfunds
               </Header>
               <div id="contracts-crowdfund-intro">
                 <Message info size="small" style={{ marginBottom: '1em' }}>
@@ -658,7 +685,7 @@ function ContractList () {
                 </ButtonGroup>
               </div>
               <List divided relaxed>
-              {filteredContracts.map((c) => {
+              {storageContractsSlice.map((c) => {
                 if (!c || !c.id) return null;
                 const created = c.created ? new Date(c.created).toLocaleString() : '';
                 const docContracts = contractsByDoc[c.document] || [];
@@ -719,6 +746,29 @@ function ContractList () {
                 </List.Item>
               )}
             </List>
+            {storageListTotal > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '0.5em',
+                  marginTop: '0.75em'
+                }}
+              >
+                <span style={{ color: '#666', fontSize: '0.88em' }}>
+                  Showing {storageRangeFrom}–{storageRangeTo} of {storageListTotal}
+                </span>
+                <HubPagination
+                  activePage={storageListActivePage}
+                  totalPages={storageTotalPages}
+                  onPageChange={(e, d) => setStorageListPage(d.activePage)}
+                  disabled={loading}
+                  style={{ marginTop: 0, flex: '1 1 auto', minWidth: 0 }}
+                />
+              </div>
+            )}
               </section>
 
               <section aria-labelledby="contracts-execution-h4" aria-describedby="contracts-execution-desc">
@@ -754,7 +804,7 @@ function ContractList () {
                   <p style={{ margin: '0.35em 0 0', color: '#444' }}>
                     Use <strong>Request registry invoice</strong>, pay on-chain (e.g. from{' '}
                     {uf.bitcoinPayments ? (
-                      <Link to="/services/bitcoin/payments">Payments</Link>
+                      <Link to="/payments">Payments</Link>
                     ) : (
                       <span>Payments (enable Bitcoin — Payments in Admin → Feature visibility)</span>
                     )}
@@ -915,7 +965,7 @@ function ContractList () {
                 </div>
               </Form>
               <List divided relaxed>
-                {executionContracts.map((c) => {
+                {executionContractsSlice.map((c) => {
                   if (!c || !c.id) return null;
                   const created = c.created ? new Date(c.created).toLocaleString() : '';
                   const stepCount = c.program && Array.isArray(c.program.steps) ? c.program.steps.length : null;
@@ -981,6 +1031,29 @@ function ContractList () {
                   </List.Item>
                 )}
               </List>
+              {executionListTotal > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '0.5em',
+                    marginTop: '0.75em'
+                  }}
+                >
+                  <span style={{ color: '#666', fontSize: '0.88em' }}>
+                    Showing {executionRangeFrom}–{executionRangeTo} of {executionListTotal}
+                  </span>
+                  <HubPagination
+                    activePage={executionListActivePage}
+                    totalPages={executionTotalPages}
+                    onPageChange={(e, d) => setExecutionListPage(d.activePage)}
+                    disabled={loading}
+                    style={{ marginTop: 0, flex: '1 1 auto', minWidth: 0 }}
+                  />
+                </div>
+              )}
               </section>
             </>
           )}
