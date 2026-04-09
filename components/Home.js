@@ -580,7 +580,6 @@ class Home extends React.Component {
               Global chat
             </Header>
             <p style={{ color: '#666', marginTop: '-0.25em', marginBottom: '0.75em' }}>
-              Hub-wide chat (same stream as the activity log).{' '}
               {uf.activities ? (
                 <>
                   <Link to="/notifications">Notifications</Link>

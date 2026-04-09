@@ -11,6 +11,7 @@ const {
   Header,
   Icon,
   Label,
+  Popup,
   Segment
 } = require('semantic-ui-react');
 const { formatSatsDisplay } = require('../functions/formatSats');
@@ -123,8 +124,62 @@ function TopPanel (props) {
   const balanceHoverRefreshAtRef = React.useRef(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
   const uiFlags = loadHubUiFeatureFlags();
+  const isAdvancedMode = !!uiFlags.advancedMode;
   void uiTick;
   const balanceChipHref = '/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel';
+  const depositFlowHref = uiFlags.bitcoinPayments
+    ? '/payments#fabric-btc-request-payment-h4'
+    : '/services/bitcoin';
+  const withdrawFlowHref = uiFlags.bitcoinPayments
+    ? '/payments#fabric-btc-make-payment-h4'
+    : balanceChipHref;
+  const chipBalanceSats = Number(clientBalance && clientBalance.balanceSats);
+  const hasSpendableChipBalance = Number.isFinite(chipBalanceSats) && chipBalanceSats > 0;
+  const walletChipMenu = (
+    <div className="fade-in" style={{ padding: '0.5em', maxWidth: '22rem' }}>
+      <p style={{ marginBottom: '0.65em', fontSize: '0.9em', lineHeight: 1.45 }}>
+        Open wallet flows quickly from here.
+      </p>
+      <Button
+        as={Link}
+        to={balanceChipHref}
+        fluid
+        size="small"
+        icon
+        labelPosition="right"
+        style={{ marginBottom: '0.5em' }}
+      >
+        <Icon name="wallet" />
+        Wallet
+      </Button>
+      <Button
+        as={Link}
+        to={depositFlowHref}
+        color="green"
+        fluid
+        size="small"
+        icon
+        labelPosition="right"
+        style={{ marginBottom: '0.5em' }}
+      >
+        <Icon name="download" />
+        Deposit
+      </Button>
+      <Button
+        as={Link}
+        to={withdrawFlowHref}
+        color="black"
+        fluid
+        size="small"
+        icon
+        labelPosition="right"
+        disabled={showLiveBalanceInChip && !hasSpendableChipBalance}
+      >
+        <Icon name="right chevron" />
+        Withdraw
+      </Button>
+    </div>
+  );
 
   React.useEffect(() => {
     const sync = () => setNotifList(readUiNotifications());
@@ -168,7 +223,7 @@ function TopPanel (props) {
             <Icon name="home" />
             Home
           </Button>
-          {uiFlags.peers && !publicHubVisitor ? (
+          {isAdvancedMode && uiFlags.peers && !publicHubVisitor ? (
             <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')} aria-current={active('/peers') ? 'page' : undefined}>
               <Icon name="sitemap" />
               Peers
@@ -178,14 +233,14 @@ function TopPanel (props) {
             <Icon name="file outline" />
             Documents
           </Button>
-          {!publicHubVisitor ? (
+          {!publicHubVisitor && isAdvancedMode ? (
             <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')} aria-current={active('/contracts') ? 'page' : undefined}>
               <Icon name="file code" />
               Contracts
             </Button>
           ) : null}
         </Button.Group>
-        {!publicHubVisitor ? (
+        {!publicHubVisitor && isAdvancedMode ? (
         <Dropdown
           item
           trigger={
@@ -325,7 +380,7 @@ function TopPanel (props) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        {showSignedInControls ? (
+        {showSignedInControls && isAdvancedMode ? (
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <Button
               as={Link}
@@ -364,57 +419,63 @@ function TopPanel (props) {
           </div>
         ) : null}
         {(showSignedInControls || isLockedState) ? (
-          <Label
-            as={Link}
-            to={balanceChipHref}
-            size="small"
-            basic
-            aria-label={
-              !showLiveBalanceInChip
-                ? (isPasswordLocked
-                    ? 'Wallet — unlock identity to show balance'
-                    : isWatchOnlyIdentity
-                      ? 'Wallet — open Bitcoin transactions (watch-only)'
-                      : 'Wallet — log in to track balance')
-                : clientBalanceLoading && clientBalance == null
-                  ? 'Wallet — loading balance'
-                  : 'Wallet — browser balance; opens transactions with federation multisig tools'
-            }
-            title={
-              !showLiveBalanceInChip
-                ? (isPasswordLocked
-                    ? 'Unlock your identity to show your browser wallet balance here'
-                    : isWatchOnlyIdentity
-                      ? 'Import a full key or unlock to track your browser wallet balance'
-                      : 'Log in or set a local identity to track your browser wallet balance')
-                : clientBalanceLoading && clientBalance == null
-                  ? 'Loading your browser wallet balance…'
-                  : 'Your browser wallet balance — hover to refresh; click opens Wallet (federation vault & tagged sends at top, activity below)'
-            }
-            style={{ cursor: 'pointer' }}
-            onMouseEnter={() => {
-              if (!onRefreshBalance || !showLiveBalanceInChip) return;
-              const now = Date.now();
-              if (now - balanceHoverRefreshAtRef.current < 8000) return;
-              balanceHoverRefreshAtRef.current = now;
-              try {
-                onRefreshBalance();
-              } catch (_) {}
-            }}
-          >
-            <Icon name="bitcoin" color={showLiveBalanceInChip ? 'orange' : 'grey'} />
-            {!showLiveBalanceInChip
-              ? (isPasswordLocked ? 'Unlock for balance' : 'Wallet')
-              : (clientBalanceLoading && clientBalance == null
-                  ? '…'
-                  : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
-                      ? (clientBalance.balanceSats >= 100000000
-                          ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
-                          : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
-                      : '—'))}
-          </Label>
+          <Popup
+            on="hover"
+            hoverable
+            position="bottom center"
+            trigger={(
+              <Label
+                size="small"
+                basic
+                aria-label={
+                  !showLiveBalanceInChip
+                    ? (isPasswordLocked
+                        ? 'Wallet — unlock identity to show balance'
+                        : isWatchOnlyIdentity
+                          ? 'Wallet — open Bitcoin transactions (watch-only)'
+                          : 'Wallet — log in to track balance')
+                    : clientBalanceLoading && clientBalance == null
+                      ? 'Wallet — loading balance'
+                      : 'Wallet — browser balance; opens wallet menu'
+                }
+                title={
+                  !showLiveBalanceInChip
+                    ? (isPasswordLocked
+                        ? 'Unlock your identity to show your browser wallet balance here'
+                        : isWatchOnlyIdentity
+                          ? 'Import a full key or unlock to track your browser wallet balance'
+                          : 'Log in or set a local identity to track your browser wallet balance')
+                    : clientBalanceLoading && clientBalance == null
+                      ? 'Loading your browser wallet balance…'
+                      : 'Hover for wallet actions: open wallet, deposit, or withdraw'
+                }
+                style={{ cursor: 'pointer' }}
+                onMouseEnter={() => {
+                  if (!onRefreshBalance || !showLiveBalanceInChip) return;
+                  const now = Date.now();
+                  if (now - balanceHoverRefreshAtRef.current < 8000) return;
+                  balanceHoverRefreshAtRef.current = now;
+                  try {
+                    onRefreshBalance();
+                  } catch (_) {}
+                }}
+              >
+                <Icon name="bitcoin" color={showLiveBalanceInChip ? 'orange' : 'grey'} />
+                {!showLiveBalanceInChip
+                  ? (isPasswordLocked ? 'Unlock for balance' : 'Wallet')
+                  : (clientBalanceLoading && clientBalance == null
+                      ? '…'
+                      : (clientBalance != null && Number.isFinite(clientBalance.balanceSats)
+                          ? (clientBalance.balanceSats >= 100000000
+                              ? `${(clientBalance.balanceSats / 100000000).toFixed(4)} BTC`
+                              : `${formatSatsDisplay(clientBalance.balanceSats)} sats`)
+                          : '—'))}
+              </Label>
+            )}
+            content={walletChipMenu}
+          />
         ) : null}
-        {!publicHubVisitor && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
+        {!publicHubVisitor && isAdvancedMode && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
           <Label
             as={Link}
             to="/services/bitcoin"
@@ -451,14 +512,16 @@ function TopPanel (props) {
                   title="Hub WebSocket URL and bridge options"
                 />
                 <Dropdown.Divider />
-                <Dropdown.Item
-                  icon="lock"
-                  text="Lock identity"
-                  onClick={() => {
-                    if (!onLockIdentity) return;
-                    onLockIdentity();
-                  }}
-                />
+                {localIdentity && localIdentity.passwordProtected ? (
+                  <Dropdown.Item
+                    icon="lock"
+                    text="Lock identity"
+                    onClick={() => {
+                      if (!onLockIdentity) return;
+                      onLockIdentity();
+                    }}
+                  />
+                ) : null}
                 <Dropdown.Divider />
                 <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>
@@ -495,18 +558,18 @@ function TopPanel (props) {
             {isPasswordLocked ? 'Locked' : isWatchOnlyIdentity ? 'Watch-only' : identityLabel}
           </Button>
         )}
-        {!isAuthed && (
+        {onOpenSettings ? (
           <Button
             size="small"
             basic
             icon
-            title="Settings"
+            title="Settings and UI mode"
             aria-label="Open settings"
             onClick={() => onOpenSettings && onOpenSettings()}
           >
             <Icon name="cog" aria-hidden="true" />
           </Button>
-        )}
+        ) : null}
       </div>
     </Segment>
   );

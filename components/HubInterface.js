@@ -20,6 +20,7 @@ const {
 } = require('../functions/fabricBrowserState');
 const {
   loadHubUiFeatureFlags,
+  setHubUiFeatureFlag,
   subscribeHubUiFeatureFlags,
   fetchPersistedHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
@@ -608,6 +609,7 @@ class HubInterface extends React.Component {
       uiSettingsOpen: false,
       uiHubAddress: initialHubAddress,
       uiHubAddressDraft: initialHubAddress,
+      uiAdvancedModeDraft: !!loadHubUiFeatureFlags().advancedMode,
       uiHubAddressError: null,
       uiIdentityOpen: false,
       uiSignMessageOpen: false,
@@ -1123,7 +1125,7 @@ class HubInterface extends React.Component {
 
   _handleLockIdentity () {
     const local = this.state.uiLocalIdentity;
-    if (!local || !local.xprv) return;
+    if (!local || !local.xprv || !local.passwordProtected) return;
     try {
       if (typeof window !== 'undefined' && window.sessionStorage) {
         window.sessionStorage.removeItem('fabric.identity.unlocked');
@@ -1402,9 +1404,11 @@ class HubInterface extends React.Component {
                   onSignMessage={() => this.setState({ uiSignMessageOpen: true })}
                   onDestroyIdentity={() => this.setState({ uiDestroyIdentityConfirmOpen: true })}
                   onOpenSettings={() => {
+                    const uf = loadHubUiFeatureFlags();
                     this.setState({
                       uiSettingsOpen: true,
                       uiHubAddressDraft: this.state.uiHubAddress,
+                      uiAdvancedModeDraft: !!uf.advancedMode,
                       uiHubAddressError: null
                     });
                   }}
@@ -1425,8 +1429,18 @@ class HubInterface extends React.Component {
                   open={!!this.state.uiIdentityOpen}
                   onClose={() => this.setState({ uiIdentityOpen: false })}
                   aria-labelledby="fabric-identity-modal-heading"
+                  style={{ margin: '1rem auto', maxWidth: 'calc(100vw - 1.5rem)' }}
                 >
-                  <Modal.Content scrolling>
+                  <Modal.Content
+                    scrolling
+                    style={{
+                      maxWidth: '100%',
+                      minWidth: 0,
+                      overflowX: 'hidden',
+                      WebkitOverflowScrolling: 'touch',
+                      boxSizing: 'border-box'
+                    }}
+                  >
                     <IdentityManager
                       key="fabric-identity-manager"
                       currentIdentity={this.state.uiLocalIdentity}
@@ -1454,6 +1468,17 @@ class HubInterface extends React.Component {
                   </Header>
                   <Modal.Content>
                     <Form>
+                      <Form.Field>
+                        <Checkbox
+                          toggle
+                          label="Advanced Mode"
+                          checked={!!this.state.uiAdvancedModeDraft}
+                          onChange={(e, data) => this.setState({ uiAdvancedModeDraft: !!(data && data.checked) })}
+                        />
+                        <div style={{ marginTop: '0.5em', color: '#666' }}>
+                          Shows advanced hub surfaces (Peers, Contracts, More tools, activity/nav extras).
+                        </div>
+                      </Form.Field>
                       <Form.Field>
                         <label>Hub address</label>
                         <Input
@@ -1489,6 +1514,9 @@ class HubInterface extends React.Component {
                           if (typeof window !== 'undefined') {
                             writeStorageString('fabric.hub.address', raw);
                           }
+                        } catch (e) {}
+                        try {
+                          setHubUiFeatureFlag('advancedMode', !!this.state.uiAdvancedModeDraft);
                         } catch (e) {}
 
                         this.setState({ uiHubAddress: raw, uiSettingsOpen: false, uiHubAddressError: null }, () => {

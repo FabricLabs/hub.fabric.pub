@@ -25,6 +25,7 @@ const BITCOIN_UI_FLAG_KEYS = [
 ];
 
 const FLAG_KEYS = [
+  'advancedMode',
   'peers',
   'activities',
   'features',
@@ -37,9 +38,10 @@ const ALWAYS_ON_FLAG_KEYS = [];
 
 function defaultFlags () {
   return {
+    advancedMode: false,
     peers: true,
     activities: true,
-    features: true,
+    features: false,
     sidechain: false,
     bitcoinPayments: false,
     bitcoinInvoices: true,
@@ -60,6 +62,17 @@ function normalizeFlags (raw) {
     if (Object.prototype.hasOwnProperty.call(raw, k)) {
       d[k] = !!raw[k];
     }
+  }
+  // Beginner-safe mode: keep the core surface lean unless Advanced Mode is explicitly enabled.
+  if (!d.advancedMode) {
+    d.peers = false;
+    d.activities = false;
+    d.features = false;
+    d.sidechain = false;
+    d.bitcoinResources = false;
+    d.bitcoinExplorer = false;
+    d.bitcoinLightning = false;
+    d.bitcoinCrowdfund = false;
   }
   return d;
 }

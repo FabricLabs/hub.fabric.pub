@@ -692,7 +692,7 @@ class PeersPage extends React.Component {
                   </Grid.Column>
                   <Grid.Column computer={6} tablet={16}>
                     <Header as="h3" size="small" style={{ marginTop: 0 }}>Chain &amp; mempool</Header>
-                    <Statistic.Group size="small" widths={2} stackable>
+                    <Statistic.Group size="small" widths={2}>
                       <Statistic>
                         <Statistic.Value>{chainHeight != null ? chainHeight : '—'}</Statistic.Value>
                         <Statistic.Label>Height</Statistic.Label>

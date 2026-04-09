@@ -3663,6 +3663,10 @@ class Bridge extends React.Component {
         case 'Pong':
           // Keepalive response from hub; no action needed beyond acknowledging receipt.
           break;
+        case 'P2P_PING':
+        case 'P2P_PONG':
+          // Peer heartbeat frames are handled by the transport/session layer; no UI action required.
+          break;
         // Wire opcode decodes to JSON_CALL; Message.fromVector(['JSONCall', …]) uses friendly alias.
         case 'JSONCall':
         case 'JSON_CALL':

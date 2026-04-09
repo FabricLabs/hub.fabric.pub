@@ -44,7 +44,13 @@ async function rebindFabricHttpListen (fabricHttp) {
     throw new Error('rebindFabricHttpListen: invalid Fabric HTTP server');
   }
   const port = fabricHttp.settings.port || fabricHttp.port;
-  const iface = fabricHttp.interface;
+  const iface = (
+    fabricHttp.settings && fabricHttp.settings.interface != null && fabricHttp.settings.interface !== ''
+      ? fabricHttp.settings.interface
+      : fabricHttp.interface
+  );
+  // Keep legacy field in sync for callers that still read `server.interface`.
+  fabricHttp.interface = iface;
 
   await closeWebSocketServer(fabricHttp.wss);
   fabricHttp.wss = null;

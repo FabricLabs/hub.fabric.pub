@@ -39,6 +39,25 @@ const {
 
 const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
 
+/** Long xpub / Bech32 strings must wrap or mobile modals overflow and the viewport strobes. */
+const identityMonospaceBlockStyle = {
+  display: 'block',
+  margin: '0.35em 0 0.75em',
+  padding: '0.5rem 0.6rem',
+  maxWidth: '100%',
+  boxSizing: 'border-box',
+  fontSize: '0.78em',
+  lineHeight: 1.4,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  overflowWrap: 'anywhere',
+  fontFamily: 'monospace, Menlo, Monaco, Consolas, monospace',
+  background: 'rgba(0, 0, 0, 0.04)',
+  borderRadius: 4,
+  border: '1px solid rgba(0, 0, 0, 0.06)',
+  overflowX: 'auto'
+};
+
 function readLinkedDevices () {
   try {
     if (typeof window === 'undefined') return [];
@@ -64,13 +83,14 @@ function IdentityManager (props) {
     ? props.lockTimeoutMs
     : DEFAULT_LOCK_TIMEOUT_MS;
   const [localIdentity, setLocalIdentity] = React.useState(() => {
-    // If parent already has an unlocked identity (with xprv), use that to preserve unlocked state.
-    if (props.currentIdentity && props.currentIdentity.xprv) {
+    // Parent identity is authoritative when provided (prevents lock/watch-only state drifting from shell).
+    if (props.currentIdentity && (props.currentIdentity.id || props.currentIdentity.xpub)) {
       return {
         id: props.currentIdentity.id,
         xpub: props.currentIdentity.xpub,
-        xprv: props.currentIdentity.xprv,
-        passwordProtected: !!props.currentIdentity.passwordProtected
+        xprv: props.currentIdentity.xprv || null,
+        passwordProtected: !!props.currentIdentity.passwordProtected,
+        linkedFromDesktop: !!props.currentIdentity.linkedFromDesktop
       };
     }
 
@@ -168,9 +188,9 @@ function IdentityManager (props) {
   // Derive lock state from localIdentity. Only "locked" when password-protected and no xprv (user can unlock).
   const isLocked = !!(localIdentity && localIdentity.id && localIdentity.xpub && !localIdentity.xprv && localIdentity.passwordProtected);
 
-  // Automatically re-lock the private key after the configured timeout.
+  // Automatically re-lock only password-protected keys after the configured timeout.
   React.useEffect(() => {
-    if (!localIdentity || !localIdentity.xprv || !lockTimeoutMs) return;
+    if (!localIdentity || !localIdentity.xprv || !localIdentity.passwordProtected || !lockTimeoutMs) return;
 
     const timer = setTimeout(() => {
       setLocalIdentity((prev) => {
@@ -201,13 +221,13 @@ function IdentityManager (props) {
     } catch (e) {}
   }, [localIdentity]);
 
-  function identitySnapshotKey (i) {
+  function identityAnchorKey (i) {
     if (!i || (!i.id && !i.xpub)) return '';
-    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.xprv ? '1' : '0'}|${i.passwordProtected ? '1' : '0'}`;
+    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.passwordProtected ? '1' : '0'}|${i.linkedFromDesktop ? '1' : '0'}`;
   }
 
-  // Content key only — parent often passes a new object reference each render with the same identity.
-  const parentIdentityKey = identitySnapshotKey(props.currentIdentity);
+  // Anchor key only (no xprv): avoid local<->parent lock/unlock echo loops that can flicker the modal.
+  const parentIdentityKey = identityAnchorKey(props.currentIdentity);
 
   // Keep modal state aligned with Hub shell when parent identity changes (forget, desktop link, etc.).
   React.useEffect(() => {
@@ -217,13 +237,19 @@ function IdentityManager (props) {
       return;
     }
     setLocalIdentity((prev) => {
-      if (identitySnapshotKey(prev) === identitySnapshotKey(p)) return prev;
-      if (prev && prev.xprv && !p.xprv && p.passwordProtected) return prev;
+      if (identityAnchorKey(prev) === identityAnchorKey(p)) {
+        const prevHasXprv = !!(prev && prev.xprv);
+        const parentHasXprv = !!p.xprv;
+        const isPasswordFlow = !!(p.passwordProtected || (prev && prev.passwordProtected));
+        // Keep anti-flicker behavior, but honor explicit lock/unlock transitions for password-protected identities.
+        if (!isPasswordFlow || prevHasXprv === parentHasXprv) return prev;
+      }
       return {
         id: p.id,
         xpub: p.xpub,
         xprv: p.xprv || null,
-        passwordProtected: !!p.passwordProtected
+        passwordProtected: !!p.passwordProtected,
+        linkedFromDesktop: !!p.linkedFromDesktop
       };
     });
   }, [parentIdentityKey]);
@@ -483,7 +509,7 @@ function IdentityManager (props) {
   }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
 
   return (
-    <Segment basic>
+    <Segment basic style={{ minWidth: 0, maxWidth: '100%' }}>
       <Header as="h3" id="fabric-identity-modal-heading">
         <Icon name="key" aria-hidden="true" />
         <Header.Content>Fabric Identity</Header.Content>
@@ -499,8 +525,10 @@ function IdentityManager (props) {
       <div>
         {localIdentity ? (
           <>
-            <p><strong>XPUB (public identifier):</strong> <code>{localIdentity.xpub}</code></p>
-            <p><strong>Bech32m ID:</strong> <code>{localIdentity.id}</code></p>
+            <p style={{ marginBottom: 0 }}><strong>XPUB (public identifier):</strong></p>
+            <code style={identityMonospaceBlockStyle}>{localIdentity.xpub}</code>
+            <p style={{ marginBottom: 0, marginTop: '0.25em' }}><strong>Bech32m ID:</strong></p>
+            <code style={identityMonospaceBlockStyle}>{localIdentity.id}</code>
             {localIdentity.linkedFromDesktop ? (
               <Message info size="small" style={{ marginTop: '0.75em' }}>
                 <Icon name="shield" />
@@ -591,7 +619,7 @@ function IdentityManager (props) {
               <Icon name="download" />
               Download backup
             </Button>
-            {localIdentity.xprv ? (
+            {localIdentity.xprv && localIdentity.passwordProtected ? (
               <Button
                 size="small"
                 basic
