@@ -4667,6 +4667,7 @@ class Hub extends Service {
     }
 
     this.http.settings.interface = nextIf;
+    this.http.interface = nextIf;
     if (this.settings && this.settings.http) {
       this.settings.http.interface = nextIf;
     }
