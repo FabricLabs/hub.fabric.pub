@@ -84,6 +84,16 @@ async function main (input = {}) {
   // Render
   // TODO: render to `fabric-application-target`?
   const container = document.getElementById('application-target');
+  if (!container) {
+    console.error('[FABRIC:HUB] Missing #application-target — index.html shell is wrong or not from this hub build.');
+    const fallback = document.createElement('div');
+    fallback.setAttribute('style', 'padding:1.5rem;font-family:system-ui,sans-serif;max-width:36rem');
+    fallback.innerHTML =
+      '<h1 style="font-size:1.1rem">Fabric Hub UI did not load</h1>' +
+      '<p>The page is missing <code>#application-target</code>. Run <code>npm run build:browser</code> and open the hub URL served from <code>assets/index.html</code> (Electron uses <code>http://127.0.0.1:&lt;port&gt;/</code>).</p>';
+    document.body.appendChild(fallback);
+    return {};
+  }
   const root = ReactDOM.createRoot(container);
 
   console.debug('[HUB]', 'Rendering UI...');

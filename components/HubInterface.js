@@ -390,6 +390,7 @@ function resolveBitcoinFromNetworkStatus (networkStatus) {
 const {
   Modal,
   Button,
+  Checkbox,
   Form,
   Header,
   Icon,
