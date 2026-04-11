@@ -149,7 +149,7 @@ function TopPanel (props) {
         labelPosition="right"
         style={{ marginBottom: '0.5em' }}
       >
-        <Icon name="wallet" />
+        <Icon name="credit card" />
         Wallet
       </Button>
       <Button

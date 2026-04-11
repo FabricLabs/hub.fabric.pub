@@ -128,8 +128,7 @@ function SettingsHome () {
             </Card.Header>
             <Card.Description>
               Unlock, import, or export your local Fabric keys (same modal as <strong>Profile</strong> / <strong>Manage identity</strong> in the top bar).
-              For Bitcoin receive addresses and balance, see{' '}
-              <Link to="/settings/bitcoin-wallet" onClick={(e) => e.stopPropagation()}>Bitcoin wallet &amp; derivation</Link>.
+              For Bitcoin receive addresses and balance, use <strong>Bitcoin wallet &amp; derivation</strong>.
             </Card.Description>
           </Card.Content>
         </Card>
@@ -208,14 +207,8 @@ function SettingsHome () {
               </Card.Header>
               <Card.Description>
                 Multi-sig validator policy for sidechain patches and beacon epochs (when not overridden by environment). Same form under Settings → Distributed federation.
-                For L1-bound epochs and reproducible Schnorr witnesses, see{' '}
-                <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>
-                {' '}
-                and the live{' '}
-                <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">manifest</a>
-                {' / '}
-                <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">epoch</a>
-                {' '}JSON.
+                For L1-bound epochs and reproducible Schnorr witnesses, see <strong>Beacon Federation</strong> and the live
+                <code>/services/distributed/manifest</code> / <code>/services/distributed/epoch</code> JSON endpoints.
               </Card.Description>
             </Card.Content>
           </Card>

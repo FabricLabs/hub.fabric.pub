@@ -332,6 +332,8 @@ class Hub extends Service {
     this._lightningRpcQueue = Promise.resolve();
     this._bitcoinStatusCache = { value: null, updatedAt: 0 };
     this._bitcoinCacheTTL = 15000;
+    /** Dedupe concurrent scantxoutset scans by descriptor set. */
+    this._bitcoinScanInflight = new Map();
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
     this._lastBitcoinBlockActivityTip = null;
     /** Per-peer cooldown for requesting mainchain inventory over Fabric. */
@@ -1318,6 +1320,42 @@ class Hub extends Service {
       return { id, activity: base };
     } catch (err) {
       console.error('[HUB] recordActivity error:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Cache chat messages in Hub state so browser reloads can rehydrate from GetNetworkStatus.
+   * This keeps global chat visible across refreshes without waiting for new live events.
+   * @param {object} chat Chat payload ({ type, actor, object.content, object.created, object.clientId? }).
+   * @returns {{ id: string, message: object }|null}
+   */
+  _cacheChatMessage (chat = {}) {
+    try {
+      if (!chat || typeof chat !== 'object') return null;
+      const content = chat && chat.object && chat.object.content != null
+        ? String(chat.object.content)
+        : '';
+      if (!content.trim()) return null;
+      const actorId = chat && chat.actor && chat.actor.id
+        ? String(chat.actor.id)
+        : ((this.agent && this.agent.identity && this.agent.identity.id) ? String(this.agent.identity.id) : 'unknown');
+      const created = Number((chat && chat.object && chat.object.created) || chat.created || Date.now());
+      const entry = {
+        type: 'P2P_CHAT_MESSAGE',
+        actor: { id: actorId },
+        object: {
+          content,
+          created: Number.isFinite(created) ? created : Date.now(),
+          ...(chat && chat.object && chat.object.clientId ? { clientId: String(chat.object.clientId) } : {})
+        }
+      };
+      const id = `chat:${entry.object.created}:${actorId}`;
+      this._state.messages = this._state.messages || {};
+      this._state.messages[id] = entry;
+      return { id, message: entry };
+    } catch (err) {
+      console.warn('[HUB] _cacheChatMessage failed:', err && err.message ? err.message : err);
       return null;
     }
   }
@@ -5354,6 +5392,38 @@ class Hub extends Service {
     }
   }
 
+  async _scanWalletDescriptors (bitcoin, xpub, network = 'mainnet') {
+    const normalizedXpub = this._normalizeXpubForNetwork(xpub, network);
+    const receiveDesc = `wpkh(${normalizedXpub}/0/*)`;
+    const changeDesc = `wpkh(${normalizedXpub}/1/*)`;
+    const scanKey = `${network}:${normalizedXpub}`;
+
+    const existing = this._bitcoinScanInflight.get(scanKey);
+    if (existing) return existing;
+
+    const task = (async () => {
+      const [receiveInfo, changeInfo] = await Promise.all([
+        bitcoin._makeRPCRequest('getdescriptorinfo', [receiveDesc]).catch(() => ({ descriptor: receiveDesc })),
+        bitcoin._makeRPCRequest('getdescriptorinfo', [changeDesc]).catch(() => ({ descriptor: changeDesc }))
+      ]);
+
+      const scanObjects = [
+        { desc: receiveInfo.descriptor || receiveDesc, range: [0, 999] },
+        { desc: changeInfo.descriptor || changeDesc, range: [0, 999] }
+      ];
+
+      return bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+    })();
+
+    this._bitcoinScanInflight.set(scanKey, task);
+
+    try {
+      return await task;
+    } finally {
+      this._bitcoinScanInflight.delete(scanKey);
+    }
+  }
+
   _handleBitcoinWalletSummaryRequest (req, res) {
     return this._jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
@@ -5368,21 +5438,7 @@ class Hub extends Service {
       if (isClientWallet) {
         try {
           const network = bitcoin.network || 'regtest';
-          const normalizedXpub = this._normalizeXpubForNetwork(xpub, network);
-          const receiveDesc = `wpkh(${normalizedXpub}/0/*)`;
-          const changeDesc = `wpkh(${normalizedXpub}/1/*)`;
-
-          const [receiveInfo, changeInfo] = await Promise.all([
-            bitcoin._makeRPCRequest('getdescriptorinfo', [receiveDesc]).catch(() => ({ descriptor: receiveDesc })),
-            bitcoin._makeRPCRequest('getdescriptorinfo', [changeDesc]).catch(() => ({ descriptor: changeDesc }))
-          ]);
-
-          const scanObjects = [
-            { desc: receiveInfo.descriptor || receiveDesc, range: [0, 999] },
-            { desc: changeInfo.descriptor || changeDesc, range: [0, 999] }
-          ];
-
-          const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+          const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
           const totalBTC = result && typeof result.total_amount === 'number' ? result.total_amount : 0;
           const confirmedSats = Math.round(totalBTC * 100000000);
 
@@ -5594,21 +5650,7 @@ class Hub extends Service {
       if (isClientWallet) {
         try {
           const network = bitcoin.network || 'regtest';
-          const normalizedXpub = this._normalizeXpubForNetwork(xpub, network);
-          const receiveDesc = `wpkh(${normalizedXpub}/0/*)`;
-          const changeDesc = `wpkh(${normalizedXpub}/1/*)`;
-
-          const [receiveInfo, changeInfo] = await Promise.all([
-            bitcoin._makeRPCRequest('getdescriptorinfo', [receiveDesc]).catch(() => ({ descriptor: receiveDesc })),
-            bitcoin._makeRPCRequest('getdescriptorinfo', [changeDesc]).catch(() => ({ descriptor: changeDesc }))
-          ]);
-
-          const scanObjects = [
-            { desc: receiveInfo.descriptor || receiveDesc, range: [0, 999] },
-            { desc: changeInfo.descriptor || changeDesc, range: [0, 999] }
-          ];
-
-          const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+          const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
           const raw = (result && Array.isArray(result.unspents)) ? result.unspents : [];
           const utxos = raw.map((u) => ({
             txid: u.txid,
@@ -5671,21 +5713,7 @@ class Hub extends Service {
       if (isClientWallet) {
         try {
           const network = bitcoin.network || 'regtest';
-          const normalizedXpub = this._normalizeXpubForNetwork(xpub, network);
-          const receiveDesc = `wpkh(${normalizedXpub}/0/*)`;
-          const changeDesc = `wpkh(${normalizedXpub}/1/*)`;
-
-          const [receiveInfo, changeInfo] = await Promise.all([
-            bitcoin._makeRPCRequest('getdescriptorinfo', [receiveDesc]).catch(() => ({ descriptor: receiveDesc })),
-            bitcoin._makeRPCRequest('getdescriptorinfo', [changeDesc]).catch(() => ({ descriptor: changeDesc }))
-          ]);
-
-          const scanObjects = [
-            { desc: receiveInfo.descriptor || receiveDesc, range: [0, 999] },
-            { desc: changeInfo.descriptor || changeDesc, range: [0, 999] }
-          ];
-
-          const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+          const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
           const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
           const confirmedTxids = new Set(unspents.map((u) => u.txid).filter(Boolean));
 
@@ -8056,6 +8084,7 @@ class Hub extends Service {
         };
         if (clientId) chatPayload.object.clientId = clientId;
         try {
+          this._cacheChatMessage(chatPayload);
           const relay = Message.fromVector(['ChatMessage', JSON.stringify(chatPayload)]);
           if (this._rootKey && this._rootKey.private) relay.signWithKey(this._rootKey);
           // Broadcast to all WebSocket clients
@@ -9512,6 +9541,7 @@ class Hub extends Service {
           documents: this._state.documents,
           setup: setupStatus,
           publishedDocuments: (this._state.content && this._state.content.collections && this._state.content.collections.documents) ? this._state.content.collections.documents : {},
+          messages: this._state.messages || {},
           fabricMessages,
           chain,
           /** Wallet-safe Bitcoin head (height, tip hash, network, mempool counts) for operator UIs (e.g. Peers). */
@@ -10138,6 +10168,7 @@ class Hub extends Service {
         try {
           const originPeer = chat && chat._origin ? String(chat._origin) : '';
           this._ingestOfferFromChatMessage(chat, originPeer);
+          this._cacheChatMessage(chat);
           if (this.settings && this.settings.debug) {
             try {
               console.log('[HUB:CHAT]', JSON.stringify(chat));

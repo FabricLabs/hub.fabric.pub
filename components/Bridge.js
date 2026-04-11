@@ -4374,6 +4374,22 @@ class Bridge extends React.Component {
         } catch (_) {}
       }
     }
+    const hubMessages = result.messages;
+    if (hubMessages && typeof hubMessages === 'object' && this.globalState) {
+      const current = this.globalState.messages && typeof this.globalState.messages === 'object'
+        ? this.globalState.messages
+        : {};
+      const merged = { ...current, ...hubMessages };
+      this.globalState.messages = merged;
+      this._persistMessages();
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+            detail: { operation: { op: 'replace', path: '/messages', value: this.globalState.messages }, globalState: this.globalState }
+          }));
+        }
+      } catch (_) {}
+    }
     return true;
   }
 
