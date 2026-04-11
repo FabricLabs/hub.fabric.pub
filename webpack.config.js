@@ -171,6 +171,11 @@ module.exports = (env, argv) => {
       /[\\/](@fabric[\\/]core|fabric-clean)[\\/]functions[\\/]fabricNativeAccel\.js$/,
       path.resolve(__dirname, 'shims/fabricNativeAccel.browser.js')
     ),
+    // ecc.js optional self-test module is missing from some @fabric/core publishes; keep browser bundle working.
+    new webpack.NormalModuleReplacementPlugin(
+      /[\\/]types[\\/]ecc\.selftest(\.js)?$/,
+      path.resolve(__dirname, 'shims/ecc-selftest-browser.js')
+    ),
     new BundleAnalyzerPlugin({
       analyzerMode: process.env.ANALYZE ? 'server' : 'disabled',
       openAnalyzer: true
