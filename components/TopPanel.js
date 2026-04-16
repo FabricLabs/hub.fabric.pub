@@ -327,6 +327,15 @@ function TopPanel (props) {
                 active={pathname === '/settings/admin' || pathname.startsWith('/settings/admin/')}
               />
             ) : null}
+            {hasHubAdminPeerNav ? (
+              <Dropdown.Item
+                as={Link}
+                to="/settings/collaboration"
+                icon="users"
+                text="Collaboration"
+                active={pathname === '/settings/collaboration'}
+              />
+            ) : null}
             {uiFlags.sidechain && hasHubAdminPeerNav ? (
               <Dropdown.Item
                 as={Link}

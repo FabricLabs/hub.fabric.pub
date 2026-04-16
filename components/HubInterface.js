@@ -346,6 +346,8 @@ const { toast } = require('../functions/toast');
 const SecurityHome = require('./SecurityHome');
 const SecuritySessionHome = require('./SecuritySessionHome');
 const SettingsHome = require('./SettingsHome');
+const CollaborationHome = require('./CollaborationHome');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const SettingsFederationHome = require('./SettingsFederationHome');
 const FederationsHome = require('./FederationsHome');
 const FederationInviteNotificationBanner = require('./FederationInviteNotificationBanner');
@@ -353,6 +355,7 @@ const PublicVisitorGate = require('./PublicVisitorGate');
 const { computePublicHubVisitor } = require('../functions/hubPublicVisitor');
 const SettingsBitcoinWallet = require('./SettingsBitcoinWallet');
 const FederationContractInviteModal = require('./FederationContractInviteModal');
+const CollaborationInviteModal = require('./CollaborationInviteModal');
 const FeaturesPage = require('./FeaturesPage');
 const SidechainHome = require('./SidechainHome');
 const DelegationSigningModal = require('./DelegationSigningModal');
@@ -629,7 +632,9 @@ class HubInterface extends React.Component {
       webrtcChatOnly: false,
       federationInviteModalOpen: false,
       federationInviteDetail: null,
-      federationInviteBannerDetail: null
+      federationInviteBannerDetail: null,
+      collaborationInviteModalOpen: false,
+      collaborationInviteDetail: null
     };
 
     this.handleBridgeStateUpdate = this.handleBridgeStateUpdate.bind(this);
@@ -1016,6 +1021,11 @@ class HubInterface extends React.Component {
       };
       window.addEventListener('fabric:federationContractInvite', this._fabricFedInvite);
       window.addEventListener('fabric:federationContractInviteResponse', this._fabricFedResp);
+      this._fabricCollabInvite = (ev) => {
+        const d = ev && ev.detail;
+        if (d && d.invitationId) this.setState({ collaborationInviteModalOpen: true, collaborationInviteDetail: d });
+      };
+      window.addEventListener('fabric:collaborationInvitation', this._fabricCollabInvite);
       this._onFabricOpenIdentityManager = () => {
         this.openIdentityManager();
       };
@@ -1048,6 +1058,7 @@ class HubInterface extends React.Component {
       }
       if (this._fabricFedInvite) window.removeEventListener('fabric:federationContractInvite', this._fabricFedInvite);
       if (this._fabricFedResp) window.removeEventListener('fabric:federationContractInviteResponse', this._fabricFedResp);
+      if (this._fabricCollabInvite) window.removeEventListener('fabric:collaborationInvitation', this._fabricCollabInvite);
       if (this._onFabricOpenIdentityManager) {
         window.removeEventListener('fabricOpenIdentityManager', this._onFabricOpenIdentityManager);
       }
@@ -1338,6 +1349,11 @@ class HubInterface extends React.Component {
                 const b = this.bridgeRef && this.bridgeRef.current;
                 if (b && typeof b.sendPeerMessageRequest === 'function') b.sendPeerMessageRequest(toPeerId, text);
               }}
+            />
+            <CollaborationInviteModal
+              open={this.state.collaborationInviteModalOpen}
+              detail={this.state.collaborationInviteDetail}
+              onClose={() => this.setState({ collaborationInviteModalOpen: false, collaborationInviteDetail: null })}
             />
             {(this.props.auth && this.props.auth.loading) ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '0.75em' }}>
@@ -2409,6 +2425,19 @@ class HubInterface extends React.Component {
                   <Route
                     path="/admin"
                     element={<Navigate to="/settings/admin" replace />}
+                  />
+                  <Route
+                    path="/settings/collaboration"
+                    element={pv((
+                      readHubAdminTokenFromBrowser(this.state.adminToken)
+                        ? (
+                          <CollaborationHome
+                            bridgeRef={this.bridgeRef}
+                            adminToken={this.state.adminToken}
+                          />
+                          )
+                        : (<Navigate to="/settings" replace />)
+                    ))}
                   />
                   <Route
                     path="/settings"

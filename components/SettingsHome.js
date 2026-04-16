@@ -153,6 +153,18 @@ function SettingsHome () {
             </Card.Description>
           </Card.Content>
         </Card>
+        {hasHubAdminPeerNav ? (
+          <Card as={Link} to="/settings/collaboration" style={{ cursor: 'pointer' }}>
+            <Card.Content>
+              <Card.Header>
+                <Icon name="users" aria-hidden="true" /> Collaboration
+              </Card.Header>
+              <Card.Description>
+                Contacts (including from peers), multisig-oriented groups with pubkey nesting, and email invitations.
+              </Card.Description>
+            </Card.Content>
+          </Card>
+        ) : null}
         <Card as={Link} to="/settings/security" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>

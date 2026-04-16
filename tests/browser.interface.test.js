@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const http = require('http');
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -68,8 +69,10 @@ function startStaticServer ({ port = 3001, root = path.join(__dirname, '../asset
 // Helper to start the hub for full E2E (spawns child process)
 function startHub (timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
+    const hubUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-browser-e2e-'));
     const env = {
       ...process.env,
+      FABRIC_HUB_USER_DATA: hubUserData,
       FABRIC_BITCOIN_ENABLE: 'false',
       FABRIC_BITCOIN_MANAGED: 'false',
       FABRIC_PORT: process.env.FABRIC_PORT || '17777',
@@ -118,6 +121,72 @@ function startHub (timeoutMs = 45000) {
 
 function sleep (ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Ensure browser E2E has an admin token: POST /settings when `needsSetup`, else env token.
+ * Spawning `scripts/hub.js` with isolated `FABRIC_HUB_USER_DATA` yields `needsSetup` on first GET.
+ */
+async function bootstrapHubForBrowserE2e (hubOrigin) {
+  const root = String(hubOrigin || '').replace(/\/$/, '');
+  const res = await fetch(`${root}/settings`, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`GET /settings failed: ${res.status}`);
+  const data = await res.json();
+  if (data.needsSetup) {
+    const boot = await fetch(`${root}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        NODE_NAME: 'Browser E2E Hub',
+        BITCOIN_MANAGED: false,
+        BITCOIN_HOST: '127.0.0.1',
+        BITCOIN_RPC_PORT: '18443',
+        BITCOIN_USERNAME: '',
+        BITCOIN_PASSWORD: ''
+      })
+    });
+    const body = await boot.json().catch(() => ({}));
+    if (!boot.ok || !body.token) {
+      throw new Error(`POST /settings bootstrap failed: ${boot.status} ${JSON.stringify(body).slice(0, 240)}`);
+    }
+    return String(body.token);
+  }
+  const envTok = process.env.FABRIC_HUB_ADMIN_TOKEN;
+  if (envTok && String(envTok).trim()) return String(envTok).trim();
+  throw new Error('Hub is already configured; set FABRIC_HUB_ADMIN_TOKEN or use a fresh hub datadir');
+}
+
+async function installHubAdminTokenThenReload (page, token) {
+  await page.evaluate((t) => {
+    try {
+      const key = 'fabric:state';
+      let st = {};
+      try {
+        const raw = window.localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) st = parsed;
+        }
+      } catch (e) { /* ignore */ }
+      if (!st.hub || typeof st.hub !== 'object') st.hub = {};
+      st.hub.adminToken = t;
+      // Keep canonical `identity.local` in sync with the legacy key so `readStorageJSON('fabric.identity.local')`
+      // does not return an empty object from `fabric:state` (which would drop xprv and trigger PublicVisitorGate).
+      let idLocal = null;
+      try {
+        const rawId = window.localStorage.getItem('fabric.identity.local');
+        if (rawId) idLocal = JSON.parse(rawId);
+      } catch (e) { /* ignore */ }
+      if (idLocal && typeof idLocal === 'object' && idLocal.xprv) {
+        if (!st.identity || typeof st.identity !== 'object') st.identity = {};
+        st.identity.local = idLocal;
+      }
+      window.localStorage.setItem(key, JSON.stringify(st));
+      window.localStorage.setItem('fabric.hub.adminToken', t);
+      window.dispatchEvent(new CustomEvent('fabricHubAdminTokenSaved', { detail: { ok: true } }));
+    } catch (e) { /* ignore */ }
+  }, token);
+  await page.reload({ waitUntil: 'networkidle0', timeout: 20000 });
 }
 
 /** Merge keys into `localStorage` `fabric.hub.uiFeatureFlags` (browser page). */
@@ -226,6 +295,7 @@ describe('Browser Interface', function () {
   let server;
   let sandbox;
   let hubProcess;
+  let e2eHubAdminToken;
   const STATIC_PORT = 3001;
   const baseUrl = HUB_E2E ? HUB_URL : `http://localhost:${STATIC_PORT}/`;
 
@@ -235,6 +305,7 @@ describe('Browser Interface', function () {
       if (HUB_E2E) {
         hubProcess = await startHub();
         await sleep(2000);
+        e2eHubAdminToken = await bootstrapHubForBrowserE2e(HUB_URL.replace(/\/$/, ''));
       } else {
         server = await startStaticServer({ port: STATIC_PORT });
       }
@@ -243,6 +314,7 @@ describe('Browser Interface', function () {
       await seedBrowserUnlockedTestIdentity(sandbox.browser);
       await sandbox.browser.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 15000 });
       if (HUB_E2E) {
+        await installHubAdminTokenThenReload(sandbox.browser, e2eHubAdminToken);
         const ok = await waitForMainUI(sandbox.browser, 20000);
         if (!ok) throw new Error('Main UI did not appear');
       } else {
@@ -845,6 +917,88 @@ describe('Browser Interface', function () {
         );
       });
       assert.ok(ok, 'Invoices page should render local invoice UX');
+    });
+  });
+
+  describe('Collaboration UI', function () {
+    describe('gate without admin token (static bundle)', function () {
+      before(function () {
+        if (HUB_E2E) this.skip();
+      });
+
+      it('redirects /settings/collaboration to /settings when admin token is absent', async function () {
+        this.timeout(25000);
+        const root = baseUrl.replace(/\/$/, '');
+        await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 15000 });
+        await sandbox.browser.evaluate(() => {
+          try {
+            window.localStorage.removeItem('fabric.hub.adminToken');
+          } catch (e) { /* ignore */ }
+        });
+        await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'networkidle0', timeout: 15000 });
+        await sleep(600);
+        const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+        assert.strictEqual(pathname, '/settings', `expected redirect to /settings, got ${pathname}`);
+      });
+    });
+
+    describe('operator flow (HUB_E2E)', function () {
+      before(function () {
+        if (!HUB_E2E) this.skip();
+      });
+
+      it('creates a group and shows multisig preview JSON', async function () {
+        this.timeout(90000);
+        const root = baseUrl.replace(/\/$/, '');
+        await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'networkidle0', timeout: 25000 });
+        const hasHeading = await waitForBodyText(sandbox.browser, 'Collaboration', 20000);
+        if (!hasHeading) {
+          const dbg = await sandbox.browser.evaluate(() => ({
+            path: window.location.pathname || '',
+            snippet: (document.body && document.body.innerText) ? document.body.innerText.slice(0, 500) : ''
+          }));
+          assert.ok(false, `Collaboration page should render; debug: ${JSON.stringify(dbg)}`);
+        }
+
+        const inputSel = '#collab-input-group-name input';
+        await sandbox.browser.waitForSelector(inputSel, { timeout: 15000 });
+        const nameInput = await sandbox.browser.$(inputSel);
+        assert.ok(nameInput, 'Group name field should exist');
+        await nameInput.click({ clickCount: 3 });
+        await nameInput.type('E2E Collab Group');
+
+        const createSel = '#collab-btn-group-create button';
+        await sandbox.browser.waitForSelector(createSel, { timeout: 15000 });
+        await sandbox.browser.click(createSel);
+        const previewBtnAppeared = await (async () => {
+          const deadline = Date.now() + 20000;
+          while (Date.now() < deadline) {
+            const ok = await sandbox.browser.evaluate(() => {
+              const buttons = Array.from(document.querySelectorAll('button'));
+              return buttons.some((b) => String(b.textContent || '').trim() === 'Preview');
+            });
+            if (ok) return true;
+            await sleep(300);
+          }
+          return false;
+        })();
+        assert.ok(previewBtnAppeared, 'Preview button should appear after creating a group');
+
+        await sandbox.browser.evaluate(() => {
+          const b = Array.from(document.querySelectorAll('button')).find((el) => String(el.textContent || '').trim() === 'Preview');
+          if (b) b.click();
+        });
+        const previewShown = await waitForElementById(sandbox.browser, 'collab-multisig-preview-json', 15000);
+        assert.ok(previewShown, 'Multisig preview block should render');
+        const txt = await sandbox.browser.evaluate(() => {
+          const el = document.getElementById('collab-multisig-preview-json');
+          return el ? String(el.textContent || '') : '';
+        });
+        assert.ok(
+          txt.includes('threshold') && (txt.includes('xOnlyPubkeysSorted') || txt.includes('missing')),
+          `preview should include threshold and pubkey fields; got: ${txt.slice(0, 280)}`
+        );
+      });
     });
   });
 });

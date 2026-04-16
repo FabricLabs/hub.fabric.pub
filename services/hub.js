@@ -54,10 +54,12 @@ const Bitcoin = require('@fabric/core/services/bitcoin');
 const Lightning = require('@fabric/core/services/lightning');
 const Beacon = require('../contracts/beacon');
 const PayjoinService = require('../services/payjoin');
+const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
+const hubCollaboration = require('../functions/hubCollaboration');
 
 // Fabric HTTP
 const HTTPServer = require('@fabric/http/types/server');
@@ -216,6 +218,20 @@ class Hub extends Service {
         maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256),
         beaconFederationXOnlyHex: String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '')
       },
+      email: {
+        enable: process.env.FABRIC_EMAIL_ENABLE === 'true' || process.env.FABRIC_EMAIL_ENABLE === '1',
+        transport: process.env.FABRIC_EMAIL_TRANSPORT || null,
+        host: process.env.FABRIC_EMAIL_SMTP_HOST || null,
+        port: Number(process.env.FABRIC_EMAIL_SMTP_PORT || 587),
+        secure: process.env.FABRIC_EMAIL_SMTP_SECURE === '1' || process.env.FABRIC_EMAIL_SMTP_SECURE === 'true',
+        requireTLS: process.env.FABRIC_EMAIL_SMTP_REQUIRE_TLS === '1' || process.env.FABRIC_EMAIL_SMTP_REQUIRE_TLS === 'true',
+        ignoreTLS: process.env.FABRIC_EMAIL_SMTP_IGNORE_TLS === '1' || process.env.FABRIC_EMAIL_SMTP_IGNORE_TLS === 'true',
+        auth: (process.env.FABRIC_EMAIL_SMTP_USER || '')
+          ? { user: process.env.FABRIC_EMAIL_SMTP_USER, pass: process.env.FABRIC_EMAIL_SMTP_PASS || '' }
+          : null,
+        key: process.env.FABRIC_EMAIL_POSTMARK_KEY || null,
+        defaultFrom: process.env.FABRIC_EMAIL_FROM || null
+      },
       peering: {
         enable: process.env.FABRIC_PEERING_ENABLE ? process.env.FABRIC_PEERING_ENABLE !== 'false' : true,
         endpointBasePath: process.env.FABRIC_PEERING_BASE_PATH || '/services/peering'
@@ -261,6 +277,11 @@ class Hub extends Service {
           payjoin: {
             available: false,
             sessions: 0
+          },
+          email: {
+            enabled: false,
+            configured: false,
+            transport: null
           },
           peering: {
             available: false
@@ -425,6 +446,21 @@ class Hub extends Service {
       ...this.settings.payjoin,
       network: (this.settings.bitcoin && this.settings.bitcoin.network) || 'mainnet'
     });
+
+    this.email = null;
+    if (this.settings.email && this.settings.email.enable) {
+      this.email = new EmailService({
+        name: 'EmailService',
+        transport: this.settings.email.transport,
+        host: this.settings.email.host,
+        port: this.settings.email.port,
+        secure: this.settings.email.secure,
+        requireTLS: this.settings.email.requireTLS,
+        ignoreTLS: this.settings.email.ignoreTLS,
+        auth: this.settings.email.auth,
+        key: this.settings.email.key
+      });
+    }
 
     this.peering = new PeeringService({
       ...this.settings.peering
@@ -7292,6 +7328,10 @@ class Hub extends Service {
         await this.payjoin.start();
       }
 
+      if (this.email) {
+        await this.email.start();
+      }
+
       if (this.peering && this.settings.peering && this.settings.peering.enable !== false) {
         this.peering.attach({
           key: this._rootKey,
@@ -7376,6 +7416,16 @@ class Hub extends Service {
 
       this._state.content.services = this._state.content.services || {};
       this._state.content.services.payjoin = this._state.content.services.payjoin || { available: false, sessions: 0 };
+      if (this.email) {
+        const mode = typeof this.email.getTransportMode === 'function' ? this.email.getTransportMode() : null;
+        this._state.content.services.email = {
+          enabled: true,
+          configured: !!mode,
+          transport: mode
+        };
+      } else {
+        this._state.content.services.email = { enabled: false, configured: false, transport: null };
+      }
 
       // Seed _state.documents from restored collections so ListDocuments has the index
       try {
@@ -7571,6 +7621,8 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/peering', this._handlePeeringServiceRequest.bind(this));
       this.http._addRoute('GET', '/services/peering/attestation', this._handlePeeringAttestationRequest.bind(this));
       this.http._addRoute('GET', '/services/challenges', this._handleChallengeServiceRequest.bind(this));
+      /* Collaboration: contacts, email invitations, multisig-oriented groups (see functions/hubCollaboration.js) */
+      hubCollaboration.registerHttp(this);
       /* Distributed execution: manifest + beacon epoch status (@fabric/core + @fabric/http) */
       if (this.settings.distributed && this.settings.distributed.enable !== false && this.distributedHttp) {
         this.distributedHttp.bind(this.http);
@@ -7735,6 +7787,8 @@ class Hub extends Service {
         if (!ch) return { status: 'error', message: 'Challenge service unavailable' };
         return ch.getCapabilities();
       });
+
+      hubCollaboration.registerRpc(this);
 
       this.http._registerMethod('CreatePayjoinDeposit', async (...params) => {
         const payjoin = this._getPayjoinService();
@@ -9533,6 +9587,14 @@ class Hub extends Service {
         const bitcoinSnapshot = (btcSvc && btcSvc.status && typeof btcSvc.status === 'object')
           ? { ...btcSvc.status }
           : this._sanitizeBitcoinStatusForPublic(this._bitcoinStatusCache && this._bitcoinStatusCache.value);
+        const emailSvc = this._state.content && this._state.content.services && this._state.content.services.email;
+        const emailSnapshot = emailSvc && typeof emailSvc === 'object'
+          ? {
+            enabled: !!emailSvc.enabled,
+            configured: !!emailSvc.configured,
+            transport: emailSvc.transport || null
+          }
+          : { enabled: false, configured: false, transport: null };
         return {
           clock: this.http.clock,
           contract: this.contract.id,
@@ -9546,6 +9608,8 @@ class Hub extends Service {
           chain,
           /** Wallet-safe Bitcoin head (height, tip hash, network, mempool counts) for operator UIs (e.g. Peers). */
           bitcoin: bitcoinSnapshot,
+          /** Outbound email (invitations / alerts); no secrets in this snapshot. */
+          email: emailSnapshot,
           network: {
             address: this.http.agent.listenAddress,
             listening: this.http.agent.listening
@@ -10682,6 +10746,14 @@ class Hub extends Service {
           await this.payjoin.stop();
         } catch (err) {
           console.warn('[HUB] Failed to stop Payjoin service cleanly:', err && err.message ? err.message : err);
+        }
+      }
+
+      if (this.email && typeof this.email.stop === 'function') {
+        try {
+          await this.email.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Email service cleanly:', err && err.message ? err.message : err);
         }
       }
 

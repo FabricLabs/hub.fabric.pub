@@ -49,9 +49,11 @@ function FederationWalletMultisigPanel (props) {
   const [psbtBusy, setPsbtBusy] = React.useState(false);
   const [psbtResult, setPsbtResult] = React.useState(null);
   const [prefs, setPrefs] = React.useState(() => loadFederationSpendingPrefs());
+  const [collabHubSummary, setCollabHubSummary] = React.useState(null);
 
   const refresh = React.useCallback(async () => {
     setLoadErr(null);
+    const tok = readHubAdminTokenFromBrowser(props && props.adminToken);
     try {
       const [pol, dist] = await Promise.all([
         hubJsonRpc('GetDistributedFederationPolicy', []).catch((e) => {
@@ -66,7 +68,18 @@ function FederationWalletMultisigPanel (props) {
       setManifest(null);
       setLoadErr(e && e.message ? e.message : String(e));
     }
-  }, []);
+    if (!tok) {
+      setCollabHubSummary(null);
+    } else {
+      try {
+        const lg = await hubJsonRpc('ListCollaborationGroups', [{ adminToken: tok }]);
+        const groups = lg && Array.isArray(lg.groups) ? lg.groups : [];
+        setCollabHubSummary({ n: groups.length });
+      } catch (e) {
+        setCollabHubSummary({ err: e && e.message ? e.message : String(e) });
+      }
+    }
+  }, [props]);
 
   React.useEffect(() => {
     void refresh();
@@ -170,10 +183,33 @@ function FederationWalletMultisigPanel (props) {
         </Message>
       )}
       {vaultAddr ? (
-        <p style={{ margin: '0.75em 0', color: '#2c5c2c', lineHeight: 1.45 }}>
-          <strong>Federation vault (deposit here for multisig):</strong>{' '}
-          <code style={{ wordBreak: 'break-all' }}>{vaultAddr}</code>
-          {' · '}
+        <p
+          style={{
+            margin: '0.75em 0',
+            color: '#2c5c2c',
+            lineHeight: 1.45,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '0.35em'
+          }}
+        >
+          <span>
+            <strong>Federation vault (deposit here for multisig):</strong>{' '}
+            <code style={{ wordBreak: 'break-all' }}>{vaultAddr}</code>
+          </span>
+          <Button
+            type="button"
+            icon
+            basic
+            size="small"
+            title="Copy vault address"
+            aria-label="Copy vault address"
+            onClick={() => copyToClipboard(vaultAddr)}
+          >
+            <Icon name="copy" />
+          </Button>
+          <span>{' · '}</span>
           <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">UTXOs</a>
         </p>
       ) : vault && vault.status === 'no_validators' ? (
@@ -187,6 +223,28 @@ function FederationWalletMultisigPanel (props) {
         {' · '}
         <a href="#fabric-btc-tx-client-h3">Jump to wallet activity</a>
       </div>
+
+      {adminToken && collabHubSummary && collabHubSummary.err ? (
+        <Message warning size="small" style={{ marginTop: 0 }}>
+          Could not load Collaboration groups: {collabHubSummary.err}
+        </Message>
+      ) : null}
+      {adminToken && collabHubSummary && collabHubSummary.n != null ? (
+        <p style={{ margin: '0.5em 0 0', fontSize: '0.9em', color: '#555', lineHeight: 1.45 }}>
+          <Icon name="users" />
+          {' '}
+          Collaboration: <strong>{collabHubSummary.n}</strong> group{collabHubSummary.n === 1 ? '' : 's'} on this hub.
+          {' '}
+          <Link to="/settings/collaboration">Multisig previews · pubkey members</Link>
+          {' — '}
+          align federation signers with a group via{' '}
+          <Link to="/federations">Federations → Save signer set to Collaboration group</Link>.
+        </p>
+      ) : !adminToken && mOfN ? (
+        <p style={{ margin: '0.5em 0 0', fontSize: '0.88em', color: '#666', lineHeight: 1.45 }}>
+          Save the hub <strong>admin token</strong> (Settings) to show Collaboration group counts next to this vault and to build withdrawal PSBTs.
+        </p>
+      ) : null}
 
       <FederationSpendingCriteriaDraft compact />
 

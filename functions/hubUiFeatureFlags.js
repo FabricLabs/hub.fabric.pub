@@ -25,6 +25,7 @@ const BITCOIN_UI_FLAG_KEYS = [
 ];
 
 const FLAG_KEYS = [
+  'promo',
   'advancedMode',
   'peers',
   'activities',
@@ -38,6 +39,7 @@ const ALWAYS_ON_FLAG_KEYS = [];
 
 function defaultFlags () {
   return {
+    promo: false,
     advancedMode: false,
     peers: true,
     activities: true,

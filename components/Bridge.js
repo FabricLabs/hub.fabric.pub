@@ -51,6 +51,8 @@ const {
   FabricTransportSession
 } = require('../functions/fabricTransportSession');
 
+const COLLAB_INVITE_PREFIX = '[COLLAB_INVITATION] ';
+
 /**
  * Describe inbound/outbound payloads for debug logs without printing raw bytes or bodies (privacy).
  * @param {*} data
@@ -199,6 +201,8 @@ class Bridge extends React.Component {
     this._lastWebRTCGossipAt = 0;
     this._lastPeeringOfferAt = 0;
     this._jsonRpcQueue = []; // JSON-RPC payloads to send once WebSocket is open
+    /** Monotonic id for {@link Bridge#callHubJsonRpc} HTTP POST /services/rpc. */
+    this._hubJsonRpcSeq = 0;
     this._rtcPeers = new Map(); // peerId -> { pc, dc, status, initiator, metadata }
     this._rtcPendingIce = new Map(); // peerId -> [RTCIceCandidateInit]
     this._webrtcConnectTimers = new Map(); // peerId -> timeout handle
@@ -1005,6 +1009,49 @@ class Bridge extends React.Component {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Collaboration invite in P2P chat (prefix + JSON payload), emitted by hubCollaboration relay.
+   * Dispatches a modal event and bell notification with accept/reject URLs.
+   * @param {string} content
+   * @param {object|null} chatEnvelope
+   * @returns {boolean}
+   */
+  _tryDispatchCollaborationInviteFromChat (content, chatEnvelope) {
+    if (typeof window === 'undefined' || typeof content !== 'string' || !content.startsWith(COLLAB_INVITE_PREFIX)) return false;
+    try {
+      const payload = JSON.parse(content.slice(COLLAB_INVITE_PREFIX.length));
+      if (!payload || !payload.invitationId || !payload.acceptUrl || !payload.declineUrl) return false;
+      const fromPeerId = chatEnvelope && chatEnvelope.actor && chatEnvelope.actor.id
+        ? String(chatEnvelope.actor.id)
+        : '';
+      const peerIdentity = payload && payload.recipientPeerIdentity
+        ? String(payload.recipientPeerIdentity)
+        : '';
+      const detail = Object.assign({}, payload, { fromPeerId });
+      window.dispatchEvent(new CustomEvent('fabric:collaborationInvitation', { detail }));
+      try {
+        toast.info('Collaboration invite received', {
+          header: peerIdentity ? `Invite for ${peerIdentity}` : 'Collaboration'
+        });
+      } catch (e) { /* ignore */ }
+      try {
+        pushUiNotification({
+          id: `collab-invite-${String(payload.invitationId)}`,
+          kind: 'collaboration_invite',
+          title: 'Collaboration invite',
+          subtitle: fromPeerId
+            ? `From peer ${fromPeerId}`
+            : (peerIdentity ? `Invite for ${peerIdentity}` : 'Review and respond'),
+          href: '/settings/collaboration',
+          copyText: `${String(payload.acceptUrl)}\n${String(payload.declineUrl)}`
+        });
+      } catch (e) { /* ignore */ }
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   /** @returns {import('@fabric/core/types/key')|null} Key with private for document encrypt/decrypt */
@@ -2176,6 +2223,15 @@ class Bridge extends React.Component {
     const fp = ns && ns.fabricPeerId != null ? String(ns.fabricPeerId).trim() : '';
     if (fp) meta.fabricPeerId = fp;
 
+    try {
+      const pkHex = typeof this.getHtlcRefundPublicKeyHex === 'function' ? this.getHtlcRefundPublicKeyHex() : null;
+      if (pkHex && /^[0-9a-fA-F]{66}$/.test(String(pkHex).trim())) {
+        meta.publicKeyHex = String(pkHex).trim().toLowerCase();
+      } else if (key && key.pubkey && /^[0-9a-fA-F]{64,66}$/.test(String(key.pubkey).trim())) {
+        meta.publicKeyHex = String(key.pubkey).trim().toLowerCase();
+      }
+    } catch (_) {}
+
     const payload = {
       method: 'RegisterWebRTCPeer',
       params: [{
@@ -3100,6 +3156,45 @@ class Bridge extends React.Component {
     this._sendJSONRPCNow(payload);
   }
 
+  /**
+   * Call Hub JSON-RPC over HTTP POST /services/rpc (same method set as WebSocket JSONCall).
+   * @param {string} method - e.g. ListCollaborationGroups
+   * @param {object} [params] - Single object becomes JSON-RPC params[0]
+   * @returns {Promise<{ result: * }|{ error: string }>}
+   */
+  async callHubJsonRpc (method, params = {}) {
+    if (typeof window === 'undefined') return { error: 'callHubJsonRpc requires window' };
+    const origin = window.location.origin;
+    this._hubJsonRpcSeq = (this._hubJsonRpcSeq || 0) + 1;
+    const id = this._hubJsonRpcSeq;
+    let res;
+    try {
+      res = await fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: String(method || ''),
+          params: [params && typeof params === 'object' ? params : {}]
+        }),
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
+    } catch (e) {
+      return { error: e && e.message ? e.message : String(e) };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: (body && (body.error || body.message)) || `HTTP ${res.status}` };
+    }
+    if (body && body.error) {
+      const msg = body.error.message || body.error.data || JSON.stringify(body.error);
+      return { error: String(msg || 'RPC error') };
+    }
+    return { result: body && Object.prototype.hasOwnProperty.call(body, 'result') ? body.result : null };
+  }
+
   addJob (type, data) {
     this.queue.push({ type, data });
   }
@@ -3986,6 +4081,30 @@ class Bridge extends React.Component {
               }));
               break;
             }
+            if (parsed && parsed.type === 'CollaborationInvitation' && parsed.object && typeof window !== 'undefined') {
+              const payload = parsed.object;
+              const localId = this._getIdentityId() || '';
+              const recipient = payload && payload.recipientFabricPeerId ? String(payload.recipientFabricPeerId) : '';
+              const match =
+                !recipient ||
+                (localId && recipient === localId) ||
+                (this.peerId && recipient === this.peerId);
+              if (match) {
+                window.dispatchEvent(new CustomEvent('fabric:collaborationInvitation', { detail: payload }));
+                try {
+                  const pid = payload && payload.recipientPeerIdentity ? String(payload.recipientPeerIdentity) : '';
+                  pushUiNotification({
+                    id: `collab-invite-${String(payload.invitationId || Date.now())}`,
+                    kind: 'collaboration_invite',
+                    title: 'Collaboration invite',
+                    subtitle: pid ? `Invite for ${pid}` : 'Review and respond',
+                    href: '/settings/collaboration',
+                    copyText: `${String(payload.acceptUrl || '')}\n${String(payload.declineUrl || '')}`.trim()
+                  });
+                } catch (e) { /* ignore */ }
+              }
+              break;
+            }
             if (parsed && parsed.type === DOCUMENT_OFFER && typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent('fabric:documentOffer', { detail: parsed }));
               break;
@@ -4165,6 +4284,9 @@ class Bridge extends React.Component {
             if (this._tryDispatchFederationContractInviteFromChat(content, chat)) {
               break;
             }
+            if (this._tryDispatchCollaborationInviteFromChat(content, chat)) {
+              break;
+            }
             const relayOfferPrefix = `[${DOCUMENT_OFFER}] `;
             if (typeof content === 'string' && content.startsWith(relayOfferPrefix) && typeof window !== 'undefined') {
               try {
@@ -4208,6 +4330,9 @@ class Bridge extends React.Component {
               break;
             }
             if (this._tryDispatchFederationContractInviteFromChat(content, chat)) {
+              break;
+            }
+            if (this._tryDispatchCollaborationInviteFromChat(content, chat)) {
               break;
             }
 

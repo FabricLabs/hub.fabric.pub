@@ -49,6 +49,11 @@ function FederationsHome (props) {
   const [federationFs, setFederationFs] = React.useState(null);
   const [hubKeyBusy, setHubKeyBusy] = React.useState(false);
   const [hubKeyMsg, setHubKeyMsg] = React.useState(null);
+  const [collabGroupId, setCollabGroupId] = React.useState('');
+  const [collabGroupName, setCollabGroupName] = React.useState('Federation validators');
+  const [collabBusy, setCollabBusy] = React.useState(false);
+  const [collabMsg, setCollabMsg] = React.useState('');
+  const [collabErr, setCollabErr] = React.useState('');
 
   const refresh = React.useCallback(async () => {
     setLoadError(null);
@@ -119,6 +124,55 @@ function FederationsHome (props) {
       setHubKeyMsg(e && e.message ? e.message : String(e));
     } finally {
       setHubKeyBusy(false);
+    }
+  };
+
+  const saveCollaborationGroupFromFederation = async () => {
+    setCollabErr('');
+    setCollabMsg('');
+    if (!adminToken) {
+      setCollabErr('Admin token required (complete hub setup and keep the token in this browser).');
+      return;
+    }
+    const lines = normalizePubkeyRows(validatorRows);
+    if (lines.length === 0) {
+      setCollabErr('Add at least one validator public key.');
+      return;
+    }
+    if (lines.some((k) => !PUBKEY_RE.test(k))) {
+      setCollabErr('Each validator must be a 33-byte compressed secp256k1 public key (66 hex chars, prefix 02 or 03).');
+      return;
+    }
+    let thr = Number(threshold);
+    if (!Number.isFinite(thr) || thr < 1) thr = 1;
+    if (thr > lines.length) thr = lines.length;
+    setCollabBusy(true);
+    try {
+      const payload = {
+        validators: lines,
+        threshold: thr,
+        adminToken
+      };
+      const gid = String(collabGroupId || '').trim();
+      if (gid) payload.groupId = gid;
+      const nm = String(collabGroupName || '').trim();
+      if (nm) payload.name = nm;
+      const r = await hubJsonRpc('UpsertCollaborationGroupFromFederationValidators', [payload]);
+      if (r && r.status === 'error') {
+        setCollabErr(r.message || 'Collaboration group sync failed.');
+        return;
+      }
+      const id = r && r.groupId ? String(r.groupId) : '';
+      const updated = !!(r && r.updated);
+      setCollabMsg(
+        updated
+          ? `Updated collaboration group ${id} to match this federation signer set.`
+          : `Created collaboration group ${id} from this federation signer set.`
+      );
+    } catch (e) {
+      setCollabErr(e && e.message ? e.message : String(e));
+    } finally {
+      setCollabBusy(false);
     }
   };
 
@@ -318,6 +372,57 @@ function FederationsHome (props) {
                 {hubKeyMsg}
               </Message>
             ) : null}
+
+            <Message info size="small" style={{ marginTop: '0.85em' }}>
+              <Message.Header>Collaboration group (same signer set)</Message.Header>
+              <p style={{ margin: '0.35em 0 0.65em', lineHeight: 1.45 }}>
+                Mirror these federation validators into a <Link to="/settings/collaboration">Collaboration</Link> group
+                so invitations, previews, and the federation vault stay aligned on one pubkey list and threshold.
+              </p>
+              {collabErr ? (
+                <Message negative size="small" onDismiss={() => setCollabErr('')} style={{ marginBottom: '0.65em' }}>
+                  {collabErr}
+                </Message>
+              ) : null}
+              {collabMsg ? (
+                <Message success size="small" onDismiss={() => setCollabMsg('')} style={{ marginBottom: '0.65em' }}>
+                  {collabMsg}{' '}
+                  <Link to="/settings/collaboration">Open Collaboration</Link>.
+                </Message>
+              ) : null}
+              <Form.Field>
+                <label htmlFor="fed-collab-group-id">Existing group id (optional — leave empty to create)</label>
+                <Form.Input
+                  id="fed-collab-group-id"
+                  placeholder="grp_…"
+                  value={collabGroupId}
+                  onChange={(e, { value }) => setCollabGroupId(value != null ? String(value) : '')}
+                  style={{ fontFamily: 'monospace', fontSize: '0.9em' }}
+                />
+              </Form.Field>
+              <Form.Field>
+                <label htmlFor="fed-collab-group-name">New group name (when creating)</label>
+                <Form.Input
+                  id="fed-collab-group-name"
+                  placeholder="Federation validators"
+                  value={collabGroupName}
+                  onChange={(e, { value }) => setCollabGroupName(value != null ? String(value) : '')}
+                />
+              </Form.Field>
+              <Button
+                type="button"
+                size="small"
+                color="teal"
+                icon
+                labelPosition="left"
+                loading={collabBusy}
+                disabled={collabBusy || !normalizedKeys.length || invalidKeys.length > 0}
+                onClick={() => void saveCollaborationGroupFromFederation()}
+              >
+                <Icon name="users" />
+                Save signer set to Collaboration group
+              </Button>
+            </Message>
 
             <Form onSubmit={(e) => { e.preventDefault(); void save(); }}>
               <Header as="h4">Signers</Header>

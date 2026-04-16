@@ -36,6 +36,7 @@ const GraphDocumentPreview = require('./GraphDocumentPreview');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { shortenPublicId, fabricPeerBech32Id, peerConnectionPubkeyAtHostPort } = require('../functions/peerIdentity');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
@@ -129,6 +130,9 @@ function PeerDetail (props) {
   const [inviteNoteDraft, setInviteNoteDraft] = React.useState('');
   const [peerOpsAccordionOpen, setPeerOpsAccordionOpen] = React.useState(false);
   const [peerWorkspaceTab, setPeerWorkspaceTab] = React.useState(0);
+  const [contactAddBusy, setContactAddBusy] = React.useState(false);
+  const [contactAddErr, setContactAddErr] = React.useState(null);
+  const [contactAddOk, setContactAddOk] = React.useState(null);
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -457,6 +461,58 @@ function PeerDetail (props) {
     }
   }, [props, id, inviteNoteDraft, federationContractId]);
 
+  const hubAdminCollaborationToken = readHubAdminTokenFromBrowser();
+  const fabricPeerIdForCollaborationContact = React.useMemo(() => {
+    const fromPeer = peer && peer.id ? String(peer.id).trim() : '';
+    const fromWebrtc = webrtcMeta && webrtcMeta.fabricPeerId ? String(webrtcMeta.fabricPeerId).trim() : '';
+    const fp = fromPeer || fromWebrtc;
+    if (!fp || isLikelyBip32ExtendedKey(fp)) return '';
+    return fp;
+  }, [peer, webrtcMeta]);
+
+  const addPeerToCollaborationContacts = React.useCallback(async () => {
+    const token = readHubAdminTokenFromBrowser();
+    const fp = fabricPeerIdForCollaborationContact;
+    if (!token) {
+      setContactAddErr('Save the hub admin token to add contacts (Settings).');
+      return;
+    }
+    if (!fp) {
+      setContactAddErr('No Fabric peer id on this row yet.');
+      return;
+    }
+    const bi = props.bridgeRef && props.bridgeRef.current;
+    if (!bi || typeof bi.callHubJsonRpc !== 'function') {
+      setContactAddErr('Bridge is not ready.');
+      return;
+    }
+    setContactAddBusy(true);
+    setContactAddErr(null);
+    setContactAddOk(null);
+    try {
+      const out = await bi.callHubJsonRpc('AddCollaborationContact', {
+        adminToken: token,
+        fabricPeerId: fp,
+        label: (peer && peer.nickname) ? String(peer.nickname).trim().slice(0, 200) : '',
+        source: 'peer_detail'
+      });
+      if (out && out.error) {
+        setContactAddErr(String(out.error));
+        return;
+      }
+      const res = out && out.result;
+      if (res && res.status === 'error') {
+        setContactAddErr(res.message || 'Add contact failed');
+        return;
+      }
+      setContactAddOk('Added to Collaboration contacts.');
+    } catch (e) {
+      setContactAddErr(e && e.message ? e.message : String(e));
+    } finally {
+      setContactAddBusy(false);
+    }
+  }, [fabricPeerIdForCollaborationContact, peer, props.bridgeRef]);
+
   return (
     <fabric-peer-detail class='fade-in'>
       <Segment>
@@ -573,6 +629,18 @@ function PeerDetail (props) {
                   <Icon name="tag" />
                 </Button>
               )}
+              {hubAdminCollaborationToken && fabricPeerIdForCollaborationContact && !xpubOnlyNoPeer ? (
+                <Button
+                  icon
+                  loading={contactAddBusy}
+                  disabled={contactAddBusy}
+                  title="Add to contacts"
+                  aria-label="Add to contacts"
+                  onClick={() => void addPeerToCollaborationContacts()}
+                >
+                  <Icon name="address book" />
+                </Button>
+              ) : null}
             </Button.Group>
           )}
         </div>
@@ -671,6 +739,17 @@ function PeerDetail (props) {
         {inviteOk ? (
           <Message success size="small" onDismiss={() => setInviteOk(null)} style={{ marginTop: '0.5em' }}>
             {inviteOk}
+          </Message>
+        ) : null}
+        {contactAddErr ? (
+          <Message negative size="small" onDismiss={() => setContactAddErr(null)} style={{ marginTop: '0.5em' }}>
+            {contactAddErr}
+          </Message>
+        ) : null}
+        {contactAddOk ? (
+          <Message success size="small" onDismiss={() => setContactAddOk(null)} style={{ marginTop: '0.5em' }}>
+            {contactAddOk}{' '}
+            <Link to="/settings/collaboration">Open Collaboration</Link>
           </Message>
         ) : null}
 
