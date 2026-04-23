@@ -58,6 +58,14 @@ const MULBERRY32_A = 0x6d2b79f5;
 /** 2^32, maps unsigned 32-bit hash to [0, 1) */
 const UINT32_MAX_PLUS_ONE = 2 ** 32;
 
+/** Difficulty / large-number display: use exponential at or above this value. */
+const UI_NUMBER_LOG_EXP_THRESHOLD = 10 ** 12;
+/** Prefer compact grouping with limited fraction digits at or above this value. */
+const UI_NUMBER_COMPACT_FRACTION_THRESHOLD = 10 ** 6;
+
+/** Browser localStorage key for Joinmarket pool size tiers (BTC). */
+const JOINMARKET_POOL_SIZES_STORAGE_KEY = 'fabric.joinmarket.poolSizesBtc';
+
 module.exports = {
   AUTHORITY: 'hub.fabric.pub',
   GENESIS_HASH,
@@ -77,5 +85,8 @@ module.exports = {
   FNV1A_32_OFFSET,
   FNV1A_32_PRIME,
   MULBERRY32_A,
-  UINT32_MAX_PLUS_ONE
+  UINT32_MAX_PLUS_ONE,
+  UI_NUMBER_LOG_EXP_THRESHOLD,
+  UI_NUMBER_COMPACT_FRACTION_THRESHOLD,
+  JOINMARKET_POOL_SIZES_STORAGE_KEY
 };

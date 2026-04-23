@@ -55,7 +55,7 @@ const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSat
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
-const { SATS_PER_BTC } = require('../constants');
+const { SATS_PER_BTC, UI_NUMBER_LOG_EXP_THRESHOLD } = require('../constants');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 
@@ -238,7 +238,7 @@ class BitcoinHome extends React.Component {
   formatDifficulty (value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return '—';
-    if (n >= 1e12) return n.toExponential(4);
+    if (n >= UI_NUMBER_LOG_EXP_THRESHOLD) return n.toExponential(4);
     return n.toLocaleString();
   }
 
@@ -1965,27 +1965,27 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.lightningChannels.map((channel, idx) => {
-                      const channelId = channel.channel_id || channel.funding_txid || idx;
-                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(channelId)}`;
+                    {this.state.lightningChannels.map((lnChannel, idx) => {
+                      const lnChRowId = lnChannel.channel_id || lnChannel.funding_txid || idx;
+                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(String(lnChRowId))}`;
                       return (
                         <Table.Row
-                          key={channelId}
+                          key={lnChRowId}
                           style={{ cursor: 'pointer' }}
                           onClick={() => this.props.navigate ? this.props.navigate(toUrl) : (window.location.href = toUrl)}
                         >
                           <Table.Cell>
-                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(channel.peer_id || channel.funding_txid || '')}</code>
+                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(lnChannel.peer_id || lnChannel.funding_txid || '')}</code>
                           </Table.Cell>
-                          <Table.Cell>{channel.state || '—'}</Table.Cell>
+                          <Table.Cell>{lnChannel.state || '—'}</Table.Cell>
                           <Table.Cell>
-                            {channel.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(channel.amount_msat) / 1000))} sats` : (channel.channel_sat != null ? `${formatSatsDisplay(channel.channel_sat)} sats` : '—')}
-                          </Table.Cell>
-                          <Table.Cell>
-                            {channel.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(channel.our_amount_msat) / 1000))} sats` : '—'}
+                            {lnChannel.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(lnChannel.amount_msat) / 1000))} sats` : (lnChannel.channel_sat != null ? `${formatSatsDisplay(lnChannel.channel_sat)} sats` : '—')}
                           </Table.Cell>
                           <Table.Cell>
-                            <code style={{ fontSize: '0.8em' }}>{channel.short_channel_id || '—'}</code>
+                            {lnChannel.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(lnChannel.our_amount_msat) / 1000))} sats` : '—'}
+                          </Table.Cell>
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.8em' }}>{lnChannel.short_channel_id || '—'}</code>
                           </Table.Cell>
                         </Table.Row>
                       );

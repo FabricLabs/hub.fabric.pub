@@ -9,9 +9,11 @@ const {
   readStorageJSON,
   writeStorageJSON
 } = require('./fabricBrowserState');
-const { SATS_PER_BTC, BITCOIN_MAX_SUPPLY_BTC: MAX_BTC_SUPPLY } = require('../constants');
-
-const STORAGE_KEY = 'fabric.joinmarket.poolSizesBtc';
+const {
+  SATS_PER_BTC,
+  BITCOIN_MAX_SUPPLY_BTC: MAX_BTC_SUPPLY,
+  JOINMARKET_POOL_SIZES_STORAGE_KEY: STORAGE_KEY
+} = require('../constants');
 
 /** Default pools: 0.05 → 0.005 → 0.0005 BTC */
 const DEFAULT_POOLS_BTC = Object.freeze([0.05, 0.005, 1 / 2000]);

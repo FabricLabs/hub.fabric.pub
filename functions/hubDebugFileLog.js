@@ -42,7 +42,16 @@ function hubDebugLogPath (userDataRoot) {
   if (override && String(override).trim()) {
     const o = String(override).trim();
     if (o.includes('..')) return def;
-    return path.isAbsolute(o) ? o : path.join(root, o);
+    const rootAbs = path.resolve(String(root));
+    if (path.isAbsolute(o)) {
+      const abs = path.resolve(o);
+      if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) return def;
+      return abs;
+    }
+    const joined = path.resolve(rootAbs, o);
+    const rel = path.relative(rootAbs, joined);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return def;
+    return joined;
   }
   return def;
 }
