@@ -120,7 +120,7 @@ const fetchDocument = (fabricID) => {
     dispatch(fetchDocumentRequest());
     const { token } = getState().auth.token;
     try {
-      const instance = await fetchFromAPI(`/documents/${fabricID}`, null, token);
+      const instance = await fetchFromAPI(`/documents/${encodeURIComponent(fabricID)}`, null, token);
       dispatch(fetchDocumentSuccess(instance));
     } catch (error) {
       dispatch(fetchDocumentFailure(error));
@@ -133,7 +133,7 @@ const fetchDocumentSections = (fabric_id) => {
     dispatch(fetchDocumentSectionsRequest());
     const { token } = getState().auth.token;
     try {
-      const sections = await fetchFromAPI(`/documents/sections/${fabric_id}`, null, token);
+      const sections = await fetchFromAPI(`/documents/sections/${encodeURIComponent(fabric_id)}`, null, token);
       dispatch(fetchDocumentSectionsSuccess(sections));
     } catch (error) {
       dispatch(fetchDocumentSectionsFailure(error));
@@ -238,7 +238,9 @@ const createDocumentSection = (fabricID, target, title, content = null) => {
     dispatch(createSectionRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch(`/documents/${fabricID}/section/${target}`, {
+      const response = await fetch(
+        `/documents/${encodeURIComponent(fabricID)}/section/${encodeURIComponent(target)}`,
+        {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -262,7 +264,9 @@ const deleteDocumentSection = (fabricID, target) => {
     dispatch(deleteSectionRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch(`/documents/${fabricID}/section/delete/${target}`, {
+      const response = await fetch(
+        `/documents/${encodeURIComponent(fabricID)}/section/delete/${encodeURIComponent(target)}`,
+        {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -286,7 +290,9 @@ const editDocumentSection = (fabricID, target, title, content = null) => {
     dispatch(editSectionRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch(`/documents/${fabricID}/section/${target}`, {
+      const response = await fetch(
+        `/documents/${encodeURIComponent(fabricID)}/section/${encodeURIComponent(target)}`,
+        {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -310,7 +316,9 @@ const editDocument = (fabricID,title) => {
     dispatch(editDocumentRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch(`/documents/${fabricID}`, {
+      const response = await fetch(
+        `/documents/${encodeURIComponent(fabricID)}`,
+        {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -336,7 +344,9 @@ const deleteDocument = (fabricID) => {
     dispatch(deleteDocumentRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch(`/documents/delete/${fabricID}`, {
+      const response = await fetch(
+        `/documents/delete/${encodeURIComponent(fabricID)}`,
+        {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'

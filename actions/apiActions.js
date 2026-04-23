@@ -2,8 +2,24 @@
 
 const fetch = require('node-fetch');
 
+/** Reject protocol-relative and cross-origin absolute URLs (Codacy / SSRF hygiene for client-side fetch). */
+function assertClientFetchPath (input) {
+  const s = String(input || '');
+  if (!s) throw new TypeError('path required');
+  if (s.startsWith('//')) throw new TypeError('protocol-relative URL refused');
+  if (/^https?:\/\//i.test(s)) {
+    if (typeof window === 'undefined' || !window.location) return s;
+    const u = new URL(s, window.location.href);
+    if (u.origin !== window.location.origin) {
+      throw new TypeError('cross-origin URL refused');
+    }
+  }
+  return s;
+}
+
 async function fetchFromAPI (path, params = {},token = null) {
-  const response = await fetch(path, {
+  const safe = assertClientFetchPath(path);
+  const response = await fetch(safe, {
     method: 'GET',
     headers: {
       'Accept': 'application/json',
@@ -16,7 +32,8 @@ async function fetchFromAPI (path, params = {},token = null) {
 }
 
 async function patchAPI (path, params, token = null) {
-  const response = await fetch(path, {
+  const safe = assertClientFetchPath(path);
+  const response = await fetch(safe, {
     method: 'PATCH',
     headers: {
       'Accept': 'application/json',
@@ -32,7 +49,8 @@ async function patchAPI (path, params, token = null) {
 }
 
 async function postAPI (path, params, token = null) {
-  const response = await fetch(path, {
+  const safe = assertClientFetchPath(path);
+  const response = await fetch(safe, {
     method: 'POST',
     headers: {
       'Accept': 'application/json',

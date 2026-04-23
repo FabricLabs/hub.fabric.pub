@@ -199,9 +199,14 @@ function FederationCoSignerSessionPanel (props) {
       return;
     }
 
-    const inviteId = typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `fed-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const g = (typeof globalThis !== 'undefined' && globalThis.crypto) ? globalThis.crypto : null;
+    const inviteId = g && g.randomUUID
+      ? g.randomUUID()
+      : (() => {
+        const a = new Uint8Array(8);
+        if (g && g.getRandomValues) g.getRandomValues(a);
+        return `fed-${Date.now()}-${Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+      })();
     const publishSessionId = inviteId;
     const json = buildFederationContractInviteJson({
       inviteId,

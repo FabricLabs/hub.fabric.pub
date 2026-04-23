@@ -18,7 +18,8 @@ function getAtPointer (doc, path) {
   const segs = splitPointer(path);
   let cur = doc;
   for (const seg of segs) {
-    if (cur == null || typeof cur !== 'object' || !(seg in cur)) return undefined;
+    if (cur == null || typeof cur !== 'object') return undefined;
+    if (!Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
     cur = cur[seg];
   }
   return cur;

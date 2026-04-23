@@ -120,6 +120,23 @@ function normalizeBaseUrl (value) {
   return raw.replace(/\/+$/, '');
 }
 
+/**
+ * Reject cross-origin absolute URLs for in-app Hub API fetches (Lightning channel create, etc.).
+ * Explorer and third-party block explorer URLs are handled in separate code paths.
+ */
+function assertHubRelativeOrSameOriginRequestUrl (url) {
+  const s = String(url || '');
+  if (!s) throw new Error('URL required');
+  if (s.startsWith('//')) throw new Error('Refusing protocol-relative URL');
+  if (!/^https?:\/\//i.test(s)) return s;
+  if (typeof window === 'undefined' || !window.location) return s;
+  const p = new URL(s, window.location.href);
+  if (p.origin !== window.location.origin) {
+    throw new Error('This request must be same-origin or a relative path');
+  }
+  return s;
+}
+
 function loadUpstreamSettings () {
   const defaults = {
     explorerBaseUrl: '/services/bitcoin',
@@ -1842,7 +1859,7 @@ async function createLightningChannel (settings = {}, channel = {}) {
     amountSats: Number(channel.amountSats || channel.amount_sats || 0),
     pushMsat: channel.pushMsat != null ? Number(channel.pushMsat) : (channel.push_msat != null ? Number(channel.push_msat) : undefined)
   };
-  const url = `${baseUrl}/channels`;
+  const url = assertHubRelativeOrSameOriginRequestUrl(`${baseUrl}/channels`);
   const headers = makeHeaders(settings.apiToken || '', 'POST');
   const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
   let data = {};
