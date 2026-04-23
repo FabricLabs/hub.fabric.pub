@@ -1964,27 +1964,27 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.lightningChannels.map((ch, idx) => {
-                      const chId = ch.channel_id || ch.funding_txid || idx;
-                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(chId)}`;
+                    {this.state.lightningChannels.map((channel, idx) => {
+                      const channelId = channel.channel_id || channel.funding_txid || idx;
+                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(channelId)}`;
                       return (
                         <Table.Row
-                          key={chId}
+                          key={channelId}
                           style={{ cursor: 'pointer' }}
                           onClick={() => this.props.navigate ? this.props.navigate(toUrl) : (window.location.href = toUrl)}
                         >
                           <Table.Cell>
-                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(ch.peer_id || ch.funding_txid || '')}</code>
+                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(channel.peer_id || channel.funding_txid || '')}</code>
                           </Table.Cell>
-                          <Table.Cell>{ch.state || '—'}</Table.Cell>
+                          <Table.Cell>{channel.state || '—'}</Table.Cell>
                           <Table.Cell>
-                            {ch.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.amount_msat) / 1000))} sats` : (ch.channel_sat != null ? `${formatSatsDisplay(ch.channel_sat)} sats` : '—')}
-                          </Table.Cell>
-                          <Table.Cell>
-                            {ch.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.our_amount_msat) / 1000))} sats` : '—'}
+                            {channel.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(channel.amount_msat) / 1000))} sats` : (channel.channel_sat != null ? `${formatSatsDisplay(channel.channel_sat)} sats` : '—')}
                           </Table.Cell>
                           <Table.Cell>
-                            <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
+                            {channel.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(channel.our_amount_msat) / 1000))} sats` : '—'}
+                          </Table.Cell>
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.8em' }}>{channel.short_channel_id || '—'}</code>
                           </Table.Cell>
                         </Table.Row>
                       );

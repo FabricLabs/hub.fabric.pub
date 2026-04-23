@@ -27,6 +27,15 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 
+function timingSafeStringEqual (a, b) {
+  const s = String(a);
+  const t = String(b);
+  if (s.length !== t.length) return false;
+  let diff = 0;
+  for (let i = 0; i < s.length; i++) diff |= s.charCodeAt(i) ^ t.charCodeAt(i);
+  return diff === 0;
+}
+
 function readDelegation () {
   try {
     if (typeof window === 'undefined') return null;
@@ -178,7 +187,7 @@ function SecurityHome () {
         return;
       }
       await refreshSessions();
-      if (token === tokenId) {
+      if (timingSafeStringEqual(token, tokenId)) {
         try {
           removeStorageKey(DELEGATION_STORAGE_KEY);
         } catch (e) {}
