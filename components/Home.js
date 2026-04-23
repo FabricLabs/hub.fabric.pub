@@ -187,7 +187,7 @@ function PromoHero ({ onDismiss }) {
 function StatCard ({ icon, color, label, value, sub }) {
   return (
     <Segment textAlign="center" style={{ margin: 0, padding: '1em 0.75em' }}>
-      <Statistic size="small" style={{ margin: 0 }}>
+      <Statistic size="mini" style={{ margin: 0 }}>
         <Statistic.Value>
           <Icon name={icon} color={color || 'grey'} style={{ marginRight: '0.2em', fontSize: '0.85em' }} />
           {value != null ? value : '—'}
