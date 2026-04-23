@@ -1,5 +1,7 @@
 'use strict';
 
+const Actor = require('@fabric/core/types/actor');
+
 const {
   readStorageJSON,
   writeStorageJSON,
@@ -46,7 +48,12 @@ function emitUpdated (list) {
  */
 function pushUiNotification (item) {
   if (typeof window === 'undefined') return;
-  const id = String(item.id || '').trim() || `n-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const id = String(item.id || '').trim() || `n-${new Actor({
+    type: 'HubEphemeralId',
+    purpose: 'uiNotification',
+    nonce: Actor.randomBytes(8).toString('hex'),
+    at: Date.now()
+  }).id}`;
   const entry = {
     id,
     kind: item.kind || 'info',

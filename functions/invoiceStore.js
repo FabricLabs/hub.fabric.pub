@@ -1,5 +1,6 @@
 'use strict';
 
+const Actor = require('@fabric/core/types/actor');
 const { createFabricBrowserStore } = require('./fabricBrowserStore');
 
 const INVOICES_KEY = 'fabric.bitcoin.invoices';
@@ -67,7 +68,12 @@ function createInvoice (invoice = {}) {
   const amountSats = Number(invoice.amountSats || 0);
   if (!address || !Number.isFinite(amountSats) || amountSats <= 0) return null;
 
-  const id = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const id = `inv_${new Actor({
+    type: 'HubEphemeralId',
+    purpose: 'fabric.bitcoin.invoice',
+    nonce: Actor.randomBytes(8).toString('hex'),
+    at: new Date().toISOString()
+  }).id}`;
   const entry = {
     id,
     address,

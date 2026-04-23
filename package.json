@@ -131,7 +131,7 @@
     "jsdom": "=28.1.0",
     "lodash.merge": "=4.6.2",
     "mocha": "=10.8.2",
-    "nodemailer": "6.10.1",
+    "nodemailer": "=8.0.5",
     "path-browserify": "=1.0.1",
     "process": "=0.11.10",
     "qrcode": "=1.5.4",
@@ -192,6 +192,10 @@
     "webpack-bundle-analyzer": "=4.10.2",
     "webpack-cli": "=5.1.4",
     "webpack-dev-server": "=5.2.2"
+  },
+  "overrides": {
+    "elliptic": "npm:@soatok/elliptic-to-noble@^9999.0.0",
+    "serialize-javascript": "7.0.5"
   },
   "c8": {
     "exclude": [
