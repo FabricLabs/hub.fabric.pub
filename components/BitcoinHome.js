@@ -290,6 +290,19 @@ class BitcoinHome extends React.Component {
     else if (typeof window !== 'undefined') window.location.assign(`/services/bitcoin/transactions/${encodeURIComponent(id)}`);
   }
 
+  /**
+   * Navigate to a relative Hub path (must start with `/`). Keeps row click navigation off
+   * `Array#map` index parameters that some static rules treat as tainted for `window` location.
+   * @param {string} path
+   */
+  navigateInternalPath (path) {
+    const p = String(path || '');
+    if (!p.startsWith('/') || p.includes('//')) return;
+    const nav = this.props.navigate;
+    if (typeof nav === 'function') nav(p);
+    else if (typeof window !== 'undefined') window.location.assign(p);
+  }
+
   getIdentity () {
     const identity = (this.props && this.props.identity) || (this.props && this.props.auth) || null;
     return identity || {};
@@ -1966,13 +1979,16 @@ class BitcoinHome extends React.Component {
                   </Table.Header>
                   <Table.Body>
                     {this.state.lightningChannels.map((lnChannel, listIndex) => {
-                      const lnChRowId = lnChannel.channel_id || lnChannel.funding_txid || listIndex;
-                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(String(lnChRowId))}`;
+                      const idForPath = lnChannel.channel_id || lnChannel.funding_txid;
+                      const path = (idForPath != null && String(idForPath).trim() !== '')
+                        ? `/services/bitcoin/channels/${encodeURIComponent(String(idForPath).trim())}`
+                        : null;
+                      const rowKey = path != null ? path : `ln-ch-${listIndex}`;
                       return (
                         <Table.Row
-                          key={lnChRowId}
+                          key={rowKey}
                           style={{ cursor: 'pointer' }}
-                          onClick={() => this.props.navigate ? this.props.navigate(toUrl) : (window.location.href = toUrl)}
+                          onClick={path ? () => this.navigateInternalPath(path) : undefined}
                         >
                           <Table.Cell>
                             <code style={{ fontSize: '0.85em' }}>{this.trimHash(lnChannel.peer_id || lnChannel.funding_txid || '')}</code>
