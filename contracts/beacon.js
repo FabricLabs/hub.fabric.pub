@@ -6,6 +6,7 @@ const Message = require('@fabric/core/types/message');
 const Tree = require('@fabric/core/types/tree');
 const DistributedExecution = require('../functions/fabricDistributedExecution');
 
+const { SATS_PER_BTC } = require('../constants');
 const BEACON_CHAIN_PATH = 'beacon/CHAIN';
 
 class Beacon extends Actor {
@@ -246,7 +247,7 @@ class Beacon extends Actor {
     const height = await this.bitcoin._makeRPCRequest('getblockcount', []);
     const balances = await this.bitcoin._makeRPCRequest('getbalances', []).catch(() => null);
     const trusted = (balances && balances.mine && balances.mine.trusted != null) ? Number(balances.mine.trusted) : 0;
-    const balanceSats = Math.round(trusted * 1e8);
+    const balanceSats = Math.round(trusted * SATS_PER_BTC);
 
     this._state.content.clock += 1;
     this._state.content.lastBlockHash = blockHash || null;
@@ -330,7 +331,7 @@ class Beacon extends Actor {
     const height = payload.height != null ? Number(payload.height) : (await this.bitcoin._makeRPCRequest('getblockcount', []));
     const balances = await this.bitcoin._makeRPCRequest('getbalances', []).catch(() => null);
     const trusted = (balances && balances.mine && balances.mine.trusted != null) ? Number(balances.mine.trusted) : 0;
-    const balanceSats = Math.round(trusted * 1e8);
+    const balanceSats = Math.round(trusted * SATS_PER_BTC);
 
     if (height <= this._state.content.height && blockHash === this._state.content.lastBlockHash) {
       return null;

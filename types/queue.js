@@ -178,16 +178,21 @@ class Queue extends Actor {
         return jobs[i];
       }
     }
-
-    const job = JSON.parse(json);
-    console.debug('[QUEUE]', 'Took job:', job);
-
-    return job;
+    return null;
   }
 
   async _completeJob (job) {
-    if (this._methods[job.method]) {
-      const result = await this._methods[job.method](...job.params);
+    if (!job) {
+      return { status: 'FAILED', message: 'No job' };
+    }
+    const method = job.method;
+    if (
+      method != null &&
+      typeof method === 'string' &&
+      Object.prototype.hasOwnProperty.call(this._methods, method) &&
+      typeof this._methods[method] === 'function'
+    ) {
+      const result = await this._methods[method](...job.params);
       console.debug('[QUEUE]', 'Completed job:', job);
 
       // TODO: reverse this logic to reject if !this.redis

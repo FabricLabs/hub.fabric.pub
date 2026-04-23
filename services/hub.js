@@ -34,6 +34,7 @@ function resolveStorePath (p) {
 }
 const bs58check = require('bs58check');
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
+const { SATS_PER_BTC } = require('../constants');
 
 // Fabric Types
 const Chain = require('@fabric/core/types/chain'); // fabric chains
@@ -2713,7 +2714,7 @@ class Hub extends Service {
         verified,
         confirmations,
         inMempool: !!inMempool,
-        matchedSats: Math.min(Number.MAX_SAFE_INTEGER, Math.round(received * 1e8))
+        matchedSats: Math.min(Number.MAX_SAFE_INTEGER, Math.round(received * SATS_PER_BTC))
       };
     } catch (err) {
       console.error('[HUB] _l1PaymentVerificationDetail error:', err);
@@ -4054,7 +4055,7 @@ class Hub extends Service {
         const tx = mempoolVerbose[txid];
         if (tx && tx.fees) {
           const btc = tx.fees.modified != null ? tx.fees.modified : tx.fees.base;
-          if (typeof btc === 'number' && Number.isFinite(btc)) mempoolFeeSats += Math.round(btc * 1e8);
+          if (typeof btc === 'number' && Number.isFinite(btc)) mempoolFeeSats += Math.round(btc * SATS_PER_BTC);
         }
       }
       const mempoolFeesTruncated = mempoolTxCountFull > MAX_MEMPOOL_FEE_SUM;

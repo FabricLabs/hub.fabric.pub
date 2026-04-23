@@ -1,7 +1,6 @@
 'use strict';
 
-/** Epsilon for treating a value as a whole number of sats. */
-const SUB_SAT_EPS = 1e-9;
+const { SATS_PER_BTC, SUB_SATOSHI_EPSILON: SUB_SAT_EPS } = require('../constants');
 
 /**
  * Format satoshis for UI. Whole sats: grouped locale integer. Sub-satoshi: 2 fraction digits (centisat).
@@ -27,8 +26,8 @@ function formatBtcFromSats (sats) {
   const n = Number(sats || 0);
   if (!Number.isFinite(n)) return '0.00000000';
   const sub = Math.abs(n % 1) > SUB_SAT_EPS;
-  if (!sub) return (n / 100000000).toFixed(8);
-  const raw = (n / 100000000).toFixed(10);
+  if (!sub) return (n / SATS_PER_BTC).toFixed(8);
+  const raw = (n / SATS_PER_BTC).toFixed(10);
   return raw.replace(/0+$/, '').replace(/\.$/, '');
 }
 

@@ -42,8 +42,8 @@ function fmtDifficulty (n) {
   if (n == null || n === '') return '—';
   const x = Number(n);
   if (!Number.isFinite(x)) return '—';
-  if (x >= 1e12) return x.toExponential(4);
-  if (x >= 1e6) return x.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (x >= 1_000_000_000_000) return x.toExponential(4);
+  if (x >= 1_000_000) return x.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return x.toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 

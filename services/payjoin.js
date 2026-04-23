@@ -6,6 +6,7 @@ const Tree = require('@fabric/core/types/tree');
 const psbtFabric = require('../functions/psbtFabric');
 const payjoinJoinmarketTaproot = require('../functions/payjoinJoinmarketTaproot');
 const { buildFabricPayjoinProtocolProfile } = require('../functions/payjoinFabricProtocol');
+const { SATS_PER_BTC } = require('../constants');
 
 class PayjoinService extends Service {
   constructor (settings = {}) {
@@ -300,7 +301,7 @@ class PayjoinService extends Service {
   _buildBIP21Uri (address, amountSats, label, proposalURL) {
     const params = [];
     if (Number.isFinite(amountSats) && amountSats > 0) {
-      params.push(`amount=${(amountSats / 100000000).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}`);
+      params.push(`amount=${(amountSats / SATS_PER_BTC).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}`);
     }
     if (label) params.push(`label=${encodeURIComponent(label)}`);
     if (proposalURL) params.push(`pj=${encodeURIComponent(proposalURL)}`);

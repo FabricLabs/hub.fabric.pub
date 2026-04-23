@@ -1,6 +1,7 @@
 'use strict';
 
 const { URL } = require('url');
+const { SATS_PER_BTC } = require('../constants');
 
 /**
  * Build a Hub SPA path for Bitcoin Payments from a BIP21 `bitcoin:` URI.
@@ -31,7 +32,7 @@ function hubPaymentsPathFromBitcoinUri (uriStr) {
     const amountStr = u.searchParams.get('amount');
     const amountBtc = amountStr != null ? Number(amountStr) : NaN;
     if (Number.isFinite(amountBtc) && amountBtc > 0) {
-      params.set('payAmountSats', String(Math.round(amountBtc * 1e8)));
+      params.set('payAmountSats', String(Math.round(amountBtc * SATS_PER_BTC)));
     }
   }
   const qs = params.toString();

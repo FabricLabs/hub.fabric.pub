@@ -55,6 +55,7 @@ const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSat
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const { SATS_PER_BTC } = require('../constants');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 
@@ -746,7 +747,7 @@ class BitcoinHome extends React.Component {
     const lightningFunds = this.getLightningBalanceFromOutputs(this.state.lightningOutputs || []);
     const hubWalletSats = Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balanceSats != null
       ? this.state.bitcoinStatus.balanceSats
-      : Math.round(Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null ? this.state.bitcoinStatus.balance : 0) * 1e8));
+      : Math.round(Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null ? this.state.bitcoinStatus.balance : 0) * SATS_PER_BTC));
     const clientWalletSats = Number(wallet && wallet.balanceSats != null ? wallet.balanceSats : 0);
     const sharedSessionsSats = Number(lightningFunds.confirmed || 0) + Number(lightningFunds.unconfirmed || 0) + Number(lightningFunds.immature || 0);
     /** Avoid showing “No data yet” on first paint before refresh() resolves or while a refresh is in flight. */

@@ -43,6 +43,7 @@ const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSat
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const { SATS_PER_BTC } = require('../constants');
 
 class CrowdfundingHome extends React.Component {
   constructor (props) {
@@ -187,7 +188,7 @@ class CrowdfundingHome extends React.Component {
     const minC = Math.round(Number(row && row.minContributionSats || 0)) || 546;
     const share = Math.round(Number(this.state.cfShareAmountSats || 0));
     const sats = Number.isFinite(share) && share >= minC ? share : minC;
-    return buildCrowdfundFunderBitcoinUri(addr, sats / 1e8);
+    return buildCrowdfundFunderBitcoinUri(addr, sats / SATS_PER_BTC);
   }
 
   _paymentsLinkForRow (row) {

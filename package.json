@@ -16,7 +16,7 @@
     "./types/LightningChannel": "./types/lightningChannel.js"
   },
   "engines": {
-    "node": ">=24.14.1 <25"
+    "node": "24.x"
   },
   "scripts": {
     "build": "npm run build:browser",

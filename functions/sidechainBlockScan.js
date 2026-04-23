@@ -1,5 +1,7 @@
 'use strict';
 
+const { SATS_PER_BTC } = require('../constants');
+
 function normalizeSidechainScanCfg (cfg) {
   const c = cfg && typeof cfg === 'object' ? cfg : {};
   const magicHex = String(c.opReturnMagicHex != null ? c.opReturnMagicHex : 'fab100')
@@ -43,7 +45,7 @@ function parseVerboseBlockForSidechainSignals (block, height, cfg) {
       const addr = spk.address || (Array.isArray(spk.addresses) ? spk.addresses[0] : null);
       if (addr && watch.has(addr)) {
         const valueBtc = Number(vout.value);
-        const valueSats = Number.isFinite(valueBtc) ? Math.round(valueBtc * 1e8) : null;
+        const valueSats = Number.isFinite(valueBtc) ? Math.round(valueBtc * SATS_PER_BTC) : null;
         signals.push({
           kind: 'watch_address_out',
           txid,

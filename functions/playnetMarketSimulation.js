@@ -1,5 +1,6 @@
 'use strict';
 
+const { MULBERRY32_A, UINT32_MAX_PLUS_ONE } = require('../constants');
 const { formatSimulationRevenueAsciiGraph } = require('./playnetAsciiFeeGraph');
 
 /**
@@ -11,10 +12,10 @@ const { formatSimulationRevenueAsciiGraph } = require('./playnetAsciiFeeGraph');
 
 function mulberry32 (a) {
   return function () {
-    let t = (a += 0x6d2b79f5);
+    let t = (a += MULBERRY32_A);
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    return ((t ^ (t >>> 14)) >>> 0) / UINT32_MAX_PLUS_ONE;
   };
 }
 

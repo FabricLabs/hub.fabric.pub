@@ -22,6 +22,7 @@ const ECPairFactory = typeof ecpairMod === 'function' ? ecpairMod : (ecpairMod.d
 
 bitcoin.initEccLib(ecc);
 const ecpair = ECPairFactory(ecc);
+const { SATS_PER_BTC } = require('../constants');
 
 /** 0x81 — commit to all outputs; only this input is bound (others may be appended). */
 const SIGHASH_ALL_ANYONECANPAY = bitcoin.Transaction.SIGHASH_ALL | bitcoin.Transaction.SIGHASH_ANYONECANPAY;
@@ -67,7 +68,7 @@ function parseBitcoinUriForPayjoin (uri) {
   if (!/^https?:\/\//i.test(pjUrl)) return null;
   const amountStr = params.get('amount');
   const amountBtc = amountStr != null ? Number(amountStr) : NaN;
-  const amountSats = Number.isFinite(amountBtc) ? Math.round(amountBtc * 1e8) : null;
+  const amountSats = Number.isFinite(amountBtc) ? Math.round(amountBtc * SATS_PER_BTC) : null;
   return {
     address,
     amountSats,
@@ -180,7 +181,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const sorted = utxos
     .map((u) => ({
       ...u,
-      _sats: Math.round(Number(u.amountSats != null ? u.amountSats : (u.amount != null ? u.amount * 1e8 : 0)))
+      _sats: Math.round(Number(u.amountSats != null ? u.amountSats : (u.amount != null ? u.amount * SATS_PER_BTC : 0)))
     }))
     .filter((u) => u.txid && Number.isFinite(u.vout) && u._sats > 0)
     .sort((a, b) => b._sats - a._sats);
