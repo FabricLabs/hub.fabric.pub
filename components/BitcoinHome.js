@@ -1965,8 +1965,8 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.lightningChannels.map((lnChannel, idx) => {
-                      const lnChRowId = lnChannel.channel_id || lnChannel.funding_txid || idx;
+                    {this.state.lightningChannels.map((lnChannel, listIndex) => {
+                      const lnChRowId = lnChannel.channel_id || lnChannel.funding_txid || listIndex;
                       const toUrl = `/services/bitcoin/channels/${encodeURIComponent(String(lnChRowId))}`;
                       return (
                         <Table.Row
@@ -2178,7 +2178,7 @@ class BitcoinHome extends React.Component {
             )
           ) : (
             <List divided relaxed>
-              {this.state.blocks.map((block, idx) => {
+              {this.state.blocks.map((block, listIndex) => {
                 const txCount = block.txCount != null
                   ? Number(block.txCount)
                   : (block.tx_count != null ? Number(block.tx_count) : null);
@@ -2196,7 +2196,7 @@ class BitcoinHome extends React.Component {
                 const metaBits = [txPart, rewardPart, volumePart].filter(Boolean);
                 const meta = metaBits.length ? ` · ${metaBits.join(' · ')}` : '';
                 return (
-                  <List.Item key={block.hash || block.id || idx}>
+                  <List.Item key={block.hash || block.id || listIndex}>
                     <List.Content>
                       <List.Header>
                         {block.hash || block.id ? (
@@ -2233,11 +2233,11 @@ class BitcoinHome extends React.Component {
             )
           ) : (
             <List divided relaxed>
-              {this.state.transactions.map((tx, idx) => {
+              {this.state.transactions.map((tx, listIndex) => {
                 const tid = tx.txid || tx.id || '';
                 const unconfirmed = tx.confirmations != null ? Number(tx.confirmations) === 0 : true;
                 return (
-                  <List.Item key={tid || idx}>
+                  <List.Item key={tid || listIndex}>
                     <List.Content>
                       <List.Header>
                         {tid ? (
@@ -2289,8 +2289,8 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.utxos.map((utxo, idx) => (
-                      <Table.Row key={`${utxo.txid || idx}:${utxo.vout || 0}`}>
+                    {this.state.utxos.map((utxo, listIndex) => (
+                      <Table.Row key={`${utxo.txid || listIndex}:${utxo.vout || 0}`}>
                         <Table.Cell><code>{this.trimHash(utxo.txid || utxo.id || '')}</code></Table.Cell>
                         <Table.Cell>{utxo.vout != null ? utxo.vout : '-'}</Table.Cell>
                         <Table.Cell>{utxo.amount != null ? utxo.amount : (utxo.amountSats != null ? `${formatSatsDisplay(utxo.amountSats)} sats` : '-')}</Table.Cell>

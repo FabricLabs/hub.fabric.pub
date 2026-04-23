@@ -49,7 +49,11 @@ function normalizePatchOps (input, currentState) {
       const existing = getAtPointer(currentState, path);
       const a = (existing && typeof existing === 'object' && !Array.isArray(existing)) ? existing : {};
       const b = (op.value && typeof op.value === 'object' && !Array.isArray(op.value)) ? op.value : {};
-      const merged = Object.assign(Object.create(null), a);
+      const merged = Object.create(null);
+      for (const k of Object.keys(a)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        merged[k] = a[k];
+      }
       for (const k of Object.keys(b)) {
         if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
         merged[k] = b[k];
