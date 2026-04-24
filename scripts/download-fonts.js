@@ -1,19 +1,19 @@
 'use strict';
 
 /**
- * Fetch Fabric theme Arvo latin woff2 files from Google Fonts (static gstatic URLs).
+ * Fetch Sensemaker theme Arvo latin woff2 files from Google Fonts (static gstatic URLs).
  * Run after cloning or if Arvo woff2 are missing under either:
- * - `libraries/semantic/src/themes/fabric/assets/fonts/` (Semantic source)
- * - `assets/themes/fabric/assets/fonts/` (paths served by the Hub for `/themes/…`)
+ * - `libraries/semantic/src/themes/sensemaker/assets/fonts/` (Semantic source)
+ * - `assets/themes/sensemaker/assets/fonts/` (paths served by the Hub for `/themes/…`)
  */
 
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const fontDir = path.join(__dirname, '..', 'libraries', 'semantic', 'src', 'themes', 'fabric', 'assets', 'fonts');
-/** Hub static root — `semantic*.css` references `/themes/fabric/assets/fonts/*.woff2`. */
-const assetsFontDir = path.join(__dirname, '..', 'assets', 'themes', 'fabric', 'assets', 'fonts');
+const fontDir = path.join(__dirname, '..', 'libraries', 'semantic', 'src', 'themes', 'sensemaker', 'assets', 'fonts');
+/** Hub static root — `semantic*.css` references `/themes/sensemaker/assets/fonts/*.woff2`. */
+const assetsFontDir = path.join(__dirname, '..', 'assets', 'themes', 'sensemaker', 'assets', 'fonts');
 
 /** v23 latin woff2 from https://fonts.googleapis.com/css2?family=Arvo (Chrome UA) */
 const ARVO_WOFF2 = [

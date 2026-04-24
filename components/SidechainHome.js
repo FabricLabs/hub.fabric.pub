@@ -1,6 +1,5 @@
 'use strict';
 
-// Dependencies
 const React = require('react');
 const {
   Button,
@@ -13,10 +12,6 @@ const {
   Divider,
   Label
 } = require('semantic-ui-react');
-
-// Fabric Types
-const Actor = require('@fabric/core/types/actor');
-
 const { toast } = require('../functions/toast');
 const { fabricIdentityNeedFullKeyPlain } = require('../functions/hubIdentityUiHints');
 const { sha256 } = require('@noble/hashes/sha2.js');
@@ -64,12 +59,7 @@ function safeJson (obj, space = 2) {
 }
 
 function newOfferId () {
-  return new Actor({
-    type: 'HubEphemeralId',
-    purpose: 'sidechain.documentOffer',
-    nonce: Actor.randomBytes(8).toString('hex'),
-    at: Date.now()
-  }).id;
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
 class SidechainHome extends React.Component {

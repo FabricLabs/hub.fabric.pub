@@ -6,7 +6,6 @@ const VB_OUT_P2WPKH = 31;
 const VB_TX_BASE = 10.5;
 /** Conservative P2WPKH output dust floor for relay policy (sats). */
 const DUST_P2WPKH_SATS = 330;
-const { SATS_PER_BTC } = require('../constants');
 const FAUCET_CAP_DEFAULT_SATS = 1000000;
 const MAX_INPUTS_PESSIMISTIC = 12;
 
@@ -23,7 +22,7 @@ function feeSatsForVsize (vsize, satPerVbyte) {
 function btcPerKbToSatPerVbyte (btcPerKb) {
   const n = Number(btcPerKb);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return (n * SATS_PER_BTC) / 1000;
+  return (n * 1e8) / 1000;
 }
 
 /**
@@ -52,7 +51,7 @@ function utxoAmountsFromList (utxos) {
   for (const u of utxos) {
     if (!u || typeof u !== 'object') continue;
     let s = u.amountSats;
-    if (s == null && u.amount != null) s = Math.round(Number(u.amount) * SATS_PER_BTC);
+    if (s == null && u.amount != null) s = Math.round(Number(u.amount) * 1e8);
     const n = Number(s);
     if (Number.isFinite(n) && n > 0) out.push(Math.round(n));
   }

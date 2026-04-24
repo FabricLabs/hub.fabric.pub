@@ -33,8 +33,7 @@ class Queue extends Actor {
       status: 'STOPPED'
     };
 
-    /** @type {Map<string, Function>} Job method handlers; {@link #registerMethod} and {@link #_completeJob} use this only (no `this[key]`). */
-    this._methodHandlers = new Map();
+    this._methods = {};
     this._workers = [];
 
     return this;
@@ -78,11 +77,9 @@ class Queue extends Actor {
    * @returns {Function} The registered method.
    */
   registerMethod (name, contract, context = {}) {
-    const key = String(name || '');
-    if (this._methodHandlers.has(key)) return this._methodHandlers.get(key);
-    const bound = contract.bind(context);
-    this._methodHandlers.set(key, bound);
-    return bound;
+    if (this._methods[name]) return this._methods[name];
+    this._methods[name] = contract.bind(context);
+    return this._methods[name];
   }
 
   async _tick () {
@@ -181,17 +178,16 @@ class Queue extends Actor {
         return jobs[i];
       }
     }
-    return null;
+
+    const job = JSON.parse(json);
+    console.debug('[QUEUE]', 'Took job:', job);
+
+    return job;
   }
 
   async _completeJob (job) {
-    if (!job) {
-      return { status: 'FAILED', message: 'No job' };
-    }
-    const method = job.method;
-    const handler = method != null && typeof method === 'string' ? this._methodHandlers.get(method) : null;
-    if (typeof handler === 'function') {
-      const result = await handler(...job.params);
+    if (this._methods[job.method]) {
+      const result = await this._methods[job.method](...job.params);
       console.debug('[QUEUE]', 'Completed job:', job);
 
       // TODO: reverse this logic to reject if !this.redis

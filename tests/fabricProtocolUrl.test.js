@@ -27,7 +27,7 @@ describe('fabricProtocolUrl', function () {
     assert.ok(r.message);
     const out = fabricMessageSummaryFromHex(hex);
     assert.strictEqual(out.ok, true);
-    assert.strictEqual(out.summary.typeName, 'P2P_BASE_MESSAGE');
+    assert.strictEqual(out.summary.typeName, 'GENERIC_MESSAGE');
     assert.ok(out.summary.byteLength >= 208);
   });
 

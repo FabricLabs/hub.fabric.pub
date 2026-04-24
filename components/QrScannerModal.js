@@ -10,20 +10,7 @@ class QrScannerModal extends React.Component {
     super(props);
     this.state = { error: null, started: false };
     this._scanner = null;
-    {
-      const g = (typeof globalThis !== 'undefined' && globalThis.crypto) ? globalThis.crypto : null;
-      let suffix;
-      if (g && g.randomUUID) {
-        suffix = g.randomUUID();
-      } else if (g && g.getRandomValues) {
-        const a = new Uint8Array(16);
-        g.getRandomValues(a);
-        suffix = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
-      } else {
-        suffix = String(Date.now());
-      }
-      this._scannerId = 'qr-scanner-' + suffix;
-    }
+    this._scannerId = 'qr-scanner-' + Math.random().toString(36).slice(2);
   }
 
   async componentDidMount () {

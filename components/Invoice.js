@@ -21,7 +21,6 @@ const {
   verifyL1Payment,
   createPayjoinDeposit
 } = require('../functions/bitcoinClient');
-const { SATS_PER_BTC } = require('../constants');
 const { buildTabPayerPayjoinUrl } = require('../functions/tabPayerDemoUrl');
 const {
   loadJoinmarketPoolSizesBtc,
@@ -142,7 +141,7 @@ function Invoice (props) {
   // Payment URI for QR code (BIP 21)
   const paymentUri = React.useMemo(() => {
     if (!address || !amountSats || amountSats <= 0) return null;
-    const btc = (Number(amountSats) / SATS_PER_BTC).toFixed(8);
+    const btc = (Number(amountSats) / 100000000).toFixed(8);
     return `bitcoin:${address}?amount=${btc}`;
   }, [address, amountSats]);
 

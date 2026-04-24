@@ -119,6 +119,6 @@ async function main (input = {}) {
 // Run Main Process
 main(settings).catch((exception) => {
   console.error('[FABRIC:HUB] Main Process Exception:', exception);
-}).then(() => {
-  console.debug('[FABRIC:HUB] main() completed (React root rendered).');
+}).then((output) => {
+  console.log('[FABRIC:HUB] Main Process Output:', output);
 });

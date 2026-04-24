@@ -163,18 +163,6 @@ async function probeHttpInterface (originBase, options = {}) {
     };
   }
   const url = new URL('/', `${origin}/`);
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return {
-      ok: false,
-      status: 0,
-      origin: String(originBase || ''),
-      json: null,
-      hubLike: false,
-      fabricHttpLike: false,
-      application: null,
-      error: 'invalid_origin'
-    };
-  }
   const ac = new AbortController();
   const extSignal = options.signal;
   const onExtAbort = () => {

@@ -15,7 +15,6 @@ const {
   Loader
 } = require('semantic-ui-react');
 const { fetchBlockByHash, loadUpstreamSettings } = require('../functions/bitcoinClient');
-const { UI_NUMBER_LOG_EXP_THRESHOLD, UI_NUMBER_COMPACT_FRACTION_THRESHOLD } = require('../constants');
 
 const BLOCK_HASH_REGEX = /^[a-fA-F0-9]{64}$/;
 
@@ -43,8 +42,8 @@ function fmtDifficulty (n) {
   if (n == null || n === '') return '—';
   const x = Number(n);
   if (!Number.isFinite(x)) return '—';
-  if (x >= UI_NUMBER_LOG_EXP_THRESHOLD) return x.toExponential(4);
-  if (x >= UI_NUMBER_COMPACT_FRACTION_THRESHOLD) return x.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (x >= 1e12) return x.toExponential(4);
+  if (x >= 1e6) return x.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return x.toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 

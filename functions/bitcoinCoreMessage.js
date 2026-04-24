@@ -26,7 +26,7 @@ function encodeBitcoinSignedMessagePayload (message) {
     lenEnc = Buffer.allocUnsafe(3);
     lenEnc[0] = 0xfd;
     lenEnc.writeUInt16LE(n, 1);
-  } else if (n < 2 ** 32) {
+  } else if (n <= 0xffffffff) {
     lenEnc = Buffer.allocUnsafe(5);
     lenEnc[0] = 0xfe;
     lenEnc.writeUInt32LE(n, 1);

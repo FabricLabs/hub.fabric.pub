@@ -18,8 +18,7 @@ function getAtPointer (doc, path) {
   const segs = splitPointer(path);
   let cur = doc;
   for (const seg of segs) {
-    if (cur == null || typeof cur !== 'object') return undefined;
-    if (!Object.prototype.hasOwnProperty.call(cur, seg)) return undefined;
+    if (cur == null || typeof cur !== 'object' || !(seg in cur)) return undefined;
     cur = cur[seg];
   }
   return cur;
@@ -49,16 +48,7 @@ function normalizePatchOps (input, currentState) {
       const existing = getAtPointer(currentState, path);
       const a = (existing && typeof existing === 'object' && !Array.isArray(existing)) ? existing : {};
       const b = (op.value && typeof op.value === 'object' && !Array.isArray(op.value)) ? op.value : {};
-      const merged = Object.create(null);
-      for (const k of Object.keys(a)) {
-        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-        merged[k] = a[k];
-      }
-      for (const k of Object.keys(b)) {
-        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-        merged[k] = b[k];
-      }
-      normalized.push({ op: 'replace', path, value: merged });
+      normalized.push({ op: 'replace', path, value: { ...a, ...b } });
       continue;
     }
     if (!kind && Object.prototype.hasOwnProperty.call(op, 'value')) {

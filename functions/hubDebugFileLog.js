@@ -37,23 +37,13 @@ function resolveDebugLogMaxBytes () {
 
 function hubDebugLogPath (userDataRoot) {
   const root = userDataRoot || process.env.FABRIC_HUB_USER_DATA || process.cwd();
-  const def = path.join(root, 'logs', 'hub', 'debug.log');
   const override = process.env.FABRIC_HUB_DEBUG_LOG_FILE;
   if (override && String(override).trim()) {
-    const o = String(override).trim();
-    if (o.includes('..')) return def;
-    const rootAbs = path.resolve(String(root));
-    if (path.isAbsolute(o)) {
-      const abs = path.resolve(o);
-      if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) return def;
-      return abs;
-    }
-    const joined = path.resolve(rootAbs, o);
-    const rel = path.relative(rootAbs, joined);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) return def;
-    return joined;
+    return path.isAbsolute(override)
+      ? override
+      : path.join(root, override);
   }
-  return def;
+  return path.join(root, 'logs', 'hub', 'debug.log');
 }
 
 function shouldAppendLine (formatted) {

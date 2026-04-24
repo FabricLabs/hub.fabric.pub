@@ -35,11 +35,7 @@ describe('hubUiFeatureFlags', function () {
       json: async () => ({
         success: true,
         setting: 'HUB_UI_FEATURE_FLAGS',
-        value: {
-          advancedMode: true,
-          bitcoinPayments: true,
-          bitcoinCrowdfund: true
-        }
+        value: { bitcoinPayments: true, bitcoinCrowdfund: true }
       })
     });
 

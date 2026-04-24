@@ -26,8 +26,7 @@ function formatDate (inputString) {
     suffix = 'rd';
   }
 
-  // String replace avoids dynamic `RegExp` (static analysis / DoS toolchains).
-  return formattedDate.replace(` ${day},`, ` ${day}${suffix},`);
+  return formattedDate.replace(new RegExp(` ${day},`), ` ${day}${suffix},`);
 }
 
 module.exports = formatDate;

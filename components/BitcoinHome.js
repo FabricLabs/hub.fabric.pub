@@ -55,7 +55,6 @@ const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSat
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
-const { SATS_PER_BTC, UI_NUMBER_LOG_EXP_THRESHOLD } = require('../constants');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 
@@ -238,7 +237,7 @@ class BitcoinHome extends React.Component {
   formatDifficulty (value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return '—';
-    if (n >= UI_NUMBER_LOG_EXP_THRESHOLD) return n.toExponential(4);
+    if (n >= 1e12) return n.toExponential(4);
     return n.toLocaleString();
   }
 
@@ -288,19 +287,6 @@ class BitcoinHome extends React.Component {
     const nav = this.props.navigate;
     if (typeof nav === 'function') nav(`/services/bitcoin/transactions/${encodeURIComponent(id)}`);
     else if (typeof window !== 'undefined') window.location.assign(`/services/bitcoin/transactions/${encodeURIComponent(id)}`);
-  }
-
-  /**
-   * Navigate to a relative Hub path (must start with `/`). Keeps row click navigation off
-   * `Array#map` index parameters that some static rules treat as tainted for `window` location.
-   * @param {string} path
-   */
-  navigateInternalPath (path) {
-    const p = String(path || '');
-    if (!p.startsWith('/') || p.includes('//')) return;
-    const nav = this.props.navigate;
-    if (typeof nav === 'function') nav(p);
-    else if (typeof window !== 'undefined') window.location.assign(p);
   }
 
   getIdentity () {
@@ -760,7 +746,7 @@ class BitcoinHome extends React.Component {
     const lightningFunds = this.getLightningBalanceFromOutputs(this.state.lightningOutputs || []);
     const hubWalletSats = Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balanceSats != null
       ? this.state.bitcoinStatus.balanceSats
-      : Math.round(Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null ? this.state.bitcoinStatus.balance : 0) * SATS_PER_BTC));
+      : Math.round(Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null ? this.state.bitcoinStatus.balance : 0) * 1e8));
     const clientWalletSats = Number(wallet && wallet.balanceSats != null ? wallet.balanceSats : 0);
     const sharedSessionsSats = Number(lightningFunds.confirmed || 0) + Number(lightningFunds.unconfirmed || 0) + Number(lightningFunds.immature || 0);
     /** Avoid showing “No data yet” on first paint before refresh() resolves or while a refresh is in flight. */
@@ -1978,30 +1964,27 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.lightningChannels.map((lnChannel, listIndex) => {
-                      const idForPath = lnChannel.channel_id || lnChannel.funding_txid;
-                      const path = (idForPath != null && String(idForPath).trim() !== '')
-                        ? `/services/bitcoin/channels/${encodeURIComponent(String(idForPath).trim())}`
-                        : null;
-                      const rowKey = path != null ? path : `ln-ch-${listIndex}`;
+                    {this.state.lightningChannels.map((ch, idx) => {
+                      const chId = ch.channel_id || ch.funding_txid || idx;
+                      const toUrl = `/services/bitcoin/channels/${encodeURIComponent(chId)}`;
                       return (
                         <Table.Row
-                          key={rowKey}
+                          key={chId}
                           style={{ cursor: 'pointer' }}
-                          onClick={path ? () => this.navigateInternalPath(path) : undefined}
+                          onClick={() => this.props.navigate ? this.props.navigate(toUrl) : (window.location.href = toUrl)}
                         >
                           <Table.Cell>
-                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(lnChannel.peer_id || lnChannel.funding_txid || '')}</code>
+                            <code style={{ fontSize: '0.85em' }}>{this.trimHash(ch.peer_id || ch.funding_txid || '')}</code>
                           </Table.Cell>
-                          <Table.Cell>{lnChannel.state || '—'}</Table.Cell>
+                          <Table.Cell>{ch.state || '—'}</Table.Cell>
                           <Table.Cell>
-                            {lnChannel.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(lnChannel.amount_msat) / 1000))} sats` : (lnChannel.channel_sat != null ? `${formatSatsDisplay(lnChannel.channel_sat)} sats` : '—')}
-                          </Table.Cell>
-                          <Table.Cell>
-                            {lnChannel.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(lnChannel.our_amount_msat) / 1000))} sats` : '—'}
+                            {ch.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.amount_msat) / 1000))} sats` : (ch.channel_sat != null ? `${formatSatsDisplay(ch.channel_sat)} sats` : '—')}
                           </Table.Cell>
                           <Table.Cell>
-                            <code style={{ fontSize: '0.8em' }}>{lnChannel.short_channel_id || '—'}</code>
+                            {ch.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.our_amount_msat) / 1000))} sats` : '—'}
+                          </Table.Cell>
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
                           </Table.Cell>
                         </Table.Row>
                       );
@@ -2194,7 +2177,7 @@ class BitcoinHome extends React.Component {
             )
           ) : (
             <List divided relaxed>
-              {this.state.blocks.map((block, listIndex) => {
+              {this.state.blocks.map((block, idx) => {
                 const txCount = block.txCount != null
                   ? Number(block.txCount)
                   : (block.tx_count != null ? Number(block.tx_count) : null);
@@ -2212,7 +2195,7 @@ class BitcoinHome extends React.Component {
                 const metaBits = [txPart, rewardPart, volumePart].filter(Boolean);
                 const meta = metaBits.length ? ` · ${metaBits.join(' · ')}` : '';
                 return (
-                  <List.Item key={block.hash || block.id || listIndex}>
+                  <List.Item key={block.hash || block.id || idx}>
                     <List.Content>
                       <List.Header>
                         {block.hash || block.id ? (
@@ -2249,11 +2232,11 @@ class BitcoinHome extends React.Component {
             )
           ) : (
             <List divided relaxed>
-              {this.state.transactions.map((tx, listIndex) => {
+              {this.state.transactions.map((tx, idx) => {
                 const tid = tx.txid || tx.id || '';
                 const unconfirmed = tx.confirmations != null ? Number(tx.confirmations) === 0 : true;
                 return (
-                  <List.Item key={tid || listIndex}>
+                  <List.Item key={tid || idx}>
                     <List.Content>
                       <List.Header>
                         {tid ? (
@@ -2305,8 +2288,8 @@ class BitcoinHome extends React.Component {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {this.state.utxos.map((utxo, listIndex) => (
-                      <Table.Row key={`${utxo.txid || listIndex}:${utxo.vout || 0}`}>
+                    {this.state.utxos.map((utxo, idx) => (
+                      <Table.Row key={`${utxo.txid || idx}:${utxo.vout || 0}`}>
                         <Table.Cell><code>{this.trimHash(utxo.txid || utxo.id || '')}</code></Table.Cell>
                         <Table.Cell>{utxo.vout != null ? utxo.vout : '-'}</Table.Cell>
                         <Table.Cell>{utxo.amount != null ? utxo.amount : (utxo.amountSats != null ? `${formatSatsDisplay(utxo.amountSats)} sats` : '-')}</Table.Cell>

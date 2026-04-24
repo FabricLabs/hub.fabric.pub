@@ -12,7 +12,6 @@ const {
   requestFaucet
 } = require('../functions/bitcoinClient');
 const { computeHubWalletSpendHints } = require('../functions/bitcoinSpendBounds');
-const { SATS_PER_BTC } = require('../constants');
 
 function hubWalletSatsFromDetail (detail) {
   if (!detail || typeof detail !== 'object' || !detail.available) return null;
@@ -20,7 +19,7 @@ function hubWalletSatsFromDetail (detail) {
     return Math.round(Number(detail.balanceSats));
   }
   const b = Number(detail.balance != null ? detail.balance : NaN);
-  if (Number.isFinite(b)) return Math.round(b * SATS_PER_BTC);
+  if (Number.isFinite(b)) return Math.round(b * 1e8);
   return 0;
 }
 
@@ -257,7 +256,7 @@ class FaucetHome extends React.Component {
       ? String(detail.network).toLowerCase()
       : (wsBitcoin.network ? String(wsBitcoin.network).toLowerCase() : 'regtest');
     const hubSats = hubWalletSatsFromDetail(detail);
-    const hubBtc = hubSats != null ? hubSats / SATS_PER_BTC : null;
+    const hubBtc = hubSats != null ? hubSats / 1e8 : null;
     const chainHeight = detail && detail.height != null ? detail.height : (wsBitcoin.height != null ? wsBitcoin.height : null);
     const amountSatsNum = Math.round(Number(this.state.amountSats || 0));
     const utxoListRender = Array.isArray(this.state.hubWalletUtxos) ? this.state.hubWalletUtxos : [];

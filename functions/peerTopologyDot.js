@@ -1,6 +1,5 @@
 'use strict';
 
-const { FNV1A_32_OFFSET, FNV1A_32_PRIME } = require('../constants');
 const { escapeDotLabel, shortLabel } = require('./contractGraphDot');
 
 /**
@@ -8,10 +7,10 @@ const { escapeDotLabel, shortLabel } = require('./contractGraphDot');
  */
 function nodeName (raw) {
   const s = String(raw || 'unknown');
-  let h = FNV1A_32_OFFSET;
+  let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
-    h = Math.imul(h, FNV1A_32_PRIME);
+    h = Math.imul(h, 16777619);
   }
   return 'N' + (h >>> 0).toString(16);
 }

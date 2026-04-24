@@ -9,14 +9,11 @@ const {
   readStorageJSON,
   writeStorageJSON
 } = require('./fabricBrowserState');
-const {
-  SATS_PER_BTC,
-  BITCOIN_MAX_SUPPLY_BTC: MAX_BTC_SUPPLY,
-  JOINMARKET_POOL_SIZES_STORAGE_KEY: STORAGE_KEY
-} = require('../constants');
+
+const STORAGE_KEY = 'fabric.joinmarket.poolSizesBtc';
 
 /** Default pools: 0.05 → 0.005 → 0.0005 BTC */
-const DEFAULT_POOLS_BTC = Object.freeze([0.05, 0.005, 1 / 2000]);
+const DEFAULT_POOLS_BTC = Object.freeze([0.05, 0.005, 0.0005]);
 
 const LABELS = Object.freeze(['Pool A (largest)', 'Pool B', 'Pool C (smallest)']);
 
@@ -33,7 +30,7 @@ function loadJoinmarketPoolSizesBtc () {
     for (let i = 0; i < 3; i++) {
       const n = Number(parsed[i]);
       const d = DEFAULT_POOLS_BTC[i];
-      if (!Number.isFinite(n) || n <= 0 || n > MAX_BTC_SUPPLY) out.push(d);
+      if (!Number.isFinite(n) || n <= 0 || n > 21000000) out.push(d);
       else out.push(n);
     }
     return out;
@@ -52,7 +49,7 @@ function saveJoinmarketPoolSizesBtc (pools) {
   for (let i = 0; i < 3; i++) {
     const n = Number(base[i]);
     const d = DEFAULT_POOLS_BTC[i];
-    if (!Number.isFinite(n) || n <= 0 || n > MAX_BTC_SUPPLY) next.push(d);
+    if (!Number.isFinite(n) || n <= 0 || n > 21000000) next.push(d);
     else next.push(n);
   }
   if (typeof window !== 'undefined') {
@@ -70,7 +67,7 @@ function poolLabels () {
 function btcToSats (btc) {
   const n = Number(btc);
   if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.round(n * SATS_PER_BTC);
+  return Math.round(n * 1e8);
 }
 
 module.exports = {

@@ -24,8 +24,7 @@ function realPackageRoot (pkg) {
 }
 
 const roots = [];
-const LINKED_FABRIC_PKGS = new Set(['@fabric/core', '@fabric/http']);
-for (const pkg of LINKED_FABRIC_PKGS) {
+for (const pkg of ['@fabric/core', '@fabric/http']) {
   const root = realPackageRoot(pkg);
   if (!root) continue;
   const sub = path.join(root, 'node_modules');

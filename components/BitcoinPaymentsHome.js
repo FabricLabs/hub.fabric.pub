@@ -43,7 +43,6 @@ const { fabricIdentityNeedFullKeyPlain } = require('../functions/hubIdentityUiHi
 const txContractLabels = require('../functions/txContractLabels');
 const invoiceStore = require('../functions/invoiceStore');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
-const { SATS_PER_BTC } = require('../constants');
 const QrScannerModal = require('./QrScannerModal');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
@@ -361,7 +360,7 @@ class BitcoinPaymentsHome extends React.Component {
               const amountStr = bu.searchParams.get('amount');
               const amountBtc = amountStr != null ? Number(amountStr) : NaN;
               if (Number.isFinite(amountBtc) && amountBtc > 0) {
-                nextState.amountSats = String(Math.round(amountBtc * SATS_PER_BTC));
+                nextState.amountSats = String(Math.round(amountBtc * 1e8));
               }
             }
           } catch (_) { /* ignore */ }
@@ -837,9 +836,9 @@ class BitcoinPaymentsHome extends React.Component {
     const wallet = this.state.wallet || {};
     const hasAdmin = !!readHubAdminTokenFromBrowser(this.props && this.props.adminToken);
     const summary = this.state.summary || {};
-    const balanceSats = summary && Number.isFinite(summary.balanceSats) ? summary.balanceSats : (summary && summary.summary && summary.summary.trusted != null ? Math.round(Number(summary.summary.trusted) * SATS_PER_BTC) : null);
+    const balanceSats = summary && Number.isFinite(summary.balanceSats) ? summary.balanceSats : (summary && summary.summary && summary.summary.trusted != null ? Math.round(Number(summary.summary.trusted) * 100000000) : null);
     const balanceDisplay = balanceSats != null
-      ? (balanceSats >= SATS_PER_BTC ? `${(balanceSats / SATS_PER_BTC).toFixed(4)} BTC` : `${formatSatsDisplay(balanceSats)} sats`)
+      ? (balanceSats >= 100000000 ? `${(balanceSats / 100000000).toFixed(4)} BTC` : `${formatSatsDisplay(balanceSats)} sats`)
       : 'n/a';
     const ln = this.state.lightningSummary || {};
     const lnChans = Array.isArray(this.state.lightningChannels) ? this.state.lightningChannels : [];
@@ -853,7 +852,7 @@ class BitcoinPaymentsHome extends React.Component {
     const hubBitcoin = (this.props && this.props.bitcoin) || {};
     const hubWalletSats = Number(hubBitcoin && hubBitcoin.balanceSats != null
       ? hubBitcoin.balanceSats
-      : Math.round(Number(hubBitcoin && hubBitcoin.balance != null ? hubBitcoin.balance : 0) * SATS_PER_BTC));
+      : Math.round(Number(hubBitcoin && hubBitcoin.balance != null ? hubBitcoin.balance : 0) * 1e8));
     const sharedSessionSats = Number(lnManaged.confirmed || 0) + Number(lnManaged.unconfirmed || 0) + Number(lnManaged.immature || 0);
     const payjoinSessions = Array.isArray(this.state.payjoinSessions) ? this.state.payjoinSessions : [];
     const payjoinOpenCount = payjoinSessions.filter((s) => {

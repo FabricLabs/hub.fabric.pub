@@ -5,13 +5,12 @@
  * Syncs from `collections.contracts` on start and persists a JSON index under the Hub filesystem.
  */
 const Service = require('@fabric/core/types/service');
-const { MILLISECONDS_PER_HOUR, MILLISECONDS_PER_DAY } = require('../constants');
 
 const CADENCE_MS = {
-  hourly: MILLISECONDS_PER_HOUR,
-  daily: MILLISECONDS_PER_DAY,
-  weekly: 7 * MILLISECONDS_PER_DAY,
-  monthly: 30 * MILLISECONDS_PER_DAY
+  hourly: 3600000,
+  daily: 86400000,
+  weekly: 604800000,
+  monthly: 2592000000
 };
 
 class ChallengeService extends Service {
