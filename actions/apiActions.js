@@ -64,6 +64,7 @@ async function postAPI (path, params, token = null) {
 }
 
 module.exports = {
+  assertClientFetchPath,
   fetchFromAPI,
   patchAPI,
   postAPI

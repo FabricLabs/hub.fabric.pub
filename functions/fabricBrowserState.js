@@ -79,19 +79,39 @@ function writeStorageString (legacyKey, value) {
 function readStorageJSON (legacyKey, fallback) {
   if (!hasLocalStorage()) return fallback;
   const path = pathForLegacyKey(legacyKey);
+  let fromPath;
+  let hasPath = false;
   try {
     if (path) {
       const v = store().GET(path);
-      if (typeof v !== 'undefined') return v;
+      if (typeof v !== 'undefined') {
+        fromPath = v;
+        hasPath = true;
+      }
     }
   } catch (e) {}
+  let fromLegacy;
+  let hasLegacy = false;
   try {
     const raw = window.localStorage.getItem(legacyKey);
-    if (!raw) return fallback;
-    return JSON.parse(raw);
+    if (raw) {
+      fromLegacy = JSON.parse(raw);
+      hasLegacy = true;
+    }
   } catch (e) {
-    return fallback;
+    fromLegacy = undefined;
   }
+  // `fabric:state` is canonical, but many callers (and browser tests) only set the legacy
+  // `fabric.hub.*` string. If both exist, merge with **legacy** winning so explicit local
+  // patches are not shadowed by an empty or stale `ui.featureFlags` snapshot.
+  if (String(legacyKey) === 'fabric.hub.uiFeatureFlags' && hasPath && hasLegacy) {
+    const base = (fromPath && typeof fromPath === 'object' && !Array.isArray(fromPath)) ? fromPath : {};
+    const over = (fromLegacy && typeof fromLegacy === 'object' && !Array.isArray(fromLegacy)) ? fromLegacy : {};
+    return { ...base, ...over };
+  }
+  if (hasPath) return fromPath;
+  if (hasLegacy) return fromLegacy;
+  return fallback;
 }
 
 function writeStorageJSON (legacyKey, value) {

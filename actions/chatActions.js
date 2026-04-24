@@ -1,6 +1,7 @@
 'use strict';
 
 const fetch = require('cross-fetch');
+const { assertClientFetchPath } = require('./apiActions');
 
 // Action Types
 const CHAT_REQUEST = 'CHAT_REQUEST';
@@ -56,7 +57,7 @@ const submitMessage = (message, matter_id = null, file_fabric_id = null) => {
         requestBody.file_fabric_id = file_fabric_id;
       }
 
-      const response = await fetch('/messages', {
+      const response = await fetch(assertClientFetchPath('/messages'), {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -101,7 +102,9 @@ const regenAnswer = (message, matter_id = null, file_fabric_id = null) => {
     }
 
     try {
-      const response = await fetch(`/messages/${message.id}`, {
+      const response = await fetch(
+        assertClientFetchPath(`/messages/${encodeURIComponent(String(message && message.id != null ? message.id : ''))}`),
+        {
         method: 'PATCH',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -134,7 +137,7 @@ const getMessages = (params = {}) => {
     if (!params.conversation_id) params.conversation_id = state.chat.message.conversation;
 
     try {
-      const response = await fetch('/messages?' + new URLSearchParams(params), {
+      const response = await fetch(assertClientFetchPath('/messages?' + new URLSearchParams(params)), {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -162,7 +165,7 @@ const getMessageInformation = (request) => {
     try {
       const state = getState();
       const token = state.auth.token;
-      const response = await fetch('/documents', {
+      const response = await fetch(assertClientFetchPath('/documents'), {
         method: 'SEARCH',
         headers: {
           //        'Authorization': `Bearer ${token}`,

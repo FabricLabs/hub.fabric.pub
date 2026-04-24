@@ -669,7 +669,7 @@ class HubInterface extends React.Component {
       ? `${window.location.protocol}//${window.location.host}`
       : 'http://localhost:8080';
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeoutMs = 12000;
+    const timeoutMs = 15000;
     const timer = controller && typeof setTimeout === 'function'
       ? setTimeout(() => {
         try {
@@ -679,7 +679,11 @@ class HubInterface extends React.Component {
       : null;
     try {
       const res = await fetch(`${base}/settings`, {
-        headers: { 'Accept': 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          'X-Requested-With': 'FabricHub-Setup'
+        },
+        cache: 'no-store',
         signal: controller ? controller.signal : undefined
       });
       if (res.ok) {
@@ -988,7 +992,15 @@ class HubInterface extends React.Component {
 
   componentDidMount () {
     console.debug('[HUB]', 'Component mounted!');
-    this._checkSetupStatus();
+    this._setupStatusSafetyTimer = setTimeout(() => {
+      this.setState((prev) => (prev.setupChecked ? null : { setupChecked: true }));
+    }, 20000);
+    this._checkSetupStatus().finally(() => {
+      if (this._setupStatusSafetyTimer) {
+        clearTimeout(this._setupStatusSafetyTimer);
+        this._setupStatusSafetyTimer = null;
+      }
+    });
     this._refreshAdminTokenIfNeeded();
     this._refreshClientBalance();
     this._onGlobalStateUpdate = (e) => {
@@ -1048,6 +1060,10 @@ class HubInterface extends React.Component {
 
   componentWillUnmount () {
     console.debug('[HUB]', 'Cleaning up...');
+    if (this._setupStatusSafetyTimer) {
+      clearTimeout(this._setupStatusSafetyTimer);
+      this._setupStatusSafetyTimer = null;
+    }
     if (typeof this._hubUiUnsub === 'function') this._hubUiUnsub();
     if (typeof this._toastUnsub === 'function') this._toastUnsub();
     if (typeof window !== 'undefined') {

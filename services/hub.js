@@ -9,13 +9,11 @@ const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
 
-/** Read-only app bundle root (Electron sets FABRIC_HUB_APP_ROOT to app.getAppPath() for asar-safe assets). */
-function hubAppRoot () {
-  return process.env.FABRIC_HUB_APP_ROOT || process.cwd();
-}
+const { resolveAppAssetsDir } = require('@fabric/http/resolveAppAssetsDir');
 
+/** Read-only static root (see @fabric/http `resolveAppAssetsDir`). */
 function hubAssetsDir () {
-  return path.join(hubAppRoot(), 'assets');
+  return resolveAppAssetsDir(__dirname, { envVar: 'FABRIC_HUB_APP_ROOT' });
 }
 
 /** Writable store root (Electron: FABRIC_HUB_USER_DATA). */
@@ -1988,7 +1986,7 @@ class Hub extends Service {
   }
 
   _handleDistributedFederationRegistryRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const reg = federationRegistry.loadRegistry(this.fs);
       res.status(200).json({
         type: 'FederationRegistry',
@@ -2550,14 +2548,14 @@ class Hub extends Service {
   }
 
   _handleDistributedVaultRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const body = this._buildFederationVaultSummary();
       res.status(200).json(body);
     });
   }
 
   _handleDistributedVaultUtxosRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) {
         return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -3762,39 +3760,6 @@ class Hub extends Service {
     }
   }
 
-  _jsonOrShell (req, res, onJSON) {
-    return res.format({
-      html: () => {
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.send(this.applicationString);
-      },
-      json: async () => {
-        try {
-          await onJSON();
-        } catch (error) {
-          res.status(500).json({
-            status: 'error',
-            message: error && error.message ? error.message : String(error)
-          });
-        }
-      }
-    });
-  }
-
-  /** Always return JSON (no Accept negotiation). Use for API-only routes like /settings. */
-  _jsonOnly (req, res, onJSON) {
-    return (async () => {
-      try {
-        await onJSON();
-      } catch (error) {
-        res.status(500).json({
-          status: 'error',
-          message: error && error.message ? error.message : String(error)
-        });
-      }
-    })();
-  }
-
   /**
    * HTTP JSON-RPC for the same method set as WebSocket `JSONCall` (`this.http._registerMethod`).
    * Registered as an explicit route so `POST /services/rpc` is not handled by the SPA `POST /*`
@@ -4603,7 +4568,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinStatusRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const status = await this._collectBitcoinStatus({ force: true });
       // Always 200 so the client receives balance/beacon/message even when unavailable
       const body = status && typeof status === 'object'
@@ -4614,7 +4579,7 @@ class Hub extends Service {
   }
 
   _handleHubUiConfigRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const { normalizeHubUiAlerts } = require('../functions/hubUiAlerts');
       const raw = this.settings.ui && Array.isArray(this.settings.ui.alerts)
         ? this.settings.ui.alerts
@@ -4625,7 +4590,10 @@ class Hub extends Service {
   }
 
   _handleSettingsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    // Same Accept negotiation as `GET /settings/:name`: HTML shell for `Accept: text/html` (SPA
+    // refresh on `/settings`); JSON for `Accept: application/json`. The app must not rely on
+    // default `*/*` for the setup probe—`HubInterface` and tests use `Accept: application/json`.
+    return this.http.jsonOrShell(req, res, async () => {
       const settings = this.setup.listSettings();
       const setupStatus = this.setup.getSetupStatus();
       return res.status(200).json({ success: true, settings, ...setupStatus });
@@ -4633,7 +4601,7 @@ class Hub extends Service {
   }
 
   _handleSettingsBootstrapRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const status = this.setup.getSetupStatus();
       if (status.configured) {
         return res.status(403).json({ error: 'Already configured', message: 'Hub is already configured.' });
@@ -4665,7 +4633,7 @@ class Hub extends Service {
   }
 
   _handleSettingsGetRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const name = req.params && req.params.name;
       if (!name) return res.status(400).json({ error: 'Setting name is required' });
       const value = this.setup.getSetting(name);
@@ -4675,7 +4643,7 @@ class Hub extends Service {
   }
 
   _handleSettingsPutRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const token = SetupService.extractBearerToken(req);
       if (!this.setup.verifyAdminToken(token)) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Admin token required' });
@@ -4754,7 +4722,7 @@ class Hub extends Service {
   }
 
   _handleSettingsRefreshRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const token = SetupService.extractBearerToken(req) || (req.body && req.body.token);
       if (!token) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Current token required for refresh.' });
@@ -4769,7 +4737,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinBlocksListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const status = await this._collectBitcoinStatus({ force: true });
       if (!status || !status.available) {
         return res.status(503).json(status || { status: 'error', message: 'Bitcoin service unavailable' });
@@ -4823,7 +4791,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinPeersListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) {
         return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -4834,7 +4802,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinNetworkInfoRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) {
         return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -4953,7 +4921,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinCrowdfundingListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const rows = Array.from(this._crowdfundingCampaigns.values())
         .map((c) => this._publicCrowdfundingView(c))
@@ -5039,7 +5007,7 @@ class Hub extends Service {
    * Outputs-only PSBT: one output to the campaign vault; donors add inputs with SIGHASH_ALL|ANYONECANPAY.
    */
   _handleBitcoinCrowdfundingAcpDonationPsbtRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const id = String((req.params && req.params.campaignId) || '').trim();
       const c = this._crowdfundingCampaigns.get(id);
@@ -5075,7 +5043,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinCrowdfundingGetRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const id = String((req.params && req.params.campaignId) || '').trim();
       const c = this._crowdfundingCampaigns.get(id);
@@ -5115,7 +5083,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinCrowdfundingPayoutPsbtRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const id = String((req.params && req.params.campaignId) || '').trim();
       const c = this._crowdfundingCampaigns.get(id);
@@ -5312,7 +5280,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinBlockByHeightRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const heightParam = req && req.params ? req.params.height : null;
@@ -5325,7 +5293,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinBlockViewRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const hash = req && req.params ? req.params.blockhash : null;
@@ -5336,7 +5304,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinTransactionsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const limit = Math.max(1, Math.min(100, Number(req.query.limit || 25)));
@@ -5365,7 +5333,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinTransactionViewRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const txhash = req && req.params ? req.params.txhash : null;
@@ -5462,7 +5430,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletSummaryRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5557,7 +5525,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletAddressRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const address = await bitcoin.getUnusedAddress();
@@ -5574,7 +5542,7 @@ class Hub extends Service {
    * Compatible with Fabric CLI and Blockstream-style chain_stats/mempool_stats.
    */
   _handleBitcoinAddressInfoRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5639,7 +5607,7 @@ class Hub extends Service {
    * Requires txindex. Works for any on-chain address.
    */
   _handleBitcoinAddressBalanceRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5675,7 +5643,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletUtxosRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5737,7 +5705,7 @@ class Hub extends Service {
    * created our UTXOs). Requires txindex for getrawtransaction.
    */
   _handleBitcoinWalletTransactionsRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5865,7 +5833,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletSendRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const body = req.body || {};
       const rpcToken = body.adminToken || body.token;
       if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(rpcToken)) {
@@ -5913,7 +5881,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinFaucetRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       try {
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -5988,7 +5956,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinPaymentsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -6018,7 +5986,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinStatusRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) {
         return res.status(503).json({
@@ -6039,7 +6007,7 @@ class Hub extends Service {
   }
 
   _handlePeeringServiceRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const peering = this._getPeeringService();
       if (!peering) {
         return res.status(503).json({
@@ -6060,7 +6028,7 @@ class Hub extends Service {
   }
 
   _handlePeeringAttestationRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const peering = this._getPeeringService();
       if (!peering) {
         return res.status(503).json({ status: 'error', message: 'Peering service is disabled on this Hub node.' });
@@ -6077,7 +6045,7 @@ class Hub extends Service {
   }
 
   _handleChallengeServiceRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const challenge = this._getChallengeService();
       if (!challenge) {
         return res.status(503).json({
@@ -6102,7 +6070,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinDepositRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
 
@@ -6149,7 +6117,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinSessionsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const limit = Math.max(1, Math.min(200, Number(req.query.limit || 25)));
@@ -6166,7 +6134,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinSessionViewRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
@@ -6181,7 +6149,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinProposalSubmitRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
@@ -6218,7 +6186,7 @@ class Hub extends Service {
         message: 'Admin token required. The Hub wallet co-signs an additional input (regtest / ops).'
       });
     }
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
@@ -6621,7 +6589,7 @@ class Hub extends Service {
   }
 
   _handleLightningStatusRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const stub = this.settings.lightning && this.settings.lightning.stub === true;
       if (stub) {
         return res.status(200).json({
@@ -6706,7 +6674,7 @@ class Hub extends Service {
   }
 
   _handleLightningCollectionRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const stub = this.settings.lightning && this.settings.lightning.stub === true;
       const pathName = req && req.path ? req.path : '/services/lightning';
       if (stub) {
@@ -6782,7 +6750,7 @@ class Hub extends Service {
         message: 'Lightning runs automatically with regtest. Use regtest for local development.'
       });
     }
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       try {
         const result = await this._serializedLightningRpc(() =>
           this.lightning._makeRPCRequest('close', [channelId])
@@ -6832,7 +6800,7 @@ class Hub extends Service {
     }
 
     if (this.lightning) {
-      return this._jsonOrShell(req, res, async () => {
+      return this.http.jsonOrShell(req, res, async () => {
         try {
           if (pathName.endsWith('/invoices') || pathName.includes('/invoice')) {
             const amountSats = Number(body.amountSats || 0);
@@ -7530,6 +7498,8 @@ class Hub extends Service {
           console.warn('[HUB] FABRIC_DEV_PUSH_BROWSER_IDENTITY set but no FABRIC_SEED / FABRIC_MNEMONIC / settings.key mnemonic.');
         }
       }
+
+      this.http.setApplicationHtml(this.applicationString);
 
       // Load DEVELOPERS.md into buffer
       const devMdPath = path.resolve(__dirname, '../DEVELOPERS.md');
@@ -9939,105 +9909,6 @@ class Hub extends Service {
         };
       });
 
-      // WebRTC Peer Mesh Management
-      // Register a browser client's WebRTC peer ID for peer discovery
-      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
-        const info = params[0] || {};
-        const peerId = info.peerId;
-        if (!peerId) return { status: 'error', message: 'peerId required' };
-
-        console.debug('[HUB] RegisterWebRTCPeer:', peerId);
-
-        // Ensures a registry entry for this peer id (Bridge registers on load);
-        // augments metadata and lastSeen for ListWebRTCPeers / mesh discovery.
-        const existing = this.http.webrtcPeers.get(peerId);
-        const now = Date.now();
-        if (existing) {
-          existing.metadata = info.metadata || existing.metadata;
-          existing.registeredAt = now;
-          existing.lastSeen = now;
-          this.http.webrtcPeers.set(peerId, existing);
-        } else {
-          this.http.webrtcPeers.set(peerId, {
-            id: peerId,
-            connectedAt: now,
-            status: 'registered',
-            metadata: info.metadata || {},
-            registeredAt: now,
-            lastSeen: now,
-            meshSessionCount: 0
-          });
-        }
-        const cur = this.http.webrtcPeers.get(peerId);
-        if (cur && (cur.meshSessionCount == null || Number.isNaN(Number(cur.meshSessionCount)))) {
-          cur.meshSessionCount = 0;
-          this.http.webrtcPeers.set(peerId, cur);
-        }
-
-        pushNetworkStatus();
-        return { status: 'success', peerId };
-      });
-
-      // List available WebRTC peers for mesh connections
-      this.http._registerMethod('ListWebRTCPeers', (...params) => {
-        const options = params[0] || {};
-        const excludeSelf = options.excludeSelf !== false;
-        const requestingPeerId = options.peerId;
-        const now = Date.now();
-        const maxAgeMs = Number(this.settings.webrtcPeerMaxAgeMs || 2 * 60 * 1000);
-        const maxCandidates = Number(this.settings.webrtcPeerCandidateLimit || 16);
-
-        // Keep the requesting peer active while it continues polling.
-        if (requestingPeerId && this.http.webrtcPeers.has(requestingPeerId)) {
-          const self = this.http.webrtcPeers.get(requestingPeerId);
-          self.lastSeen = now;
-          if (!self.registeredAt) self.registeredAt = now;
-          if (!self.connectedAt) self.connectedAt = now;
-          this.http.webrtcPeers.set(requestingPeerId, self);
-        }
-
-        // Prune stale browser peer registrations so dead sessions do not crowd
-        // candidate selection for active clients.
-        for (const [id, entry] of this.http.webrtcPeers.entries()) {
-          if (!entry || typeof entry !== 'object') {
-            this.http.webrtcPeers.delete(id);
-            continue;
-          }
-          const seenAt = Number(entry.lastSeen || entry.registeredAt || entry.connectedAt || 0);
-          if (!seenAt || (now - seenAt) > maxAgeMs) {
-            this.http.webrtcPeers.delete(id);
-          }
-        }
-
-        const peers = this.http.webrtcPeerList || [];
-        const filtered = excludeSelf && requestingPeerId
-          ? peers.filter(p => p.id !== requestingPeerId)
-          : peers;
-
-        console.debug('[HUB] ListWebRTCPeers:', filtered.length, 'peers available');
-
-        return {
-          type: 'ListWebRTCPeersResult',
-          peers: filtered
-            .sort((a, b) => {
-              const bSeen = Number(b.lastSeen || b.registeredAt || b.connectedAt || 0);
-              const aSeen = Number(a.lastSeen || a.registeredAt || a.connectedAt || 0);
-              return bSeen - aSeen;
-            })
-            .slice(0, maxCandidates)
-            .map(p => ({
-            id: p.id,
-            peerId: p.id,
-            connectedAt: p.connectedAt,
-            lastSeen: Number(p.lastSeen || p.registeredAt || p.connectedAt || 0) || undefined,
-            registeredAt: Number(p.registeredAt || p.connectedAt || 0) || undefined,
-            status: p.status,
-            metadata: p.metadata,
-            meshSessionCount: Number(p.meshSessionCount || 0) || 0
-          }))
-        };
-      });
-
       const bumpWebRtcMeshSession = (pid) => {
         const id = pid != null ? String(pid) : '';
         if (!id || !this.http.webrtcPeers.has(id)) return;
@@ -10638,6 +10509,105 @@ class Hub extends Service {
 
       await this.agent.start();
       await this.http.start();
+
+      // @fabric/http `start()` registers default RegisterWebRTCPeer / ListWebRTCPeers (JSON-RPC).
+      // Re-bind Hub's mesh registry + candidate logic so POST /services/rpc does not use the stock handlers.
+      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
+        const info = params[0] || {};
+        const peerId = info.peerId;
+        if (!peerId) return { status: 'error', message: 'peerId required' };
+
+        console.debug('[HUB] RegisterWebRTCPeer:', peerId);
+
+        // Ensures a registry entry for this peer id (Bridge registers on load);
+        // augments metadata and lastSeen for ListWebRTCPeers / mesh discovery.
+        const existing = this.http.webrtcPeers.get(peerId);
+        const now = Date.now();
+        if (existing) {
+          existing.metadata = info.metadata || existing.metadata;
+          existing.registeredAt = now;
+          existing.lastSeen = now;
+          this.http.webrtcPeers.set(peerId, existing);
+        } else {
+          this.http.webrtcPeers.set(peerId, {
+            id: peerId,
+            connectedAt: now,
+            status: 'registered',
+            metadata: info.metadata || {},
+            registeredAt: now,
+            lastSeen: now,
+            meshSessionCount: 0
+          });
+        }
+        const cur = this.http.webrtcPeers.get(peerId);
+        if (cur && (cur.meshSessionCount == null || Number.isNaN(Number(cur.meshSessionCount)))) {
+          cur.meshSessionCount = 0;
+          this.http.webrtcPeers.set(peerId, cur);
+        }
+
+        pushNetworkStatus();
+        return { status: 'success', peerId };
+      });
+
+      this.http._registerMethod('ListWebRTCPeers', (...params) => {
+        const options = params[0] || {};
+        const excludeSelf = options.excludeSelf !== false;
+        const requestingPeerId = options.peerId;
+        const now = Date.now();
+        const maxAgeMs = Number(this.settings.webrtcPeerMaxAgeMs || 2 * 60 * 1000);
+        const maxCandidates = Number(this.settings.webrtcPeerCandidateLimit || 16);
+
+        // Keep the requesting peer active while it continues polling.
+        if (requestingPeerId && this.http.webrtcPeers.has(requestingPeerId)) {
+          const self = this.http.webrtcPeers.get(requestingPeerId);
+          self.lastSeen = now;
+          if (!self.registeredAt) self.registeredAt = now;
+          if (!self.connectedAt) self.connectedAt = now;
+          this.http.webrtcPeers.set(requestingPeerId, self);
+        }
+
+        // Prune stale browser peer registrations so dead sessions do not crowd
+        // candidate selection for active clients.
+        for (const [id, entry] of this.http.webrtcPeers.entries()) {
+          if (!entry || typeof entry !== 'object') {
+            this.http.webrtcPeers.delete(id);
+            continue;
+          }
+          const seenAt = Number(entry.lastSeen || entry.registeredAt || entry.connectedAt || 0);
+          if (!seenAt || (now - seenAt) > maxAgeMs) {
+            this.http.webrtcPeers.delete(id);
+          }
+        }
+
+        const peers = this.http.webrtcPeerList || [];
+        const filtered = excludeSelf && requestingPeerId
+          ? peers.filter(p => p.id !== requestingPeerId)
+          : peers;
+
+        console.debug('[HUB] ListWebRTCPeers:', filtered.length, 'peers available');
+
+        return {
+          type: 'ListWebRTCPeersResult',
+          peers: filtered
+            .sort((a, b) => {
+              const bSeen = Number(b.lastSeen || b.registeredAt || b.connectedAt || 0);
+              const aSeen = Number(a.lastSeen || a.registeredAt || a.connectedAt || 0);
+              return bSeen - aSeen;
+            })
+            .slice(0, maxCandidates)
+            .map(p => ({
+            id: p.id,
+            peerId: p.id,
+            connectedAt: p.connectedAt,
+            lastSeen: Number(p.lastSeen || p.registeredAt || p.connectedAt || 0) || undefined,
+            registeredAt: Number(p.registeredAt || p.connectedAt || 0) || undefined,
+            status: p.status,
+            metadata: p.metadata,
+            meshSessionCount: Number(p.meshSessionCount || 0) || 0
+          }))
+        };
+      });
+
       this._loadWorkQueueStrategyFromSettings();
       this._ensureWorker();
       if (!this._workQueueTimer) {

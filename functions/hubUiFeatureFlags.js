@@ -65,16 +65,18 @@ function normalizeFlags (raw) {
       d[k] = !!raw[k];
     }
   }
-  // Beginner-safe mode: keep the core surface lean unless Advanced Mode is explicitly enabled.
+  // Beginner-safe mode: keep the default surface lean unless Advanced Mode is enabled. If the user
+  // (or a test) set an explicit value in storage, honor it so `fabric.hub.uiFeatureFlags` is not
+  // silently stomped for keys that are present in the raw object.
   if (!d.advancedMode) {
-    d.peers = false;
-    d.activities = false;
-    d.features = false;
-    d.sidechain = false;
-    d.bitcoinResources = false;
-    d.bitcoinExplorer = false;
-    d.bitcoinLightning = false;
-    d.bitcoinCrowdfund = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'peers')) d.peers = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'activities')) d.activities = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'features')) d.features = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'sidechain')) d.sidechain = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinResources')) d.bitcoinResources = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinExplorer')) d.bitcoinExplorer = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinLightning')) d.bitcoinLightning = false;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinCrowdfund')) d.bitcoinCrowdfund = false;
   }
   return d;
 }

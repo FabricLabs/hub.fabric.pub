@@ -57,6 +57,13 @@ describe('hubUiFeatureFlags', function () {
     assert.strictEqual(flags.loadHubUiFeatureFlags().bitcoinPayments, true, 'local cache still updates');
   });
 
+  it('explicit peers true in storage is honored when advancedMode is off (beginner default does not override)', function () {
+    setupWindowStorage();
+    window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ peers: true }));
+    const f = flags.loadHubUiFeatureFlags();
+    assert.strictEqual(f.peers, true);
+  });
+
   it('normalizeFlags honors peers false and explicit false for former always-on keys (UI-58)', function () {
     setupWindowStorage();
     flags.saveHubUiFeatureFlags({

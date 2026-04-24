@@ -1,11 +1,11 @@
 'use strict';
 
-const { fetchFromAPI } = require('./apiActions');
+const { assertClientFetchPath, fetchFromAPI } = require('./apiActions');
 const createTimeoutPromise = require('../functions/createTimeoutPromise');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 
 
-async function fetchDocumentsFromAPI(token) {
+async function fetchDocumentsFromAPI (token) {
   return fetchFromAPI('/documents', null, token);
 }
 
@@ -18,10 +18,6 @@ const FETCH_DOCUMENT_REQUEST = 'FETCH_DOCUMENT_REQUEST';
 const FETCH_DOCUMENT_SUCCESS = 'FETCH_DOCUMENT_SUCCESS';
 const FETCH_DOCUMENT_FAILURE = 'FETCH_DOCUMENT_FAILURE';
 
-const FETCH_DOCUMENT_SECTIONS_REQUEST = 'FETCH_DOCUMENT_SECTIONS_REQUEST';
-const FETCH_DOCUMENT_SECTIONS_SUCCESS = 'FETCH_DOCUMENT_SECTIONS_SUCCESS';
-const FETCH_DOCUMENT_SECTIONS_FAILURE = 'FETCH_DOCUMENT_SECTIONS_FAILURE';
-
 const UPLOAD_DOCUMENT_REQUEST = 'UPLOAD_DOCUMENT_REQUEST';
 const UPLOAD_DOCUMENT_SUCCESS = 'UPLOAD_DOCUMENT_SUCCESS';
 const UPLOAD_DOCUMENT_FAILURE = 'UPLOAD_DOCUMENT_FAILURE';
@@ -33,18 +29,6 @@ const SEARCH_DOCUMENT_FAILURE = 'SEARCH_DOCUMENT_FAILURE';
 const CREATE_DOCUMENT_REQUEST = 'CREATE_DOCUMENT_REQUEST';
 const CREATE_DOCUMENT_SUCCESS = 'CREATE_DOCUMENT_SUCCESS';
 const CREATE_DOCUMENT_FAILURE = 'CREATE_DOCUMENT_FAILURE';
-
-const CREATE_DOCUMENT_SECTION_REQUEST = 'CREATE_DOCUMENT_SECTION_REQUEST';
-const CREATE_DOCUMENT_SECTION_SUCCESS = 'CREATE_DOCUMENT_SECTION_SUCCESS';
-const CREATE_DOCUMENT_SECTION_FAILURE = 'CREATE_DOCUMENT_SECTION_FAILURE';
-
-const DELETE_DOCUMENT_SECTION_REQUEST = 'DELETE_DOCUMENT_SECTION_REQUEST';
-const DELETE_DOCUMENT_SECTION_SUCCESS = 'DELETE_DOCUMENT_SECTION_SUCCESS';
-const DELETE_DOCUMENT_SECTION_FAILURE = 'DELETE_DOCUMENT_SECTION_FAILURE';
-
-const EDIT_DOCUMENT_SECTION_REQUEST = 'EDIT_DOCUMENT_SECTION_REQUEST';
-const EDIT_DOCUMENT_SECTION_SUCCESS = 'EDIT_DOCUMENT_SECTION_SUCCESS';
-const EDIT_DOCUMENT_SECTION_FAILURE = 'EDIT_DOCUMENT_SECTION_FAILURE';
 
 const EDIT_DOCUMENT_REQUEST = 'EDIT_DOCUMENT_REQUEST';
 const EDIT_DOCUMENT_SUCCESS = 'EDIT_DOCUMENT_SUCCESS';
@@ -63,10 +47,6 @@ const fetchDocumentRequest = () => ({ type: FETCH_DOCUMENT_REQUEST });
 const fetchDocumentSuccess = (instance) => ({ type: FETCH_DOCUMENT_SUCCESS, payload: instance });
 const fetchDocumentFailure = (error) => ({ type: FETCH_DOCUMENT_FAILURE, payload: error });
 
-const fetchDocumentSectionsRequest = () => ({ type: FETCH_DOCUMENT_SECTIONS_REQUEST });
-const fetchDocumentSectionsSuccess = (sections) => ({ type: FETCH_DOCUMENT_SECTIONS_SUCCESS, payload: sections });
-const fetchDocumentSectionsFailure = (error) => ({ type: FETCH_DOCUMENT_SECTIONS_FAILURE, payload: error });
-
 const uploadDocumentRequest = () => ({ type: UPLOAD_DOCUMENT_REQUEST });
 const uploadDocumentSuccess = (fabric_id) => ({ type: UPLOAD_DOCUMENT_SUCCESS, payload: fabric_id });
 const uploadDocumentFailure = (error) => ({ type: UPLOAD_DOCUMENT_FAILURE, payload: error });
@@ -79,18 +59,6 @@ const createDocumentRequest = () => ({ type: CREATE_DOCUMENT_REQUEST });
 const createDocumentSuccess = (results) => ({ type: CREATE_DOCUMENT_SUCCESS, payload: results });
 const createDocumentFailure = (error) => ({ type: CREATE_DOCUMENT_FAILURE, payload: error });
 
-const createSectionRequest = () => ({ type: CREATE_DOCUMENT_SECTION_REQUEST });
-const createSectionSuccess = (sections) => ({ type: CREATE_DOCUMENT_SECTION_SUCCESS, payload: sections });
-const createSectionFailure = (error) => ({ type: CREATE_DOCUMENT_SECTION_FAILURE, payload: error });
-
-const deleteSectionRequest = () => ({ type: DELETE_DOCUMENT_SECTION_REQUEST });
-const deleteSectionSuccess = (sections) => ({ type: DELETE_DOCUMENT_SECTION_SUCCESS, payload: sections });
-const deleteSectionFailure = (error) => ({ type: DELETE_DOCUMENT_SECTION_FAILURE, payload: error });
-
-const editSectionRequest = () => ({ type: EDIT_DOCUMENT_SECTION_REQUEST });
-const editSectionSuccess = (sections) => ({ type: EDIT_DOCUMENT_SECTION_SUCCESS, payload: sections });
-const editSectionFailure = (error) => ({ type: EDIT_DOCUMENT_SECTION_FAILURE, payload: error });
-
 const editDocumentRequest = () => ({ type: EDIT_DOCUMENT_REQUEST });
 const editDocumentSuccess = (document) => ({ type: EDIT_DOCUMENT_SUCCESS, payload: document });
 const editDocumentFailure = (error) => ({ type: EDIT_DOCUMENT_FAILURE, payload: error });
@@ -98,8 +66,6 @@ const editDocumentFailure = (error) => ({ type: EDIT_DOCUMENT_FAILURE, payload: 
 const deleteDocumentRequest = () => ({ type: DELETE_DOCUMENT_REQUEST });
 const deleteDocumentSuccess = () => ({ type: DELETE_DOCUMENT_SUCCESS });
 const deleteDocumentFailure = (error) => ({ type: DELETE_DOCUMENT_FAILURE, payload: error });
-
-
 
 // Thunk action creator
 const fetchDocuments = () => {
@@ -128,19 +94,6 @@ const fetchDocument = (fabricID) => {
   };
 };
 
-const fetchDocumentSections = (fabric_id) => {
-  return async (dispatch, getState) => {
-    dispatch(fetchDocumentSectionsRequest());
-    const { token } = getState().auth.token;
-    try {
-      const sections = await fetchFromAPI(`/documents/sections/${encodeURIComponent(fabric_id)}`, null, token);
-      dispatch(fetchDocumentSectionsSuccess(sections));
-    } catch (error) {
-      dispatch(fetchDocumentSectionsFailure(error));
-    }
-  };
-};
-
 const uploadDocument = (file) => {
   return async (dispatch, getState) => {
     dispatch(uploadDocumentRequest());
@@ -153,7 +106,7 @@ const uploadDocument = (file) => {
       data.append('name', file.name);
       data.append('file', file);
 
-      const fetchPromise = await fetch('/files', {
+      const fetchPromise = await fetch(assertClientFetchPath('/files'), {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -183,7 +136,7 @@ const searchDocument = (query) => {
     dispatch(searchDocumentRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch('/documents', {
+      const response = await fetch(assertClientFetchPath('/documents'), {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
@@ -202,13 +155,12 @@ const searchDocument = (query) => {
     }
   }
 }
-//this starts the document outline, its called in step 2 from document drafter
 const createDocument = (type, query) => {
   return async (dispatch, getState) => {
     dispatch(createDocumentRequest());
     const { token } = getState().auth;
     try {
-      const response = await fetch('/documents', {
+      const response = await fetch(assertClientFetchPath('/documents'), {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
@@ -231,93 +183,13 @@ const createDocument = (type, query) => {
   }
 }
 
-//this creates a new document section, it needs document fabricID, the order number that section will have and its title
-//can be called in step 3 when the user, and in the document view edit mode.
-const createDocumentSection = (fabricID, target, title, content = null) => {
-  return async (dispatch, getState) => {
-    dispatch(createSectionRequest());
-    const { token } = getState().auth;
-    try {
-      const response = await fetch(
-        `/documents/${encodeURIComponent(fabricID)}/section/${encodeURIComponent(target)}`,
-        {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        method: 'POST',
-        body: JSON.stringify({ title, content })
-      });
-
-      const sections = await response.json();
-
-      dispatch(createSectionSuccess(sections));
-    } catch (error) {
-      console.error('Error fetching data:', safeIdentityErr(error));
-      dispatch(createSectionFailure(error.message));
-    }
-  }
-}
-
-const deleteDocumentSection = (fabricID, target) => {
-  return async (dispatch, getState) => {
-    dispatch(deleteSectionRequest());
-    const { token } = getState().auth;
-    try {
-      const response = await fetch(
-        `/documents/${encodeURIComponent(fabricID)}/section/delete/${encodeURIComponent(target)}`,
-        {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        method: 'PATCH',
-      });
-
-      const sections = await response.json();
-
-      dispatch(deleteSectionSuccess(sections));
-    } catch (error) {
-      console.error('Error fetching data:', safeIdentityErr(error));
-      dispatch(deleteSectionFailure(error.message));
-    }
-  }
-}
-
-//this edits the document section, first we wont be editing content
-const editDocumentSection = (fabricID, target, title, content = null) => {
-  return async (dispatch, getState) => {
-    dispatch(editSectionRequest());
-    const { token } = getState().auth;
-    try {
-      const response = await fetch(
-        `/documents/${encodeURIComponent(fabricID)}/section/${encodeURIComponent(target)}`,
-        {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        method: 'PATCH',
-        body: JSON.stringify({ title, content })
-      });
-
-      const obj = await response.json();
-
-      dispatch(editSectionSuccess(obj));
-    } catch (error) {
-      console.error('Error fetching data:', safeIdentityErr(error));
-      dispatch(editSectionFailure(error.message));
-    }
-  }
-}
-
-const editDocument = (fabricID,title) => {
+const editDocument = (fabricID, title) => {
   return async (dispatch, getState) => {
     dispatch(editDocumentRequest());
     const { token } = getState().auth;
     try {
       const response = await fetch(
-        `/documents/${encodeURIComponent(fabricID)}`,
+        assertClientFetchPath(`/documents/${encodeURIComponent(fabricID)}`),
         {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -337,15 +209,13 @@ const editDocument = (fabricID,title) => {
   }
 }
 
-//this sets the document status to deleted
-//remember to add the last migration
 const deleteDocument = (fabricID) => {
   return async (dispatch, getState) => {
     dispatch(deleteDocumentRequest());
     const { token } = getState().auth;
     try {
       const response = await fetch(
-        `/documents/delete/${encodeURIComponent(fabricID)}`,
+        assertClientFetchPath(`/documents/delete/${encodeURIComponent(fabricID)}`),
         {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -370,13 +240,9 @@ const deleteDocument = (fabricID) => {
 module.exports = {
   fetchDocument,
   fetchDocuments,
-  fetchDocumentSections,
   uploadDocument,
   searchDocument,
   createDocument,
-  createDocumentSection,
-  deleteDocumentSection,
-  editDocumentSection,
   editDocument,
   deleteDocument,
   FETCH_DOCUMENT_REQUEST,
@@ -385,9 +251,6 @@ module.exports = {
   FETCH_DOCUMENTS_REQUEST,
   FETCH_DOCUMENTS_SUCCESS,
   FETCH_DOCUMENTS_FAILURE,
-  FETCH_DOCUMENT_SECTIONS_REQUEST,
-  FETCH_DOCUMENT_SECTIONS_SUCCESS,
-  FETCH_DOCUMENT_SECTIONS_FAILURE,
   UPLOAD_DOCUMENT_REQUEST,
   UPLOAD_DOCUMENT_SUCCESS,
   UPLOAD_DOCUMENT_FAILURE,
@@ -397,15 +260,6 @@ module.exports = {
   CREATE_DOCUMENT_REQUEST,
   CREATE_DOCUMENT_SUCCESS,
   CREATE_DOCUMENT_FAILURE,
-  CREATE_DOCUMENT_SECTION_REQUEST,
-  CREATE_DOCUMENT_SECTION_SUCCESS,
-  CREATE_DOCUMENT_SECTION_FAILURE,
-  DELETE_DOCUMENT_SECTION_REQUEST,
-  DELETE_DOCUMENT_SECTION_SUCCESS,
-  DELETE_DOCUMENT_SECTION_FAILURE,
-  EDIT_DOCUMENT_SECTION_REQUEST,
-  EDIT_DOCUMENT_SECTION_SUCCESS,
-  EDIT_DOCUMENT_SECTION_FAILURE,
   EDIT_DOCUMENT_REQUEST,
   EDIT_DOCUMENT_SUCCESS,
   EDIT_DOCUMENT_FAILURE,
