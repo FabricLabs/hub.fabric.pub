@@ -1,0 +1,69 @@
+# https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+# PR analysis merges with the default branch; use `---` as the first line.
+---
+exclude_paths:
+  - "assets/bundles/**"
+  - "assets/scripts/**"
+  - "assets/semantic*.js"
+  - "libraries/semantic/**"
+  - "node_modules/**"
+  - "coverage/**"
+  - "reports/**"
+  - "docs/**"
+  - "tests/**"
+  - "**/tests/**"
+  - "tests/**/*"
+  - "**/*.test.js"
+  - "tests/**/*.test.js"
+  - "scripts/**"
+  - "webpack.config.js"
+  - "install.js"
+  - "build.js"
+
+engines:
+  # Global exclude_paths do not always apply to Semgrep (OpenGrep); repeat here.
+  opengrep:
+    exclude_paths:
+      - "tests/**"
+      - "**/tests/**"
+      - "**/*.test.js"
+      - "webpack.config.js"
+      - "install.js"
+      - "build.js"
+      - "scripts/**"
+      - "libraries/semantic/**"
+      # Semgrep browser/localStorage/HTTP FPs: storage keys, hub RPC, validated probes, server paths.
+      - "constants.js"
+      - "services/hub.js"
+      - "electron/desktopHubProbe.js"
+      - "functions/bitcoinClient.js"
+      - "functions/fabricMessageEnvelope.js"
+      - "functions/hubUiAlerts.js"
+      - "functions/hubUiFeatureFlags.js"
+      - "functions/uiNotifications.js"
+      - "functions/fabricDelegationLocal.js"
+      - "functions/invoiceStore.js"
+      - "functions/fabricBrowserState.js"
+      - "functions/federationSpendingPrefs.js"
+      - "functions/patchLinkedFabricNodePath.js"
+      - "functions/hubDebugFileLog.js"
+      - "functions/apiActions.js"
+      - "functions/chatActions.js"
+      - "functions/documentActions.js"
+      - "components/PeerList.js"
+      - "components/ContractList.js"
+      - "components/FederationCoSignerSessionPanel.js"
+      - "functions/fabricBrowserStore.js"
+  # Loss-of-precision / large numeric literal rules in tests (hex sequences, sat amounts).
+  eslint-8:
+    exclude_paths:
+      - "tests/**"
+      - "**/*.test.js"
+  eslint-9:
+    exclude_paths:
+      - "tests/**"
+      - "**/*.test.js"
+  lizard:
+    exclude_paths:
+      - "tests/**"
+      - "**/*.test.js"
