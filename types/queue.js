@@ -1,0 +1,242 @@
+'use strict';
+
+// Dependencies
+const merge = require('lodash.merge');
+
+// Fabric Types
+const Actor = require('@fabric/core/types/actor');
+
+/**
+ * A `Queue` is a simple job queue for managing asynchronous tasks.
+ */
+class Queue extends Actor {
+  constructor (settings = {}) {
+    super(settings);
+
+    this.settings = merge({
+      clock: 0,
+      collection: 'queue:jobs',
+      frequency: 1, // hz
+      state: {
+        status: 'STOPPED',
+        jobs: {}
+      },
+      worker: false,
+      workers: 0
+    }, settings);
+
+    this._state = {
+      clock: this.settings.clock,
+      content: this.settings.state,
+      current: null,
+      output: [],
+      status: 'STOPPED'
+    };
+
+    /** @type {Map<string, Function>} Job method handlers; {@link #registerMethod} and {@link #_completeJob} use this only (no `this[key]`). */
+    this._methodHandlers = new Map();
+    this._workers = [];
+
+    return this;
+  }
+
+  set clock (value) {
+    this._state.clock = value;
+  }
+
+  get clock () {
+    return this._state.clock;
+  }
+
+  get addJob () {
+    return this._addJob.bind(this);
+  }
+
+  get _clearQueue () {
+    return this._clearQueue.bind(this);
+  }
+
+  get interval () {
+    return 1000 / this.settings.frequency; // ms
+  }
+
+  get jobs () {
+    return new Promise(async (resolve, reject) => {
+      resolve(Object.values(this.state.jobs));
+    });
+  }
+
+  _registerMethod (name, contract, context = {}) {
+    return this.registerMethod(name, contract, context);
+  }
+
+  /**
+   * Register a method with the queue.
+   * @param {String} name Name of the method to register.
+   * @param {Function} contract Function to execute when the method is called.
+   * @param {Object} context Context in which to execute the method.
+   * @returns {Function} The registered method.
+   */
+  registerMethod (name, contract, context = {}) {
+    const key = String(name || '');
+    if (this._methodHandlers.has(key)) return this._methodHandlers.get(key);
+    const bound = contract.bind(context);
+    this._methodHandlers.set(key, bound);
+    return bound;
+  }
+
+  async _tick () {
+    ++this.clock;
+
+    if (this.settings.worker) {
+      console.debug('[QUEUE]', 'Jobs in queue:', await this.jobs);
+      this._state.current = await this._takeJob();
+      console.debug('[QUEUE]', 'Current job:', this._state.current);
+
+      // If there's work to do, do it
+      if (this._state.current && !this._state.current.status) {
+        console.log('actual current queue: ', this._state.current)
+        this._state.current.status = 'COMPUTING';
+
+        // Handle job completion or timeout
+        try {
+
+          const result = await Promise.race([
+            this._completeJob(this._state.current),
+            new Promise((_, reject) => {
+              setTimeout(() => {
+                console.error('[QUEUE]', 'Job timed out:', this._state.current);
+                if (this._state.current && this._state.current.attempts > 0) {
+                  this._failJob(this._state.current);
+                }
+                reject(new Error('Job timed out.'));
+              }, this.interval);
+            })
+          ]);
+
+          console.debug('[QUEUE]', 'Finished work:', result);
+
+          if (result.status === 'FAILED' && this._state.current.attempts > 0) {
+            console.debug('[QUEUE] Failed job in the trainer::', this._state.current);
+            await this._failJob(this._state.current);
+          }
+
+          this._state.output.push(result);
+
+        } catch (exception) {
+          console.error('[QUEUE]', 'Job failed:', exception);
+          if (this._state.current && this._state.current.attempts > 0) {
+            await this._failJob(this._state.current);
+          }
+        } finally {
+          this._state.current = null;
+        }
+      }
+
+      console.debug('[QUEUE]', 'Jobs completed this epoch:', this._state.output.length);
+      this._state.output = [];
+    }
+
+    console.debug('[QUEUE]', 'TICK', this.clock);
+  }
+
+
+  async start () {
+    await this._registerMethod('verify', async function (...params) {
+      return true;
+    });
+
+    for (let i = 0; i < this.settings.workers; i++) {
+      const worker = (async () => { }).bind(this);
+      this._workers.push(worker);
+    }
+
+    this.ticker = setInterval(this._tick.bind(this), this.interval);
+  }
+
+  async _addJob (job) {
+    if (!job.id) job = new Actor(job);
+    if (this.state.jobs[job.id]) return this.state.jobs[job.id];
+
+    // Add job to state
+    this._state.content.jobs[job.id] = job;
+
+    // Commit
+    this.commit();
+
+    // Emit
+    this.emit('job', this.state.jobs[job.id]);
+
+    // Return Job
+    return this._state.content.jobs[job.id];
+  }
+
+  async _takeJob () {
+    const jobs = await this.jobs;
+    if (!jobs.length) return null;
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      if (job.status === 'PENDING') {
+        this._state.content.jobs[job.id].status = 'TAKEN';
+        return jobs[i];
+      }
+    }
+    return null;
+  }
+
+  async _completeJob (job) {
+    if (!job) {
+      return { status: 'FAILED', message: 'No job' };
+    }
+    const method = job.method;
+    const handler = method != null && typeof method === 'string' ? this._methodHandlers.get(method) : null;
+    if (typeof handler === 'function') {
+      const result = await handler(...job.params);
+      console.debug('[QUEUE]', 'Completed job:', job);
+
+      // TODO: reverse this logic to reject if !this.redis
+      if (this.redis) {
+        await this.redis.publish('job:completed', JSON.stringify({ job, result }));
+      }
+
+      return result;
+    }
+
+    switch (job.method) {
+      default:
+        console.warn('[QUEUE]', 'Unhandled job type:', job.method);
+        const failureResult = { status: 'FAILED', message: 'Unhandled job type.' };
+        if (this.redis) {
+          await this.redis.publish('job:completed', JSON.stringify({ job, result: failureResult }));
+        }
+        return failureResult;
+    }
+  }
+
+
+  async _failJob (job) {
+    //we take the failed job and we add it to the queue again with 1 less retry attempt
+    job.attempts--;
+    console.debug('[QUEUE]', 'Retrying job:', job);
+    this._state.current = null;
+    await this._addJob(job);
+  }
+
+  async _clearQueue () {
+    try {
+      if (this.redis) {
+        await this.redis.del(this.settings.collection);
+        console.debug('[QUEUE]', 'Queue cleared in Redis');
+      }
+
+      this._state.content.jobs = {};
+      console.debug('[QUEUE]', 'Queue cleared in local state');
+    } catch (error) {
+      console.error('[QUEUE]', 'Failed to clear queue:', error);
+      throw error;
+    }
+    return this._state.content.jobs;
+  }
+}
+
+module.exports = Queue;

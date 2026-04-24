@@ -1,0 +1,113 @@
+/*******************************
+        Import Directives
+*******************************/
+
+/*------------------
+       Theme
+-------------------*/
+
+@theme: @@element;
+
+/*--------------------
+   Site Variables
+---------------------*/
+
+/* Default site.variables */
+@import "@{themesFolder}/default/globals/site.variables";
+
+/* Packaged site.variables */
+@import (optional) "@{themesFolder}/@{site}/globals/site.variables";
+
+/* Component's site.variables */
+& when not (@theme = 'default') {
+  @import (optional) "@{themesFolder}/@{theme}/globals/site.variables";
+}
+
+/* Site theme site.variables */
+@import (optional) "@{siteFolder}/globals/site.variables";
+
+
+/*-------------------
+ Component Variables
+---------------------*/
+
+/* Default */
+@import "@{themesFolder}/default/@{type}s/@{element}.variables";
+
+/* Packaged Theme */
+@import (optional) "@{themesFolder}/@{theme}/@{type}s/@{element}.variables";
+
+/* Site Theme */
+@import (optional) "@{siteFolder}/@{type}s/@{element}.variables";
+
+
+/*-------------------------
+    Central Color Map
+-------------------------*/
+
+/* Default */
+@import "@{themesFolder}/default/globals/colors.less";
+
+/* Site Theme */
+@import (optional) "@{themesFolder}/@{site}/globals/colors.less";
+
+
+/*******************************
+             Mix-ins
+*******************************/
+
+/*------------------
+       Fonts
+-------------------*/
+
+.loadFonts() when (@importGoogleFonts) {
+  /* Local Arvo (latin subset woff2); matches Fabric Hub Semantic build — no Google Fonts request */
+  /* @import (css) url('@{googleProtocol}fonts.googleapis.com/css2?family=@{googleFontRequest}'); */
+  @font-face {
+    font-family: 'Arvo';
+    font-style: italic;
+    font-weight: 400;
+    font-display: swap;
+    src: url('./themes/fabric/assets/fonts/arvo-italic-400.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+
+  @font-face {
+    font-family: 'Arvo';
+    font-style: italic;
+    font-weight: 700;
+    font-display: swap;
+    src: url('./themes/fabric/assets/fonts/arvo-italic-700.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+
+  @font-face {
+    font-family: 'Arvo';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('./themes/fabric/assets/fonts/arvo-normal-400.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+
+  @font-face {
+    font-family: 'Arvo';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('./themes/fabric/assets/fonts/arvo-normal-700.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+}
+
+/*------------------
+     Overrides
+-------------------*/
+
+.loadUIOverrides() {
+  & when not (@theme = 'default') {
+    @import (optional) "@{themesFolder}/default/@{type}s/@{element}.overrides";
+  }
+  @import (optional) "@{themesFolder}/@{theme}/@{type}s/@{element}.overrides";
+  @import (optional) "@{siteFolder}/@{type}s/@{element}.overrides";
+}

@@ -1,0 +1,30 @@
+# Release gate: browser build + unit tests (see docs/PRODUCTION.md)
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop, 'feature/**']
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hub
+      - uses: actions/checkout@v4
+        with:
+          repository: FabricLabs/fabric-http
+          ref: feature/v0.1.0-RC1
+          path: fabric-http
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.1'
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+      - run: npm ci
+        working-directory: hub
+      - run: npm run ci
+        working-directory: hub
