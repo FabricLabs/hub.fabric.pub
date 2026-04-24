@@ -1,0 +1,17 @@
+'use strict';
+
+const Site = require('@fabric/http/types/site');
+const Dashboard = require('./Dashboard');
+
+class Interface extends Site {
+  _getHTML () {
+    const dashboard = new Dashboard();
+    return `
+      <${this.settings.handle}>
+        ${dashboard.toHTML()}
+      </${this.settings.handle}>
+    `;
+  }
+}
+
+module.exports = Interface;

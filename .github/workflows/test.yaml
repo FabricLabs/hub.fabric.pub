@@ -16,19 +16,32 @@ jobs:
         - macos-latest
         - ubuntu-latest
     steps:
-    - name: Checkout branch
+    - name: Checkout hub
       uses: actions/checkout@v3
-    - name: Install Node.js on ${{ matrix.os }}
-      uses: actions/setup-node@v2
       with:
-        node-version-file: '.nvmrc'
+        path: hub
+    - name: Checkout fabric-http (@fabric/http via file:../fabric-http)
+      uses: actions/checkout@v3
+      with:
+        repository: FabricLabs/fabric-http
+        ref: feature/v0.1.0-RC1
+        path: fabric-http
+    - name: Install Node.js on ${{ matrix.os }}
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: 'hub/.nvmrc'
         cache: 'npm'
-        cache-dependency-path: package-lock.json
+        cache-dependency-path: hub/package-lock.json
     - name: Install dependencies
       run: npm ci
+      working-directory: hub
     - name: Generate coverage report
       run: npm run report:coverage
+      working-directory: hub
+    - name: Mainnet RPC smoke script (no-op in CI unless FABRIC_MAINNET_RPC_SMOKE=1)
+      run: npm run test:smoke-mainnet-rpc
+      working-directory: hub
     - name: Send coverage report
       uses: codecov/codecov-action@v3.1.1
       with:
-        directory: ./reports/
+        directory: ./hub/reports/

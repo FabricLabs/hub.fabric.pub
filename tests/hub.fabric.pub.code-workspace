@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"name": "hub.fabric.pub",
+			"path": ".."
+		},
+		{
+			"name": "fabric-http",
+			"path": "../../fabric-http"
+		},
+		{
+			"name": "fabric",
+			"path": "../../fabric"
+		}
+	],
+	"settings": {}
+}

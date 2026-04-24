@@ -1,0 +1,28 @@
+./types/spa.js: // TODO: move CSS to inline from webpack
+./types/queue.js: // TODO: reverse this logic to reject if !this.redis
+./components/HeaderBar.js: // TODO: use i18n (e.g., call i18n.t('pitch.cta.text') etc.)
+./components/ActivityStream.js: // TODO: use Bridge to send `GET_DOCUMENT` request
+./components/ActivityStream.js: // TODO: load other sources (local, etc.)
+./components/Splash.js: // TODO: use i18n (e.g., call i18n.t('pitch.cta.text') etc.)
+./components/FrontPage.js: // TODO: use i18n (e.g., call i18n.t('pitch.cta.text') etc.)
+./components/Dashboard.js: // TODO: review and determine what to do with this function
+./scripts/browser.js: // TODO: restore fabric-chat-bar
+./scripts/browser.js: // TODO: consider localforage
+./scripts/browser.js: // TODO: consider schema from Knex / MySQL
+./scripts/browser.js: // TODO: consider GraphQL to pass schema
+./scripts/browser.js: // TODO: migrate this to `functions/mapStateToProps.js`?
+./scripts/browser.js: // TODO: render to `fabric-application-target`?
+./actions/bridgeActions.js: // TODO: get bridge instance
+./CLIENT_SECURITY_AUDIT.md: **Issue:** `marked.parse()` output is rendered via `dangerouslySetInnerHTML` without sanitization. Marked.js does **not** sanitize by default and has a history of XSS bypasses. The TODO notes "populate from GitHub releases"—once external content is used, this becomes a direct XSS vector.
+./services/hub.js: // TODO: extract defaults to `settings/default.json`
+./services/hub.js: // TODO: define all resource routes at the Resource level
+./services/hub.js: // TODO: check for vulnerabilities, easy setup
+./services/hub.js: // TODO: use Fabric Resources; routes and components will be defined there
+./services/hub.js: // TODO: upstream
+./services/hub.js: // TODO: upstream to @fabric/http (deprecate, should already exist there)
+./services/hub.js: // TODO: retrieve contract ID, add to local state
+./services/hub.js: // TODO: refactor this from `/verify-payment` to `/payments/...` or `/transactions/:txid`
+./services/hub.js: // TODO: move this upstream to @fabric/http and use Jayson server.
+./services/hub.js: // TODO: remove /rpc route
+./services/fabric.js: // TODO: validate documents
+./services/fabric.js: // TODO: decide inner Fabric state vs. standard document content

@@ -1,0 +1,31 @@
+# Build Electron installers per OS. Run on tags or manually — not on every PR (slow + platform-specific).
+name: Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.1'
+          cache: npm
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build:desktop
+      - name: Upload dist (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-hub-desktop-${{ matrix.os }}
+          path: dist/

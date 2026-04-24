@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Source: types/entity.js &middot; Docs</title>
+  <script src="scripts/prettify/prettify.js"> </script>
+  <script src="scripts/prettify/lang-css.js"> </script>
+  <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  <link type="text/css" rel="stylesheet" href="styles/prettify-tomorrow.css">
+  <link type="text/css" rel="stylesheet" href="styles/jsdoc-default.css">
+  <script>
+    window.dataLayer = window.dataLayer || [];
+
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+    gtag('js', new Date());
+    gtag('config', 'G-09Y57FL980');
+  </script>
+</head>
+
+<body>
+  <div id="main">
+    <h1 class="page-title">Source: types/entity.js</h1>
+
+
+
+
+    <section>
+      <article>
+        <pre class="prettyprint source linenums"><code>'use strict';
+
+const crypto = require('crypto');
+const { EventEmitter } = require('events');
+const monitor = require('fast-json-patch');
+const Witness = require('./witness');
+
+class Entity extends EventEmitter {
+  constructor (data = {}) {
+    super(data);
+
+    // allow this entity to be run without the new keyword
+    if (!(this instanceof Entity)) return new Entity(data);
+
+    // set internal properties
+    this.settings = {
+      verbosity: 2 // Information &amp;&amp; Warnings
+    };
+
+    // configure defaults
+    this.actor = Object.assign({}, this._downsample(data));
+    this.data = Object.assign({}, data);
+
+    // TODO: use getters/setters to restrict access to these elements
+    // remove EventEmitter cruft
+    Object.defineProperty(this, '_events', { enumerable: false });
+    Object.defineProperty(this, '_eventsCount', { enumerable: false });
+    Object.defineProperty(this, '_maxListeners', { enumerable: false });
+
+    // remove mutable variables
+    Object.defineProperty(this, 'actor', { enumerable: false });
+    // Object.defineProperty(this, 'machine', { enumerable: false });
+
+    // return instance
+    return this;
+  }
+
+  get version () {
+    return 1;
+  }
+
+  set state (state) {
+    if (!state) throw new Error('State must be provided.');
+    this._state = state;
+  }
+
+  get state () {
+    return Object.assign({}, this._state);
+  }
+
+  get buffer () {
+    let entity = this;
+    return function buffer () {
+      return Buffer.from(entity.toJSON(), 'utf8');
+    }
+  }
+
+  get id () {
+    let data = this.toJSON();
+    let hash = crypto.createHash('sha256').update(data).digest('hex');
+    if (this.settings.verbosity >= 5) console.log('[FABRIC:ENTITY (pending upstream!)]', 'hash:', hash, 'data:', data);
+    return hash;
+  }
+
+  serialize () {
+    return this.toJSON();
+  }
+
+  toBuffer () {
+    return Buffer.from(this.toString(), 'utf8');
+  }
+
+  /**
+   * Produces a string of JSON, representing the entity.
+   * @return {String} JSON-encoded object.
+   */
+  toJSON () {
+    let result = null;
+
+    switch (this.actor['@type']) {
+      default:
+        result = JSON.stringify(this.toObject());
+        break;
+      case 'Function':
+        result = this._downsample();
+        break;
+      case 'Buffer':
+      case 'String':
+        result = JSON.stringify(this.toString());
+        break;
+    }
+
+    return result;
+  }
+
+  toString () {
+    let result = null;
+
+    switch (this.actor['@type']) {
+      default:
+        result = JSON.stringify(this.actor['@data']);
+        break;
+      case 'Buffer':
+        const buffer = new Uint8Array(this.data);
+        const values = Object.values(this.data);
+        result = JSON.stringify(values);
+        break;
+      case 'String':
+        // TODO: write up longer-form explanation as to why we use an Array here
+        result = this.actor['@data'].map(x => String.fromCharCode(x)).join('');
+        // console.log('was string in array? now:', result);
+        break;
+    }
+
+    return result;
+  }
+
+  toObject () {
+    return this.actor['@data'];
+  }
+
+  /**
+   * As a {@link Buffer}.
+   * @return {Buffer} Slice of memory.
+   */
+  toRaw () {
+    return Buffer.from(this.toJSON(), 'utf8');
+  }
+
+  /**
+   * Return a {@link Fabric}-labeled {@link Object} for this {@link Entity}.
+   * @param {Mixed} [input] Input to downsample.  If not provided, current Entity will be used. 
+   */
+  _downsample (input = this.data) {
+    let result = {};
+
+    if (typeof input === 'string') {
+      result = {
+        '@type': 'String',
+        '@data': input.split('').map(x => x.charCodeAt(0))
+      };
+    } else if (input instanceof Array) {
+      result = {
+        '@type': 'Array',
+        '@data': input
+      };
+    } else if (input instanceof Buffer) {
+      result = {
+        '@type': 'Buffer',
+        '@data': JSON.parse(JSON.stringify(input))[0]
+      };
+    } else if (input instanceof Function) {
+      try {
+        result = {
+          '@type': 'Function',
+          '@data': JSON.stringify(input)
+        };
+      } catch (E) {
+        console.error('Something could not be converted:', E, input);
+        process.exit();
+      }
+    } else {
+      try {
+        result = {
+          '@type': 'Entity',
+          '@data': JSON.parse(JSON.stringify(input))
+        };
+      } catch (E) {
+        console.error('Something could not be converted:', E, input);
+        process.exit();
+      }
+    }
+
+    return result;
+  }
+}
+
+class Transition extends Entity {
+  constructor (settings = {}) {
+    super(settings);
+
+    this.status = 'constructing';
+    this._state = {
+      origin: null,
+      target: null,
+      changes: [],
+      program: [],
+      witness: null
+    };
+
+    this.settings = Object.assign({}, this._state, settings);
+    this.witness = new Witness(this.settings);
+
+    this._setOrigin(this.settings.origin);
+    this._setTarget(this.settings.target);
+
+    this.status = 'constructed';
+  }
+
+  static between (origin, target) {
+    const x = new Entity(origin);
+    const y = new Entity(target);
+
+    const actor = Object.assign({}, origin);
+    const observer = monitor.observe(actor);
+
+    Object.assign(actor, target);
+
+    return new Transition({
+      origin: x.id,
+      target: y.id,
+      changes: monitor.generate(observer)
+    });
+  }
+
+  fromTarget (target) {
+    const base = new Entity();
+    const entity = this._describeTarget(target);
+    return new Transition({
+      origin: base.id,
+      target: entity.id
+    });
+  }
+
+  _applyTo (state) {
+    if (!state) throw new Error('State must be provided.');
+    if (!(state instanceof Entity)) throw new Error('State not of known Entity type.');
+
+    const instance = Object.assign({}, state);
+    const observer = monitor.observe(instance);
+
+    try {
+      monitor.applyPatch(instance, this._state.changes);
+    } catch (E) {
+      console.error('Could not apply changes:', E);
+    }
+
+    monitor.generate(observer);
+    return instance;
+  }
+
+  _setChanges (changes) {
+    if (!changes) throw new Error('No changes specified.');
+    this._state.changes = changes;
+  }
+
+  _setOrigin (origin) {
+    if (!origin) throw new Error('No origin specified.');
+    this._state.origin = origin;
+  }
+
+  _setTarget (target) {
+    if (!target) throw new Error('No target specified.');
+    this._state.target = target;
+  }
+
+  _describeTarget (target) {
+    if (!target) throw new Error('No target specified.');
+    const entity = new Entity(target);
+    this._setTarget(entity.id);
+    return entity;
+  }
+}
+
+Entity.Transition = Transition;
+
+module.exports = Entity;
+module.exports.Transition = Transition;
+</code></pre>
+      </article>
+    </section>
+
+
+
+  </div>
+  <nav>
+    <h2><a href="index.html">Home</a></h2>
+    <h3>Classes</h3>
+    <ul>
+      <li><a href="Actor.html">Actor</a></li>
+      <li><a href="Bitcoin.html">Bitcoin</a></li>
+      <li><a href="Chain.html">Chain</a></li>
+      <li><a href="Channel.html">Channel</a></li>
+      <li><a href="Circuit.html">Circuit</a></li>
+      <li><a href="Collection.html">Collection</a></li>
+      <li><a href="Environment.html">Environment</a></li>
+      <li><a href="Fabric.html">Fabric</a></li>
+      <li><a href="Federation.html">Federation</a></li>
+      <li><a href="Filesystem.html">Filesystem</a></li>
+      <li><a href="HKDF.html">HKDF</a></li>
+      <li><a href="Hash256.html">Hash256</a></li>
+      <li><a href="Identity.html">Identity</a></li>
+      <li><a href="Interface.html">Interface</a></li>
+      <li><a href="Key.html">Key</a></li>
+      <li><a href="Ledger.html">Ledger</a></li>
+      <li><a href="Lightning.html">Lightning</a></li>
+      <li><a href="Logger.html">Logger</a></li>
+      <li><a href="Machine.html">Machine</a></li>
+      <li><a href="Message.html">Message</a></li>
+      <li><a href="Peer.html">Peer</a></li>
+      <li><a href="Reader.html">Reader</a></li>
+      <li><a href="Redis.html">Redis</a></li>
+      <li><a href="Remote.html">Remote</a></li>
+      <li><a href="Resource.html">Resource</a></li>
+      <li><a href="Scribe.html">Scribe</a></li>
+      <li><a href="Script.html">Script</a></li>
+      <li><a href="Service.html">Service</a></li>
+      <li><a href="Session.html">Session</a></li>
+      <li><a href="State.html">State</a></li>
+      <li><a href="Store.html">Store</a></li>
+      <li><a href="Token.html">Token</a></li>
+      <li><a href="Tree.html">Tree</a></li>
+      <li><a href="Vector.html">Vector</a></li>
+      <li><a href="Wallet.html">Wallet</a></li>
+      <li><a href="Worker.html">Worker</a></li>
+      <li><a href="ZMQ.html">ZMQ</a></li>
+    </ul>
+  </nav>
+  <br class="clear" />
+  <footer><a href="https://github.com/FabricLabs/fabric">git://</a> &middot; <a href="https://chat.fabric.pub/#/room/#hub:fabric.pub">Community</a></footer>
+  <script type="text/javascript">
+    prettyPrint();
+  </script>
+  <script src="scripts/linenumber.js"></script>
+</body>
+
+</html>

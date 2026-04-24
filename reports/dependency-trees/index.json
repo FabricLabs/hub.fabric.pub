@@ -1,0 +1,43 @@
+{
+  "generatedAt": "2026-04-03T20:31:01.119Z",
+  "npmVersion": "11.12.1",
+  "nodeVersion": "v24.14.1",
+  "projects": [
+    {
+      "name": "@fabric/hub",
+      "path": "/Users/eric/hub.fabric.pub",
+      "slug": "@fabric_hub",
+      "npmLsJsonExitCode": 0,
+      "npmLsTextExitCode": 0,
+      "files": [
+        "@fabric_hub.json",
+        "@fabric_hub.txt"
+      ],
+      "stderrSnippet": "npm warn Unknown env config \"devdir\". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.\n"
+    },
+    {
+      "name": "@fabric/core",
+      "path": "/Users/eric/fabric-clean",
+      "slug": "@fabric_core",
+      "npmLsJsonExitCode": 0,
+      "npmLsTextExitCode": 0,
+      "files": [
+        "@fabric_core.json",
+        "@fabric_core.txt"
+      ],
+      "stderrSnippet": "npm warn Unknown env config \"devdir\". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.\n"
+    },
+    {
+      "name": "@fabric/http",
+      "path": "/Users/eric/fabric-http",
+      "slug": "@fabric_http",
+      "npmLsJsonExitCode": 0,
+      "npmLsTextExitCode": 0,
+      "files": [
+        "@fabric_http.json",
+        "@fabric_http.txt"
+      ],
+      "stderrSnippet": "npm warn Unknown env config \"devdir\". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.\n"
+    }
+  ]
+}

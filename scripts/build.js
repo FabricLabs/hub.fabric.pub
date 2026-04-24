@@ -1,19 +1,55 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
+require('../functions/patchLinkedFabricNodePath');
+
+require('@babel/register');
+
+(function ensureConfigLocalJs () {
+  const target = path.join(__dirname, '..', 'assets', 'config.local.js');
+  const example = path.join(__dirname, '..', 'assets', 'config.local.example.js');
+  try {
+    if (!fs.existsSync(target) && fs.existsSync(example)) {
+      fs.copyFileSync(example, target);
+    }
+  } catch (e) {
+    console.warn('[BUILD:SITE] Could not seed assets/config.local.js from example:', e && e.message ? e.message : e);
+  }
+})();
+
+const React = require('react');
+const ReactDOM = require('react-dom');
+const ReactDOMServer = require('react-dom/server');
+const webpack = require('webpack');
+
 // Settings
 const settings = require('../settings/local');
 
-// Types
-const Compiler = require('@fabric/http/types/compiler');
+// Fabric HTTP Types
+// const Compiler = require('@fabric/http/types/compiler');
+
+const Compiler = require('../types/compiler');
+const webpackConfigModule = require('../webpack.config');
 
 // Components
-const Interface = require('../components/interface');
+const HubInterface = require('../components/HubInterface');
+
+function resolveWebpackConfig () {
+  return typeof webpackConfigModule === 'function'
+    ? webpackConfigModule({}, { mode: 'development' })
+    : webpackConfigModule;
+}
 
 // Program Body
 async function main (input = {}) {
-  const site = new Interface(input);
+  const site = new HubInterface(input);
+  const buildWebpackConfig = Object.assign({}, resolveWebpackConfig(), { watch: false });
   const compiler = new Compiler({
-    document: site
+    document: site,
+    webpack: buildWebpackConfig,
+    ...input
   });
 
   await compiler.compileTo('assets/index.html');
@@ -25,7 +61,10 @@ async function main (input = {}) {
 
 // Run Program
 main(settings).catch((exception) => {
-  console.error('[BUILD:HUB]', '[EXCEPTION]', exception);
+  console.error('[BUILD:SITE]', '[EXCEPTION]', exception);
+  if (exception && exception.stack) {
+    console.error('[BUILD:SITE]', '[STACK]', exception.stack);
+  }
 }).then((output) => {
-  console.log('[BUILD:HUB]', '[OUTPUT]', output);
+  console.log('[BUILD:SITE]', '[OUTPUT]', output);
 });
