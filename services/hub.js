@@ -541,7 +541,7 @@ class Hub extends Service {
 
     // Storage and Network
     this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
-    this.setup = new SetupService({ fs: this.fs, key: this._rootKey });
+    this.setup = new SetupService({ fs: this.fs, key: this._rootKey, state: this._state.content });
     /** Sidechain global document + logical clock ({ version, clock, content }); see functions/sidechainState.js */
     this._sidechainState = sidechainState.loadState(this.fs);
     /** Serialize beacon reorg handling so sidechain rewind completes before downstream refresh. */
@@ -7503,7 +7503,11 @@ class Hub extends Service {
         }
       }
 
-      this.http.setApplicationHtml(this.applicationString);
+      if (this.http && typeof this.http.setApplicationHtml === 'function') {
+        this.http.setApplicationHtml(this.applicationString);
+      } else if (this.http && this.http.settings && typeof this.http.settings === 'object') {
+        this.http.settings.applicationString = this.applicationString;
+      }
 
       // Load DEVELOPERS.md into buffer
       const devMdPath = path.resolve(__dirname, '../DEVELOPERS.md');
