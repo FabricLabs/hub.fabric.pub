@@ -9,9 +9,9 @@ const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
 
-const { resolveAppAssetsDir } = require('@fabric/http/resolveAppAssetsDir');
+const { resolveAppAssetsDir } = require('@fabric/http');
 
-/** Read-only static root (see @fabric/http `resolveAppAssetsDir`). */
+/** Read-only static root (see `resolveAppAssetsDir` on `@fabric/http`). */
 function hubAssetsDir () {
   return resolveAppAssetsDir(__dirname, { envVar: 'FABRIC_HUB_APP_ROOT' });
 }
@@ -551,6 +551,10 @@ class Hub extends Service {
     this.http = new HTTPServer({
       name: 'hub.fabric.pub',
       path: hubAssetsDir(),
+      // Fomantic **Fabric** theme: built in `@fabric/http` and served from its `assets/` (second static root).
+      // Use `npm run link:fabric` so `node_modules/@fabric/http` is your local clone; `npm run build:semantic` there
+      // when you change the theme. Keep Hub `assets/` free of duplicate `semantic*.css`
+      // / `themes/` or they would shadow the package.
       hostname: this.settings.http.hostname,
       interface: this.settings.http.interface,
       port: this.settings.http.port,

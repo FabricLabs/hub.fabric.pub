@@ -11,7 +11,7 @@
  * 2. **Fabric P2P** — TCP reachability + NOISE handshake on the Fabric listen port (default 7777).
  */
 
-const { isSampleHubHttpServerOptions } = require('@fabric/http/sampleHubOptions');
+const { isSampleHubHttpServerOptions } = require('../functions/sampleHubOptions');
 
 const DEFAULT_OPTIONS_TIMEOUT_MS = 3500;
 const DEFAULT_FABRIC_P2P_PORT = 7777;

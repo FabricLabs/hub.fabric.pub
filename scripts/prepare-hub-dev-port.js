@@ -2,7 +2,7 @@
 
 /**
  * Ensures the Hub HTTP port (default 8080) is available for @fabric/hub, not the @fabric/http
- * `sample-hub-http-server`. Uses `@fabric/http/constants` + `isSampleHubHttpServerOptions` from `@fabric/http/sampleHubOptions`.
+ * `sample-hub-http-server` (see `functions/sampleHubOptions.js`).
  *
  * 1) OPTIONS the port. If the listener is the sample, SIGTERM only PIDs whose command line
  *    references `sample-hub-http-server.js` (macOS / Linux: `lsof` + `ps`).
@@ -13,7 +13,7 @@
 const http = require('http');
 const { execSync } = require('child_process');
 const { SAMPLE_HUB_HTTP_SERVER_NAME } = require('@fabric/http/constants');
-const { isSampleHubHttpServerOptions } = require('@fabric/http/sampleHubOptions');
+const { isSampleHubHttpServerOptions } = require('../functions/sampleHubOptions');
 
 const port = Number(
   process.env.FABRIC_HUB_CHECK_PORT != null

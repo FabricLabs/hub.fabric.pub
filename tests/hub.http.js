@@ -130,6 +130,68 @@ describe('@fabric/hub', function () {
       });
     }
 
+    /**
+     * Fomantic (Fabric theme) static assets: packed CSS references `themes/...` (unchanged Gulp output).
+     */
+    function getHttpBuffer (pth) {
+      return new Promise((resolve, reject) => {
+        const requestUrl = url.parse(`${baseUrl}${pth}`);
+        const opt = { hostname: requestUrl.hostname, port: requestUrl.port, path: requestUrl.path, method: 'GET' };
+        const req = http.get(opt, (res) => {
+          const parts = [];
+          res.on('data', (c) => parts.push(c));
+          res.on('end', () => {
+            resolve({
+              status: res.statusCode,
+              headers: res.headers,
+              body: Buffer.concat(parts)
+            });
+          });
+        });
+        req.on('error', reject);
+      });
+    }
+
+    describe('Fomantic static theme (icons + Arvo)', function () {
+      it('serves /semantic.min.css with fabric theme font URLs (Gulp + site.variables @fontPath)', async function () {
+        const { status, body } = await getHttpBuffer('/semantic.min.css');
+        assert.strictEqual(status, 200);
+        const s = body.toString('utf8');
+        assert.ok(
+          s.includes('themes/fabric/assets/fonts/icons.woff2'),
+          'expected icon @font-face to use themes/fabric (see fabric globals/site.variables @fontPath)'
+        );
+        assert.ok(
+          !s.includes('themes/default/'),
+          'fabric build should not reference themes/default/ in the packed CSS'
+        );
+      });
+
+      it('serves Fomantic icon woff2 at /themes/fabric/.../icons.woff2 (assets)', async function () {
+        const { status, body, headers } = await getHttpBuffer('/themes/fabric/assets/fonts/icons.woff2');
+        assert.strictEqual(status, 200);
+        assert.ok(body && body.length > 8, 'expected woff2 bytes');
+        assert.strictEqual(body.toString('ascii', 0, 4), 'wOF2');
+        const ct = (headers['content-type'] || '');
+        assert.ok(
+          ct.includes('font/woff2'),
+          `expected font/woff2 Content-Type (Chromium+nosniff), got: ${ct}`
+        );
+      });
+
+      it('serves Fabric theme Arvo woff2 at /themes/fabric/.../arvo-normal-400.woff2', async function () {
+        const { status, body, headers } = await getHttpBuffer('/themes/fabric/assets/fonts/arvo-normal-400.woff2');
+        assert.strictEqual(status, 200);
+        assert.ok(body && body.length > 8, 'expected woff2 bytes');
+        assert.strictEqual(body.toString('ascii', 0, 4), 'wOF2');
+        const ct = (headers['content-type'] || '');
+        assert.ok(
+          ct.includes('font/woff2'),
+          `expected font/woff2 Content-Type (Chromium+nosniff), got: ${ct}`
+        );
+      });
+    });
+
     describe('/contracts', function () {
       describe('GET /contracts', function () {
         it('should return an ok status and contracts array', async function () {
