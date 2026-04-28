@@ -4,6 +4,16 @@ const { createFabricBrowserStore } = require('./fabricBrowserStore');
 
 const FABRIC_STATE_KEY = 'fabric:state';
 
+function getFabricBrowserGlobal () {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.window != null) return globalThis.window;
+  } catch (_) {}
+  try {
+    if (typeof window !== 'undefined') return window;
+  } catch (_) {}
+  return undefined;
+}
+
 const LEGACY_KEY_PATHS = {
   'fabric.identity.local': '/identity/local',
   'fabric.hub.adminToken': '/hub/adminToken',
@@ -12,7 +22,6 @@ const LEGACY_KEY_PATHS = {
   'fabric.delegation': '/delegation',
   'fabric.hub.federationSpendingPrefs': '/preferences/federationSpending',
   'fabric.hub.alertDismissals': '/ui/alertDismissals',
-  'fabric.hub.uiFeatureFlags': '/ui/featureFlags',
   'fabric:uiNotifications': '/ui/notifications',
   'fabric.joinmarket.poolSizesBtc': '/joinmarket/poolSizesBtc',
   'fabric.bitcoin.upstream': '/bitcoin/upstream',
@@ -31,7 +40,8 @@ const LEGACY_KEY_PATHS = {
 
 function hasLocalStorage () {
   try {
-    return typeof window !== 'undefined' && !!window.localStorage;
+    const w = getFabricBrowserGlobal();
+    return !!w && !!w.localStorage;
   } catch (e) {
     return false;
   }
@@ -55,7 +65,9 @@ function readStorageString (legacyKey) {
     }
   } catch (e) {}
   try {
-    return String(window.localStorage.getItem(legacyKey) || '');
+    const w = getFabricBrowserGlobal();
+    if (!w) return '';
+    return String(w.localStorage.getItem(legacyKey) || '');
   } catch (e) {
     return '';
   }
@@ -69,7 +81,9 @@ function writeStorageString (legacyKey, value) {
     if (path) store().PUT(path, v);
   } catch (e) {}
   try {
-    window.localStorage.setItem(legacyKey, v);
+    const w = getFabricBrowserGlobal();
+    if (!w) return false;
+    w.localStorage.setItem(legacyKey, v);
     return true;
   } catch (e) {
     return false;
@@ -93,21 +107,16 @@ function readStorageJSON (legacyKey, fallback) {
   let fromLegacy;
   let hasLegacy = false;
   try {
-    const raw = window.localStorage.getItem(legacyKey);
-    if (raw) {
-      fromLegacy = JSON.parse(raw);
-      hasLegacy = true;
+    const w = getFabricBrowserGlobal();
+    if (w) {
+      const raw = w.localStorage.getItem(legacyKey);
+      if (raw) {
+        fromLegacy = JSON.parse(raw);
+        hasLegacy = true;
+      }
     }
   } catch (e) {
     fromLegacy = undefined;
-  }
-  // `fabric:state` is canonical, but many callers (and browser tests) only set the legacy
-  // `fabric.hub.*` string. If both exist, merge with **legacy** winning so explicit local
-  // patches are not shadowed by an empty or stale `ui.featureFlags` snapshot.
-  if (String(legacyKey) === 'fabric.hub.uiFeatureFlags' && hasPath && hasLegacy) {
-    const base = (fromPath && typeof fromPath === 'object' && !Array.isArray(fromPath)) ? fromPath : {};
-    const over = (fromLegacy && typeof fromLegacy === 'object' && !Array.isArray(fromLegacy)) ? fromLegacy : {};
-    return { ...base, ...over };
   }
   if (hasPath) return fromPath;
   if (hasLegacy) return fromLegacy;
@@ -121,7 +130,9 @@ function writeStorageJSON (legacyKey, value) {
     if (path) store().PUT(path, value);
   } catch (e) {}
   try {
-    window.localStorage.setItem(legacyKey, JSON.stringify(value));
+    const w = getFabricBrowserGlobal();
+    if (!w) return false;
+    w.localStorage.setItem(legacyKey, JSON.stringify(value));
     return true;
   } catch (e) {
     return false;
@@ -135,7 +146,9 @@ function removeStorageKey (legacyKey) {
     if (path) store().DELETE(path);
   } catch (e) {}
   try {
-    window.localStorage.removeItem(legacyKey);
+    const w = getFabricBrowserGlobal();
+    if (!w) return false;
+    w.localStorage.removeItem(legacyKey);
     return true;
   } catch (e) {
     return false;
@@ -144,6 +157,8 @@ function removeStorageKey (legacyKey) {
 
 module.exports = {
   FABRIC_STATE_KEY,
+  store,
+  getFabricBrowserGlobal,
   pathForLegacyKey,
   readStorageString,
   writeStorageString,

@@ -19,6 +19,15 @@ function setupWindowStorage () {
   };
 }
 
+function setFabricUiFeatureFlags (featureFlags) {
+  global.window.localStorage.setItem(
+    'fabric:state',
+    JSON.stringify({
+      ui: { featureFlags }
+    })
+  );
+}
+
 describe('hubUiFeatureFlags', function () {
   afterEach(function () {
     delete global.window;
@@ -59,9 +68,20 @@ describe('hubUiFeatureFlags', function () {
 
   it('explicit peers true in storage is honored when advancedMode is off (beginner default does not override)', function () {
     setupWindowStorage();
-    window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ peers: true }));
+    setFabricUiFeatureFlags({ peers: true });
     const f = flags.loadHubUiFeatureFlags();
     assert.strictEqual(f.peers, true);
+  });
+
+  it('empty {} in storage resets to bundled defaults (avoids malformed partial storage)', function () {
+    setupWindowStorage();
+    setFabricUiFeatureFlags({});
+    const f = flags.loadHubUiFeatureFlags();
+    assert.strictEqual(f.peers, true);
+    assert.strictEqual(f.features, true);
+    assert.strictEqual(f.activities, true);
+    assert.strictEqual(f.sidechain, true);
+    assert.strictEqual(f.bitcoinCrowdfund, true);
   });
 
   it('normalizeFlags honors peers false and explicit false for former always-on keys (UI-58)', function () {

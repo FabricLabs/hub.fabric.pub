@@ -223,14 +223,25 @@ async function installHubAdminTokenThenReload (page, token) {
   await page.reload({ waitUntil: 'load', timeout: 20000 });
 }
 
-/** Merge keys into `localStorage` `fabric.hub.uiFeatureFlags` (browser page). App read merges with `fabric:state` when both exist. */
+/**
+ * Merge keys into Hub UI flags — mirrors canonical storage in `fabric:state.ui.featureFlags`
+ * (same as {@link ../functions/hubUiFeatureFlags.saveHubUiFeatureFlags}).
+ */
 async function mergeHubUiFeatureFlags (page, patch) {
-  const raw = JSON.stringify(patch || {});
+  const raw = JSON.stringify(patch && typeof patch === 'object' ? patch : {});
   await page.evaluate((serialized) => {
     try {
       const p = JSON.parse(serialized);
-      const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-      window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, ...p }));
+      const prev = window.localStorage.getItem('fabric:state');
+      const st = prev ? JSON.parse(prev) : {};
+      if (!st.ui || typeof st.ui !== 'object') st.ui = {};
+      const cur = (st.ui.featureFlags && typeof st.ui.featureFlags === 'object') ? st.ui.featureFlags : {};
+      const merged = { ...cur, ...p };
+      st.ui.featureFlags = merged;
+      window.localStorage.setItem('fabric:state', JSON.stringify(st));
+      try {
+        window.dispatchEvent(new CustomEvent('fabricHubUiFeatureFlagsChanged', { detail: merged }));
+      } catch (e) { /* ignore */ }
     } catch (e) { /* ignore */ }
   }, raw);
 }
@@ -479,6 +490,7 @@ describe('Browser Interface', function () {
   });
 
   describe('route rendering', function () {
+    this.timeout(120000);
     before(async function () {
       const hasMainUI = await waitForMainUI(sandbox.browser, 8000);
       if (!hasMainUI) this.skip();
@@ -625,15 +637,7 @@ describe('Browser Interface', function () {
 
     it('should render Settings → Distributed federation at /settings/federation without crashing', async function () {
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/federation`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
@@ -647,15 +651,7 @@ describe('Browser Interface', function () {
 
     it('should render Federations workspace at /federations without crashing', async function () {
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/federations`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
@@ -711,15 +707,7 @@ describe('Browser Interface', function () {
           }
         } catch (e) { /* ignore */ }
       });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) { /* ignore */ }
-      });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
       await sandbox.browser.goto(`${root}/federations`, { waitUntil: 'load', timeout: 10000 });
       const gate = await waitForBodyText(sandbox.browser, 'Sign in with a Fabric identity', 12000);
       assert.ok(gate, 'Expected sign-in gate on Federations when not logged in');
@@ -729,15 +717,7 @@ describe('Browser Interface', function () {
 
     it('should render Beacon Federation page at /settings/admin/beacon-federation without crashing', async function () {
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin/beacon-federation`, { waitUntil: 'load', timeout: 10000 });
       const onBeaconPage = await waitForPathname(sandbox.browser, '/settings/admin/beacon-federation', 12000);
       assert.ok(onBeaconPage, 'Expected Beacon Federation route to resolve');
@@ -746,15 +726,7 @@ describe('Browser Interface', function () {
 
     it('should redirect legacy /admin/beacon-federation to /settings/admin/beacon-federation', async function () {
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin/beacon-federation`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');

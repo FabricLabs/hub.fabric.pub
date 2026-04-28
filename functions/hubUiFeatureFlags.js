@@ -1,17 +1,20 @@
 'use strict';
 
-const {
-  readStorageJSON,
-  writeStorageJSON
-} = require('./fabricBrowserState');
+const { store, getFabricBrowserGlobal } = require('./fabricBrowserState');
 
 /**
- * Browser-only feature visibility for the hub SPA (localStorage). Stored values are honored after
- * normalize (including explicit `false` for any flag key). **peers** defaults true; explicit
- * **`peers: false`** hides Peers nav/routes. Bitcoin dashboard stays routable; sub-areas use
+ * Browser-only feature visibility for the hub SPA (`fabric:state` → `ui.featureFlags`).
+ * Defaults favor full Hub surfaces unless the operator disables a flag (or enables Advanced Mode
+ * ergonomics explicitly). Persisted `{ value }` from `GET /settings/HUB_UI_FEATURE_FLAGS` overwrites locals.
+ *
+ * **`advancedMode`** is still used for UX that truly needs an explicit “power user” opt-in elsewhere.
+ *
+ * Explicit **`peers: false`** hides Peers nav; Bitcoin explorer remains routable; sub-areas use
  * bitcoinPayments, bitcoinResources, etc.
  */
-const STORAGE_KEY = 'fabric.hub.uiFeatureFlags';
+/** Path under `fabric:state` JSON (see {@link ./fabricBrowserState.js}). */
+const UI_FEATURE_FLAGS_STATE_PATH = '/ui/featureFlags';
+
 const CHANGED_EVENT = 'fabricHubUiFeatureFlagsChanged';
 const SETTINGS_KEY = 'HUB_UI_FEATURE_FLAGS';
 
@@ -43,20 +46,29 @@ function defaultFlags () {
     advancedMode: false,
     peers: true,
     activities: true,
-    features: false,
-    sidechain: false,
+    features: true,
+    sidechain: true,
     bitcoinPayments: false,
     bitcoinInvoices: true,
     bitcoinResources: false,
     bitcoinExplorer: true,
     bitcoinLightning: false,
-    bitcoinCrowdfund: false
+    bitcoinCrowdfund: true
   };
+}
+
+function hasStoredUiFlagShape (raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  /** `bitcoin: true` is a sentinel that enables all BTC sub-features. */
+  if (Object.prototype.hasOwnProperty.call(raw, 'bitcoin')) return true;
+  return FLAG_KEYS.some((k) => Object.prototype.hasOwnProperty.call(raw, k));
 }
 
 function normalizeFlags (raw) {
   const d = defaultFlags();
   if (!raw || typeof raw !== 'object') return d;
+  // Empty `{}` is not intentional config; real storage can accidentally hold `{}` under fabric:state only.
+  if (!hasStoredUiFlagShape(raw)) return d;
   if (raw.bitcoin === true) {
     for (const k of BITCOIN_UI_FLAG_KEYS) d[k] = true;
   }
@@ -65,39 +77,54 @@ function normalizeFlags (raw) {
       d[k] = !!raw[k];
     }
   }
-  // Beginner-safe mode: keep the default surface lean unless Advanced Mode is enabled. If the user
-  // (or a test) set an explicit value in storage, honor it so `fabric.hub.uiFeatureFlags` is not
-  // silently stomped for keys that are present in the raw object.
+  // Without Advanced Mode, keys omitted from `raw` keep bundled defaults (`defaultFlags`), not implicit off.
   if (!d.advancedMode) {
-    if (!Object.prototype.hasOwnProperty.call(raw, 'peers')) d.peers = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'activities')) d.activities = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'features')) d.features = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'sidechain')) d.sidechain = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinResources')) d.bitcoinResources = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinExplorer')) d.bitcoinExplorer = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinLightning')) d.bitcoinLightning = false;
-    if (!Object.prototype.hasOwnProperty.call(raw, 'bitcoinCrowdfund')) d.bitcoinCrowdfund = false;
+    const baseWhenUnset = defaultFlags();
+    const KEYS_INHERIT_WHEN_ABSENT_FROM_RAW = [
+      'peers',
+      'activities',
+      'features',
+      'sidechain',
+      'bitcoinResources',
+      'bitcoinExplorer',
+      'bitcoinLightning',
+      'bitcoinCrowdfund'
+    ];
+    for (const k of KEYS_INHERIT_WHEN_ABSENT_FROM_RAW) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) {
+        d[k] = !!baseWhenUnset[k];
+      }
+    }
   }
   return d;
 }
 
 function loadHubUiFeatureFlags () {
-  if (typeof window === 'undefined') return defaultFlags();
+  if (!getFabricBrowserGlobal()) return defaultFlags();
   try {
-    const s = readStorageJSON(STORAGE_KEY, null);
-    if (!s) return defaultFlags();
-    return normalizeFlags(s);
+    const v = store().GET(UI_FEATURE_FLAGS_STATE_PATH);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return defaultFlags();
+    return normalizeFlags(v);
   } catch (e) {
     return defaultFlags();
   }
 }
 
 function saveHubUiFeatureFlags (flags) {
-  if (typeof window === 'undefined') return;
+  if (!getFabricBrowserGlobal()) return;
   const next = normalizeFlags(flags);
-  writeStorageJSON(STORAGE_KEY, next);
   try {
-    window.dispatchEvent(new CustomEvent(CHANGED_EVENT, { detail: next }));
+    const st = store();
+    const ui = st.GET('/ui');
+    const merged =
+      ui && typeof ui === 'object' && !Array.isArray(ui)
+        ? Object.assign({}, ui, { featureFlags: next })
+        : { featureFlags: next };
+    st.PUT('/ui', merged);
+  } catch (e) { /* ignore */ }
+  try {
+    const w = getFabricBrowserGlobal();
+    if (w) w.dispatchEvent(new CustomEvent(CHANGED_EVENT, { detail: next }));
   } catch (e) { /* ignore */ }
 }
 
@@ -120,7 +147,8 @@ function setAllHubUiFeatureFlags (patch) {
 }
 
 function subscribeHubUiFeatureFlags (callback) {
-  if (typeof window === 'undefined' || typeof callback !== 'function') {
+  const w = getFabricBrowserGlobal();
+  if (!w || typeof callback !== 'function') {
     return function noop () {};
   }
   const handler = () => {
@@ -128,8 +156,8 @@ function subscribeHubUiFeatureFlags (callback) {
       callback(loadHubUiFeatureFlags());
     } catch (e) { /* ignore */ }
   };
-  window.addEventListener(CHANGED_EVENT, handler);
-  return () => window.removeEventListener(CHANGED_EVENT, handler);
+  w.addEventListener(CHANGED_EVENT, handler);
+  return () => w.removeEventListener(CHANGED_EVENT, handler);
 }
 
 /**
@@ -138,7 +166,7 @@ function subscribeHubUiFeatureFlags (callback) {
  * @returns {Promise<object>}
  */
 async function fetchPersistedHubUiFeatureFlags () {
-  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+  if (!getFabricBrowserGlobal() || typeof fetch !== 'function') {
     return loadHubUiFeatureFlags();
   }
   try {
@@ -169,7 +197,7 @@ async function fetchPersistedHubUiFeatureFlags () {
 async function persistHubUiFeatureFlags (flags, adminToken) {
   const next = normalizeFlags(flags);
   saveHubUiFeatureFlags(next);
-  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+  if (!getFabricBrowserGlobal() || typeof fetch !== 'function') {
     return { ok: false, flags: next, persisted: false, message: 'window/fetch unavailable' };
   }
   const token = String(adminToken || '').trim();

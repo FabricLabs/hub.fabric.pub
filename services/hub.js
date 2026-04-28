@@ -2427,8 +2427,14 @@ class Hub extends Service {
     }).filter((x) => Array.isArray(x.addresses) && x.addresses.length > 0);
 
     let dnsProbe = { ok: false, resolver: 'example.com', error: null, addresses: [] };
+    const DNS_PROBE_MS = 3500;
     try {
-      const addresses = await dns.resolve('example.com');
+      const addresses = await Promise.race([
+        dns.resolve('example.com'),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('DNS probe timed out')), DNS_PROBE_MS)
+        )
+      ]);
       dnsProbe = { ok: true, resolver: 'example.com', error: null, addresses: Array.isArray(addresses) ? addresses : [] };
     } catch (err) {
       dnsProbe = {
