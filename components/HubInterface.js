@@ -42,7 +42,11 @@ const {
 } = require('react-router-dom');
 
 // Fabric Types
-const { buildLocalFabricIdentityPayload, plaintextMasterFromStored } = require('../functions/fabricHubLocalIdentity');
+const {
+  buildLocalFabricIdentityPayload,
+  plaintextMasterFromStored,
+  fabricPlaintextSigningUnlockable
+} = require('../functions/fabricHubLocalIdentity');
 const {
   deriveFabricAccountIdentityKeys,
   fabricRootXpubFromMasterXprv
@@ -555,6 +559,7 @@ class HubInterface extends React.Component {
                 passwordProtected: !!r.passwordProtected,
                 plaintextUnlockAvailable: !!r.plaintextUnlockAvailable,
                 fabricIdentityMode: r.fabricIdentityMode || undefined,
+                fabricHdRole: r.fabricHdRole || undefined,
                 fabricAccountIndex:
                   r.fabricAccountIndex != null ? Math.floor(Number(r.fabricAccountIndex)) : undefined,
                 masterXpub: r.masterXpub || undefined,
@@ -568,12 +573,16 @@ class HubInterface extends React.Component {
         }
 
         try {
-          if (window.sessionStorage) {
-            const want = window.sessionStorage.getItem('fabric.hub.wantIdentityWizard');
-            const dismissed = window.sessionStorage.getItem('fabric.hub.identityWizardDismissed');
-            const hasRec = !!(parsed && (parsed.id || parsed.xpub));
-            initialPostSetupIdentityWizardOpen = want === '1' && dismissed !== '1' && !hasRec;
-          }
+          let dismissed = readStorageString('fabric.hub.identityWizardDismissed') === '1';
+          let pending = readStorageString('fabric.hub.identityWizardPending') === '1';
+          try {
+            if (typeof window !== 'undefined' && window.sessionStorage) {
+              if (window.sessionStorage.getItem('fabric.hub.identityWizardDismissed') === '1') dismissed = true;
+              if (window.sessionStorage.getItem('fabric.hub.wantIdentityWizard') === '1') pending = true;
+            }
+          } catch (eSess) {}
+          const hasRec = !!(parsed && (parsed.id || parsed.xpub));
+          initialPostSetupIdentityWizardOpen = !!(pending && !dismissed && !hasRec);
         } catch (e) {}
       }
     } catch (e) {}
@@ -844,10 +853,19 @@ class HubInterface extends React.Component {
       ? String(Math.floor(Number(info.fabricAccountIndex)))
       : '';
     const mode = info.fabricIdentityMode ? String(info.fabricIdentityMode) : '';
-    return `${String(info.id || '')}|${String(info.xpub || '')}|${hasX ? '1' : '0'}|${info.passwordProtected ? '1' : '0'}|${plainAvail ? '1' : '0'}|${info.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}`;
+    const hd = info.fabricHdRole ? String(info.fabricHdRole) : '';
+    return `${String(info.id || '')}|${String(info.xpub || '')}|${hasX ? '1' : '0'}|${info.passwordProtected ? '1' : '0'}|${plainAvail ? '1' : '0'}|${info.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}|${hd}`;
   }
 
   _handleIdentityManagerLocalChange (info) {
+    if (info && (info.id || info.xpub)) {
+      try {
+        writeStorageString('fabric.hub.identityWizardPending', '');
+        if (typeof window !== 'undefined' && window.sessionStorage) {
+          window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
+        }
+      } catch (e) {}
+    }
     this.setState((prev) => {
       if (!info) {
         try { clearSpendXpubWatch(); } catch (_) {}
@@ -900,6 +918,11 @@ class HubInterface extends React.Component {
       } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.fabricAccountIndex != null) {
         nextIdentity.fabricAccountIndex = prev.uiLocalIdentity.fabricAccountIndex;
       }
+      if (info.fabricHdRole != null && String(info.fabricHdRole).trim() !== '') {
+        nextIdentity.fabricHdRole = info.fabricHdRole;
+      } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.fabricHdRole) {
+        nextIdentity.fabricHdRole = prev.uiLocalIdentity.fabricHdRole;
+      }
       if (info.masterXprv != null && String(info.masterXprv).trim()) {
         nextIdentity.masterXprv = info.masterXprv;
       } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.masterXprv && hasXprv) {
@@ -930,6 +953,8 @@ class HubInterface extends React.Component {
   _handleIdentityManagerLockStateChange (locked) {
     this.setState((prev) => {
       if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv) return {};
+      const hasIdent = !!(prev.uiLocalIdentity && (prev.uiLocalIdentity.id || prev.uiLocalIdentity.xpub));
+      if (locked && !hasIdent) return {};
       if (!!prev.uiHasLockedIdentity === !!locked) return {};
       return { uiHasLockedIdentity: !!locked };
     });
@@ -942,6 +967,12 @@ class HubInterface extends React.Component {
 
   _handleIdentityManagerUnlockSuccess (identityInfo) {
     if (identityInfo && typeof identityInfo === 'object' && (identityInfo.id || identityInfo.xpub)) {
+      try {
+        writeStorageString('fabric.hub.identityWizardPending', '');
+        if (typeof window !== 'undefined' && window.sessionStorage) {
+          window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
+        }
+      } catch (e) {}
       const next = {
         id: identityInfo.id,
         xpub: identityInfo.xpub,
@@ -952,6 +983,7 @@ class HubInterface extends React.Component {
       if (identityInfo.fabricAccountIndex != null) {
         next.fabricAccountIndex = Math.floor(Number(identityInfo.fabricAccountIndex));
       }
+      if (identityInfo.fabricHdRole) next.fabricHdRole = identityInfo.fabricHdRole;
       if (identityInfo.masterXprv) next.masterXprv = identityInfo.masterXprv;
       if (identityInfo.masterXpub) next.masterXpub = identityInfo.masterXpub;
       this.setState({
@@ -1321,7 +1353,7 @@ class HubInterface extends React.Component {
     let plaintextStored = false;
     try {
       const p = readStorageJSON('fabric.identity.local', null);
-      plaintextStored = !!(p && plaintextMasterFromStored(p));
+      plaintextStored = !!(p && fabricPlaintextSigningUnlockable(p));
     } catch (_) {}
     if (!local.passwordProtected && !plaintextStored) return;
     try {
@@ -1337,6 +1369,9 @@ class HubInterface extends React.Component {
         passwordProtected: !!local.passwordProtected
       };
       if (local.fabricIdentityMode) next.fabricIdentityMode = local.fabricIdentityMode;
+      if (local.fabricHdRole != null && String(local.fabricHdRole).trim() !== '') {
+        next.fabricHdRole = local.fabricHdRole;
+      }
       if (local.fabricAccountIndex != null) next.fabricAccountIndex = local.fabricAccountIndex;
       if (local.masterXpub) next.masterXpub = local.masterXpub;
       if (plaintextStored && !local.passwordProtected) {
@@ -1469,6 +1504,35 @@ class HubInterface extends React.Component {
     );
   }
 
+  _shouldShowPostSetupIdentityWizard () {
+    if (!this.state.setupChecked || this.state.needsSetup) return false;
+    let dismissed = false;
+    try {
+      dismissed = readStorageString('fabric.hub.identityWizardDismissed') === '1';
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        if (window.sessionStorage.getItem('fabric.hub.identityWizardDismissed') === '1') dismissed = true;
+      }
+    } catch (e) {
+      return false;
+    }
+    if (dismissed) return false;
+    try {
+      const p = readStorageJSON('fabric.identity.local', null);
+      const hasRec = !!(p && (p.id || p.xpub));
+      if (hasRec) return false;
+    } catch (e) {
+      return false;
+    }
+    let pending = readStorageString('fabric.hub.identityWizardPending') === '1';
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        if (window.sessionStorage.getItem('fabric.hub.wantIdentityWizard') === '1') pending = true;
+      }
+    } catch (e) {}
+    const stateFlag = !!this.state.postSetupIdentityWizardOpen;
+    return !!(pending || stateFlag);
+  }
+
   render () {
     // Prefer Bridge ref (live from WebSocket), then Redux, then local state
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
@@ -1481,8 +1545,14 @@ class HubInterface extends React.Component {
     const local = this.state.uiLocalIdentity;
     const hasLocal = local && (local.id || local.xpub);
     const effectiveAuth = hasLocal ? local : this.props.auth;
-    // Never show "locked" when we have the key in memory
-    const effectiveHasLockedIdentity = (local && local.xprv) ? false : this.state.uiHasLockedIdentity;
+    // Locked chip: derive only from shell identity fields — never trust orphan uiHasLockedIdentity when
+    // local is empty (TopPanel still merges persisted storage into the chip and could show "Locked"
+    // if hasLockedIdentity stayed true from a stale callback).
+    const effectiveHasLockedIdentity = !!(
+      hasLocal &&
+      !local.xprv &&
+      (local.passwordProtected || local.plaintextUnlockAvailable)
+    );
     const publicHubVisitor = computePublicHubVisitor({
       localIdentity: local,
       propsAuth: this.props.auth
@@ -1605,12 +1675,18 @@ class HubInterface extends React.Component {
                   if (result && result.token) {
                     let openWizard = false;
                     try {
+                      const idRec = readStorageJSON('fabric.identity.local', null);
+                      openWizard = !(idRec && (idRec.id || idRec.xpub));
+                    } catch (e) {}
+                    try {
                       if (typeof window !== 'undefined') {
                         if (window.sessionStorage) {
-                          window.sessionStorage.setItem('fabric.hub.wantIdentityWizard', '1');
+                          window.sessionStorage.setItem('fabric.hub.wantIdentityWizard', openWizard ? '1' : '');
                         }
-                        const idRec = readStorageJSON('fabric.identity.local', null);
-                        openWizard = !(idRec && (idRec.id || idRec.xpub));
+                        writeStorageString('fabric.hub.identityWizardPending', openWizard ? '1' : '');
+                        if (!openWizard) {
+                          writeStorageString('fabric.hub.identityWizardDismissed', '');
+                        }
                       }
                     } catch (e) {}
 
@@ -1632,8 +1708,9 @@ class HubInterface extends React.Component {
                 }}
               />
               )
-            ) : this.state.postSetupIdentityWizardOpen && !hasLocal ? (
+            ) : this._shouldShowPostSetupIdentityWizard() ? (
               <FabricPostSetupIdentityWizard
+                hubAdminToken={this.state.adminToken}
                 currentIdentity={local}
                 onLocalIdentityChange={this._handleIdentityManagerLocalChange}
                 onUnlockSuccess={this._handleIdentityManagerUnlockSuccess}
@@ -1641,13 +1718,24 @@ class HubInterface extends React.Component {
                 onForgetIdentity={this._handleIdentityManagerForget}
                 onComplete={() => {
                   try {
+                    writeStorageString('fabric.hub.identityWizardPending', '');
                     if (typeof window !== 'undefined' && window.sessionStorage) {
                       window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
                     }
                   } catch (e) {}
                   this.setState({ postSetupIdentityWizardOpen: false });
                 }}
-                onSkip={() => this.setState({ postSetupIdentityWizardOpen: false })}
+                onSkip={() => {
+                  try {
+                    writeStorageString('fabric.hub.identityWizardDismissed', '1');
+                    writeStorageString('fabric.hub.identityWizardPending', '');
+                    if (typeof window !== 'undefined' && window.sessionStorage) {
+                      window.sessionStorage.setItem('fabric.hub.identityWizardDismissed', '1');
+                      window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
+                    }
+                  } catch (e) {}
+                  this.setState({ postSetupIdentityWizardOpen: false });
+                }}
               />
             ) : (
               <BrowserRouter
@@ -1725,6 +1813,7 @@ class HubInterface extends React.Component {
                   >
                     <IdentityManager
                       key="fabric-identity-manager"
+                      hubAdminToken={this.state.adminToken}
                       currentIdentity={this.state.uiLocalIdentity}
                       onLocalIdentityChange={this._handleIdentityManagerLocalChange}
                       onLockStateChange={this._handleIdentityManagerLockStateChange}

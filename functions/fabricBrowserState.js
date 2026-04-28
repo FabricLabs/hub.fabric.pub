@@ -18,6 +18,8 @@ const LEGACY_KEY_PATHS = {
   'fabric.identity.local': '/identity/local',
   'fabric.hub.adminToken': '/hub/adminToken',
   'fabric.hub.adminTokenExpiresAt': '/hub/adminTokenExpiresAt',
+  'fabric.hub.identityWizardPending': '/hub/identityWizardPending',
+  'fabric.hub.identityWizardDismissed': '/hub/identityWizardDismissed',
   'fabric.hub.address': '/hub/address',
   'fabric.delegation': '/delegation',
   'fabric.hub.federationSpendingPrefs': '/preferences/federationSpending',

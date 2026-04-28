@@ -213,6 +213,52 @@ function waitForHub (timeoutMs = 120000) {
   });
 }
 
+function isConnectionRefusedLoadError (err) {
+  const msg = err && err.message ? String(err.message) : String(err || '');
+  return msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('(-102)');
+}
+
+/**
+ * Retry navigation to the Hub shell. Node's `waitForHub()` can observe GET /settings while the
+ * embedded process is still racing to listen; Chromium sometimes reaches `loadURL` first and
+ * fails with ERR_CONNECTION_REFUSED (-102).
+ *
+ * @param {import('electron').BrowserWindow} win
+ */
+async function loadHubUiWithRetries (win) {
+  const url = hubUrl();
+  const maxAttempts = 10;
+  const gapMs = 400;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await win.loadURL(url);
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (!isConnectionRefusedLoadError(e) || attempt === maxAttempts) {
+        break;
+      }
+      console.warn(`[DESKTOP] loadURL connection refused; retry ${attempt}/${maxAttempts} after short wait…`);
+      await new Promise((r) => setTimeout(r, gapMs));
+      try {
+        await waitForHub(25000);
+      } catch (_) {
+        /* Hub still waking up — next attempt */
+      }
+    }
+  }
+  if (lastErr) {
+    console.error(
+      '[DESKTOP] Could not load Hub UI after retries. If nothing listens on',
+      HUB_PORT + ',',
+      'run `npm start` in another terminal (same repo), or ensure `scripts/hub.js` did not exit',
+      '(see stderr above). External hub: same port must serve this Hub’s GET /settings JSON.'
+    );
+  }
+  throw lastErr || new Error('loadURL failed');
+}
+
 /**
  * Read-only app root (contains `assets/`, `scripts/hub.js`, `node_modules/`).
  * In dev, `electron scripts/desktop.js` makes `app.getAppPath()` point at `scripts/`, not the repo root — use `__dirname`.
@@ -527,7 +573,7 @@ async function createWindow () {
     return { action: 'deny' };
   });
 
-  await win.loadURL(hubUrl());
+  await loadHubUiWithRetries(win);
   if (process.env.FABRIC_DESKTOP_DEVTOOLS === '1' || String(process.env.FABRIC_DESKTOP_DEVTOOLS || '').toLowerCase() === 'true') {
     try {
       win.webContents.openDevTools({ mode: 'detach' });

@@ -33,6 +33,7 @@ const {
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const {
   readStorageJSON,
+  readStorageString,
   writeStorageJSON,
   removeStorageKey
 } = require('../functions/fabricBrowserState');
@@ -45,12 +46,17 @@ const {
 const {
   buildLocalFabricIdentityPayload,
   plaintextMasterFromStored,
+  fabricPlaintextSigningUnlockable,
   unlockedSessionFromDecryptedMaster
 } = require('../functions/fabricHubLocalIdentity');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const FabricHubAdminTokenNotice = require('./fabricIdentity/FabricHubAdminTokenNotice');
 const {
   deriveFabricAccountIdentityKeys,
-  fabricRootXpubFromMasterXprv
+  fabricRootXpubFromMasterXprv,
+  identityFromFabricProtocolSigningXprv
 } = require('../functions/fabricAccountDerivedIdentity');
+const { buildFabricAccountSubtreeBackupInner } = require('../functions/fabricIdentityCapabilities');
 
 const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
 
@@ -114,6 +120,7 @@ function IdentityManager (props) {
         fabricAccountIndex: props.currentIdentity.fabricAccountIndex != null
           ? Math.floor(Number(props.currentIdentity.fabricAccountIndex))
           : undefined,
+        fabricHdRole: props.currentIdentity.fabricHdRole || null,
         masterXprv: props.currentIdentity.masterXprv || null,
         masterXpub: props.currentIdentity.masterXpub || null
       };
@@ -142,6 +149,7 @@ function IdentityManager (props) {
           fabricIdentityMode: r.fabricIdentityMode || undefined,
           fabricAccountIndex:
             r.fabricAccountIndex != null ? Math.floor(Number(r.fabricAccountIndex)) : undefined,
+          fabricHdRole: r.fabricHdRole || undefined,
           masterXpub: r.masterXpub || null,
           masterXprv: null,
           linkedFromDesktop: false
@@ -234,7 +242,7 @@ function IdentityManager (props) {
         if (!prev.passwordProtected) {
           try {
             const parsed = readStorageJSON('fabric.identity.local', null);
-            if (parsed && plaintextMasterFromStored(parsed)) next.plaintextUnlockAvailable = true;
+            if (parsed && fabricPlaintextSigningUnlockable(parsed)) next.plaintextUnlockAvailable = true;
           } catch (e) {}
         }
         return next;
@@ -258,6 +266,7 @@ function IdentityManager (props) {
           passwordProtected: !!localIdentity.passwordProtected,
           fabricIdentityMode: localIdentity.fabricIdentityMode || undefined,
           fabricAccountIndex: localIdentity.fabricAccountIndex,
+          fabricHdRole: localIdentity.fabricHdRole || undefined,
           masterXprv: localIdentity.masterXprv || undefined,
           masterXpub: localIdentity.masterXpub || undefined
         }));
@@ -273,7 +282,8 @@ function IdentityManager (props) {
       ? String(Math.floor(Number(i.fabricAccountIndex)))
       : '';
     const mode = i.fabricIdentityMode ? String(i.fabricIdentityMode) : '';
-    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.passwordProtected ? '1' : '0'}|${i.plaintextUnlockAvailable ? '1' : '0'}|${i.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}`;
+    const hd = i.fabricHdRole ? String(i.fabricHdRole) : '';
+    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.passwordProtected ? '1' : '0'}|${i.plaintextUnlockAvailable ? '1' : '0'}|${i.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}|${hd}`;
   }
 
   // Anchor key only (no xprv): avoid local<->parent lock/unlock echo loops that can flicker the modal.
@@ -307,6 +317,7 @@ function IdentityManager (props) {
         linkedFromDesktop: !!p.linkedFromDesktop,
         fabricIdentityMode: p.fabricIdentityMode || null,
         fabricAccountIndex: p.fabricAccountIndex != null ? Math.floor(Number(p.fabricAccountIndex)) : undefined,
+        fabricHdRole: p.fabricHdRole || undefined,
         masterXprv: p.masterXprv || null,
         masterXpub: p.masterXpub || null
       };
@@ -343,6 +354,7 @@ function IdentityManager (props) {
         ...(localIdentity.fabricAccountIndex != null
           ? { fabricAccountIndex: localIdentity.fabricAccountIndex }
           : {}),
+        ...(localIdentity.fabricHdRole ? { fabricHdRole: localIdentity.fabricHdRole } : {}),
         ...(localIdentity.masterXprv ? { masterXprv: localIdentity.masterXprv } : {}),
         ...(localIdentity.masterXpub ? { masterXpub: localIdentity.masterXpub } : {})
       });
@@ -371,6 +383,7 @@ function IdentityManager (props) {
           passwordProtected: !!localIdentity.passwordProtected,
           fabricIdentityMode: localIdentity.fabricIdentityMode || undefined,
           fabricAccountIndex: localIdentity.fabricAccountIndex,
+          fabricHdRole: localIdentity.fabricHdRole || undefined,
           masterXprv: localIdentity.masterXprv || undefined,
           masterXpub: localIdentity.masterXpub || undefined
         };
@@ -587,11 +600,14 @@ function IdentityManager (props) {
   const plaintextKeyMaterialOnDisk = React.useMemo(() => {
     try {
       const parsed = readStorageJSON('fabric.identity.local', null);
-      return !!(parsed && plaintextMasterFromStored(parsed));
+      return !!(parsed && fabricPlaintextSigningUnlockable(parsed));
     } catch (_) {
       return false;
     }
   }, [localIdentity && localIdentity.xpub]);
+
+  const showFabricHubAdminNotice = !!readHubAdminTokenFromBrowser(props.hubAdminToken) &&
+    (props.postSetupFlow || readStorageString('fabric.hub.identityWizardPending') === '1');
 
   return (
     <Segment basic style={{ minWidth: 0, maxWidth: '100%' }}>
@@ -599,6 +615,9 @@ function IdentityManager (props) {
         <Icon name="key" aria-hidden="true" />
         <Header.Content>Fabric Identity</Header.Content>
       </Header>
+      {showFabricHubAdminNotice ? (
+        <FabricHubAdminTokenNotice compact={!props.postSetupFlow} />
+      ) : null}
       <p style={{ color: '#666', marginTop: '0.25em', marginBottom: '0.75em', maxWidth: '42em', lineHeight: 1.45 }}>
         {props.postSetupFlow ? (
           <>
@@ -747,6 +766,62 @@ function IdentityManager (props) {
               <Icon name="download" />
               Download encrypted backup
             </Button>
+            {localIdentity &&
+            localIdentity.fabricIdentityMode === 'account' &&
+            localIdentity.xprv &&
+            localIdentity.fabricHdRole !== 'accountNode' &&
+            localIdentity.fabricHdRole !== 'watchAccount' ? (
+              <Button
+                size="small"
+                icon
+                labelPosition="left"
+                style={{ marginLeft: '0.5em', marginTop: '0.5em' }}
+                loading={backupExportBusy}
+                disabled={backupExportBusy || !localIdentity || !localIdentity.xpub}
+                title="Encrypted backup of this Fabric account signing key only (no HD master). Use when the master is stored elsewhere."
+                onClick={() => {
+                  (async () => {
+                    if (!localIdentity || !localIdentity.xpub || !localIdentity.xprv) return;
+                    const pwd = String(backupExportPassword || '').trim();
+                    if (!pwd || pwd.length < 8) {
+                      setError('Choose a backup file password of at least 8 characters.');
+                      return;
+                    }
+                    try {
+                      setBackupExportBusy(true);
+                      setError(null);
+                      const ai =
+                        localIdentity.fabricAccountIndex != null
+                          ? Math.floor(Number(localIdentity.fabricAccountIndex))
+                          : 0;
+                      const inner = buildFabricAccountSubtreeBackupInner({
+                        fabricAccountIndex: ai,
+                        id: localIdentity.id,
+                        xpub: localIdentity.xpub,
+                        xprv: localIdentity.xprv
+                      });
+                      const envelope = await encryptFabricIdentityBackupPayload(inner, pwd);
+                      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'fabric-identity-account-backup.enc.json';
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    } catch (err) {
+                      setError(err && err.message ? err.message : String(err));
+                    } finally {
+                      setBackupExportBusy(false);
+                    }
+                  })();
+                }}
+              >
+                <Icon name="download" />
+                Account-only encrypted backup
+              </Button>
+            ) : null}
             {localIdentity.xprv && (localIdentity.passwordProtected || plaintextKeyMaterialOnDisk) ? (
               <Button
                 size="small"
@@ -759,7 +834,7 @@ function IdentityManager (props) {
                     if (prev.passwordProtected) return { ...prev, xprv: null, ...(prev.fabricIdentityMode === 'account' ? { masterXprv: null } : {}) };
                     try {
                       const parsed = readStorageJSON('fabric.identity.local', null);
-                      if (parsed && plaintextMasterFromStored(parsed)) {
+                      if (parsed && fabricPlaintextSigningUnlockable(parsed)) {
                         return {
                           ...prev,
                           xprv: null,
@@ -796,11 +871,16 @@ function IdentityManager (props) {
                     (async () => {
                       try {
                         const parsed = readStorageJSON('fabric.identity.local', null);
-                        const masterPlain = plaintextMasterFromStored(parsed);
-                        if (!parsed || !masterPlain) {
+                        let material = '';
+                        if (parsed && parsed.fabricHdRole === 'accountNode' && !parsed.passwordProtected) {
+                          material = String(parsed.xprv || '').trim();
+                        } else {
+                          material = plaintextMasterFromStored(parsed);
+                        }
+                        if (!parsed || !material) {
                           throw new Error('No plaintext key in storage.');
                         }
-                        const nextIdentity = unlockedSessionFromDecryptedMaster(masterPlain, parsed);
+                        const nextIdentity = unlockedSessionFromDecryptedMaster(material, parsed);
                         try {
                           if (typeof window !== 'undefined' && window.sessionStorage) {
                             window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
@@ -1676,6 +1756,64 @@ function IdentityManager (props) {
                           setError(decErr && decErr.message ? decErr.message : 'Could not decrypt backup.');
                           return;
                         }
+                      }
+
+                      if (
+                        data &&
+                        typeof data === 'object' &&
+                        data.type === 'fabric-identity-backup-inner' &&
+                        data.xprv &&
+                        (data.backupScope === 'fabricAccountSubtree' || data.fabricHdRole === 'accountNode')
+                      ) {
+                        let hasStorage = false;
+                        try {
+                          hasStorage = (typeof window !== 'undefined');
+                        } catch (e) {
+                          hasStorage = false;
+                        }
+                        const mat = identityFromFabricProtocolSigningXprv(String(data.xprv).trim());
+                        if (
+                          data.id != null &&
+                          String(data.id).trim() &&
+                          String(data.id).trim() !== String(mat.id)
+                        ) {
+                          setError('Backup identity id does not match key material.');
+                          return;
+                        }
+                        const fabricAccountIndex =
+                          data.fabricAccountIndex != null
+                            ? Math.floor(Number(data.fabricAccountIndex))
+                            : 0;
+                        const storedPayload = {
+                          fabricIdentityMode: 'account',
+                          fabricHdRole: 'accountNode',
+                          fabricAccountIndex,
+                          id: mat.id,
+                          xpub: mat.xpub,
+                          xprv: mat.xprv,
+                          passwordProtected: false
+                        };
+                        if (hasStorage) {
+                          writeStorageJSON('fabric.identity.local', storedPayload);
+                        }
+                        const nextIdentity = unlockedSessionFromDecryptedMaster(mat.xprv, storedPayload);
+                        setLocalIdentity(nextIdentity);
+                        resetSeedState();
+                        if (typeof props.onLocalIdentityChange === 'function') {
+                          props.onLocalIdentityChange(nextIdentity);
+                        }
+                        if (typeof props.onUnlockSuccess === 'function') {
+                          props.onUnlockSuccess({
+                            id: String(mat.id),
+                            xpub: String(mat.xpub),
+                            xprv: String(mat.xprv),
+                            passwordProtected: false,
+                            fabricIdentityMode: 'account',
+                            fabricHdRole: 'accountNode',
+                            fabricAccountIndex
+                          });
+                        }
+                        return;
                       }
 
                       let xprv = null;
