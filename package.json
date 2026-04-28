@@ -11,6 +11,7 @@
     "./components/DelegationSigningModal": "./components/DelegationSigningModal.js",
     "./components/SettingsHome": "./components/SettingsHome.js",
     "./functions/fabricMessageEnvelope": "./functions/fabricMessageEnvelope.js",
+    "./functions/fabricDocumentOfferEnvelope": "./functions/fabricDocumentOfferEnvelope.js",
     "./functions/fabricProtocolUrl": "./functions/fabricProtocolUrl.js",
     "./components/SecuritySessionHome": "./components/SecuritySessionHome.js",
     "./types/LightningChannel": "./types/lightningChannel.js"
