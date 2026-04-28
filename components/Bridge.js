@@ -21,6 +21,10 @@ const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER } = require('@fabric/core/constants')
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
 const { pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+const {
+  FABRIC_DOCUMENT_OFFER_RESPONSE,
+  isDocumentInventoryDocumentsOfferResponse
+} = require('../functions/fabricDocumentOfferEnvelope');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { toast } = require('../functions/toast');
 const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
@@ -38,8 +42,7 @@ const {
   fabricIdentityChatDisabledReasonPlain,
   fabricIdentityPeerDisabledReasonPlain
 } = require('../functions/hubIdentityUiHints');
-const { createFabricBrowserStore } = require('../functions/fabricBrowserStore');
-const { readStorageJSON } = require('../functions/fabricBrowserState');
+const { store: fabricBrowserStateStore, readStorageJSON } = require('../functions/fabricBrowserState');
 const BridgeMessageCollection = require('../types/bridgeMessageCollection');
 const {
   HUB_FABRIC_SESSION_ID,
@@ -135,10 +138,7 @@ class Bridge extends React.Component {
     };
 
     // Canonical browser-side Fabric state store (offline-first baseline).
-    this._fabricStore = createFabricBrowserStore({
-      storageKey: 'fabric:state',
-      initialState: this.globalState
-    });
+    this._fabricStore = fabricBrowserStateStore();
     const restoredUnified = this._fabricStore.GET('/');
     if (restoredUnified && typeof restoredUnified === 'object') {
       this.globalState = {
@@ -248,10 +248,16 @@ class Bridge extends React.Component {
     const restoredPeerQueue = this._readJSONFromStorage('fabric:peerMessageQueue', []);
     if (Array.isArray(restoredPeerQueue)) this.peerMessageQueue = restoredPeerQueue;
 
-    const restoredMessages = this._readJSONFromStorage('fabric:messages', null);
-    this._messageCollection = new BridgeMessageCollection({
-      data: (restoredMessages && typeof restoredMessages === 'object') ? restoredMessages : {}
-    });
+    // Merge legacy `fabric:messages` with hub messages already restored from `fabric:state` (unified wins).
+    const unifiedMessages =
+      this.globalState.messages && typeof this.globalState.messages === 'object'
+        ? { ...this.globalState.messages }
+        : {};
+    const restoredLegacyMessages = this._readJSONFromStorage('fabric:messages', null);
+    const legacyMessages =
+      restoredLegacyMessages && typeof restoredLegacyMessages === 'object' ? restoredLegacyMessages : {};
+    const mergedChat = { ...legacyMessages, ...unifiedMessages };
+    this._messageCollection = new BridgeMessageCollection({ data: mergedChat });
     this.globalState.messages = this._messageCollection.exportMap();
 
     // Restore documents (unified store: all docs with content; publish adds ref to hub index)
@@ -917,7 +923,12 @@ class Bridge extends React.Component {
   _persistGlobalState () {
     if (!this._fabricStore || typeof this._fabricStore.PUT !== 'function') return;
     try {
-      this._fabricStore.PUT('/', this.globalState, { persist: true });
+      const prev = this._fabricStore.GET('/');
+      const base =
+        prev && typeof prev === 'object' && !Array.isArray(prev)
+          ? prev
+          : {};
+      this._fabricStore.PUT('/', { ...base, ...this.globalState }, { persist: true });
     } catch (e) {}
   }
 
@@ -1960,6 +1971,23 @@ class Bridge extends React.Component {
     if (!token) return base;
     const sep = base.indexOf('?') >= 0 ? '&' : '?';
     return `${base}${sep}token=${encodeURIComponent(token)}`;
+  }
+
+  /**
+   * Same-origin POST /services/rpc headers: optional `FABRIC_WS_CLIENT_TOKEN` as Bearer so HTTP JSON-RPC
+   * satisfies hub `websocket.clientToken` checks when WebSockets use query auth (MESSAGE_TRANSPORT.md).
+   * @returns {{ 'Content-Type': string, Accept: string, Authorization?: string }}
+   */
+  _hubJsonRpcHttpHeaders () {
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    let token = '';
+    try {
+      token = (typeof window !== 'undefined' && window.FABRIC_WS_CLIENT_TOKEN)
+        ? String(window.FABRIC_WS_CLIENT_TOKEN).trim()
+        : '';
+    } catch (e) {}
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
   }
 
   _applyHubAddressString (input) {
@@ -3171,7 +3199,7 @@ class Bridge extends React.Component {
     try {
       res = await fetch(`${origin}/services/rpc`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: this._hubJsonRpcHttpHeaders(),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id,
@@ -3421,7 +3449,7 @@ class Bridge extends React.Component {
       jsonRpcSeq += 1;
       const res = await fetch(`${origin}/services/rpc`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: this._hubJsonRpcHttpHeaders(),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: jsonRpcSeq,
@@ -4159,7 +4187,7 @@ class Bridge extends React.Component {
             }
 
             // Inventory responses from peers for documents, stored under globalState.peers[peerId].inventory.documents.
-            if (parsed && parsed.type === 'INVENTORY_RESPONSE' && parsed.object && parsed.object.kind === 'documents') {
+            if (isDocumentInventoryDocumentsOfferResponse(parsed)) {
               const peerId = parsed.actor && parsed.actor.id;
               const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
               if (peerId) {
@@ -4240,9 +4268,9 @@ class Bridge extends React.Component {
               }
               break;
             }
-            if (originalType === 'INVENTORY_RESPONSE') {
+            if (originalType === 'INVENTORY_RESPONSE' || originalType === FABRIC_DOCUMENT_OFFER_RESPONSE) {
               const parsed = typeof original === 'string' ? JSON.parse(original) : original;
-              if (parsed && parsed.type === 'INVENTORY_RESPONSE' && parsed.object && parsed.object.kind === 'documents') {
+              if (isDocumentInventoryDocumentsOfferResponse(parsed)) {
                 const peerId = parsed.actor && parsed.actor.id;
                 const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
                 if (peerId) {
@@ -4875,7 +4903,7 @@ class Bridge extends React.Component {
         : '';
       const res = await fetch(`${rpcOrigin}/services/rpc`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: this._hubJsonRpcHttpHeaders(),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: Date.now(),
@@ -5526,7 +5554,7 @@ class Bridge extends React.Component {
           if (!origin) return;
           fetch(`${origin}/services/rpc`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            headers: this._hubJsonRpcHttpHeaders(),
             body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'CreateDocument', params: [payloadDoc] })
           })
             .then((r) => r.json().catch(() => null))
@@ -5656,7 +5684,7 @@ class Bridge extends React.Component {
           if (!origin) return;
           fetch(`${origin}/services/rpc`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            headers: this._hubJsonRpcHttpHeaders(),
             body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'PublishDocument', params })
           })
             .then((r) => r.json().catch(() => null))
@@ -6020,6 +6048,87 @@ class Bridge extends React.Component {
   }
 
   /**
+   * POST /services/rpc with positional params (same as WebSocket JSONCall).
+   * {@link Bridge#callHubJsonRpc} wraps a single object — not suitable for RequestPeerInventory.
+   * @param {Array} positionalParams — e.g. [idOrAddress, 'documents', opts]
+   * @returns {Promise<{ ok: boolean, result?: *, error?: * }>}
+   */
+  async _invokeHubRpcWithArrayParams (method, positionalParams) {
+    if (typeof window === 'undefined') return { ok: false, error: 'no window' };
+    const origin = window.location.origin;
+    this._hubJsonRpcSeq = (this._hubJsonRpcSeq || 0) + 1;
+    const id = this._hubJsonRpcSeq;
+    let res;
+    try {
+      res = await fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: this._hubJsonRpcHttpHeaders(),
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: String(method || ''),
+          params: Array.isArray(positionalParams) ? positionalParams : []
+        }),
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: (body && (body.error || body.message)) || `HTTP ${res.status}` };
+    }
+    if (body && body.error) {
+      const msg = body.error.message || body.error.data || JSON.stringify(body.error);
+      return { ok: false, error: String(msg || 'RPC error') };
+    }
+    const result = Object.prototype.hasOwnProperty.call(body, 'result') ? body.result : null;
+    return { ok: true, result };
+  }
+
+  /**
+   * Same hub handler as WS JSONCall, when the Bridge WebSocket is not yet open —
+   * otherwise {@link Bridge#sendMessage} queues the message and inventory never fires until later.
+   * @private
+   */
+  async _requestPeerInventoryHttpFallback (idOrAddress, kind, options) {
+    const params = (options && typeof options === 'object' && Object.keys(options).length > 0)
+      ? [idOrAddress, kind, options]
+      : [idOrAddress, kind];
+    const out = await this._invokeHubRpcWithArrayParams('RequestPeerInventory', params);
+    if (!out.ok) {
+      if (this.settings && this.settings.debug) {
+        console.debug('[BRIDGE]', 'RequestPeerInventory HTTP fallback:', out.error || 'failed');
+      } else {
+        console.warn('[BRIDGE]', 'RequestPeerInventory:', out.error || 'HTTP fallback failed');
+      }
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fabric:peerInventoryRequestResult', {
+            detail: { status: 'error', message: String(out.error || 'HTTP request failed') }
+          }));
+        }
+      } catch (_) {}
+      return;
+    }
+    const r = out.result;
+    if (r && typeof r === 'object' && r.status === 'error' && r.message) {
+      console.warn('[BRIDGE]', 'RequestPeerInventory:', String(r.message));
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('fabric:peerInventoryRequestResult', {
+          detail: {
+            ...(r && typeof r === 'object' ? r : {}),
+            via: 'http'
+          }
+        }));
+      }
+    } catch (_) {}
+  }
+
+  /**
    * Request a peer's inventory (e.g., list of documents) via the hub JSON-RPC.
    * @param {string|{id,address}} idOrAddress - Direct Fabric connection (next hop); use with `options.inventoryTarget` when that hop is a relay.
    * @param {string} kind - Inventory kind, defaults to 'documents'.
@@ -6033,7 +6142,19 @@ class Bridge extends React.Component {
         : [idOrAddress, kind];
       const payload = { method: 'RequestPeerInventory', params };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      const wsReady = this._isConnected && this.ws && this.ws.readyState === WebSocket.OPEN;
+      if (!wsReady) {
+        void this._requestPeerInventoryHttpFallback(idOrAddress, kind || 'documents', options);
+        return;
+      }
       this.sendSignedMessage(message.toBuffer());
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fabric:peerInventoryRequestResult', {
+            detail: { status: 'success', via: 'ws' }
+          }));
+        }
+      } catch (_) {}
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending RequestPeerInventory:', safeIdentityErr(error));
     }

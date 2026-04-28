@@ -224,8 +224,7 @@ class Dashboard extends React.Component {
         {/* <div id="sidebar" attached="bottom" style={{ overflow: 'hidden', borderRadius: 0, height: '100vh', backgroundColor: '#eee' }}> */}
         <div attached="bottom" style={{
           display: 'flex',
-          height: '100vh',
-          backgroundColor: '#ffffff'
+          height: '100vh'
         }}>
           {/* Small sidebar to the left, with the icons, always visible */}
           <Sidebar as={Menu} id="main-sidebar" animation='overlay' icon='labeled' inverted vertical visible size='huge' style={{ overflow: 'hidden' }} onClick={() => { this.toggleInformationSidebar(); this.closeHelpBox(); }}>

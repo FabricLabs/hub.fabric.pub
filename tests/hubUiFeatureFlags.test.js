@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const flags = require('../functions/hubUiFeatureFlags');
+const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');
 
 function setupWindowStorage () {
   const local = Object.create(null);
@@ -19,11 +20,35 @@ function setupWindowStorage () {
   };
 }
 
+function setFabricUiFeatureFlags (featureFlags) {
+  global.window.localStorage.setItem(
+    'fabric:state',
+    JSON.stringify({
+      ui: { featureFlags }
+    })
+  );
+}
+
 describe('hubUiFeatureFlags', function () {
+  /** Saved so later test files in the same Node process retain real `window` APIs (MutationObserver, addEventListener, …). */
+  let globalsBeforeSuite;
+
+  before(function () {
+    globalsBeforeSuite = {
+      window: global.window,
+      fetch: global.fetch,
+      CustomEvent: global.CustomEvent
+    };
+  });
+
   afterEach(function () {
-    delete global.window;
-    delete global.fetch;
-    delete global.CustomEvent;
+    try {
+      resetFabricBrowserStateStore();
+    } catch (_) {}
+    const g = globalsBeforeSuite || {};
+    global.window = g.window;
+    global.fetch = g.fetch;
+    global.CustomEvent = g.CustomEvent;
   });
 
   it('fetchPersistedHubUiFeatureFlags hydrates local flags from /settings', async function () {
@@ -55,6 +80,24 @@ describe('hubUiFeatureFlags', function () {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.persisted, false);
     assert.strictEqual(flags.loadHubUiFeatureFlags().bitcoinPayments, true, 'local cache still updates');
+  });
+
+  it('explicit peers true in storage is honored when advancedMode is off (beginner default does not override)', function () {
+    setupWindowStorage();
+    setFabricUiFeatureFlags({ peers: true });
+    const f = flags.loadHubUiFeatureFlags();
+    assert.strictEqual(f.peers, true);
+  });
+
+  it('empty {} in storage resets to bundled defaults (avoids malformed partial storage)', function () {
+    setupWindowStorage();
+    setFabricUiFeatureFlags({});
+    const f = flags.loadHubUiFeatureFlags();
+    assert.strictEqual(f.peers, true);
+    assert.strictEqual(f.features, true);
+    assert.strictEqual(f.activities, true);
+    assert.strictEqual(f.sidechain, true);
+    assert.strictEqual(f.bitcoinCrowdfund, true);
   });
 
   it('normalizeFlags honors peers false and explicit false for former always-on keys (UI-58)', function () {

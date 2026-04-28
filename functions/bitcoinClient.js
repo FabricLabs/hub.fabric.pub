@@ -41,9 +41,16 @@ const BITCOIN_WALLET_BRANCH_CHANGED = 'fabricBitcoinWalletBranchChanged';
 const SPEND_XPUB_WATCH_KEY = 'fabric.bitcoin.spendXpubWatch';
 const { safeIdentityErr } = require('./fabricSafeLog');
 
+function fabricBitcoinWatchMasterXpub (identity = {}) {
+  if (identity && identity.fabricIdentityMode === 'account' && identity.masterXpub) {
+    return String(identity.masterXpub).trim();
+  }
+  return identity && identity.xpub ? String(identity.xpub).trim() : '';
+}
+
 function loadSpendXpubWatchForIdentity (identity = {}) {
   const fabricId = identity && identity.id ? String(identity.id).trim() : '';
-  const masterXpub = identity && identity.xpub ? String(identity.xpub).trim() : '';
+  const masterXpub = fabricBitcoinWatchMasterXpub(identity);
   try {
     if (typeof window === 'undefined') return null;
     const p = readStorageJSON(SPEND_XPUB_WATCH_KEY, null);
@@ -64,9 +71,9 @@ function loadSpendXpubWatchForIdentity (identity = {}) {
 
 function saveSpendXpubWatchForIdentity (identity = {}, wallet = {}) {
   const fabricId = identity && identity.id ? String(identity.id).trim() : '';
-  const masterXpub = identity && identity.xpub ? String(identity.xpub).trim() : '';
+  const masterXpub = fabricBitcoinWatchMasterXpub(identity);
   const spendAccountXpub = wallet && wallet.xpub ? String(wallet.xpub).trim() : '';
-  if (!spendAccountXpub || !String(identity.xprv || '').trim()) return;
+  if (!spendAccountXpub || !fabricIdentityHasUnlockedSigningForBitcoin(identity)) return;
   try {
     if (typeof window === 'undefined') return;
     writeStorageJSON(SPEND_XPUB_WATCH_KEY, {
@@ -422,6 +429,32 @@ function deriveFabricBitcoinAccountKeys (masterXprv, masterXpub, accountIndex) {
 }
 
 /**
+ * Fabric master key for Bitcoin BIP44 (m/44'/0'/n') is always the HD root (master xpriv).
+ * When {@link fabricIdentityMode} is `account`, {@link masterXprv} holds that root; {@link xprv} is the
+ * Fabric-protocol signing key at m/44'/7778'/… and must not be used for Bitcoin derivation.
+ */
+function bitcoinDerivationSecretsFromFabricIdentity (identity = {}) {
+  if (identity && identity.fabricIdentityMode === 'account' &&
+      typeof identity.masterXprv === 'string' && identity.masterXprv.trim()) {
+    return {
+      xprvForBitcoin: String(identity.masterXprv).trim(),
+      xpubHint: identity.masterXpub ? String(identity.masterXpub).trim() : ''
+    };
+  }
+  return {
+    xprvForBitcoin: identity && identity.xprv ? String(identity.xprv).trim() : '',
+    xpubHint: identity && identity.xpub ? String(identity.xpub).trim() : ''
+  };
+}
+
+function fabricIdentityHasUnlockedSigningForBitcoin (identity = {}) {
+  if (identity && identity.fabricIdentityMode === 'account') {
+    return !!String(identity.masterXprv || '').trim();
+  }
+  return !!String(identity && identity.xprv || '').trim();
+}
+
+/**
  * Wallet context for Hub Bitcoin APIs (walletId, xpub, …).
  * One browser wallet (one identity): {@link getSpendWalletContext} / {@link getNextReceiveWalletContext} always use
  * {@link BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX} under the master. Callers may pass `fixedBitcoinBip44Account` to override;
@@ -430,8 +463,9 @@ function deriveFabricBitcoinAccountKeys (masterXprv, masterXpub, accountIndex) {
  * @param {{ role?: 'receive'|'send', fixedBitcoinBip44Account?: number }} [opts] - role affects legacy session lookup only when fixed index omitted
  */
 function getWalletContextFromIdentity (identity = {}, opts = {}) {
-  let xpub = identity && identity.xpub ? String(identity.xpub) : '';
-  let xprv = identity && identity.xprv ? String(identity.xprv) : '';
+  const masterMat = bitcoinDerivationSecretsFromFabricIdentity(identity);
+  let xpub = masterMat.xpubHint;
+  let xprv = masterMat.xprvForBitcoin;
   const id = identity && identity.id ? String(identity.id) : '';
   const address = identity && identity.address ? String(identity.address) : '';
   const role = opts && opts.role === 'receive' ? 'receive' : 'send';
@@ -453,7 +487,7 @@ function getWalletContextFromIdentity (identity = {}, opts = {}) {
     }
   }
 
-  if (!String(identity.xprv || '').trim()) {
+  if (!fabricIdentityHasUnlockedSigningForBitcoin(identity)) {
     const watchedSpend = loadSpendXpubWatchForIdentity(identity);
     if (watchedSpend) {
       xpub = watchedSpend;
@@ -491,7 +525,7 @@ function getWalletContextFromIdentity (identity = {}, opts = {}) {
       ]
     : [];
 
-  const hasPrivateKey = !!String(identity.xprv || '').trim();
+  const hasPrivateKey = !!String(xprv || '').trim();
   const out = {
     walletId,
     fingerprint,
@@ -1458,8 +1492,9 @@ async function postCrowdfundingRefundPrepare (settings = {}, campaignId = '', bo
  */
 function getCrowdfundingBeneficiaryPubkeyHex (identity = {}) {
   const w = getSpendWalletContext(identity);
-  const masterXprv = String(identity && identity.xprv || '').trim();
-  const masterXpub = String(identity && identity.xpub || '').trim();
+  const mat = bitcoinDerivationSecretsFromFabricIdentity(identity);
+  const masterXprv = String(mat.xprvForBitcoin || '').trim();
+  const masterXpub = String(mat.xpubHint || '').trim();
 
   let accountXprv = '';
   let accountXpub = '';
@@ -1502,8 +1537,9 @@ function getCrowdfundingBeneficiaryPubkeyHex (identity = {}) {
  * @returns {Buffer|null}
  */
 function getCrowdfundingBeneficiaryPrivateKey32 (identity = {}) {
-  const masterXprv = String(identity && identity.xprv || '').trim();
-  const masterXpub = String(identity && identity.xpub || '').trim();
+  const mat = bitcoinDerivationSecretsFromFabricIdentity(identity);
+  const masterXprv = String(mat.xprvForBitcoin || '').trim();
+  const masterXpub = String(mat.xpubHint || '').trim();
   if (!masterXprv) return null;
   let accountXprv = '';
   let accountXpub = '';

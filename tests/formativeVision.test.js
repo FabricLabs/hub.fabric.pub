@@ -174,6 +174,7 @@ describe('Formative Vision Integration', function () {
   });
 
   it('operator health endpoint returns core node observability fields', async function () {
+    this.timeout(12000); // bounded by DNS/TCP probes in _collectOperatorHealthSnapshot
     const res = await requestJson({
       hostname: host,
       port: httpPort,

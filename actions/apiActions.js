@@ -17,7 +17,7 @@ function assertClientFetchPath (input) {
   return s;
 }
 
-async function fetchFromAPI (path, params = {},token = null) {
+async function fetchFromAPI (path, token = null) {
   const safe = assertClientFetchPath(path);
   const response = await fetch(safe, {
     method: 'GET',
@@ -64,6 +64,7 @@ async function postAPI (path, params, token = null) {
 }
 
 module.exports = {
+  assertClientFetchPath,
   fetchFromAPI,
   patchAPI,
   postAPI

@@ -33,9 +33,30 @@ const {
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const {
   readStorageJSON,
+  readStorageString,
   writeStorageJSON,
   removeStorageKey
 } = require('../functions/fabricBrowserState');
+
+const {
+  encryptFabricIdentityBackupPayload,
+  decryptFabricIdentityBackupToPayload
+} = require('../functions/fabricIdentityBackupCrypto');
+
+const {
+  buildLocalFabricIdentityPayload,
+  plaintextMasterFromStored,
+  fabricPlaintextSigningUnlockable,
+  unlockedSessionFromDecryptedMaster
+} = require('../functions/fabricHubLocalIdentity');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const FabricHubAdminTokenNotice = require('./fabricIdentity/FabricHubAdminTokenNotice');
+const {
+  deriveFabricAccountIdentityKeys,
+  fabricRootXpubFromMasterXprv,
+  identityFromFabricProtocolSigningXprv
+} = require('../functions/fabricAccountDerivedIdentity');
+const { buildFabricAccountSubtreeBackupInner } = require('../functions/fabricIdentityCapabilities');
 
 const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
 
@@ -82,6 +103,9 @@ function IdentityManager (props) {
   const lockTimeoutMs = (props && typeof props.lockTimeoutMs === 'number' && props.lockTimeoutMs > 0)
     ? props.lockTimeoutMs
     : DEFAULT_LOCK_TIMEOUT_MS;
+
+  const suppressForget = !!(props && props.suppressForgetAndLinkedChrome);
+
   const [localIdentity, setLocalIdentity] = React.useState(() => {
     // Parent identity is authoritative when provided (prevents lock/watch-only state drifting from shell).
     if (props.currentIdentity && (props.currentIdentity.id || props.currentIdentity.xpub)) {
@@ -90,7 +114,15 @@ function IdentityManager (props) {
         xpub: props.currentIdentity.xpub,
         xprv: props.currentIdentity.xprv || null,
         passwordProtected: !!props.currentIdentity.passwordProtected,
-        linkedFromDesktop: !!props.currentIdentity.linkedFromDesktop
+        plaintextUnlockAvailable: !!props.currentIdentity.plaintextUnlockAvailable,
+        linkedFromDesktop: !!props.currentIdentity.linkedFromDesktop,
+        fabricIdentityMode: props.currentIdentity.fabricIdentityMode || null,
+        fabricAccountIndex: props.currentIdentity.fabricAccountIndex != null
+          ? Math.floor(Number(props.currentIdentity.fabricAccountIndex))
+          : undefined,
+        fabricHdRole: props.currentIdentity.fabricHdRole || null,
+        masterXprv: props.currentIdentity.masterXprv || null,
+        masterXpub: props.currentIdentity.masterXpub || null
       };
     }
 
@@ -105,18 +137,26 @@ function IdentityManager (props) {
       const parsed = readStorageJSON('fabric.identity.local', null);
       if (!parsed) return null;
 
-      // Prefer full xprv-based identities (can sign locally).
-      if (parsed.xprv && !parsed.passwordProtected) {
-        const ident = new Identity({ xprv: parsed.xprv });
+      const bl = buildLocalFabricIdentityPayload(parsed, { unlockPlaintextMaster: true });
+      if (bl.resolved && bl.record) {
+        const r = bl.record;
         return {
-          id: ident.id,
-          xpub: ident.key.xpub,
-          xprv: parsed.xprv,
-          passwordProtected: false
+          id: r.id,
+          xpub: r.xpub,
+          xprv: null,
+          passwordProtected: !!r.passwordProtected,
+          plaintextUnlockAvailable: !!r.plaintextUnlockAvailable,
+          fabricIdentityMode: r.fabricIdentityMode || undefined,
+          fabricAccountIndex:
+            r.fabricAccountIndex != null ? Math.floor(Number(r.fabricAccountIndex)) : undefined,
+          fabricHdRole: r.fabricHdRole || undefined,
+          masterXpub: r.masterXpub || null,
+          masterXprv: null,
+          linkedFromDesktop: false
         };
       }
 
-      // Password-protected identity: we know id/xpub but keep xprv locked until password is provided.
+      // Fallback legacy parse (unexpected invalid payload)
       if (parsed.passwordProtected && parsed.id && parsed.xpub) {
         return {
           id: parsed.id,
@@ -124,23 +164,6 @@ function IdentityManager (props) {
           xprv: null,
           passwordProtected: true
         };
-      }
-
-      // Fallback: xpub-only identity (public identifier only; signing disabled here).
-      if (parsed.xpub) {
-        try {
-          const key = new Key({ xpub: parsed.xpub });
-          const ident = new Identity(key);
-          return {
-            id: ident.id,
-            xpub: key.xpub,
-            xprv: null,
-            passwordProtected: false
-          };
-        } catch (e) {
-          console.warn('[IDENTITY]', 'Failed to restore xpub-only identity:', safeIdentityErr(e));
-          return null;
-        }
       }
 
       return null;
@@ -159,10 +182,16 @@ function IdentityManager (props) {
   const [identityPassword, setIdentityPassword] = React.useState('');
   const [identityPasswordConfirm, setIdentityPasswordConfirm] = React.useState('');
   const [unlockPassword, setUnlockPassword] = React.useState('');
+  /** Password for JSON export (v2 encrypted backup). */
+  const [backupExportPassword, setBackupExportPassword] = React.useState('');
+  const [backupExportBusy, setBackupExportBusy] = React.useState(false);
+  const [importBackupFilePassword, setImportBackupFilePassword] = React.useState('');
   const [isGenerating, setIsGenerating] = React.useState(false);
   const [showSeedPhrase, setShowSeedPhrase] = React.useState(false);
   const [showBackupKey, setShowBackupKey] = React.useState(false);
-  const [loginMethod, setLoginMethod] = React.useState(null); // 'existing' | 'generate' | 'import' | 'restoreMnemonic' | 'mnemonicDev' | null
+  const [loginMethod, setLoginMethod] = React.useState(() => (
+    props.initialLoginMethod != null ? props.initialLoginMethod : null
+  )); // 'existing' | 'generate' | 'import' | 'restoreMnemonic' | 'mnemonicDev' | null
   const [devMnemonicText, setDevMnemonicText] = React.useState('');
   const [devBip39Passphrase, setDevBip39Passphrase] = React.useState('');
   const [devMnemonicReplace, setDevMnemonicReplace] = React.useState(false);
@@ -178,24 +207,45 @@ function IdentityManager (props) {
     setShowSeedPhrase(false);
     setShowBackupKey(false);
     setUnlockPassword('');
+    setBackupExportPassword('');
+    setBackupExportBusy(false);
     setDevMnemonicText('');
     setDevBip39Passphrase('');
     setDevMnemonicReplace(false);
     setBackupAcknowledged(false);
-    setLoginMethod(null);
+    setLoginMethod(props.initialLoginMethod != null ? props.initialLoginMethod : null);
   };
 
-  // Derive lock state from localIdentity. Only "locked" when password-protected and no xprv (user can unlock).
-  const isLocked = !!(localIdentity && localIdentity.id && localIdentity.xpub && !localIdentity.xprv && localIdentity.passwordProtected);
+  const backToLoginChooser = () => {
+    if (props.postSetupFlow) setLoginMethod('generate');
+    else setLoginMethod(props.initialLoginMethod != null ? props.initialLoginMethod : null);
+  };
 
-  // Automatically re-lock only password-protected keys after the configured timeout.
+  // Derive lock state: password-protected or plaintext-on-disk awaiting unlock (no signing key in memory).
+  const isLocked = !!(localIdentity && localIdentity.id && localIdentity.xpub &&
+    !localIdentity.xprv &&
+    !!(localIdentity.passwordProtected || localIdentity.plaintextUnlockAvailable));
+
+  // Automatically re-lock after timeout — password identities and plaintext-derived identities alike.
   React.useEffect(() => {
-    if (!localIdentity || !localIdentity.xprv || !localIdentity.passwordProtected || !lockTimeoutMs) return;
+    if (!localIdentity || !localIdentity.xprv || !lockTimeoutMs) return;
+    const shouldTimedRelock = !!(localIdentity.passwordProtected || localIdentity.plaintextUnlockAvailable);
+    if (!shouldTimedRelock) return;
 
     const timer = setTimeout(() => {
       setLocalIdentity((prev) => {
         if (!prev || !prev.xprv) return prev;
-        return { ...prev, xprv: null };
+        const next = { ...prev, xprv: null };
+        if (prev.fabricIdentityMode === 'account') {
+          next.masterXprv = null;
+        }
+        if (!prev.passwordProtected) {
+          try {
+            const parsed = readStorageJSON('fabric.identity.local', null);
+            if (parsed && fabricPlaintextSigningUnlockable(parsed)) next.plaintextUnlockAvailable = true;
+          } catch (e) {}
+        }
+        return next;
       });
     }, lockTimeoutMs);
 
@@ -213,7 +263,12 @@ function IdentityManager (props) {
           id: localIdentity.id,
           xpub: localIdentity.xpub,
           xprv: localIdentity.xprv,
-          passwordProtected: !!localIdentity.passwordProtected
+          passwordProtected: !!localIdentity.passwordProtected,
+          fabricIdentityMode: localIdentity.fabricIdentityMode || undefined,
+          fabricAccountIndex: localIdentity.fabricAccountIndex,
+          fabricHdRole: localIdentity.fabricHdRole || undefined,
+          masterXprv: localIdentity.masterXprv || undefined,
+          masterXpub: localIdentity.masterXpub || undefined
         }));
       } else {
         window.sessionStorage.removeItem('fabric.identity.unlocked');
@@ -223,7 +278,12 @@ function IdentityManager (props) {
 
   function identityAnchorKey (i) {
     if (!i || (!i.id && !i.xpub)) return '';
-    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.passwordProtected ? '1' : '0'}|${i.linkedFromDesktop ? '1' : '0'}`;
+    const acct = i.fabricAccountIndex != null && i.fabricAccountIndex !== ''
+      ? String(Math.floor(Number(i.fabricAccountIndex)))
+      : '';
+    const mode = i.fabricIdentityMode ? String(i.fabricIdentityMode) : '';
+    const hd = i.fabricHdRole ? String(i.fabricHdRole) : '';
+    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.passwordProtected ? '1' : '0'}|${i.plaintextUnlockAvailable ? '1' : '0'}|${i.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}|${hd}`;
   }
 
   // Anchor key only (no xprv): avoid local<->parent lock/unlock echo loops that can flicker the modal.
@@ -240,16 +300,26 @@ function IdentityManager (props) {
       if (identityAnchorKey(prev) === identityAnchorKey(p)) {
         const prevHasXprv = !!(prev && prev.xprv);
         const parentHasXprv = !!p.xprv;
-        const isPasswordFlow = !!(p.passwordProtected || (prev && prev.passwordProtected));
-        // Keep anti-flicker behavior, but honor explicit lock/unlock transitions for password-protected identities.
-        if (!isPasswordFlow || prevHasXprv === parentHasXprv) return prev;
+        const needsKeyFlow = !!(
+          (p && p.passwordProtected) ||
+          (prev && prev.passwordProtected) ||
+          (p && p.plaintextUnlockAvailable) ||
+          (prev && prev.plaintextUnlockAvailable)
+        );
+        if (!needsKeyFlow || prevHasXprv === parentHasXprv) return prev;
       }
       return {
         id: p.id,
         xpub: p.xpub,
         xprv: p.xprv || null,
         passwordProtected: !!p.passwordProtected,
-        linkedFromDesktop: !!p.linkedFromDesktop
+        plaintextUnlockAvailable: !!p.plaintextUnlockAvailable,
+        linkedFromDesktop: !!p.linkedFromDesktop,
+        fabricIdentityMode: p.fabricIdentityMode || null,
+        fabricAccountIndex: p.fabricAccountIndex != null ? Math.floor(Number(p.fabricAccountIndex)) : undefined,
+        fabricHdRole: p.fabricHdRole || undefined,
+        masterXprv: p.masterXprv || null,
+        masterXpub: p.masterXpub || null
       };
     });
   }, [parentIdentityKey]);
@@ -268,11 +338,25 @@ function IdentityManager (props) {
     const cb = onLocalIdentityChangeRef.current;
     if (typeof cb !== 'function') return;
     if (localIdentity && localIdentity.id && localIdentity.xpub) {
+      const pw = !!localIdentity.passwordProtected;
+      const plainAvail = !!(
+        localIdentity.plaintextUnlockAvailable &&
+        !localIdentity.xprv &&
+        !pw
+      );
       cb({
         id: localIdentity.id,
         xpub: localIdentity.xpub,
         xprv: localIdentity.xprv || undefined,
-        passwordProtected: !!localIdentity.passwordProtected
+        passwordProtected: pw,
+        ...(plainAvail ? { plaintextUnlockAvailable: true } : {}),
+        ...(localIdentity.fabricIdentityMode ? { fabricIdentityMode: localIdentity.fabricIdentityMode } : {}),
+        ...(localIdentity.fabricAccountIndex != null
+          ? { fabricAccountIndex: localIdentity.fabricAccountIndex }
+          : {}),
+        ...(localIdentity.fabricHdRole ? { fabricHdRole: localIdentity.fabricHdRole } : {}),
+        ...(localIdentity.masterXprv ? { masterXprv: localIdentity.masterXprv } : {}),
+        ...(localIdentity.masterXpub ? { masterXpub: localIdentity.masterXpub } : {})
       });
     } else {
       cb(null);
@@ -296,7 +380,12 @@ function IdentityManager (props) {
           id: localIdentity.id,
           xpub: localIdentity.xpub,
           xprv: localIdentity.xprv || undefined,
-          passwordProtected: !!localIdentity.passwordProtected
+          passwordProtected: !!localIdentity.passwordProtected,
+          fabricIdentityMode: localIdentity.fabricIdentityMode || undefined,
+          fabricAccountIndex: localIdentity.fabricAccountIndex,
+          fabricHdRole: localIdentity.fabricHdRole || undefined,
+          masterXprv: localIdentity.masterXprv || undefined,
+          masterXpub: localIdentity.masterXpub || undefined
         };
         chrome.storage.local.set({ 'fabric.identity.ext': payload });
       } else {
@@ -508,19 +597,43 @@ function IdentityManager (props) {
     }
   }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
 
+  const plaintextKeyMaterialOnDisk = React.useMemo(() => {
+    try {
+      const parsed = readStorageJSON('fabric.identity.local', null);
+      return !!(parsed && fabricPlaintextSigningUnlockable(parsed));
+    } catch (_) {
+      return false;
+    }
+  }, [localIdentity && localIdentity.xpub]);
+
+  const showFabricHubAdminNotice = !!readHubAdminTokenFromBrowser(props.hubAdminToken) &&
+    (props.postSetupFlow || readStorageString('fabric.hub.identityWizardPending') === '1');
+
   return (
     <Segment basic style={{ minWidth: 0, maxWidth: '100%' }}>
       <Header as="h3" id="fabric-identity-modal-heading">
         <Icon name="key" aria-hidden="true" />
         <Header.Content>Fabric Identity</Header.Content>
       </Header>
+      {showFabricHubAdminNotice ? (
+        <FabricHubAdminTokenNotice compact={!props.postSetupFlow} />
+      ) : null}
       <p style={{ color: '#666', marginTop: '0.25em', marginBottom: '0.75em', maxWidth: '42em', lineHeight: 1.45 }}>
-        The top-bar <strong>Wallet</strong> chip, Bitcoin receive addresses, and{' '}
-        <Link to="/documents">document</Link> flows (encrypt, publish, paid distribute / purchase proofs) use this identity when the private key is unlocked in this browser.
-        {' '}On-chain derivation for this Hub is described under{' '}
-        <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>.
-        {' '}Reopen this dialog from the identity menu (<strong>User profile</strong>) or{' '}
-        <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>.
+        {props.postSetupFlow ? (
+          <>
+            Create or restore keys for this browser. We use Fabric <strong>BIP44 account #0</strong> by default
+            (derived from your HD master); you can switch accounts later from the identity menu without reloading a new mnemonic.
+          </>
+        ) : (
+          <>
+            The top-bar <strong>Wallet</strong> chip, Bitcoin receive addresses, and{' '}
+            <Link to="/documents">document</Link> flows (encrypt, publish, paid distribute / purchase proofs) use this identity when the private key is unlocked in this browser.
+            {' '}On-chain derivation for this Hub is described under{' '}
+            <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>.
+            {' '}Reopen this dialog from the identity menu (<strong>User profile</strong>) or{' '}
+            <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>.
+          </>
+        )}
       </p>
       <div>
         {localIdentity ? (
@@ -529,7 +642,7 @@ function IdentityManager (props) {
             <code style={identityMonospaceBlockStyle}>{localIdentity.xpub}</code>
             <p style={{ marginBottom: 0, marginTop: '0.25em' }}><strong>Bech32m ID:</strong></p>
             <code style={identityMonospaceBlockStyle}>{localIdentity.id}</code>
-            {localIdentity.linkedFromDesktop ? (
+            {!suppressForget && localIdentity.linkedFromDesktop ? (
               <Message info size="small" style={{ marginTop: '0.75em' }}>
                 <Icon name="shield" />
                 <strong>External signing</strong> is enabled — private keys stay on the Hub node; this browser holds a watch-only xpub.
@@ -540,7 +653,7 @@ function IdentityManager (props) {
                 <Link to="/settings/security">Security & delegation</Link>
               </Message>
             ) : null}
-            {readLinkedDevices().length > 0 ? (
+            {!suppressForget && readLinkedDevices().length > 0 ? (
               <Segment style={{ marginTop: '1em' }}>
                 <Header as="h4" size="small">
                   <Icon name="linkify" />
@@ -559,7 +672,7 @@ function IdentityManager (props) {
                   ))}
                 </ul>
               </Segment>
-            ) : (
+            ) : suppressForget ? null : (
               <p style={{ color: '#888', fontSize: '0.92em', marginTop: '0.75em', marginBottom: 0 }}>
                 No linked devices on this origin yet — desktop login or delegation flows add entries here for auditing.
               </p>
@@ -568,7 +681,11 @@ function IdentityManager (props) {
               <strong>Private Key:</strong>{' '}
               {localIdentity.xprv
                 ? 'unlocked in memory'
-                : (isLocked ? 'locked (password protected)' : 'not stored in this browser')}
+                : (isLocked
+                  ? (localIdentity.passwordProtected
+                    ? 'locked (encryption password)'
+                    : 'locked — unlock to load the key stored in this browser')
+                  : 'not stored in this browser')}
               {localIdentity.xprv && lockTimeoutMs ? (
                 <span> — will re‑lock in {Math.round(lockTimeoutMs / 60000)} minutes.</span>
               ) : null}
@@ -588,38 +705,124 @@ function IdentityManager (props) {
               <Icon name="copy" />
               Copy ID
             </Button>
+            <Form style={{ marginTop: '0.75em', maxWidth: 420 }}>
+              <Form.Field>
+                <label htmlFor="fabric-backup-password">Encryption password for backup file (min 8 characters)</label>
+                <input
+                  id="fabric-backup-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={backupExportPassword}
+                  onChange={(e) => setBackupExportPassword(e.target.value)}
+                  disabled={backupExportBusy}
+                  style={{ width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' }}
+                />
+              </Form.Field>
+            </Form>
             <Button
               size="small"
               icon
               labelPosition="left"
-              style={{ marginLeft: '0.5em' }}
+              style={{ marginLeft: '0.5em', marginTop: '0.5em' }}
+              loading={backupExportBusy}
+              disabled={backupExportBusy || !localIdentity || !localIdentity.xpub}
               onClick={() => {
-                try {
+                (async () => {
                   if (!localIdentity || !localIdentity.xpub) return;
-                  const hasXprv = !!localIdentity.xprv;
-                  const backupPayload = {
-                    type: 'fabric-identity-backup',
-                    version: 1,
-                    id: localIdentity.id || undefined,
-                    xpub: localIdentity.xpub || undefined,
-                    xprv: hasXprv ? String(localIdentity.xprv) : undefined
-                  };
-                  const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json;charset=utf-8' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'fabric-identity-backup.json';
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                } catch (e) {}
+                  const pwd = String(backupExportPassword || '').trim();
+                  if (!pwd || pwd.length < 8) {
+                    setError('Choose a backup file password of at least 8 characters.');
+                    return;
+                  }
+                  try {
+                    setBackupExportBusy(true);
+                    setError(null);
+                    const inner = {
+                      type: 'fabric-identity-backup-inner',
+                      version: 1,
+                      id: localIdentity.id || undefined,
+                      xpub: localIdentity.xpub || undefined
+                    };
+                    const hasXprv = !!localIdentity.xprv;
+                    if (hasXprv) inner.xprv = String(localIdentity.xprv);
+                    const envelope = await encryptFabricIdentityBackupPayload(inner, pwd);
+                    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'fabric-identity-backup.enc.json';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  } catch (err) {
+                    setError(err && err.message ? err.message : String(err));
+                  } finally {
+                    setBackupExportBusy(false);
+                  }
+                })();
               }}
             >
               <Icon name="download" />
-              Download backup
+              Download encrypted backup
             </Button>
-            {localIdentity.xprv && localIdentity.passwordProtected ? (
+            {localIdentity &&
+            localIdentity.fabricIdentityMode === 'account' &&
+            localIdentity.xprv &&
+            localIdentity.fabricHdRole !== 'accountNode' &&
+            localIdentity.fabricHdRole !== 'watchAccount' ? (
+              <Button
+                size="small"
+                icon
+                labelPosition="left"
+                style={{ marginLeft: '0.5em', marginTop: '0.5em' }}
+                loading={backupExportBusy}
+                disabled={backupExportBusy || !localIdentity || !localIdentity.xpub}
+                title="Encrypted backup of this Fabric account signing key only (no HD master). Use when the master is stored elsewhere."
+                onClick={() => {
+                  (async () => {
+                    if (!localIdentity || !localIdentity.xpub || !localIdentity.xprv) return;
+                    const pwd = String(backupExportPassword || '').trim();
+                    if (!pwd || pwd.length < 8) {
+                      setError('Choose a backup file password of at least 8 characters.');
+                      return;
+                    }
+                    try {
+                      setBackupExportBusy(true);
+                      setError(null);
+                      const ai =
+                        localIdentity.fabricAccountIndex != null
+                          ? Math.floor(Number(localIdentity.fabricAccountIndex))
+                          : 0;
+                      const inner = buildFabricAccountSubtreeBackupInner({
+                        fabricAccountIndex: ai,
+                        id: localIdentity.id,
+                        xpub: localIdentity.xpub,
+                        xprv: localIdentity.xprv
+                      });
+                      const envelope = await encryptFabricIdentityBackupPayload(inner, pwd);
+                      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'fabric-identity-account-backup.enc.json';
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    } catch (err) {
+                      setError(err && err.message ? err.message : String(err));
+                    } finally {
+                      setBackupExportBusy(false);
+                    }
+                  })();
+                }}
+              >
+                <Icon name="download" />
+                Account-only encrypted backup
+              </Button>
+            ) : null}
+            {localIdentity.xprv && (localIdentity.passwordProtected || plaintextKeyMaterialOnDisk) ? (
               <Button
                 size="small"
                 basic
@@ -627,8 +830,25 @@ function IdentityManager (props) {
                 labelPosition="left"
                 onClick={() => {
                   setLocalIdentity((prev) => {
-                    if (!prev) return prev;
-                    return { ...prev, xprv: null };
+                    if (!prev || !prev.xprv) return prev;
+                    if (prev.passwordProtected) return { ...prev, xprv: null, ...(prev.fabricIdentityMode === 'account' ? { masterXprv: null } : {}) };
+                    try {
+                      const parsed = readStorageJSON('fabric.identity.local', null);
+                      if (parsed && fabricPlaintextSigningUnlockable(parsed)) {
+                        return {
+                          ...prev,
+                          xprv: null,
+                          masterXprv: prev.fabricIdentityMode === 'account' ? null : prev.masterXprv,
+                          plaintextUnlockAvailable: true,
+                          passwordProtected: false
+                        };
+                      }
+                    } catch (e) {}
+                    return {
+                      ...prev,
+                      xprv: null,
+                      ...(prev.fabricIdentityMode === 'account' ? { masterXprv: null } : {})
+                    };
                   });
                 }}
               >
@@ -636,7 +856,54 @@ function IdentityManager (props) {
                 Lock private key
               </Button>
             ) : null}
-            {!localIdentity.xprv && isLocked ? (
+            {!localIdentity.xprv && isLocked && localIdentity.plaintextUnlockAvailable && !localIdentity.passwordProtected ? (
+              <div style={{ marginTop: '0.75em' }}>
+                <Button
+                  primary
+                  size="small"
+                  icon
+                  labelPosition="left"
+                  disabled={busy}
+                  onClick={() => {
+                    if (busy) return;
+                    setBusy(true);
+                    setError(null);
+                    (async () => {
+                      try {
+                        const parsed = readStorageJSON('fabric.identity.local', null);
+                        let material = '';
+                        if (parsed && parsed.fabricHdRole === 'accountNode' && !parsed.passwordProtected) {
+                          material = String(parsed.xprv || '').trim();
+                        } else {
+                          material = plaintextMasterFromStored(parsed);
+                        }
+                        if (!parsed || !material) {
+                          throw new Error('No plaintext key in storage.');
+                        }
+                        const nextIdentity = unlockedSessionFromDecryptedMaster(material, parsed);
+                        try {
+                          if (typeof window !== 'undefined' && window.sessionStorage) {
+                            window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
+                          }
+                        } catch (e) {}
+                        setLocalIdentity(nextIdentity);
+                        if (typeof props.onUnlockSuccess === 'function') {
+                          props.onUnlockSuccess(nextIdentity);
+                        }
+                      } catch (err) {
+                        setError(err && err.message ? err.message : String(err));
+                      } finally {
+                        setBusy(false);
+                      }
+                    })();
+                  }}
+                >
+                  <Icon name="unlock" />
+                  Unlock local identity
+                </Button>
+              </div>
+            ) : null}
+            {!localIdentity.xprv && isLocked && localIdentity.passwordProtected ? (
               <>
                 <Form
                   style={{ marginTop: '0.75em', maxWidth: 360 }}
@@ -675,35 +942,7 @@ function IdentityManager (props) {
                           let decrypted = decipher.update(blob, 'hex', 'utf8');
                           decrypted += decipher.final('utf8');
                           const xprv = decrypted;
-                          const identity = new Identity({ xprv });
-                          const key = identity.key;
-                          const nextIdentity = {
-                            id: identity.id != null ? String(identity.id) : undefined,
-                            xpub: key.xpub != null ? String(key.xpub) : undefined,
-                            xprv: xprv != null ? String(xprv) : undefined,
-                            passwordProtected: true
-                          };
-                          try {
-                            if (typeof window !== 'undefined' && window.sessionStorage) {
-                              window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
-                            }
-                          } catch (e) {}
-                          setLocalIdentity(nextIdentity);
-                          setUnlockPassword('');
-                          setError(null);
-                          if (typeof props.onUnlockSuccess === 'function') {
-                            props.onUnlockSuccess(nextIdentity);
-                          }
-                        } else if (parsed && parsed.xprv && !parsed.passwordProtected) {
-                          const xprv = parsed.xprv;
-                          const identity = new Identity({ xprv });
-                          const key = identity.key;
-                          const nextIdentity = {
-                            id: identity.id != null ? String(identity.id) : undefined,
-                            xpub: key.xpub != null ? String(key.xpub) : undefined,
-                            xprv: xprv != null ? String(xprv) : undefined,
-                            passwordProtected: false
-                          };
+                          const nextIdentity = unlockedSessionFromDecryptedMaster(xprv, parsed);
                           try {
                             if (typeof window !== 'undefined' && window.sessionStorage) {
                               window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
@@ -716,7 +955,7 @@ function IdentityManager (props) {
                             props.onUnlockSuccess(nextIdentity);
                           }
                         } else {
-                          throw new Error('Stored identity is not password-protected.');
+                          throw new Error('Stored identity does not use encryption password storage.');
                         }
                       } catch (err) {
                         console.error('[IDENTITY]', 'Unlock failed:', safeIdentityErr(err));
@@ -751,6 +990,8 @@ function IdentityManager (props) {
                 </Form>
               </>
             ) : null}
+            {!suppressForget ? (
+              <>
             <Button
               size="small"
               basic
@@ -815,6 +1056,8 @@ function IdentityManager (props) {
                 </Button>
               </Modal.Actions>
             </Modal>
+              </>
+            ) : null}
           </>
         ) : isGenerating ? (
           <>
@@ -1043,43 +1286,70 @@ function IdentityManager (props) {
               <Icon name="copy" />
               Copy xprv
             </Button>
+            <Form.Field style={{ marginTop: '0.75em', maxWidth: 420 }}>
+              <label htmlFor="fabric-pending-backup-password">Encryption password for backup file (min 8 characters)</label>
+              <input
+                id="fabric-pending-backup-password"
+                type="password"
+                autoComplete="new-password"
+                value={backupExportPassword}
+                onChange={(e) => setBackupExportPassword(e.target.value)}
+                disabled={backupExportBusy}
+                style={{ width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' }}
+              />
+            </Form.Field>
             <Button
               size="small"
               icon
               labelPosition="left"
+              loading={backupExportBusy}
+              disabled={backupExportBusy || !showBackupKey}
+              title={!showBackupKey ? 'Reveal the xprv first so you confirm what encrypts into the backup' : undefined}
               onClick={() => {
-                try {
+                (async () => {
                   const xprv = pendingSeed && pendingSeed.xprv;
-                  if (!xprv) return;
-                  const backupPayload = {
-                    type: 'fabric-identity-backup',
-                    version: 1,
-                    mnemonic: pendingSeed.mnemonic || undefined,
-                    xprv,
-                    xpub: undefined,
-                    id: undefined
-                  };
+                  if (!xprv || !showBackupKey) return;
+                  const pwd = String(backupExportPassword || '').trim();
+                  if (!pwd || pwd.length < 8) {
+                    setError('Choose a backup file password of at least 8 characters.');
+                    return;
+                  }
+                  setBackupExportBusy(true);
+                  setError(null);
                   try {
-                    const identity = new Identity({ xprv });
-                    if (identity && identity.id && identity.key && identity.key.xpub) {
-                      backupPayload.id = String(identity.id);
-                      backupPayload.xpub = String(identity.key.xpub);
-                    }
-                  } catch (e) {}
-                  const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json;charset=utf-8' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'fabric-identity-backup.json';
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                } catch (e) {}
+                    const backupPayload = {
+                      type: 'fabric-identity-backup-inner',
+                      version: 1,
+                      mnemonic: pendingSeed.mnemonic || undefined,
+                      xprv
+                    };
+                    try {
+                      const identity = new Identity({ xprv });
+                      if (identity && identity.id && identity.key && identity.key.xpub) {
+                        backupPayload.id = String(identity.id);
+                        backupPayload.xpub = String(identity.key.xpub);
+                      }
+                    } catch (e) {}
+                    const envelope = await encryptFabricIdentityBackupPayload(backupPayload, pwd);
+                    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'fabric-identity-backup.enc.json';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  } catch (err) {
+                    setError(err && err.message ? err.message : String(err));
+                  } finally {
+                    setBackupExportBusy(false);
+                  }
+                })();
               }}
             >
               <Icon name="download" />
-              Download backup
+              Download encrypted backup
             </Button>
             <Form style={{ marginTop: '1.25em', maxWidth: '42rem' }}>
               <Form.Checkbox
@@ -1103,12 +1373,13 @@ function IdentityManager (props) {
               title={!backupAcknowledged ? 'Confirm you have saved your backup' : undefined}
               onClick={() => {
                 try {
-                  const xprv = pendingSeed && pendingSeed.xprv;
-                  if (!xprv) throw new Error('Missing xprv for pending seed.');
-                  const identity = new Identity({ xprv });
-                  const key = identity.key;
+                  const masterXprv = pendingSeed && pendingSeed.xprv;
+                  if (!masterXprv) throw new Error('Missing xprv for pending seed.');
                   const pwd = String(identityPassword || '').trim();
                   const isPasswordProtected = !!pwd;
+                  const fabricAccountIndex = 0;
+                  const dk = deriveFabricAccountIdentityKeys(String(masterXprv).trim(), fabricAccountIndex, 0);
+                  const masterXpub = fabricRootXpubFromMasterXprv(String(masterXprv).trim());
                   let hasStorage = false;
                   try {
                     hasStorage = (typeof window !== 'undefined');
@@ -1124,47 +1395,85 @@ function IdentityManager (props) {
                         .digest();
                       const iv = crypto.randomBytes(16);
                       const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
-                      let enc = cipher.update(xprv, 'utf8', 'hex');
+                      let enc = cipher.update(String(masterXprv).trim(), 'utf8', 'hex');
                       enc += cipher.final('hex');
                       payload = {
-                        id: identity.id,
-                        xpub: key.xpub,
+                        fabricIdentityMode: 'account',
+                        fabricAccountIndex,
+                        masterXpub,
+                        id: dk.id,
+                        xpub: dk.xpub,
                         xprvEnc: iv.toString('hex') + ':' + enc,
                         passwordProtected: true,
                         passwordSalt: salt
                       };
                     } else {
                       payload = {
-                        id: identity.id,
-                        xpub: key.xpub,
-                        xprv
+                        fabricIdentityMode: 'account',
+                        fabricAccountIndex,
+                        masterXpub,
+                        masterXprv: String(masterXprv).trim(),
+                        id: dk.id,
+                        xpub: dk.xpub,
+                        xprv: String(masterXprv).trim(),
+                        passwordProtected: false
                       };
                     }
                     writeStorageJSON('fabric.identity.local', payload);
                   }
-                  setLocalIdentity({
-                    id: identity.id,
-                    xpub: key.xpub,
-                    xprv,
-                    passwordProtected: isPasswordProtected
-                  });
-                  if (typeof props.onLocalIdentityChange === 'function') {
-                    props.onLocalIdentityChange({
-                      id: identity.id != null ? String(identity.id) : undefined,
-                      xpub: key.xpub != null ? String(key.xpub) : undefined,
-                      xprv: xprv != null ? String(xprv) : undefined,
-                      passwordProtected: !!isPasswordProtected
+                  const storedPayload =
+                    typeof window !== 'undefined'
+                      ? readStorageJSON('fabric.identity.local', null)
+                      : null;
+                  if (isPasswordProtected) {
+                    setLocalIdentity({
+                      id: dk.id,
+                      xpub: dk.xpub,
+                      passwordProtected: true,
+                      fabricIdentityMode: 'account',
+                      fabricAccountIndex
                     });
+                    if (typeof props.onLocalIdentityChange === 'function') {
+                      props.onLocalIdentityChange({
+                        id: dk.id != null ? String(dk.id) : undefined,
+                        xpub: dk.xpub != null ? String(dk.xpub) : undefined,
+                        passwordProtected: true,
+                        fabricIdentityMode: 'account',
+                        fabricAccountIndex
+                      });
+                    }
+                    if (typeof props.onUnlockSuccess === 'function') {
+                      props.onUnlockSuccess({
+                        id: dk.id != null ? String(dk.id) : undefined,
+                        xpub: dk.xpub != null ? String(dk.xpub) : undefined,
+                        passwordProtected: true,
+                        fabricIdentityMode: 'account',
+                        fabricAccountIndex
+                      });
+                    }
+                  } else {
+                    const nextIdent = unlockedSessionFromDecryptedMaster(
+                      String(masterXprv).trim(),
+                      storedPayload || { fabricIdentityMode: 'account', fabricAccountIndex, passwordProtected: false }
+                    );
+                    setLocalIdentity(nextIdent);
+                    if (typeof props.onLocalIdentityChange === 'function') {
+                      props.onLocalIdentityChange({
+                        id: nextIdent.id,
+                        xpub: nextIdent.xpub,
+                        xprv: nextIdent.xprv,
+                        passwordProtected: false,
+                        fabricIdentityMode: nextIdent.fabricIdentityMode,
+                        fabricAccountIndex: nextIdent.fabricAccountIndex,
+                        masterXprv: nextIdent.masterXprv,
+                        masterXpub: nextIdent.masterXpub
+                      });
+                    }
+                    if (typeof props.onUnlockSuccess === 'function') {
+                      props.onUnlockSuccess(nextIdent);
+                    }
                   }
                   resetSeedState();
-                  if (typeof props.onUnlockSuccess === 'function') {
-                    props.onUnlockSuccess({
-                      id: identity.id != null ? String(identity.id) : undefined,
-                      xpub: key.xpub != null ? String(key.xpub) : undefined,
-                      xprv: xprv != null ? String(xprv) : undefined,
-                      passwordProtected: !!isPasswordProtected
-                    });
-                  }
                 } catch (e) {
                   console.error('[IDENTITY]', 'Save local identity failed:', safeIdentityErr(e));
                   setError((e && e.stack) ? e.stack : (e && e.message ? e.message : String(e)));
@@ -1182,12 +1491,22 @@ function IdentityManager (props) {
             </p>
             <Message info size="small" style={{ marginBottom: '0.85em', maxWidth: '40rem' }}>
               <p style={{ margin: 0, fontSize: '0.95em', color: '#333', lineHeight: 1.45 }}>
-                <strong>Full key</strong> (generate, import backup, restore from recovery phrase, hub/dev mnemonic, desktop, extension, or password-unlock): encrypt and decrypt documents, publish signed listings, and use in-browser Payjoin when enabled.
-                <strong> xpub-only</strong> (<em>Existing Key</em>): watch-only — the top-bar balance chip works, but you cannot sign publishes, decrypt your own ciphertext, or complete browser-side Payjoin without another signing path.
+                {props.postSetupFlow ? (
+                  <>
+                    <strong>Full key recommended</strong> — generate keys in this browser, or paste an extended public key (existing key) /
+                    restore a recovery phrase. Other methods are available later from{' '}
+                    <a href="/settings">Settings → Fabric identity</a>.
+                  </>
+                ) : (
+                  <>
+                    <strong>Full key</strong> (generate, import backup, restore from recovery phrase, hub/dev mnemonic, desktop, extension, or password-unlock): encrypt and decrypt documents, publish signed listings, and use in-browser Payjoin when enabled.
+                    <strong> xpub-only</strong> (<em>Existing Key</em>): watch-only — the top-bar balance chip works, but you cannot sign publishes, decrypt your own ciphertext, or complete browser-side Payjoin without another signing path.
+                  </>
+                )}
               </p>
             </Message>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', maxWidth: 320 }}>
-              {extensionAvailable ? (
+              {extensionAvailable && !props.postSetupFlow ? (
                 <Button
                   primary
                   fluid
@@ -1202,7 +1521,7 @@ function IdentityManager (props) {
                   Login with Extension
                 </Button>
               ) : null}
-              {typeof window !== 'undefined' && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
+              {typeof window !== 'undefined' && !props.postSetupFlow && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
                 <Button
                   primary={!extensionAvailable}
                   fluid
@@ -1236,6 +1555,7 @@ function IdentityManager (props) {
                 <Icon name="shield" />
                 Generate New Identity
               </Button>
+              {!props.postSetupFlow ? (
               <Button
                 fluid
                 icon
@@ -1248,6 +1568,7 @@ function IdentityManager (props) {
                 <Icon name="download" />
                 Import Backup
               </Button>
+              ) : null}
               <Button
                 fluid
                 icon
@@ -1261,6 +1582,7 @@ function IdentityManager (props) {
                 <Icon name="history" />
                 Restore with recovery phrase
               </Button>
+              {!props.postSetupFlow ? (
               <Button
                 fluid
                 icon
@@ -1274,6 +1596,7 @@ function IdentityManager (props) {
                 <Icon name="paste" />
                 Import mnemonic (hub / dev)
               </Button>
+              ) : null}
             </div>
           </>
         ) : loginMethod === 'existing' ? (
@@ -1286,7 +1609,7 @@ function IdentityManager (props) {
               style={{ marginBottom: '1em' }}
               aria-label="Back to sign-in options"
               onClick={() => {
-                setLoginMethod(null);
+                backToLoginChooser();
                 setXpubInput('');
                 setError(null);
               }}
@@ -1378,7 +1701,7 @@ function IdentityManager (props) {
               style={{ marginBottom: '1em' }}
               aria-label="Back to sign-in options"
               onClick={() => {
-                setLoginMethod(null);
+                backToLoginChooser();
                 setError(null);
               }}
             >
@@ -1390,8 +1713,19 @@ function IdentityManager (props) {
               <Header.Content>Import Backup</Header.Content>
             </Header>
             <p style={{ color: '#666' }}>
-              Select a Fabric identity backup file (JSON) from this app, or JSON that includes <code>xprv</code> / <code>xpub</code>, or <strong>mnemonic</strong> (plus optional <code>bip39Passphrase</code> / <code>passphrase</code>).
+              Select a Fabric identity backup file (JSON) from this app — <strong>plaintext</strong> backups, or <strong>encrypted</strong> (version 2; set the password field first), or JSON that includes <code>xprv</code> / <code>xpub</code>, or <strong>mnemonic</strong> (plus optional <code>bip39Passphrase</code> / <code>passphrase</code>).
             </p>
+            <Form.Field style={{ maxWidth: '42rem', marginBottom: '0.75em' }}>
+              <label htmlFor="fabric-import-backup-pwd">Encrypted backup password (only if the file is password-protected)</label>
+              <input
+                id="fabric-import-backup-pwd"
+                type="password"
+                autoComplete="off"
+                value={importBackupFilePassword}
+                onChange={(e) => setImportBackupFilePassword(e.target.value)}
+                style={{ width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' }}
+              />
+            </Form.Field>
             <input
               type="file"
               accept=".json,application/json,text/*"
@@ -1402,43 +1736,115 @@ function IdentityManager (props) {
                 setError(null);
                 const reader = new FileReader();
                 reader.onload = () => {
-                  try {
-                    const text = String(reader.result || '');
-                    let data = null;
+                  (async () => {
                     try {
-                      data = JSON.parse(text);
-                    } catch (e) {}
+                      const text = String(reader.result || '');
+                      let data = null;
+                      try {
+                        data = JSON.parse(text);
+                      } catch (e) {}
 
-                    let xprv = null;
-                    let xpub = null;
-
-                    if (data && typeof data === 'object') {
-                      if (data.xprv) xprv = String(data.xprv);
-                      if (data.xpub) xpub = String(data.xpub);
-                      const seedPhrase = (data.mnemonic != null && String(data.mnemonic).trim())
-                        ? String(data.mnemonic).trim()
-                        : ((data.seed != null && String(data.seed).trim()) ? String(data.seed).trim() : '');
-                      if (!xprv && seedPhrase) {
+                      if (data && typeof data === 'object' && data.version === 2 && data.ciphertext) {
+                        const pwdImp = String(importBackupFilePassword || '').trim();
+                        if (!pwdImp || pwdImp.length < 8) {
+                          setError('This file is password-protected. Enter the backup password (min 8 characters) above and select the file again.');
+                          return;
+                        }
                         try {
-                          const ext = (data.bip39Passphrase != null && String(data.bip39Passphrase).trim() !== '')
-                            ? String(data.bip39Passphrase)
-                            : ((data.passphrase != null && String(data.passphrase).trim() !== '')
-                              ? String(data.passphrase)
-                              : null);
-                          const ident = ext
-                            ? new Identity({ seed: seedPhrase, passphrase: ext })
-                            : new Identity({ seed: seedPhrase });
-                          xprv = ident.key.xprv;
-                          xpub = ident.key.xpub;
-                        } catch (mnErr) {
-                          setError((mnErr && mnErr.message)
-                            ? `Could not restore from mnemonic in file: ${mnErr.message}`
-                            : 'Could not restore from mnemonic in file.');
+                          data = await decryptFabricIdentityBackupToPayload(data, pwdImp);
+                        } catch (decErr) {
+                          setError(decErr && decErr.message ? decErr.message : 'Could not decrypt backup.');
                           return;
                         }
                       }
-                    }
 
+                      if (
+                        data &&
+                        typeof data === 'object' &&
+                        data.type === 'fabric-identity-backup-inner' &&
+                        data.xprv &&
+                        (data.backupScope === 'fabricAccountSubtree' || data.fabricHdRole === 'accountNode')
+                      ) {
+                        let hasStorage = false;
+                        try {
+                          hasStorage = (typeof window !== 'undefined');
+                        } catch (e) {
+                          hasStorage = false;
+                        }
+                        const mat = identityFromFabricProtocolSigningXprv(String(data.xprv).trim());
+                        if (
+                          data.id != null &&
+                          String(data.id).trim() &&
+                          String(data.id).trim() !== String(mat.id)
+                        ) {
+                          setError('Backup identity id does not match key material.');
+                          return;
+                        }
+                        const fabricAccountIndex =
+                          data.fabricAccountIndex != null
+                            ? Math.floor(Number(data.fabricAccountIndex))
+                            : 0;
+                        const storedPayload = {
+                          fabricIdentityMode: 'account',
+                          fabricHdRole: 'accountNode',
+                          fabricAccountIndex,
+                          id: mat.id,
+                          xpub: mat.xpub,
+                          xprv: mat.xprv,
+                          passwordProtected: false
+                        };
+                        if (hasStorage) {
+                          writeStorageJSON('fabric.identity.local', storedPayload);
+                        }
+                        const nextIdentity = unlockedSessionFromDecryptedMaster(mat.xprv, storedPayload);
+                        setLocalIdentity(nextIdentity);
+                        resetSeedState();
+                        if (typeof props.onLocalIdentityChange === 'function') {
+                          props.onLocalIdentityChange(nextIdentity);
+                        }
+                        if (typeof props.onUnlockSuccess === 'function') {
+                          props.onUnlockSuccess({
+                            id: String(mat.id),
+                            xpub: String(mat.xpub),
+                            xprv: String(mat.xprv),
+                            passwordProtected: false,
+                            fabricIdentityMode: 'account',
+                            fabricHdRole: 'accountNode',
+                            fabricAccountIndex
+                          });
+                        }
+                        return;
+                      }
+
+                      let xprv = null;
+                      let xpub = null;
+
+                      if (data && typeof data === 'object') {
+                        if (data.xprv) xprv = String(data.xprv);
+                        if (data.xpub) xpub = String(data.xpub);
+                        const seedPhrase = (data.mnemonic != null && String(data.mnemonic).trim())
+                          ? String(data.mnemonic).trim()
+                          : ((data.seed != null && String(data.seed).trim()) ? String(data.seed).trim() : '');
+                        if (!xprv && seedPhrase) {
+                          try {
+                            const ext = (data.bip39Passphrase != null && String(data.bip39Passphrase).trim() !== '')
+                              ? String(data.bip39Passphrase)
+                              : ((data.passphrase != null && String(data.passphrase).trim() !== '')
+                                ? String(data.passphrase)
+                                : null);
+                            const ident = ext
+                              ? new Identity({ seed: seedPhrase, passphrase: ext })
+                              : new Identity({ seed: seedPhrase });
+                            xprv = ident.key.xprv;
+                            xpub = ident.key.xpub;
+                          } catch (mnErr) {
+                            setError((mnErr && mnErr.message)
+                              ? `Could not restore from mnemonic in file: ${mnErr.message}`
+                              : 'Could not restore from mnemonic in file.');
+                            return;
+                          }
+                        }
+                      }
                     if (!xprv || !xpub) {
                       const mXprv = text.match(/(xprv[0-9A-Za-z]+)/);
                       const mXpub = text.match(/(xpub[0-9A-Za-z]+)/);
@@ -1515,6 +1921,7 @@ function IdentityManager (props) {
                   } finally {
                     setBusy(false);
                   }
+                  })();
                 };
                 reader.onerror = () => {
                   setBusy(false);
@@ -1534,7 +1941,7 @@ function IdentityManager (props) {
               style={{ marginBottom: '1em' }}
               aria-label="Back to sign-in options"
               onClick={() => {
-                setLoginMethod(null);
+                backToLoginChooser();
                 setError(null);
                 setDevMnemonicText('');
                 setDevBip39Passphrase('');
@@ -1656,7 +2063,7 @@ function IdentityManager (props) {
               style={{ marginBottom: '1em' }}
               aria-label="Back to sign-in options"
               onClick={() => {
-                setLoginMethod(null);
+                backToLoginChooser();
                 setError(null);
                 setDevMnemonicText('');
                 setDevBip39Passphrase('');
@@ -1772,7 +2179,7 @@ function IdentityManager (props) {
               style={{ marginBottom: '1em' }}
               aria-label="Back to sign-in options"
               onClick={() => {
-                setLoginMethod(null);
+                backToLoginChooser();
                 setError(null);
               }}
             >

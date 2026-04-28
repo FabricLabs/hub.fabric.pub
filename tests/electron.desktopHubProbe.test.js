@@ -7,9 +7,9 @@ const {
   extractFabricHttpApplicationFromOptions,
   resolveHttpProbeOrigins,
   normalizeOriginBase
-} = require('../electron/desktopHubProbe');
+} = require('../scripts/desktopHubProbe');
 
-describe('electron/desktopHubProbe', () => {
+describe('scripts/desktopHubProbe', () => {
   it('isFabricHubOptionsPayload accepts hub.fabric.pub name', () => {
     assert.strictEqual(isFabricHubOptionsPayload({ name: 'hub.fabric.pub' }), true);
   });
