@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const flags = require('../functions/hubUiFeatureFlags');
+const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');
 
 function setupWindowStorage () {
   const local = Object.create(null);
@@ -30,9 +31,12 @@ function setFabricUiFeatureFlags (featureFlags) {
 
 describe('hubUiFeatureFlags', function () {
   afterEach(function () {
-    delete global.window;
+    try {
+      resetFabricBrowserStateStore();
+    } catch (_) {}
     delete global.fetch;
-    delete global.CustomEvent;
+    // Leave global.CustomEvent — deleting it breaks other suites using `new CustomEvent(...)`
+    // (e.g. Bridge#handleWebRTCPeerMessage) in the same Mocha process.
   });
 
   it('fetchPersistedHubUiFeatureFlags hydrates local flags from /settings', async function () {

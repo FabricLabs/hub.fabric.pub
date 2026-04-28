@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const { P2P_PEER_GOSSIP } = require('@fabric/core/constants');
+const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');
 require('@babel/register');
 
 describe('Bridge WebRTC signaling metadata', function () {
@@ -20,10 +21,7 @@ describe('Bridge WebRTC signaling metadata', function () {
     };
   }
 
-  before(function () {
-    previousWindow = global.window;
-    previousRTCSessionDescription = global.RTCSessionDescription;
-
+  function installWindowMock () {
     global.window = {
       location: {
         hostname: 'localhost',
@@ -36,12 +34,24 @@ describe('Bridge WebRTC signaling metadata', function () {
       removeEventListener: () => {},
       dispatchEvent: () => {}
     };
+  }
+
+  before(function () {
+    previousWindow = global.window;
+    previousRTCSessionDescription = global.RTCSessionDescription;
+
+    installWindowMock();
 
     global.RTCSessionDescription = function RTCSessionDescription (init) {
       return init;
     };
 
     Bridge = require('../components/Bridge');
+  });
+
+  beforeEach(function () {
+    resetFabricBrowserStateStore();
+    installWindowMock();
   });
 
   after(function () {

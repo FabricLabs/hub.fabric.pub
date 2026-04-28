@@ -38,8 +38,7 @@ const {
   fabricIdentityChatDisabledReasonPlain,
   fabricIdentityPeerDisabledReasonPlain
 } = require('../functions/hubIdentityUiHints');
-const { createFabricBrowserStore } = require('../functions/fabricBrowserStore');
-const { readStorageJSON } = require('../functions/fabricBrowserState');
+const { store: fabricBrowserStateStore, readStorageJSON } = require('../functions/fabricBrowserState');
 const BridgeMessageCollection = require('../types/bridgeMessageCollection');
 const {
   HUB_FABRIC_SESSION_ID,
@@ -135,10 +134,7 @@ class Bridge extends React.Component {
     };
 
     // Canonical browser-side Fabric state store (offline-first baseline).
-    this._fabricStore = createFabricBrowserStore({
-      storageKey: 'fabric:state',
-      initialState: this.globalState
-    });
+    this._fabricStore = fabricBrowserStateStore();
     const restoredUnified = this._fabricStore.GET('/');
     if (restoredUnified && typeof restoredUnified === 'object') {
       this.globalState = {
@@ -248,10 +244,16 @@ class Bridge extends React.Component {
     const restoredPeerQueue = this._readJSONFromStorage('fabric:peerMessageQueue', []);
     if (Array.isArray(restoredPeerQueue)) this.peerMessageQueue = restoredPeerQueue;
 
-    const restoredMessages = this._readJSONFromStorage('fabric:messages', null);
-    this._messageCollection = new BridgeMessageCollection({
-      data: (restoredMessages && typeof restoredMessages === 'object') ? restoredMessages : {}
-    });
+    // Merge legacy `fabric:messages` with hub messages already restored from `fabric:state` (unified wins).
+    const unifiedMessages =
+      this.globalState.messages && typeof this.globalState.messages === 'object'
+        ? { ...this.globalState.messages }
+        : {};
+    const restoredLegacyMessages = this._readJSONFromStorage('fabric:messages', null);
+    const legacyMessages =
+      restoredLegacyMessages && typeof restoredLegacyMessages === 'object' ? restoredLegacyMessages : {};
+    const mergedChat = { ...legacyMessages, ...unifiedMessages };
+    this._messageCollection = new BridgeMessageCollection({ data: mergedChat });
     this.globalState.messages = this._messageCollection.exportMap();
 
     // Restore documents (unified store: all docs with content; publish adds ref to hub index)
@@ -917,7 +919,12 @@ class Bridge extends React.Component {
   _persistGlobalState () {
     if (!this._fabricStore || typeof this._fabricStore.PUT !== 'function') return;
     try {
-      this._fabricStore.PUT('/', this.globalState, { persist: true });
+      const prev = this._fabricStore.GET('/');
+      const base =
+        prev && typeof prev === 'object' && !Array.isArray(prev)
+          ? prev
+          : {};
+      this._fabricStore.PUT('/', { ...base, ...this.globalState }, { persist: true });
     } catch (e) {}
   }
 

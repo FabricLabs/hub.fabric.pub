@@ -47,8 +47,24 @@ function hasLocalStorage () {
   }
 }
 
+let _fabricStateSingleton = null;
+
+function resetFabricBrowserStateStore () {
+  _fabricStateSingleton = null;
+}
+
+/**
+ * Single {@link createFabricBrowserStore} for `fabric:state`.
+ * Multiple instances used to silently clobber writes (Bridge JSON-PATCH vs hub UI prefs `PUT`).
+ */
 function store () {
-  return createFabricBrowserStore({ storageKey: FABRIC_STATE_KEY, initialState: {} });
+  if (!_fabricStateSingleton) {
+    _fabricStateSingleton = createFabricBrowserStore({
+      storageKey: FABRIC_STATE_KEY,
+      initialState: {}
+    });
+  }
+  return _fabricStateSingleton;
 }
 
 function pathForLegacyKey (legacyKey) {
@@ -158,6 +174,7 @@ function removeStorageKey (legacyKey) {
 module.exports = {
   FABRIC_STATE_KEY,
   store,
+  resetFabricBrowserStateStore,
   getFabricBrowserGlobal,
   pathForLegacyKey,
   readStorageString,

@@ -177,9 +177,17 @@ async function fetchPersistedHubUiFeatureFlags () {
     if (res.status === 404) return loadHubUiFeatureFlags();
     if (!res.ok) return loadHubUiFeatureFlags();
     const body = await res.json().catch(() => ({}));
-    const value = body && body.value && typeof body.value === 'object' ? body.value : null;
-    if (!value) return loadHubUiFeatureFlags();
-    const next = normalizeFlags(value);
+    let raw = body && Object.prototype.hasOwnProperty.call(body, 'value') ? body.value : null;
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch (_) {
+        raw = null;
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return loadHubUiFeatureFlags();
+    const localBefore = loadHubUiFeatureFlags();
+    const next = normalizeFlags({ ...localBefore, ...raw });
     saveHubUiFeatureFlags(next);
     return next;
   } catch (_) {
