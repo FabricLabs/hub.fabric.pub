@@ -449,6 +449,13 @@ describe('Browser Interface', function () {
       }
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/peers', `Expected /peers, got ${pathname}`);
+      if (!HUB_E2E) return;
+      await mergeHubUiFeatureFlags(sandbox.browser, { peers: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'load', timeout: 15000 });
+      const hooked = await sandbox.browser.evaluate(
+        () => !!document.querySelector('[data-testid="hub-peers-page"]')
+      );
+      assert.ok(hooked, 'live hub: Peers shell should expose [data-testid="hub-peers-page"]');
     });
 
     it('should navigate to Documents', async function () {
@@ -517,6 +524,11 @@ describe('Browser Interface', function () {
         );
       });
       assert.ok(layoutOk, 'Peers page should show protocol footer and Peer ID copy (table block when hub is connected)');
+
+      const hasPeersTestHook = await sandbox.browser.evaluate(
+        () => !!document.querySelector('[data-testid="hub-peers-page"]')
+      );
+      assert.ok(hasPeersTestHook, '[data-testid="hub-peers-page"] anchors E2E / automation selectors');
     });
 
     it('should render Documents page without crashing', async function () {

@@ -7,6 +7,7 @@ const net = require('net');
 const path = require('path');
 const url = require('url');
 const merge = require('lodash.merge');
+require('../functions/patchLinkedFabricNodePath');
 const Hub = require('../services/hub');
 const settings = require('../settings/local');
 
@@ -857,6 +858,92 @@ describe('@fabric/hub', function () {
         }, { Accept: 'application/json' });
 
         assert.strictEqual(publishResponse.status, 200, 'PublishDocument should return 200 status');
+      });
+
+      it('RequestPeerInventory returns peer-not-connected without TCP peer', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const r = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 400,
+          method: 'RequestPeerInventory',
+          params: ['127.0.0.1:59999', 'documents']
+        }, { Accept: 'application/json' });
+        assert.strictEqual(r.status, 200);
+        assert.ok(r.body && r.body.result, 'JSON-RPC result');
+        assert.strictEqual(r.body.result.status, 'error');
+        assert.ok(String(r.body.result.message).toLowerCase().includes('peer'), r.body.result.message);
+      });
+
+      it('RequestPeerInventory with HTLC options still requires connected peer', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const r = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 401,
+          method: 'RequestPeerInventory',
+          params: ['127.0.0.1:59998', 'documents', {
+            buyerRefundPublicKey: '02' + 'a'.repeat(64),
+            inventoryRelayTtl: 3,
+            inventoryTarget: 'fabric-peer-id-placeholder-test'
+          }]
+        }, { Accept: 'application/json' });
+        assert.strictEqual(r.status, 200);
+        assert.strictEqual(r.body.result.status, 'error');
+        assert.ok(String(r.body.result.message).toLowerCase().includes('peer'), r.body.result.message);
+      });
+
+      it('ListDocuments includes id after CreateDocument (HTTP catalog)', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const stamp = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+        const createResponse = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 500,
+          method: 'CreateDocument',
+          params: [{
+            name: `inventory-catalog-test-${stamp}.txt`,
+            mime: 'text/plain',
+            contentBase64: Buffer.from(`catalog-probe-${stamp}`).toString('base64')
+          }]
+        }, { Accept: 'application/json' });
+
+        assert.strictEqual(createResponse.status, 200);
+        assert.ok(createResponse.body.result && createResponse.body.result.document, 'CreateDocument returned document');
+        const docId = createResponse.body.result.document.id;
+
+        const list = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 501,
+          method: 'ListDocuments',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(list.status, 200);
+        const res = list.body && list.body.result;
+        assert.ok(res && res.type === 'ListDocumentsResult', JSON.stringify(res));
+        const ids = (res.documents || []).map((d) => d && d.id).filter(Boolean);
+        assert.ok(ids.includes(docId), 'ListDocuments should list created document id');
       });
 
       it('GetDistributedFederationPolicy JSON-RPC returns policy shape', async function () {

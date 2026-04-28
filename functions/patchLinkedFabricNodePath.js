@@ -13,6 +13,24 @@ const Module = require('module');
 const hubRoot = path.resolve(__dirname, '..');
 const nm = path.join(hubRoot, 'node_modules');
 
+/**
+ * Some `@fabric/core` tarballs omit `functions/fabricDocumentOfferEnvelope.js` while `types/peer.js`
+ * still `require`s it. The hub repo carries the canonical implementation — link it in so the hub
+ * and tests can boot without a custom `npm link` checkout of core.
+ */
+function ensureCoreFabricDocumentOfferEnvelopeSymlink () {
+  try {
+    const coreFnDir = path.join(nm, '@fabric', 'core', 'functions');
+    const hubEnvelope = path.join(hubRoot, 'functions', 'fabricDocumentOfferEnvelope.js');
+    const coreEnvelope = path.join(coreFnDir, 'fabricDocumentOfferEnvelope.js');
+    if (!fs.existsSync(hubEnvelope) || !fs.existsSync(coreFnDir)) return;
+    if (fs.existsSync(coreEnvelope)) return;
+    const rel = path.relative(coreFnDir, hubEnvelope);
+    fs.symlinkSync(rel, coreEnvelope, 'file');
+  } catch (_) {}
+}
+ensureCoreFabricDocumentOfferEnvelopeSymlink();
+
 function realPackageRoot (pkg) {
   const p = path.join(nm, pkg);
   try {

@@ -31,6 +31,21 @@ function resolveStorePath (p) {
   return path.isAbsolute(p) ? p : path.resolve(hubStoreRoot(), p);
 }
 const bs58check = require('bs58check');
+
+function getHubSetupUiSecretTrimmed () {
+  const s = process.env.FABRIC_HUB_SETUP_UI_SECRET;
+  return typeof s === 'string' ? s.trim() : '';
+}
+
+function timingSafeSha256Utf8Match (provided, expected) {
+  try {
+    const ph = crypto.createHash('sha256').update(String(provided ?? ''), 'utf8').digest();
+    const eh = crypto.createHash('sha256').update(String(expected ?? ''), 'utf8').digest();
+    return ph.length === eh.length && crypto.timingSafeEqual(ph, eh);
+  } catch (_) {
+    return false;
+  }
+}
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
 const { SATS_PER_BTC } = require('../constants');
 
@@ -102,6 +117,11 @@ const { computeExecutionRunCommitmentHex } = require('../functions/executionRunC
 const { anchorExecutionCommitmentRegtest } = require('../functions/bitcoinExecutionAnchor');
 const { validateEnvelopeV1, buildGenericMessageFromEnvelope } = require('../functions/fabricMessageEnvelope');
 const inventoryRelay = require('../functions/inventoryRelay');
+const {
+  FABRIC_DOCUMENT_OFFER,
+  FABRIC_DOCUMENT_OFFER_RESPONSE,
+  isDocumentInventoryResponseType
+} = require('../functions/fabricDocumentOfferEnvelope');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
 const sidechainState = require('../functions/sidechainState');
 const documentOfferEscrow = require('../functions/documentOfferEscrow');
@@ -166,7 +186,28 @@ class Hub extends Service {
       http: {
         hostname: 'localhost',
         listen: true,
-        port: 8080
+        port: 8080,
+        /**
+         * Forwarded into @fabric/http `HTTPServer` `settings.payments` (402 + `X-Fabric-Payment-Request`).
+         * **On by default.** Disable with `FABRIC_HTTP_PAYMENTS_ENABLED=0` or `false`.
+         * Published documents with **`purchasePriceSats` > 0** always get the JSON **`GET /documents/:id`** wall when enabled.
+         */
+        payments: {
+          enabled: !(
+            process.env.FABRIC_HTTP_PAYMENTS_ENABLED === '0' ||
+            process.env.FABRIC_HTTP_PAYMENTS_ENABLED === 'false'
+          ),
+          lightningL402:
+            process.env.FABRIC_HTTP_PAYMENTS_LIGHTNING_L402 === '1' ||
+            process.env.FABRIC_HTTP_PAYMENTS_LIGHTNING_L402 === 'true',
+          exposePaymentTestRoute:
+            !(
+              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === '1' ||
+              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === 'true'
+            ),
+          detail: process.env.FABRIC_HTTP_PAYMENTS_DETAIL || 'Complete payment to continue.',
+          description: process.env.FABRIC_HTTP_PAYMENTS_DESCRIPTION || 'Fabric access'
+        }
       },
       routes: [
         // TODO: define all resource routes at the Resource level
@@ -620,7 +661,10 @@ class Hub extends Service {
         }
       },
       routes: this.settings.routes,
-      sessions: false
+      sessions: false,
+      ...((this.settings.http && this.settings.http.payments)
+        ? { payments: this.settings.http.payments }
+        : {})
     });
 
     // State
@@ -1068,7 +1112,7 @@ class Hub extends Service {
 
     const items = this._collectLocalDocumentInventoryItems();
     const responsePayload = {
-      type: 'INVENTORY_RESPONSE',
+      type: FABRIC_DOCUMENT_OFFER_RESPONSE,
       actor: { id: myId },
       object: {
         kind: 'documents',
@@ -1086,7 +1130,7 @@ class Hub extends Service {
     } catch (_) {}
 
     const invReq = {
-      type: 'INVENTORY_REQUEST',
+      type: FABRIC_DOCUMENT_OFFER,
       actor: { id: myId },
       object: { kind: 'documents', fabricResync: true }
     };
@@ -4606,7 +4650,28 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const settings = this.setup.listSettings();
       const setupStatus = this.setup.getSetupStatus();
-      return res.status(200).json({ success: true, settings, ...setupStatus });
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      const requiresSetupUiSecret = !!(setupStatus.needsSetup && hubSetupSecret.length > 0);
+      return res.status(200).json({ success: true, settings, ...setupStatus, requiresSetupUiSecret });
+    });
+  }
+
+  _handleSettingsVerifySetupUiRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      if (!hubSetupSecret.length) {
+        return res.status(400).json({ error: 'Bad Request', message: 'FABRIC_HUB_SETUP_UI_SECRET is not set.' });
+      }
+      const setupStatus = this.setup.getSetupStatus();
+      const body = req.body || {};
+      const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
+      if (!(setupStatus.needsSetup && !setupStatus.configured)) {
+        return res.status(200).json({ success: true, skipped: true });
+      }
+      if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
+        return res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
+      }
+      return res.status(200).json({ success: true });
     });
   }
 
@@ -4617,6 +4682,13 @@ class Hub extends Service {
         return res.status(403).json({ error: 'Already configured', message: 'Hub is already configured.' });
       }
       const body = req.body || {};
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      if (hubSetupSecret.length) {
+        const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
+        if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
+          return res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
+        }
+      }
       const initialConfig = {
         NODE_NAME: body.NODE_NAME || body.nodeName || 'Hub',
         NODE_PERSONALITY: body.NODE_PERSONALITY || body.nodePersonality || JSON.stringify(['helpful']),
@@ -7631,6 +7703,7 @@ class Hub extends Service {
       // Settings API: GET /settings (list + setup status), POST /settings (bootstrap when not configured)
       this.http._addRoute('GET', '/settings', this._handleSettingsListRequest.bind(this));
       this.http._addRoute('POST', '/settings', this._handleSettingsBootstrapRequest.bind(this));
+      this.http._addRoute('POST', '/settings/verify-setup-ui', this._handleSettingsVerifySetupUiRequest.bind(this));
       this.http._addRoute('POST', '/settings/refresh', this._handleSettingsRefreshRequest.bind(this));
       this.http._addRoute('GET', '/settings/:name', this._handleSettingsGetRequest.bind(this));
       this.http._addRoute('PUT', '/settings/:name', this._handleSettingsPutRequest.bind(this));
@@ -8016,7 +8089,7 @@ class Hub extends Service {
         }
       });
 
-      // Request a peer's inventory (e.g., list of documents) using INVENTORY_REQUEST.
+      // Request a peer's inventory (e.g., list of documents) using FABRIC_DOCUMENT_OFFER (legacy: INVENTORY_REQUEST).
       // Params: (idOrAddress, kind = 'documents', options?)
       // options: { buyerRefundPublicKey?, htlcLocktimeBlocks?, htlcAmountSats?, inventoryTarget?, inventoryRelayTtl? }
       // — `inventoryTarget` = Fabric id of the seller when `idOrAddress` is a relay (next hop) only.
@@ -8048,8 +8121,9 @@ class Hub extends Service {
           const optTtl = Number(options.inventoryRelayTtl);
           if (Number.isFinite(optTtl) && optTtl > 0) relayTtl = Math.min(16, Math.round(optTtl));
 
+          const k = String(kind || 'documents').trim().toLowerCase();
           const payload = {
-            type: 'INVENTORY_REQUEST',
+            type: k === 'documents' ? FABRIC_DOCUMENT_OFFER : 'INVENTORY_REQUEST',
             actor: { id: this.agent.identity.id },
             object: {
               kind: kind || 'documents',
@@ -10384,7 +10458,7 @@ class Hub extends Service {
           }
 
           const responsePayload = {
-            type: 'INVENTORY_RESPONSE',
+            type: kind === 'documents' ? FABRIC_DOCUMENT_OFFER_RESPONSE : 'INVENTORY_RESPONSE',
             actor: { id: this.agent.identity.id },
             object: {
               kind,
@@ -10433,10 +10507,10 @@ class Hub extends Service {
         }
       });
 
-      // When this node requested a remote inventory (or relays a response), Fabric delivers INVENTORY_RESPONSE here.
+      // When this node requested a remote inventory (or relays a response), Fabric delivers a document-offer response here.
       this.agent.on('inventoryResponse', async ({ message, origin }) => {
         try {
-          if (!message || message.type !== 'INVENTORY_RESPONSE' || !message.object) return;
+          if (!message || !isDocumentInventoryResponseType(message.type) || !message.object) return;
           const kind = String((message.object && message.object.kind) || '').trim().toLowerCase();
           if (!kind) return;
           if (!['documents', 'mainchain', 'mainchain-blocks'].includes(kind)) return;

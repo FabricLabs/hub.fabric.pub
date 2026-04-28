@@ -15,6 +15,7 @@ const {
   Segment
 } = require('semantic-ui-react');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const { plaintextMasterFromStored } = require('../functions/fabricHubLocalIdentity');
 const {
   readUiNotifications,
   UPDATED_EVENT,
@@ -24,6 +25,7 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const FabricIdentityAccountControls = require('./fabricIdentity/FabricIdentityAccountControls');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
 
@@ -42,6 +44,8 @@ function TopPanel (props) {
   const onSignMessage = props && typeof props.onSignMessage === 'function' ? props.onSignMessage : null;
   const onDestroyIdentity = props && typeof props.onDestroyIdentity === 'function' ? props.onDestroyIdentity : null;
   const onRefreshBalance = props && typeof props.onRefreshBalance === 'function' ? props.onRefreshBalance : null;
+  const onFabricAccountChange =
+    props && typeof props.onFabricAccountChange === 'function' ? props.onFabricAccountChange : null;
   const hasLocalIdentity = !!(props && props.hasLocalIdentity);
   const hasLockedIdentity = !!(props && props.hasLockedIdentity);
   const localIdentity = props && props.localIdentity ? props.localIdentity : null;
@@ -88,13 +92,22 @@ function TopPanel (props) {
       return null;
     }
   }, [hasLocalIdentity, localIdentity && localIdentity.xpub, auth && auth.xpub]);
+  const plaintextXprvOnDisk = React.useMemo(() => {
+    try {
+      const p = readStorageJSON('fabric.identity.local', null);
+      return !!(p && plaintextMasterFromStored(p));
+    } catch (e) {
+      return false;
+    }
+  }, [hasLocalIdentity, localIdentity && localIdentity.xpub, hasLockedIdentity]);
   const identitySource = localIdentity || auth || persistedIdentity;
   const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
   // Password-protected identity without xprv in memory → show Locked (unlock flow).
   // xpub / watch-only (no password) → show Watch-only (upgrade/import path), not "Locked".
   const passwordProtectedIdentity = !!(localIdentity && localIdentity.passwordProtected);
   const isPasswordLocked = hasAnyLocalIdentity && !isAuthed && (hasLockedIdentity || passwordProtectedIdentity);
-  const isWatchOnlyIdentity = hasAnyLocalIdentity && !isAuthed && !passwordProtectedIdentity && !!identitySource;
+  const isWatchOnlyIdentity = hasAnyLocalIdentity && !isAuthed && !passwordProtectedIdentity && !!identitySource &&
+    !hasLockedIdentity;
   const isLockedState = isPasswordLocked || isWatchOnlyIdentity;
   /** True when we can derive a client wallet id and show a live balance in the chip. */
   const canShowClientBalance = !!(
@@ -498,7 +511,12 @@ function TopPanel (props) {
           </Label>
         )}
         {isAuthed ? (
-          <div style={{ display: 'inline-block' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.65em', flexWrap: 'wrap' }}>
+            <FabricIdentityAccountControls
+              localIdentity={localIdentity}
+              onFabricAccountChange={onFabricAccountChange}
+            />
+            <div style={{ display: 'inline-block' }}>
             <Dropdown
               trigger={
                 <Button size="small" primary title="Identity — menu or lock">
@@ -521,7 +539,7 @@ function TopPanel (props) {
                   title="Hub WebSocket URL and bridge options"
                 />
                 <Dropdown.Divider />
-                {localIdentity && localIdentity.passwordProtected ? (
+                {localIdentity && localIdentity.xprv && (localIdentity.passwordProtected || plaintextXprvOnDisk) ? (
                   <Dropdown.Item
                     icon="lock"
                     text="Lock identity"
@@ -535,6 +553,7 @@ function TopPanel (props) {
                 <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>
             </Dropdown>
+            </div>
           </div>
         ) : (
           <Button

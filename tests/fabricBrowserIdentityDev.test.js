@@ -37,21 +37,19 @@ describe('fabricBrowserIdentityDev.storeUnlockedIdentityFromMnemonic', function 
     delete global.window;
   });
 
-  it('stores identity and writes full unlocked snapshot to sessionStorage', function () {
+  it('stores identity in localStorage (no session hydration; unlock in UI)', function () {
     const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
     const r = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: true });
     assert.strictEqual(r.ok, true);
-    assert.ok(r.identity && r.identity.id);
-    assert.ok(r.identity.xpub);
+    assert.ok(r.identity && r.identity.masterXprv);
     assert.ok(r.identity.xprv);
 
-    const raw = window.sessionStorage.getItem('fabric.identity.unlocked');
-    assert.ok(raw);
-    const snap = JSON.parse(raw);
-    assert.strictEqual(snap.id, r.identity.id);
-    assert.strictEqual(snap.xpub, r.identity.xpub);
-    assert.strictEqual(snap.xprv, r.identity.xprv);
-    assert.strictEqual(snap.passwordProtected, false);
+    const parsed = JSON.parse(window.localStorage._data['fabric.identity.local']);
+    assert.strictEqual(parsed.fabricIdentityMode, 'account');
+    assert.strictEqual(parsed.id, r.identity.id);
+    assert.strictEqual(parsed.xpub, r.identity.xpub);
+    assert.strictEqual(String(parsed.masterXprv || '').trim(), String(r.identity.masterXprv || '').trim());
+    assert.strictEqual(String(parsed.xprv || '').trim(), String(r.identity.masterXprv || '').trim());
   });
 
   it('refuses second store without force', function () {
