@@ -6,7 +6,7 @@ const { safeIdentityErr } = require('../functions/fabricSafeLog');
 
 
 async function fetchDocumentsFromAPI (token) {
-  return fetchFromAPI('/documents', null, token);
+  return fetchFromAPI('/documents', token);
 }
 
 // Action types
@@ -86,7 +86,7 @@ const fetchDocument = (fabricID) => {
     dispatch(fetchDocumentRequest());
     const { token } = getState().auth.token;
     try {
-      const instance = await fetchFromAPI(`/documents/${encodeURIComponent(fabricID)}`, null, token);
+      const instance = await fetchFromAPI(`/documents/${encodeURIComponent(fabricID)}`, token);
       dispatch(fetchDocumentSuccess(instance));
     } catch (error) {
       dispatch(fetchDocumentFailure(error));

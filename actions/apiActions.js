@@ -17,7 +17,7 @@ function assertClientFetchPath (input) {
   return s;
 }
 
-async function fetchFromAPI (path, params = {},token = null) {
+async function fetchFromAPI (path, token = null) {
   const safe = assertClientFetchPath(path);
   const response = await fetch(safe, {
     method: 'GET',

@@ -30,13 +30,25 @@ function setFabricUiFeatureFlags (featureFlags) {
 }
 
 describe('hubUiFeatureFlags', function () {
+  /** Saved so later test files in the same Node process retain real `window` APIs (MutationObserver, addEventListener, …). */
+  let globalsBeforeSuite;
+
+  before(function () {
+    globalsBeforeSuite = {
+      window: global.window,
+      fetch: global.fetch,
+      CustomEvent: global.CustomEvent
+    };
+  });
+
   afterEach(function () {
     try {
       resetFabricBrowserStateStore();
     } catch (_) {}
-    delete global.fetch;
-    // Leave global.CustomEvent — deleting it breaks other suites using `new CustomEvent(...)`
-    // (e.g. Bridge#handleWebRTCPeerMessage) in the same Mocha process.
+    const g = globalsBeforeSuite || {};
+    global.window = g.window;
+    global.fetch = g.fetch;
+    global.CustomEvent = g.CustomEvent;
   });
 
   it('fetchPersistedHubUiFeatureFlags hydrates local flags from /settings', async function () {
