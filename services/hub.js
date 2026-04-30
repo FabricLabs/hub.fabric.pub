@@ -582,7 +582,10 @@ class Hub extends Service {
 
     // Storage and Network
     this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
-    this.setup = new SetupService({ fs: this.fs, key: this._rootKey, state: this._state.content });
+    // Setup must read persisted `STATE` from disk via `SetupService._loadStateContent`, not only the in-memory
+    // `settings.state` template. Otherwise `getSetupStatus()` runs before `start()` merges disk (`needsSetup` stays
+    // true on early GET /settings / desktop reload). Passing `state: null` forces filesystem reads.
+    this.setup = new SetupService({ fs: this.fs, key: this._rootKey, state: null });
     /** Sidechain global document + logical clock ({ version, clock, content }); see functions/sidechainState.js */
     this._sidechainState = sidechainState.loadState(this.fs);
     /** Serialize beacon reorg handling so sidechain rewind completes before downstream refresh. */

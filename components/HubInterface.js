@@ -19,6 +19,7 @@ const {
   writeStorageJSON,
   removeStorageKey
 } = require('../functions/fabricBrowserState');
+const { hasCompletedPostSetupBrowserIdentity } = require('../functions/fabricPostSetupBrowserIdentity');
 const {
   loadHubUiFeatureFlags,
   setHubUiFeatureFlag,
@@ -581,8 +582,11 @@ class HubInterface extends React.Component {
               if (window.sessionStorage.getItem('fabric.hub.wantIdentityWizard') === '1') pending = true;
             }
           } catch (eSess) {}
-          const hasRec = !!(parsed && (parsed.id || parsed.xpub));
-          initialPostSetupIdentityWizardOpen = !!(pending && !dismissed && !hasRec);
+          initialPostSetupIdentityWizardOpen = !!(
+            pending &&
+            !dismissed &&
+            !hasCompletedPostSetupBrowserIdentity(parsed)
+          );
         } catch (e) {}
       }
     } catch (e) {}
@@ -1518,8 +1522,7 @@ class HubInterface extends React.Component {
     if (dismissed) return false;
     try {
       const p = readStorageJSON('fabric.identity.local', null);
-      const hasRec = !!(p && (p.id || p.xpub));
-      if (hasRec) return false;
+      if (hasCompletedPostSetupBrowserIdentity(p)) return false;
     } catch (e) {
       return false;
     }
@@ -1676,7 +1679,7 @@ class HubInterface extends React.Component {
                     let openWizard = false;
                     try {
                       const idRec = readStorageJSON('fabric.identity.local', null);
-                      openWizard = !(idRec && (idRec.id || idRec.xpub));
+                      openWizard = !hasCompletedPostSetupBrowserIdentity(idRec);
                     } catch (e) {}
                     try {
                       if (typeof window !== 'undefined') {
