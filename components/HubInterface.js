@@ -330,6 +330,7 @@ const Home = require('./Home');
 const ActivitiesHome = require('./ActivitiesHome');
 const NotificationsHome = require('./NotificationsHome');
 const IdentityManager = require('./IdentityManager');
+const FabricIdentityAccountControls = require('./fabricIdentity/FabricIdentityAccountControls');
 const FabricPostSetupIdentityWizard = require('./fabricIdentity/FabricPostSetupIdentityWizard');
 const PeerList = require('./PeerList');
 const PeerView = require('./PeerView');
@@ -1283,9 +1284,13 @@ class HubInterface extends React.Component {
   }
 
   componentDidUpdate (prevProps, prevState) {
-    const prevXpub = (prevState.uiLocalIdentity || prevProps.auth || {}).xpub;
-    const nextXpub = (this.state.uiLocalIdentity || this.props.auth || {}).xpub;
-    if (prevXpub !== nextXpub) this._refreshClientBalance();
+    const prevId = prevState.uiLocalIdentity || prevProps.auth || {};
+    const nextId = this.state.uiLocalIdentity || this.props.auth || {};
+    const prevXpub = prevId.xpub;
+    const nextXpub = nextId.xpub;
+    const prevFab = prevId.fabricAccountIndex;
+    const nextFab = nextId.fabricAccountIndex;
+    if (prevXpub !== nextXpub || prevFab !== nextFab) this._refreshClientBalance();
   }
 
   async _refreshClientBalance (forceRefresh = false) {
@@ -1772,7 +1777,6 @@ class HubInterface extends React.Component {
                   onLockIdentity={() => this._handleLockIdentity()}
                   onLogin={this.requestLogin}
                   onManageIdentity={this.openIdentityManager}
-                  onFabricAccountChange={this._fabricAccountChange}
                   onProfile={this.openIdentityManager}
                   onSignMessage={() => this.setState({ uiSignMessageOpen: true })}
                   onDestroyIdentity={() => this.setState({ uiDestroyIdentityConfirmOpen: true })}
@@ -1814,6 +1818,27 @@ class HubInterface extends React.Component {
                       boxSizing: 'border-box'
                     }}
                   >
+                    {effectiveAuth && effectiveAuth.fabricIdentityMode === 'account' ? (
+                      <div
+                        style={{
+                          marginBottom: '1rem',
+                          padding: '0.75rem 1rem',
+                          background: 'rgba(0,0,0,0.03)',
+                          borderRadius: '0.28571429rem',
+                          border: '1px solid rgba(34,36,38,.15)'
+                        }}
+                      >
+                        <FabricIdentityAccountControls
+                          localIdentity={effectiveAuth}
+                          onFabricAccountChange={this._fabricAccountChange}
+                        />
+                        <p style={{ margin: '0.6em 0 0', color: '#666', fontSize: '0.9em', lineHeight: 1.45 }}>
+                          On-chain balance in the top bar and Bitcoin receive/spend paths use the same BIP44 account
+                          index as the Fabric account you select here (<code>m/44&apos;/0&apos;/n&apos;</code> under your
+                          master key).
+                        </p>
+                      </div>
+                    ) : null}
                     <IdentityManager
                       key="fabric-identity-manager"
                       hubAdminToken={this.state.adminToken}

@@ -6,7 +6,6 @@ const DEFAULT_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 // Dependencies
 const React = require('react');
 const { Link } = require('react-router-dom');
-const crypto = require('crypto');
 
 // Fabric Types
 const Key = require('@fabric/core/types/key');
@@ -44,10 +43,12 @@ const {
 } = require('../functions/fabricIdentityBackupCrypto');
 
 const {
+  LOCAL_IDENTITY_PASSWORD_MIN,
   buildLocalFabricIdentityPayload,
-  plaintextMasterFromStored,
   fabricPlaintextSigningUnlockable,
-  unlockedSessionFromDecryptedMaster
+  unlockedSessionFromDecryptedMaster,
+  encryptLocalIdentityAtRest,
+  decryptLocalIdentityMasterMaterial
 } = require('../functions/fabricHubLocalIdentity');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const FabricHubAdminTokenNotice = require('./fabricIdentity/FabricHubAdminTokenNotice');
@@ -182,6 +183,9 @@ function IdentityManager (props) {
   const [identityPassword, setIdentityPassword] = React.useState('');
   const [identityPasswordConfirm, setIdentityPasswordConfirm] = React.useState('');
   const [unlockPassword, setUnlockPassword] = React.useState('');
+  /** Legacy plaintext-at-rest: set password, encrypt on disk, then unlock in one step. */
+  const [plaintextMigrationPassword, setPlaintextMigrationPassword] = React.useState('');
+  const [plaintextMigrationPasswordConfirm, setPlaintextMigrationPasswordConfirm] = React.useState('');
   /** Password for JSON export (v2 encrypted backup). */
   const [backupExportPassword, setBackupExportPassword] = React.useState('');
   const [backupExportBusy, setBackupExportBusy] = React.useState(false);
@@ -207,6 +211,8 @@ function IdentityManager (props) {
     setShowSeedPhrase(false);
     setShowBackupKey(false);
     setUnlockPassword('');
+    setPlaintextMigrationPassword('');
+    setPlaintextMigrationPasswordConfirm('');
     setBackupExportPassword('');
     setBackupExportBusy(false);
     setDevMnemonicText('');
@@ -857,35 +863,49 @@ function IdentityManager (props) {
               </Button>
             ) : null}
             {!localIdentity.xprv && isLocked && localIdentity.plaintextUnlockAvailable && !localIdentity.passwordProtected ? (
-              <div style={{ marginTop: '0.75em' }}>
-                <Button
-                  primary
-                  size="small"
-                  icon
-                  labelPosition="left"
-                  disabled={busy}
-                  onClick={() => {
+              <div style={{ marginTop: '0.75em', maxWidth: 420 }}>
+                <Message warning size="small">
+                  <Message.Header>Encrypt local storage first</Message.Header>
+                  <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
+                    This identity still had a <strong>plaintext</strong> private key in this browser. Choose a
+                    password now to encrypt it on disk. The same password is required on every unlock.
+                  </p>
+                </Message>
+                <Form
+                  onSubmit={(e) => {
+                    e.preventDefault();
                     if (busy) return;
+                    const a = String(plaintextMigrationPassword || '').trim();
+                    const b = String(plaintextMigrationPasswordConfirm || '').trim();
+                    if (!a || !b) {
+                      setError('Enter and confirm a password to encrypt this identity.');
+                      return;
+                    }
+                    if (a.length < LOCAL_IDENTITY_PASSWORD_MIN) {
+                      setError(`Password must be at least ${LOCAL_IDENTITY_PASSWORD_MIN} characters.`);
+                      return;
+                    }
+                    if (a !== b) {
+                      setError('Passwords do not match.');
+                      return;
+                    }
                     setBusy(true);
                     setError(null);
                     (async () => {
                       try {
                         const parsed = readStorageJSON('fabric.identity.local', null);
-                        let material = '';
-                        if (parsed && parsed.fabricHdRole === 'accountNode' && !parsed.passwordProtected) {
-                          material = String(parsed.xprv || '').trim();
-                        } else {
-                          material = plaintextMasterFromStored(parsed);
-                        }
-                        if (!parsed || !material) {
-                          throw new Error('No plaintext key in storage.');
-                        }
-                        const nextIdentity = unlockedSessionFromDecryptedMaster(material, parsed);
+                        if (!parsed) throw new Error('No stored identity found.');
+                        const encrypted = encryptLocalIdentityAtRest(parsed, a);
+                        writeStorageJSON('fabric.identity.local', encrypted);
+                        const material = decryptLocalIdentityMasterMaterial(encrypted, a);
+                        const nextIdentity = unlockedSessionFromDecryptedMaster(material, encrypted);
                         try {
                           if (typeof window !== 'undefined' && window.sessionStorage) {
                             window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(nextIdentity));
                           }
-                        } catch (e) {}
+                        } catch (e2) {}
+                        setPlaintextMigrationPassword('');
+                        setPlaintextMigrationPasswordConfirm('');
                         setLocalIdentity(nextIdentity);
                         if (typeof props.onUnlockSuccess === 'function') {
                           props.onUnlockSuccess(nextIdentity);
@@ -898,9 +918,37 @@ function IdentityManager (props) {
                     })();
                   }}
                 >
-                  <Icon name="unlock" />
-                  Unlock local identity
-                </Button>
+                  <Form.Field>
+                    <label>Encryption password for this browser</label>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={plaintextMigrationPassword}
+                      onChange={(e) => setPlaintextMigrationPassword(e.target.value)}
+                    />
+                  </Form.Field>
+                  <Form.Field>
+                    <label>Confirm password</label>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={plaintextMigrationPasswordConfirm}
+                      onChange={(e) => setPlaintextMigrationPasswordConfirm(e.target.value)}
+                    />
+                  </Form.Field>
+                  <Button
+                    type="submit"
+                    primary
+                    size="small"
+                    icon
+                    labelPosition="left"
+                    disabled={busy}
+                    style={{ marginTop: '0.5em' }}
+                  >
+                    <Icon name="lock" />
+                    Encrypt and unlock
+                  </Button>
+                </Form>
               </div>
             ) : null}
             {!localIdentity.xprv && isLocked && localIdentity.passwordProtected ? (
@@ -931,17 +979,7 @@ function IdentityManager (props) {
                         const parsed = readStorageJSON('fabric.identity.local', null);
                         if (!parsed) throw new Error('No stored identity found.');
                         if (parsed && parsed.passwordProtected && parsed.xprvEnc && parsed.passwordSalt) {
-                          const keyBytes = crypto.createHash('sha256')
-                            .update(String(parsed.passwordSalt) + pwd)
-                            .digest();
-                          const parts = String(parsed.xprvEnc).split(':');
-                          if (parts.length !== 2) throw new Error('Invalid encrypted key format.');
-                          const iv = Buffer.from(parts[0], 'hex');
-                          const blob = Buffer.from(parts[1], 'hex');
-                          const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
-                          let decrypted = decipher.update(blob, 'hex', 'utf8');
-                          decrypted += decipher.final('utf8');
-                          const xprv = decrypted;
+                          const xprv = decryptLocalIdentityMasterMaterial(parsed, pwd);
                           const nextIdentity = unlockedSessionFromDecryptedMaster(xprv, parsed);
                           try {
                             if (typeof window !== 'undefined' && window.sessionStorage) {
@@ -1376,7 +1414,12 @@ function IdentityManager (props) {
                   const masterXprv = pendingSeed && pendingSeed.xprv;
                   if (!masterXprv) throw new Error('Missing xprv for pending seed.');
                   const pwd = String(identityPassword || '').trim();
-                  const isPasswordProtected = !!pwd;
+                  if (!pwd || pwd.length < LOCAL_IDENTITY_PASSWORD_MIN) {
+                    setError(
+                      `Enter the encryption password you chose above (at least ${LOCAL_IDENTITY_PASSWORD_MIN} characters).`
+                    );
+                    return;
+                  }
                   const fabricAccountIndex = 0;
                   const dk = deriveFabricAccountIdentityKeys(String(masterXprv).trim(), fabricAccountIndex, 0);
                   const masterXpub = fabricRootXpubFromMasterXprv(String(masterXprv).trim());
@@ -1386,92 +1429,36 @@ function IdentityManager (props) {
                   } catch (e) {
                     hasStorage = false;
                   }
-                  if (hasStorage) {
-                    let payload = null;
-                    if (isPasswordProtected) {
-                      const salt = crypto.randomBytes(16).toString('hex');
-                      const keyBytes = crypto.createHash('sha256')
-                        .update(salt + pwd)
-                        .digest();
-                      const iv = crypto.randomBytes(16);
-                      const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
-                      let enc = cipher.update(String(masterXprv).trim(), 'utf8', 'hex');
-                      enc += cipher.final('hex');
-                      payload = {
-                        fabricIdentityMode: 'account',
-                        fabricAccountIndex,
-                        masterXpub,
-                        id: dk.id,
-                        xpub: dk.xpub,
-                        xprvEnc: iv.toString('hex') + ':' + enc,
-                        passwordProtected: true,
-                        passwordSalt: salt
-                      };
-                    } else {
-                      payload = {
-                        fabricIdentityMode: 'account',
-                        fabricAccountIndex,
-                        masterXpub,
-                        masterXprv: String(masterXprv).trim(),
-                        id: dk.id,
-                        xpub: dk.xpub,
-                        xprv: String(masterXprv).trim(),
-                        passwordProtected: false
-                      };
-                    }
-                    writeStorageJSON('fabric.identity.local', payload);
-                  }
-                  const storedPayload =
-                    typeof window !== 'undefined'
-                      ? readStorageJSON('fabric.identity.local', null)
-                      : null;
-                  if (isPasswordProtected) {
-                    setLocalIdentity({
-                      id: dk.id,
-                      xpub: dk.xpub,
+                  if (!hasStorage) throw new Error('Secure storage not available in this environment.');
+                  const plaintextPayload = {
+                    fabricIdentityMode: 'account',
+                    fabricAccountIndex,
+                    masterXpub,
+                    masterXprv: String(masterXprv).trim(),
+                    id: dk.id,
+                    xpub: dk.xpub,
+                    passwordProtected: false
+                  };
+                  const payload = encryptLocalIdentityAtRest(plaintextPayload, pwd);
+                  writeStorageJSON('fabric.identity.local', payload);
+                  const storedPayload = readStorageJSON('fabric.identity.local', null);
+                  const material = decryptLocalIdentityMasterMaterial(storedPayload, pwd);
+                  const nextIdent = unlockedSessionFromDecryptedMaster(material, storedPayload);
+                  setLocalIdentity(nextIdent);
+                  if (typeof props.onLocalIdentityChange === 'function') {
+                    props.onLocalIdentityChange({
+                      id: nextIdent.id,
+                      xpub: nextIdent.xpub,
+                      xprv: nextIdent.xprv,
                       passwordProtected: true,
-                      fabricIdentityMode: 'account',
-                      fabricAccountIndex
+                      fabricIdentityMode: nextIdent.fabricIdentityMode,
+                      fabricAccountIndex: nextIdent.fabricAccountIndex,
+                      masterXprv: nextIdent.masterXprv,
+                      masterXpub: nextIdent.masterXpub
                     });
-                    if (typeof props.onLocalIdentityChange === 'function') {
-                      props.onLocalIdentityChange({
-                        id: dk.id != null ? String(dk.id) : undefined,
-                        xpub: dk.xpub != null ? String(dk.xpub) : undefined,
-                        passwordProtected: true,
-                        fabricIdentityMode: 'account',
-                        fabricAccountIndex
-                      });
-                    }
-                    if (typeof props.onUnlockSuccess === 'function') {
-                      props.onUnlockSuccess({
-                        id: dk.id != null ? String(dk.id) : undefined,
-                        xpub: dk.xpub != null ? String(dk.xpub) : undefined,
-                        passwordProtected: true,
-                        fabricIdentityMode: 'account',
-                        fabricAccountIndex
-                      });
-                    }
-                  } else {
-                    const nextIdent = unlockedSessionFromDecryptedMaster(
-                      String(masterXprv).trim(),
-                      storedPayload || { fabricIdentityMode: 'account', fabricAccountIndex, passwordProtected: false }
-                    );
-                    setLocalIdentity(nextIdent);
-                    if (typeof props.onLocalIdentityChange === 'function') {
-                      props.onLocalIdentityChange({
-                        id: nextIdent.id,
-                        xpub: nextIdent.xpub,
-                        xprv: nextIdent.xprv,
-                        passwordProtected: false,
-                        fabricIdentityMode: nextIdent.fabricIdentityMode,
-                        fabricAccountIndex: nextIdent.fabricAccountIndex,
-                        masterXprv: nextIdent.masterXprv,
-                        masterXpub: nextIdent.masterXpub
-                      });
-                    }
-                    if (typeof props.onUnlockSuccess === 'function') {
-                      props.onUnlockSuccess(nextIdent);
-                    }
+                  }
+                  if (typeof props.onUnlockSuccess === 'function') {
+                    props.onUnlockSuccess(nextIdent);
                   }
                   resetSeedState();
                 } catch (e) {

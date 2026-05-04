@@ -25,7 +25,6 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
-const FabricIdentityAccountControls = require('./fabricIdentity/FabricIdentityAccountControls');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
 
@@ -44,8 +43,6 @@ function TopPanel (props) {
   const onSignMessage = props && typeof props.onSignMessage === 'function' ? props.onSignMessage : null;
   const onDestroyIdentity = props && typeof props.onDestroyIdentity === 'function' ? props.onDestroyIdentity : null;
   const onRefreshBalance = props && typeof props.onRefreshBalance === 'function' ? props.onRefreshBalance : null;
-  const onFabricAccountChange =
-    props && typeof props.onFabricAccountChange === 'function' ? props.onFabricAccountChange : null;
   const hasLocalIdentity = !!(props && props.hasLocalIdentity);
   const hasLockedIdentity = !!(props && props.hasLockedIdentity);
   const localIdentity = props && props.localIdentity ? props.localIdentity : null;
@@ -511,12 +508,6 @@ function TopPanel (props) {
           </Label>
         )}
         {isAuthed ? (
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.65em', flexWrap: 'wrap' }}>
-            <FabricIdentityAccountControls
-              localIdentity={localIdentity}
-              onFabricAccountChange={onFabricAccountChange}
-            />
-            <div style={{ display: 'inline-block' }}>
             <Dropdown
               trigger={
                 <Button size="small" primary title="Identity — menu or lock">
@@ -553,8 +544,6 @@ function TopPanel (props) {
                 <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>
             </Dropdown>
-            </div>
-          </div>
         ) : (
           <Button
             size="small"

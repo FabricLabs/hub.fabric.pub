@@ -28,10 +28,28 @@ const LOCAL_BIP44_RECEIVE_DEFAULT_KEY = 'fabric.bitcoin.defaultBip44ReceiveAccou
 /** @see LOCAL_BIP44_RECEIVE_DEFAULT_KEY */
 const LOCAL_BIP44_SEND_DEFAULT_KEY = 'fabric.bitcoin.defaultBip44SendAccount';
 /**
- * All browser ↔ Hub Bitcoin payment flows use this BIP44 account under the Fabric identity master:
- * external addresses m/44'/0'/n'/0/* and change m/44'/0'/n'/1/*. Identity remains the signing root; n is fixed here.
+ * Default BIP44 account index under the identity master when not using Fabric multi-account mode,
+ * or when {@link fabricAccountIndex} is unset (`m/44'/0'/n'/0/*`, `m/44'/0'/n'/1/*`).
  */
 const BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX = 0;
+
+/**
+ * Browser Hub Bitcoin balance/spend/receive use this account index under the master xprv.
+ * When {@link fabricIdentityMode} is `account`, this follows {@link fabricAccountIndex} so the top-bar
+ * balance matches the active Fabric account.
+ * @param {object} identity
+ * @returns {number}
+ */
+function getBitcoinBip44AccountForIdentity (identity = {}) {
+  if (identity && identity.fabricIdentityMode === 'account') {
+    const raw = identity.fabricAccountIndex;
+    if (raw != null && raw !== '') {
+      const ai = Math.floor(Number(raw));
+      if (Number.isFinite(ai) && ai >= 0 && ai <= 0x7fffffff) return ai;
+    }
+  }
+  return BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX;
+}
 /** Fired when session BIP44 keys change (legacy; payment wallet uses a fixed account and ignores session for derivation). */
 const BITCOIN_WALLET_BRANCH_CHANGED = 'fabricBitcoinWalletBranchChanged';
 /**
@@ -460,7 +478,8 @@ function fabricIdentityHasUnlockedSigningForBitcoin (identity = {}) {
  * {@link BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX} under the master. Callers may pass `fixedBitcoinBip44Account` to override;
  * otherwise session + Settings defaults apply (legacy / advanced use).
  * @param {object} identity - Fabric identity (master xpub / xprv on the identity object)
- * @param {{ role?: 'receive'|'send', fixedBitcoinBip44Account?: number }} [opts] - role affects legacy session lookup only when fixed index omitted
+ * @param {{ role?: 'receive'|'send', fixedBitcoinBip44Account?: number }} [opts] - role affects legacy session lookup only when fixed index omitted.
+ * For Hub browser payments, {@link getSpendWalletContext} passes {@link getBitcoinBip44AccountForIdentity}(identity) so it tracks Fabric account index when enabled.
  */
 function getWalletContextFromIdentity (identity = {}, opts = {}) {
   const masterMat = bitcoinDerivationSecretsFromFabricIdentity(identity);
@@ -538,11 +557,11 @@ function getWalletContextFromIdentity (identity = {}, opts = {}) {
   return out;
 }
 
-/** One browser wallet: xpub/walletId for balance, UTXOs, spends, change chain (BIP44 account 0 under identity master). */
+/** One browser wallet: xpub/walletId for balance, UTXOs, spends, change chain (BIP44 account from Fabric account index when in account mode). */
 function getSpendWalletContext (identity = {}) {
   return getWalletContextFromIdentity(identity, {
     role: 'send',
-    fixedBitcoinBip44Account: BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX
+    fixedBitcoinBip44Account: getBitcoinBip44AccountForIdentity(identity)
   });
 }
 
@@ -550,7 +569,7 @@ function getSpendWalletContext (identity = {}) {
 function getNextReceiveWalletContext (identity = {}) {
   return getWalletContextFromIdentity(identity, {
     role: 'receive',
-    fixedBitcoinBip44Account: BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX
+    fixedBitcoinBip44Account: getBitcoinBip44AccountForIdentity(identity)
   });
 }
 
@@ -1928,6 +1947,7 @@ module.exports = {
   saveSpendXpubWatchForIdentity,
   clearSpendXpubWatch,
   getWalletContextFromIdentity,
+  getBitcoinBip44AccountForIdentity,
   getSpendWalletContext,
   getNextReceiveWalletContext,
   deriveAndStoreReceiveAddress,

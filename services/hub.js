@@ -94,6 +94,11 @@ const FABRIC_BITCOIN_TX_DOC_MIME = 'application/x-fabric-bitcoin-transaction+jso
 /** Skip per-tx Fabric documents when a block has more than this many txs (mainnet safety). */
 const BITCOIN_TX_DOC_INDEX_MAX_TXS = 2000;
 const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SATS || 1000);
+/**
+ * Body field `confirmPhrase` for {@link Hub#_handleSettingsSelfDestructRequest} must match exactly (admin-only).
+ * Wipes writable `stores/` and `logs/` under {@link hubStoreRoot} after {@link Hub#stop}.
+ */
+const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
 const P2P_FILE_CHUNK_BYTES = 1024 * 1024; // exact 1 MiB binary chunks
@@ -4646,6 +4651,95 @@ class Hub extends Service {
     });
   }
 
+  _pathUnderHubStoreRoot (absPath) {
+    const root = path.resolve(hubStoreRoot());
+    const abs = path.resolve(absPath);
+    return abs === root || abs.startsWith(root + path.sep);
+  }
+
+  /**
+   * Absolute paths removed by self-destruct (each must stay under the Hub writable root).
+   * @returns {string[]}
+   */
+  _collectSelfDestructRemovalTargets () {
+    const root = path.resolve(hubStoreRoot());
+    const out = [];
+    const storesDir = path.join(root, 'stores');
+    if (this._pathUnderHubStoreRoot(storesDir)) out.push(storesDir);
+    const logsDir = path.join(root, 'logs');
+    if (this._pathUnderHubStoreRoot(logsDir)) out.push(logsDir);
+    return out;
+  }
+
+  /**
+   * @param {import('express').Response} res
+   */
+  _scheduleHubSelfDestructWipe (res) {
+    const hub = this;
+    let ran = false;
+    const run = async () => {
+      if (ran) return;
+      ran = true;
+      console.error('[HUB] SELF-DESTRUCT: stopping services, then removing local stores/logs…');
+      try {
+        await hub.stop();
+      } catch (err) {
+        console.warn('[HUB] Self-destruct: stop() error (continuing with disk wipe):', err && err.message ? err.message : err);
+      }
+      const targets = hub._collectSelfDestructRemovalTargets();
+      const wiped = [];
+      const errors = [];
+      for (const p of targets) {
+        try {
+          await fs.promises.rm(p, { recursive: true, force: true });
+          wiped.push(p);
+        } catch (e) {
+          errors.push({ path: p, message: e && e.message ? e.message : String(e) });
+        }
+      }
+      if (errors.length) {
+        console.error('[HUB] SELF-DESTRUCT: disk errors:', errors);
+      } else {
+        console.error('[HUB] SELF-DESTRUCT: removed', wiped.length, 'path(s). Exiting process.');
+      }
+      if (process.env.NODE_ENV === 'test' && process.env.FABRIC_HUB_SELF_DESTRUCT_EXIT !== '1') {
+        return;
+      }
+      process.exit(errors.length ? 1 : 0);
+    };
+    res.once('finish', () => setImmediate(run));
+    setTimeout(() => {
+      if (!ran) {
+        console.warn('[HUB] SELF-DESTRUCT: response finish not seen; running wipe anyway.');
+        setImmediate(run);
+      }
+    }, 5000);
+  }
+
+  _handleSettingsSelfDestructRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const token = SetupService.extractBearerToken(req);
+      if (!this.setup.verifyAdminToken(token)) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'Admin token required' });
+      }
+      const body = req.body || {};
+      const phrase = typeof body.confirmPhrase === 'string' ? body.confirmPhrase.trim() : '';
+      if (phrase !== HUB_SELF_DESTRUCT_CONFIRM_PHRASE) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: `confirmPhrase must be exactly: ${HUB_SELF_DESTRUCT_CONFIRM_PHRASE}`
+        });
+      }
+      this._scheduleHubSelfDestructWipe(res);
+      return res.status(200).json({
+        ok: true,
+        message: 'Local Hub data wipe started. This process will exit; restart the Hub to run first-time setup again.',
+        confirmPhraseRequired: HUB_SELF_DESTRUCT_CONFIRM_PHRASE,
+        willRemove: this._collectSelfDestructRemovalTargets()
+      });
+    });
+  }
+
   _handleSettingsListRequest (req, res) {
     // Same Accept negotiation as `GET /settings/:name`: HTML shell for `Accept: text/html` (SPA
     // refresh on `/settings`); JSON for `Accept: application/json`. The app must not rely on
@@ -7708,6 +7802,7 @@ class Hub extends Service {
       this.http._addRoute('POST', '/settings', this._handleSettingsBootstrapRequest.bind(this));
       this.http._addRoute('POST', '/settings/verify-setup-ui', this._handleSettingsVerifySetupUiRequest.bind(this));
       this.http._addRoute('POST', '/settings/refresh', this._handleSettingsRefreshRequest.bind(this));
+      this.http._addRoute('POST', '/settings/self-destruct', this._handleSettingsSelfDestructRequest.bind(this));
       this.http._addRoute('GET', '/settings/:name', this._handleSettingsGetRequest.bind(this));
       this.http._addRoute('PUT', '/settings/:name', this._handleSettingsPutRequest.bind(this));
 
