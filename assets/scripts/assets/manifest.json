@@ -1,0 +1,10 @@
+{
+  "index.min.js": {
+    "src": "https://fabric.pub/index.min.js",
+    "integrity": "sha256-DTNvd/9iq7Bqag7PswEgFxQjPK3Yex6W4xjMJmQR4mI= sha384-jxuHOTM/0z9eghjpLBdxY8YnnOO9+V85Efl1lxYhLdHx4Kup7OTlvW1n4Chau1lv sha512-oqNkoujOow/KVF3e6MS/+xRKgClz6wUvpJvipizM/fWPTy/DvVzPz7vlC/ETAtX+UnVwRh2138MC52kgrZHcSQ=="
+  },
+  "main.js": {
+    "src": "https://fabric.pub/index.min.js",
+    "integrity": "sha256-DTNvd/9iq7Bqag7PswEgFxQjPK3Yex6W4xjMJmQR4mI= sha384-jxuHOTM/0z9eghjpLBdxY8YnnOO9+V85Efl1lxYhLdHx4Kup7OTlvW1n4Chau1lv sha512-oqNkoujOow/KVF3e6MS/+xRKgClz6wUvpJvipizM/fWPTy/DvVzPz7vlC/ETAtX+UnVwRh2138MC52kgrZHcSQ=="
+  }
+}

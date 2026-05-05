@@ -48,6 +48,34 @@ describe('bitcoinClient fixed BIP44 account for Hub/browser payments', function 
     delete global.window;
   });
 
+  it('getSpendWalletContext uses Fabric fabricAccountIndex for Bitcoin BIP44 in account mode', function () {
+    attachMockWindow();
+    const seed = bip39.mnemonicToSeedSync('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+    const bip32 = new BIP32Factory(ecc);
+    const root = bip32.fromSeed(seed);
+    const masterXprv = root.toBase58();
+    const masterXpub = root.neutered().toBase58();
+    const acct2 = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, 2);
+    const identity = {
+      fabricIdentityMode: 'account',
+      fabricAccountIndex: 2,
+      masterXprv,
+      masterXpub,
+      id: 'fab-id-test',
+      xpub: 'upub-placeholder'
+    };
+    const wSend = getSpendWalletContext(identity);
+    const wRecv = getNextReceiveWalletContext(identity);
+    assert.strictEqual(wSend.xpub, acct2.xpub);
+    assert.strictEqual(wRecv.xpub, acct2.xpub);
+    assert.strictEqual(wSend.bitcoinBip44Account, 2);
+    assert.strictEqual(wRecv.bitcoinBip44Account, 2);
+    assert.strictEqual(
+      deriveWalletIdFromXpub(wSend.xpub),
+      deriveWalletIdFromXpub(acct2.xpub)
+    );
+  });
+
   it('getSpendWalletContext and getNextReceiveWalletContext use account 0 despite session overrides', function () {
     attachMockWindow();
     saveSessionBip44Account(2, { role: 'send' });

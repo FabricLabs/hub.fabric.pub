@@ -1,6 +1,7 @@
 /**
  * Defines the HTML document which will load the application.
- * @file Fully-managed HTML application.
+ * @file Fully-managed HTML application. `/semantic.min.css` and Fomantic assets are served from
+ *      `@fabric/http` (second static root); this class only adds hub-specific document markup.
  */
 'use strict';
 
@@ -47,6 +48,12 @@ class SPA extends FabricSPA {
       body {
         margin: 0;
         padding: 0 1em;
+      }
+      /* Fomantic fabric: Arvo (themes/fabric). Icon/outline/brand @font-face comes from theme CSS — do not
+         force i.icon { font-family: "Icons" } here: it breaks outline/brand icon stacks. */
+      html,
+      body {
+        font-family: Arvo, "Helvetica Neue", Arial, Helvetica, sans-serif;
       }
     </style>
   </head>

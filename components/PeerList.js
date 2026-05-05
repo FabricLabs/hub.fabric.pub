@@ -573,7 +573,7 @@ class PeersPage extends React.Component {
       : null;
 
     return (
-      <fabric-hub-peers class='fade-in'>
+      <fabric-hub-peers class='fade-in' data-testid="hub-peers-page">
         <Segment style={{ clear: 'both', borderRadius: 4, boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
           <section aria-labelledby="peers-page-heading" aria-describedby="peers-page-summary">
             <div
@@ -972,7 +972,7 @@ class PeersPage extends React.Component {
                       <section aria-labelledby="peers-topology-h3" aria-describedby="peers-topology-desc">
                         <Header as="h3" size="small" id="peers-topology-h3">Peer topology</Header>
                         <p id="peers-topology-desc" style={{ color: '#666', marginBottom: '0.65em', lineHeight: 1.45 }}>
-                          <strong>Solid</strong> edges: TCP peers in this snapshot. <strong>Dotted</strong>: ids from <code>P2P_PEER_GOSSIP</code> (~20 min client cache). Use peer detail <strong>Docs</strong> for <code>INVENTORY_REQUEST</code>; add TCP peers for ids you need directly.
+                          <strong>Solid</strong> edges: TCP peers in this snapshot. <strong>Dotted</strong>: ids from <code>P2P_PEER_GOSSIP</code> (~20 min client cache). Use peer detail <strong>Docs</strong> for document-offer requests; add TCP peers for ids you need directly.
                         </p>
                         <GraphDocumentPreview dotSource={topologyDot} skipIdentityGate />
                         <details style={{ marginTop: '0.65rem' }}>

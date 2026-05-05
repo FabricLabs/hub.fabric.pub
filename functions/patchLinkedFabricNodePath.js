@@ -13,6 +13,24 @@ const Module = require('module');
 const hubRoot = path.resolve(__dirname, '..');
 const nm = path.join(hubRoot, 'node_modules');
 
+/**
+ * Some `@fabric/http` npm tarballs omit `functions/fabricDocumentPayment402.js` while
+ * `functions/sendPaymentRequired402Response.js` still requires it. Overlay from hub when missing.
+ */
+function ensureHttpFabricDocumentPayment402Symlink () {
+  try {
+    const httpFnDir = path.join(nm, '@fabric', 'http', 'functions');
+    const hubPay = path.join(hubRoot, 'functions', 'fabricDocumentPayment402.js');
+    const httpPay = path.join(httpFnDir, 'fabricDocumentPayment402.js');
+    if (!fs.existsSync(hubPay) || !fs.existsSync(httpFnDir)) return;
+    if (fs.existsSync(httpPay)) return;
+
+    const rel = path.relative(httpFnDir, hubPay);
+    fs.symlinkSync(rel, httpPay, 'file');
+  } catch (_) {}
+}
+ensureHttpFabricDocumentPayment402Symlink();
+
 function realPackageRoot (pkg) {
   const p = path.join(nm, pkg);
   try {

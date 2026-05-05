@@ -14,8 +14,11 @@ const HUB_E2E = process.env.HUB_E2E === '1' || process.env.HUB_E2E === 'true';
 const HUB_URL = process.env.HUB_URL || 'http://localhost:18080/';
 const HUB_PORT = 18080;
 
+/** Puppeteer `networkidle0` often never resolves: Bridge keeps WebSocket/polling work alive. */
+const DEFAULT_GOTO = { waitUntil: 'load', timeout: 20000 };
+
 // Helper to serve static files from assets/ with SPA fallback (matches Hub `spaFallback` behavior).
-function startStaticServer ({ port = 3001, root = path.join(__dirname, '../assets') } = {}) {
+function startStaticServer ({ port = 0, root = path.join(__dirname, '../assets') } = {}) {
   const indexPath = path.join(root, 'index.html');
   const server = http.createServer((req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -35,6 +38,11 @@ function startStaticServer ({ port = 3001, root = path.join(__dirname, '../asset
     if (!filePath.startsWith(root)) {
       res.writeHead(403);
       res.end('Forbidden');
+      return;
+    }
+    if (rel === 'config.local.js') {
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+      res.end('/* stub: real assets/config.local.js can force a dev browser identity; tests set identity explicitly */\n');
       return;
     }
     fs.readFile(filePath, (err, data) => {
@@ -61,8 +69,13 @@ function startStaticServer ({ port = 3001, root = path.join(__dirname, '../asset
       });
     });
   });
-  return new Promise((resolve) => {
-    server.listen(port, () => resolve(server));
+  return new Promise((resolve, reject) => {
+    server.listen(port, '127.0.0.1', () => {
+      const addr = server.address();
+      const actual = typeof addr === 'object' && addr ? addr.port : port;
+      resolve({ server, port: actual });
+    });
+    server.on('error', reject);
   });
 }
 
@@ -121,6 +134,27 @@ function startHub (timeoutMs = 45000) {
 
 function sleep (ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Log page errors, failed network, and important console to stderr (for debugging SPA failures). */
+function attachBrowserClientDiagnostics (page) {
+  if (!page || page._fabricHubBrowserTestDiag) return;
+  page._fabricHubBrowserTestDiag = true;
+  page.on('console', (msg) => {
+    const t = String(msg.type && msg.type() || '');
+    const text = (typeof msg.text === 'function' ? msg.text() : String(msg)) || '';
+    if (t === 'error' || t === 'warning' || t === 'assert') {
+      console.error(`[browser:console:${t}]`, text);
+    }
+  });
+  page.on('pageerror', (err) => {
+    const m = (err && err.message) || String(err);
+    console.error('[browser:pageerror]', m);
+  });
+  page.on('requestfailed', (req) => {
+    const f = (typeof req.failure === 'function') ? req.failure() : null;
+    console.error('[browser:requestfailed]', (typeof req.url === 'function' ? req.url() : ''), f && f.errorText ? f.errorText : '');
+  });
 }
 
 /**
@@ -186,17 +220,28 @@ async function installHubAdminTokenThenReload (page, token) {
       window.dispatchEvent(new CustomEvent('fabricHubAdminTokenSaved', { detail: { ok: true } }));
     } catch (e) { /* ignore */ }
   }, token);
-  await page.reload({ waitUntil: 'networkidle0', timeout: 20000 });
+  await page.reload({ waitUntil: 'load', timeout: 20000 });
 }
 
-/** Merge keys into `localStorage` `fabric.hub.uiFeatureFlags` (browser page). */
+/**
+ * Merge keys into Hub UI flags — mirrors canonical storage in `fabric:state.ui.featureFlags`
+ * (same as {@link ../functions/hubUiFeatureFlags.saveHubUiFeatureFlags}).
+ */
 async function mergeHubUiFeatureFlags (page, patch) {
-  const raw = JSON.stringify(patch || {});
+  const raw = JSON.stringify(patch && typeof patch === 'object' ? patch : {});
   await page.evaluate((serialized) => {
     try {
       const p = JSON.parse(serialized);
-      const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-      window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, ...p }));
+      const prev = window.localStorage.getItem('fabric:state');
+      const st = prev ? JSON.parse(prev) : {};
+      if (!st.ui || typeof st.ui !== 'object') st.ui = {};
+      const cur = (st.ui.featureFlags && typeof st.ui.featureFlags === 'object') ? st.ui.featureFlags : {};
+      const merged = { ...cur, ...p };
+      st.ui.featureFlags = merged;
+      window.localStorage.setItem('fabric:state', JSON.stringify(st));
+      try {
+        window.dispatchEvent(new CustomEvent('fabricHubUiFeatureFlagsChanged', { detail: merged }));
+      } catch (e) { /* ignore */ }
     } catch (e) { /* ignore */ }
   }, raw);
 }
@@ -242,7 +287,17 @@ async function waitForMainUI (page, timeoutMs = 15000) {
         (el) => String(el.textContent || '').trim() === 'Home'
       );
       const hubLink = document.querySelector('a[href="/"] code');
-      return !!(home || (hubLink && hubLink.textContent && hubLink.textContent.includes('hub')));
+      const hasHubShell = !!(
+        document.getElementById('fabric-hub-application') ||
+        document.getElementById('react-application')
+      );
+      const app = document.getElementById('application-target');
+      const appReady = !!(app && (app.innerHTML || '').length > 50);
+      return !!(
+        home ||
+        (hubLink && hubLink.textContent && hubLink.textContent.includes('hub')) ||
+        (hasHubShell && appReady)
+      );
     });
     if (found) return true;
     await sleep(300);
@@ -296,31 +351,43 @@ describe('Browser Interface', function () {
   let sandbox;
   let hubProcess;
   let e2eHubAdminToken;
-  const STATIC_PORT = 3001;
-  const baseUrl = HUB_E2E ? HUB_URL : `http://localhost:${STATIC_PORT}/`;
+  let baseUrl = HUB_E2E ? HUB_URL : 'http://127.0.0.1:0/';
 
   before(async function () {
     this.timeout(60000);
     try {
       if (HUB_E2E) {
+        baseUrl = HUB_URL;
         hubProcess = await startHub();
         await sleep(2000);
         e2eHubAdminToken = await bootstrapHubForBrowserE2e(HUB_URL.replace(/\/$/, ''));
       } else {
-        server = await startStaticServer({ port: STATIC_PORT });
+        const envPort = process.env.FABRIC_BROWSER_TEST_STATIC_PORT;
+        const st = await startStaticServer({
+          port: envPort && String(envPort).trim() !== '' ? Number(envPort) : 0
+        });
+        server = st.server;
+        baseUrl = `http://127.0.0.1:${st.port}/`;
       }
       sandbox = new Sandbox({ browser: { headless: true } });
       await sandbox.start();
+      attachBrowserClientDiagnostics(sandbox.browser);
+      await sandbox.browser.goto(baseUrl, { ...DEFAULT_GOTO, timeout: 30000 });
+      // localStorage is per-origin; seeding before the first goto wrote to the wrong document.
       await seedBrowserUnlockedTestIdentity(sandbox.browser);
-      await sandbox.browser.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 15000 });
+      await sandbox.browser.reload({ waitUntil: 'load', timeout: 30000 });
       if (HUB_E2E) {
         await installHubAdminTokenThenReload(sandbox.browser, e2eHubAdminToken);
         const ok = await waitForMainUI(sandbox.browser, 20000);
         if (!ok) throw new Error('Main UI did not appear');
       } else {
-        await sleep(3000);
+        const ready = await waitForMainUI(sandbox.browser, 20000);
+        if (!ready) {
+          throw new Error('Main UI (nav / app shell) did not appear on static bundle within 20s');
+        }
       }
     } catch (err) {
+      console.error('[browser.interface.test] before hook failed:', err && err.message ? err.message : err);
       this.skip();
     }
   });
@@ -375,13 +442,20 @@ describe('Browser Interface', function () {
     it('should navigate to Peers without operator token', async function () {
       const clicked = await clickNavLink(sandbox.browser, 'Peers');
       if (!clicked) {
-        await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'networkidle0', timeout: 10000 });
+        await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'load', timeout: 10000 });
         await sleep(400);
       } else {
         await sleep(500);
       }
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/peers', `Expected /peers, got ${pathname}`);
+      if (!HUB_E2E) return;
+      await mergeHubUiFeatureFlags(sandbox.browser, { peers: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'load', timeout: 15000 });
+      const hooked = await sandbox.browser.evaluate(
+        () => !!document.querySelector('[data-testid="hub-peers-page"]')
+      );
+      assert.ok(hooked, 'live hub: Peers shell should expose [data-testid="hub-peers-page"]');
     });
 
     it('should navigate to Documents', async function () {
@@ -423,20 +497,16 @@ describe('Browser Interface', function () {
   });
 
   describe('route rendering', function () {
+    this.timeout(120000);
     before(async function () {
       const hasMainUI = await waitForMainUI(sandbox.browser, 8000);
       if (!hasMainUI) this.skip();
     });
 
     it('should render Peers page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, peers: true }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { peers: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'load', timeout: 20000 });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/peers', `Expected /peers (peers feature on), got ${pathname}`);
       const hasHeading = await waitForElementById(sandbox.browser, 'peers-page-heading', 12000);
@@ -444,13 +514,25 @@ describe('Browser Interface', function () {
       const layoutOk = await sandbox.browser.evaluate(() => {
         const footer = document.getElementById('peers-page-footer');
         const body = document.body && document.body.innerText ? document.body.innerText : '';
-        return !!(footer && /Fabric Peer ID/i.test(body) && /Fabric peers/i.test(body));
+        if (!footer || !/Fabric Peer ID/i.test(body)) return false;
+        // Static `assets/` test server has no WebSocket; Bridge may stay in “Connecting to hub…”.
+        // When `networkStatus` is set, the “Fabric peers” table block is shown; otherwise loader or empty list.
+        return (
+          /Fabric peers/i.test(body) ||
+          /Connecting to hub/i.test(body) ||
+          /No TCP or mesh peers yet/i.test(body)
+        );
       });
-      assert.ok(layoutOk, 'Peers page should show consolidated summary, Fabric peers block, and protocol footer');
+      assert.ok(layoutOk, 'Peers page should show protocol footer and Peer ID copy (table block when hub is connected)');
+
+      const hasPeersTestHook = await sandbox.browser.evaluate(
+        () => !!document.querySelector('[data-testid="hub-peers-page"]')
+      );
+      assert.ok(hasPeersTestHook, '[data-testid="hub-peers-page"] anchors E2E / automation selectors');
     });
 
     it('should render Documents page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/documents`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/documents`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -460,7 +542,7 @@ describe('Browser Interface', function () {
     });
 
     it('should render Contracts page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/contracts`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/contracts`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -470,14 +552,8 @@ describe('Browser Interface', function () {
     });
 
     it('should render Activities page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, activities: true }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/activities`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { activities: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/activities`, { waitUntil: 'load', timeout: 20000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/activities', `Expected /activities, got ${pathname}`);
@@ -489,14 +565,8 @@ describe('Browser Interface', function () {
     });
 
     it('should render Notifications page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, activities: true }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/notifications`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { activities: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/notifications`, { waitUntil: 'load', timeout: 20000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/notifications', `Expected /notifications, got ${pathname}`);
@@ -508,14 +578,8 @@ describe('Browser Interface', function () {
     });
 
     it('should render Features page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({ ...cur, features: true }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/features`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { features: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/features`, { waitUntil: 'load', timeout: 20000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/features', `Expected /features, got ${pathname}`);
@@ -527,7 +591,7 @@ describe('Browser Interface', function () {
     });
 
     it('should render Bitcoin page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -537,17 +601,8 @@ describe('Browser Interface', function () {
     });
 
     it('should render Bitcoin Invoices page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            bitcoinInvoices: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin/invoices`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinInvoices: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin/invoices`, { waitUntil: 'load', timeout: 20000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -557,17 +612,8 @@ describe('Browser Interface', function () {
     });
 
     it('should render Bitcoin Payments page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            bitcoinPayments: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/payments`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinPayments: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/payments`, { waitUntil: 'load', timeout: 20000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -577,17 +623,8 @@ describe('Browser Interface', function () {
     });
 
     it('should render Bitcoin Crowdfunds page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            bitcoinCrowdfund: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin/crowdfunds`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinCrowdfund: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/services/bitcoin/crowdfunds`, { waitUntil: 'load', timeout: 20000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/services/bitcoin/crowdfunds', `Expected /services/bitcoin/crowdfunds, got ${pathname}`);
@@ -599,7 +636,7 @@ describe('Browser Interface', function () {
     });
 
     it('should render Settings home at /settings without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/settings', `Expected /settings, got ${pathname}`);
@@ -611,17 +648,9 @@ describe('Browser Interface', function () {
     });
 
     it('should render Settings → Distributed federation at /settings/federation without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/federation`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/federation`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/settings/federation', `Expected /settings/federation, got ${pathname}`);
@@ -633,17 +662,9 @@ describe('Browser Interface', function () {
     });
 
     it('should render Federations workspace at /federations without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/federations`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/federations`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/federations', `Expected /federations, got ${pathname}`);
@@ -656,7 +677,7 @@ describe('Browser Interface', function () {
     });
 
     it('should render Settings → Bitcoin wallet page without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/bitcoin-wallet`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/bitcoin-wallet`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -666,7 +687,7 @@ describe('Browser Interface', function () {
     });
 
     it('should render Admin page at /settings/admin without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const hasContent = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -676,7 +697,7 @@ describe('Browser Interface', function () {
     });
 
     it('should redirect legacy /admin to /settings/admin', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/settings/admin', `Expected redirect to /settings/admin, got ${pathname}`);
@@ -684,58 +705,41 @@ describe('Browser Interface', function () {
 
     it('should show Fabric identity gate on /federations without unlocked identity', async function () {
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 10000 });
       await sandbox.browser.evaluate(() => {
         try {
           window.localStorage.removeItem('fabric.identity.local');
           if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
+          const key = 'fabric:state';
+          const raw = window.localStorage.getItem(key);
+          if (raw) {
+            const st = JSON.parse(raw);
+            if (st && typeof st === 'object' && st.identity) delete st.identity;
+            window.localStorage.setItem(key, JSON.stringify(st));
+          }
         } catch (e) { /* ignore */ }
       });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) { /* ignore */ }
-      });
-      await sandbox.browser.goto(`${root}/federations`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
+      await sandbox.browser.goto(`${root}/federations`, { waitUntil: 'load', timeout: 10000 });
       const gate = await waitForBodyText(sandbox.browser, 'Sign in with a Fabric identity', 12000);
       assert.ok(gate, 'Expected sign-in gate on Federations when not logged in');
       await seedBrowserUnlockedTestIdentity(sandbox.browser);
-      await sandbox.browser.goto(baseUrl, { waitUntil: 'networkidle0', timeout: 15000 });
+      await sandbox.browser.goto(baseUrl, { waitUntil: 'load', timeout: 15000 });
     });
 
     it('should render Beacon Federation page at /settings/admin/beacon-federation without crashing', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin/beacon-federation`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/settings/admin/beacon-federation`, { waitUntil: 'load', timeout: 10000 });
       const onBeaconPage = await waitForPathname(sandbox.browser, '/settings/admin/beacon-federation', 12000);
       assert.ok(onBeaconPage, 'Expected Beacon Federation route to resolve');
       // Keep this as route-resolution smoke: page composition can vary by runtime feature state.
     });
 
     it('should redirect legacy /admin/beacon-federation to /settings/admin/beacon-federation', async function () {
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await sandbox.browser.evaluate(() => {
-        try {
-          const cur = JSON.parse(window.localStorage.getItem('fabric.hub.uiFeatureFlags') || '{}');
-          window.localStorage.setItem('fabric.hub.uiFeatureFlags', JSON.stringify({
-            ...cur,
-            sidechain: true
-          }));
-        } catch (e) {}
-      });
-      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin/beacon-federation`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/`, { waitUntil: 'load', timeout: 10000 });
+      await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/admin/beacon-federation`, { waitUntil: 'load', timeout: 10000 });
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/settings/admin/beacon-federation', `Expected redirect, got ${pathname}`);
@@ -755,7 +759,7 @@ describe('Browser Interface', function () {
     it('Contracts page shows storage + execution registry publish controls', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/contracts`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/contracts`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -778,7 +782,7 @@ describe('Browser Interface', function () {
     it('Bitcoin faucet page renders L1 test funding UI', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/services/bitcoin/faucet`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/services/bitcoin/faucet`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -796,9 +800,9 @@ describe('Browser Interface', function () {
     it('Bitcoin payments page renders on-chain payment + Payjoin (BIP77) surface', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 15000 });
+      await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 15000 });
       await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinPayments: true });
-      await sandbox.browser.goto(`${root}/payments`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/payments`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -821,7 +825,7 @@ describe('Browser Interface', function () {
     it('Documents page surfaces distribute / purchase L1 workflow hints', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/documents`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/documents`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -838,9 +842,9 @@ describe('Browser Interface', function () {
     it('Crowdfunds page renders Taproot L1 campaign UI when feature flag is on', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 15000 });
+      await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 15000 });
       await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinCrowdfund: true });
-      await sandbox.browser.goto(`${root}/services/bitcoin/crowdfunds`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/services/bitcoin/crowdfunds`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -856,7 +860,7 @@ describe('Browser Interface', function () {
     it('Bitcoin explorer ties contracts, Payjoin, and Lightning (wealth stack)', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/services/bitcoin`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/services/bitcoin`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -874,9 +878,9 @@ describe('Browser Interface', function () {
     it('Bitcoin resources page shows L1 payment verification (txid + address + sats)', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 15000 });
+      await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 15000 });
       await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinResources: true });
-      await sandbox.browser.goto(`${root}/services/bitcoin/resources`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/services/bitcoin/resources`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -893,9 +897,9 @@ describe('Browser Interface', function () {
     it('Lightning page shows channel list surface', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 15000 });
+      await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 15000 });
       await mergeHubUiFeatureFlags(sandbox.browser, { bitcoinLightning: true });
-      await sandbox.browser.goto(`${root}/services/bitcoin/lightning`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/services/bitcoin/lightning`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -907,7 +911,7 @@ describe('Browser Interface', function () {
     it('Invoices page shows receiver workflow', async function () {
       this.timeout(25000);
       const root = baseUrl.replace(/\/$/, '');
-      await sandbox.browser.goto(`${root}/services/bitcoin/invoices`, { waitUntil: 'networkidle0', timeout: 20000 });
+      await sandbox.browser.goto(`${root}/services/bitcoin/invoices`, { waitUntil: 'load', timeout: 20000 });
       await sleep(400);
       const ok = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -929,13 +933,13 @@ describe('Browser Interface', function () {
       it('redirects /settings/collaboration to /settings when admin token is absent', async function () {
         this.timeout(25000);
         const root = baseUrl.replace(/\/$/, '');
-        await sandbox.browser.goto(`${root}/`, { waitUntil: 'networkidle0', timeout: 15000 });
+        await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 15000 });
         await sandbox.browser.evaluate(() => {
           try {
             window.localStorage.removeItem('fabric.hub.adminToken');
           } catch (e) { /* ignore */ }
         });
-        await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'networkidle0', timeout: 15000 });
+        await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'load', timeout: 15000 });
         await sleep(600);
         const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
         assert.strictEqual(pathname, '/settings', `expected redirect to /settings, got ${pathname}`);
@@ -950,7 +954,7 @@ describe('Browser Interface', function () {
       it('creates a group and shows multisig preview JSON', async function () {
         this.timeout(90000);
         const root = baseUrl.replace(/\/$/, '');
-        await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'networkidle0', timeout: 25000 });
+        await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'load', timeout: 25000 });
         const hasHeading = await waitForBodyText(sandbox.browser, 'Collaboration', 20000);
         if (!hasHeading) {
           const dbg = await sandbox.browser.evaluate(() => ({

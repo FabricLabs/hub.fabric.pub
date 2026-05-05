@@ -9,13 +9,11 @@ const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
 
-/** Read-only app bundle root (Electron sets FABRIC_HUB_APP_ROOT to app.getAppPath() for asar-safe assets). */
-function hubAppRoot () {
-  return process.env.FABRIC_HUB_APP_ROOT || process.cwd();
-}
+const { resolveAppAssetsDir } = require('@fabric/http');
 
+/** Read-only static root (see `resolveAppAssetsDir` on `@fabric/http`). */
 function hubAssetsDir () {
-  return path.join(hubAppRoot(), 'assets');
+  return resolveAppAssetsDir(__dirname, { envVar: 'FABRIC_HUB_APP_ROOT' });
 }
 
 /** Writable store root (Electron: FABRIC_HUB_USER_DATA). */
@@ -33,6 +31,21 @@ function resolveStorePath (p) {
   return path.isAbsolute(p) ? p : path.resolve(hubStoreRoot(), p);
 }
 const bs58check = require('bs58check');
+
+function getHubSetupUiSecretTrimmed () {
+  const s = process.env.FABRIC_HUB_SETUP_UI_SECRET;
+  return typeof s === 'string' ? s.trim() : '';
+}
+
+function timingSafeSha256Utf8Match (provided, expected) {
+  try {
+    const ph = crypto.createHash('sha256').update(String(provided ?? ''), 'utf8').digest();
+    const eh = crypto.createHash('sha256').update(String(expected ?? ''), 'utf8').digest();
+    return ph.length === eh.length && crypto.timingSafeEqual(ph, eh);
+  } catch (_) {
+    return false;
+  }
+}
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
 const { SATS_PER_BTC } = require('../constants');
 
@@ -81,6 +94,11 @@ const FABRIC_BITCOIN_TX_DOC_MIME = 'application/x-fabric-bitcoin-transaction+jso
 /** Skip per-tx Fabric documents when a block has more than this many txs (mainnet safety). */
 const BITCOIN_TX_DOC_INDEX_MAX_TXS = 2000;
 const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SATS || 1000);
+/**
+ * Body field `confirmPhrase` for {@link Hub#_handleSettingsSelfDestructRequest} must match exactly (admin-only).
+ * Wipes writable `stores/` and `logs/` under {@link hubStoreRoot} after {@link Hub#stop}.
+ */
+const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
 const P2P_FILE_CHUNK_BYTES = 1024 * 1024; // exact 1 MiB binary chunks
@@ -104,6 +122,11 @@ const { computeExecutionRunCommitmentHex } = require('../functions/executionRunC
 const { anchorExecutionCommitmentRegtest } = require('../functions/bitcoinExecutionAnchor');
 const { validateEnvelopeV1, buildGenericMessageFromEnvelope } = require('../functions/fabricMessageEnvelope');
 const inventoryRelay = require('../functions/inventoryRelay');
+const {
+  FABRIC_DOCUMENT_OFFER,
+  FABRIC_DOCUMENT_OFFER_RESPONSE,
+  isDocumentInventoryResponseType
+} = require('../functions/fabricDocumentOfferEnvelope');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
 const sidechainState = require('../functions/sidechainState');
 const documentOfferEscrow = require('../functions/documentOfferEscrow');
@@ -168,19 +191,35 @@ class Hub extends Service {
       http: {
         hostname: 'localhost',
         listen: true,
-        port: 8080
+        port: 8080,
+        /**
+         * Forwarded into @fabric/http `HTTPServer` `settings.payments` (402 + `X-Fabric-Payment-Request`).
+         * **On by default.** Disable with `FABRIC_HTTP_PAYMENTS_ENABLED=0` or `false`.
+         * Published documents with **`purchasePriceSats` > 0** always get the JSON **`GET /documents/:id`** wall when enabled.
+         */
+        payments: {
+          enabled: !(
+            process.env.FABRIC_HTTP_PAYMENTS_ENABLED === '0' ||
+            process.env.FABRIC_HTTP_PAYMENTS_ENABLED === 'false'
+          ),
+          lightningL402:
+            process.env.FABRIC_HTTP_PAYMENTS_LIGHTNING_L402 === '1' ||
+            process.env.FABRIC_HTTP_PAYMENTS_LIGHTNING_L402 === 'true',
+          exposePaymentTestRoute:
+            !(
+              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === '1' ||
+              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === 'true'
+            ),
+          detail: process.env.FABRIC_HTTP_PAYMENTS_DETAIL || 'Complete payment to continue.',
+          description: process.env.FABRIC_HTTP_PAYMENTS_DESCRIPTION || 'Fabric access'
+        }
       },
       routes: [
         // TODO: define all resource routes at the Resource level
-        { method: 'POST', route: '/contracts', handler: ROUTES.contracts.create.bind(this) },
         { method: 'GET', route: '/contracts', handler: ROUTES.contracts.list.bind(this) },
         { method: 'GET', route: '/contracts/:id', handler: ROUTES.contracts.view.bind(this) },
-        { method: 'POST', route: '/documents', handler: ROUTES.documents.create.bind(this) },
         { method: 'GET', route: '/documents', handler: ROUTES.documents.list.bind(this) },
-        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) },
-        { method: 'POST', route: '/peers', handler: ROUTES.peers.create.bind(this) },
-        { method: 'GET', route: '/peers', handler: ROUTES.peers.list.bind(this) },
-        { method: 'GET', route: '/peers/:id', handler: ROUTES.peers.view.bind(this) }
+        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) }
       ],
       commitments: [],
       constraints: {
@@ -543,7 +582,10 @@ class Hub extends Service {
 
     // Storage and Network
     this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
-    this.setup = new SetupService({ fs: this.fs, key: this._rootKey });
+    // Setup must read persisted `STATE` from disk via `SetupService._loadStateContent`, not only the in-memory
+    // `settings.state` template. Otherwise `getSetupStatus()` runs before `start()` merges disk (`needsSetup` stays
+    // true on early GET /settings / desktop reload). Passing `state: null` forces filesystem reads.
+    this.setup = new SetupService({ fs: this.fs, key: this._rootKey, state: null });
     /** Sidechain global document + logical clock ({ version, clock, content }); see functions/sidechainState.js */
     this._sidechainState = sidechainState.loadState(this.fs);
     /** Serialize beacon reorg handling so sidechain rewind completes before downstream refresh. */
@@ -553,6 +595,10 @@ class Hub extends Service {
     this.http = new HTTPServer({
       name: 'hub.fabric.pub',
       path: hubAssetsDir(),
+      // Fomantic **Fabric** theme: built in `@fabric/http` and served from its `assets/` (second static root).
+      // Use `npm run link:fabric` so `node_modules/@fabric/http` is your local clone; `npm run build:semantic` there
+      // when you change the theme. Keep Hub `assets/` free of duplicate `semantic*.css`
+      // / `themes/` or they would shadow the package.
       hostname: this.settings.http.hostname,
       interface: this.settings.http.interface,
       port: this.settings.http.port,
@@ -582,6 +628,14 @@ class Hub extends Service {
           components: {
             list: 'DocumentHome',
             view: 'DocumentView'
+          }
+        },
+        Peer: {
+          route: '/peers',
+          type: Entity,
+          components: {
+            list: 'HubInterface',
+            view: 'HubInterface'
           }
         },
         Index: {
@@ -618,7 +672,10 @@ class Hub extends Service {
         }
       },
       routes: this.settings.routes,
-      sessions: false
+      sessions: false,
+      ...((this.settings.http && this.settings.http.payments)
+        ? { payments: this.settings.http.payments }
+        : {})
     });
 
     // State
@@ -1066,7 +1123,7 @@ class Hub extends Service {
 
     const items = this._collectLocalDocumentInventoryItems();
     const responsePayload = {
-      type: 'INVENTORY_RESPONSE',
+      type: FABRIC_DOCUMENT_OFFER_RESPONSE,
       actor: { id: myId },
       object: {
         kind: 'documents',
@@ -1084,7 +1141,7 @@ class Hub extends Service {
     } catch (_) {}
 
     const invReq = {
-      type: 'INVENTORY_REQUEST',
+      type: FABRIC_DOCUMENT_OFFER,
       actor: { id: myId },
       object: { kind: 'documents', fabricResync: true }
     };
@@ -1988,7 +2045,7 @@ class Hub extends Service {
   }
 
   _handleDistributedFederationRegistryRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const reg = federationRegistry.loadRegistry(this.fs);
       res.status(200).json({
         type: 'FederationRegistry',
@@ -2425,8 +2482,14 @@ class Hub extends Service {
     }).filter((x) => Array.isArray(x.addresses) && x.addresses.length > 0);
 
     let dnsProbe = { ok: false, resolver: 'example.com', error: null, addresses: [] };
+    const DNS_PROBE_MS = 3500;
     try {
-      const addresses = await dns.resolve('example.com');
+      const addresses = await Promise.race([
+        dns.resolve('example.com'),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('DNS probe timed out')), DNS_PROBE_MS)
+        )
+      ]);
       dnsProbe = { ok: true, resolver: 'example.com', error: null, addresses: Array.isArray(addresses) ? addresses : [] };
     } catch (err) {
       dnsProbe = {
@@ -2550,14 +2613,14 @@ class Hub extends Service {
   }
 
   _handleDistributedVaultRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const body = this._buildFederationVaultSummary();
       res.status(200).json(body);
     });
   }
 
   _handleDistributedVaultUtxosRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) {
         return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -3762,39 +3825,6 @@ class Hub extends Service {
     }
   }
 
-  _jsonOrShell (req, res, onJSON) {
-    return res.format({
-      html: () => {
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.send(this.applicationString);
-      },
-      json: async () => {
-        try {
-          await onJSON();
-        } catch (error) {
-          res.status(500).json({
-            status: 'error',
-            message: error && error.message ? error.message : String(error)
-          });
-        }
-      }
-    });
-  }
-
-  /** Always return JSON (no Accept negotiation). Use for API-only routes like /settings. */
-  _jsonOnly (req, res, onJSON) {
-    return (async () => {
-      try {
-        await onJSON();
-      } catch (error) {
-        res.status(500).json({
-          status: 'error',
-          message: error && error.message ? error.message : String(error)
-        });
-      }
-    })();
-  }
-
   /**
    * HTTP JSON-RPC for the same method set as WebSocket `JSONCall` (`this.http._registerMethod`).
    * Registered as an explicit route so `POST /services/rpc` is not handled by the SPA `POST /*`
@@ -4603,7 +4633,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinStatusRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const status = await this._collectBitcoinStatus({ force: true });
       // Always 200 so the client receives balance/beacon/message even when unavailable
       const body = status && typeof status === 'object'
@@ -4614,7 +4644,7 @@ class Hub extends Service {
   }
 
   _handleHubUiConfigRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const { normalizeHubUiAlerts } = require('../functions/hubUiAlerts');
       const raw = this.settings.ui && Array.isArray(this.settings.ui.alerts)
         ? this.settings.ui.alerts
@@ -4624,21 +4654,141 @@ class Hub extends Service {
     });
   }
 
+  _pathUnderHubStoreRoot (absPath) {
+    const root = path.resolve(hubStoreRoot());
+    const abs = path.resolve(absPath);
+    return abs === root || abs.startsWith(root + path.sep);
+  }
+
+  /**
+   * Absolute paths removed by self-destruct (each must stay under the Hub writable root).
+   * @returns {string[]}
+   */
+  _collectSelfDestructRemovalTargets () {
+    const root = path.resolve(hubStoreRoot());
+    const out = [];
+    const storesDir = path.join(root, 'stores');
+    if (this._pathUnderHubStoreRoot(storesDir)) out.push(storesDir);
+    const logsDir = path.join(root, 'logs');
+    if (this._pathUnderHubStoreRoot(logsDir)) out.push(logsDir);
+    return out;
+  }
+
+  /**
+   * @param {import('express').Response} res
+   */
+  _scheduleHubSelfDestructWipe (res) {
+    const hub = this;
+    let ran = false;
+    const run = async () => {
+      if (ran) return;
+      ran = true;
+      console.error('[HUB] SELF-DESTRUCT: stopping services, then removing local stores/logs…');
+      try {
+        await hub.stop();
+      } catch (err) {
+        console.warn('[HUB] Self-destruct: stop() error (continuing with disk wipe):', err && err.message ? err.message : err);
+      }
+      const targets = hub._collectSelfDestructRemovalTargets();
+      const wiped = [];
+      const errors = [];
+      for (const p of targets) {
+        try {
+          await fs.promises.rm(p, { recursive: true, force: true });
+          wiped.push(p);
+        } catch (e) {
+          errors.push({ path: p, message: e && e.message ? e.message : String(e) });
+        }
+      }
+      if (errors.length) {
+        console.error('[HUB] SELF-DESTRUCT: disk errors:', errors);
+      } else {
+        console.error('[HUB] SELF-DESTRUCT: removed', wiped.length, 'path(s). Exiting process.');
+      }
+      if (process.env.NODE_ENV === 'test' && process.env.FABRIC_HUB_SELF_DESTRUCT_EXIT !== '1') {
+        return;
+      }
+      process.exit(errors.length ? 1 : 0);
+    };
+    res.once('finish', () => setImmediate(run));
+    setTimeout(() => {
+      if (!ran) {
+        console.warn('[HUB] SELF-DESTRUCT: response finish not seen; running wipe anyway.');
+        setImmediate(run);
+      }
+    }, 5000);
+  }
+
+  _handleSettingsSelfDestructRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const token = SetupService.extractBearerToken(req);
+      if (!this.setup.verifyAdminToken(token)) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'Admin token required' });
+      }
+      const body = req.body || {};
+      const phrase = typeof body.confirmPhrase === 'string' ? body.confirmPhrase.trim() : '';
+      if (phrase !== HUB_SELF_DESTRUCT_CONFIRM_PHRASE) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: `confirmPhrase must be exactly: ${HUB_SELF_DESTRUCT_CONFIRM_PHRASE}`
+        });
+      }
+      this._scheduleHubSelfDestructWipe(res);
+      return res.status(200).json({
+        ok: true,
+        message: 'Local Hub data wipe started. This process will exit; restart the Hub to run first-time setup again.',
+        confirmPhraseRequired: HUB_SELF_DESTRUCT_CONFIRM_PHRASE,
+        willRemove: this._collectSelfDestructRemovalTargets()
+      });
+    });
+  }
+
   _handleSettingsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    // Same Accept negotiation as `GET /settings/:name`: HTML shell for `Accept: text/html` (SPA
+    // refresh on `/settings`); JSON for `Accept: application/json`. The app must not rely on
+    // default `*/*` for the setup probe—`HubInterface` and tests use `Accept: application/json`.
+    return this.http.jsonOrShell(req, res, async () => {
       const settings = this.setup.listSettings();
       const setupStatus = this.setup.getSetupStatus();
-      return res.status(200).json({ success: true, settings, ...setupStatus });
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      const requiresSetupUiSecret = !!(setupStatus.needsSetup && hubSetupSecret.length > 0);
+      return res.status(200).json({ success: true, settings, ...setupStatus, requiresSetupUiSecret });
+    });
+  }
+
+  _handleSettingsVerifySetupUiRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      if (!hubSetupSecret.length) {
+        return res.status(400).json({ error: 'Bad Request', message: 'FABRIC_HUB_SETUP_UI_SECRET is not set.' });
+      }
+      const setupStatus = this.setup.getSetupStatus();
+      const body = req.body || {};
+      const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
+      if (!(setupStatus.needsSetup && !setupStatus.configured)) {
+        return res.status(200).json({ success: true, skipped: true });
+      }
+      if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
+        return res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
+      }
+      return res.status(200).json({ success: true });
     });
   }
 
   _handleSettingsBootstrapRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const status = this.setup.getSetupStatus();
       if (status.configured) {
         return res.status(403).json({ error: 'Already configured', message: 'Hub is already configured.' });
       }
       const body = req.body || {};
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      if (hubSetupSecret.length) {
+        const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
+        if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
+          return res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
+        }
+      }
       const initialConfig = {
         NODE_NAME: body.NODE_NAME || body.nodeName || 'Hub',
         NODE_PERSONALITY: body.NODE_PERSONALITY || body.nodePersonality || JSON.stringify(['helpful']),
@@ -4665,7 +4815,7 @@ class Hub extends Service {
   }
 
   _handleSettingsGetRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const name = req.params && req.params.name;
       if (!name) return res.status(400).json({ error: 'Setting name is required' });
       const value = this.setup.getSetting(name);
@@ -4675,7 +4825,7 @@ class Hub extends Service {
   }
 
   _handleSettingsPutRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const token = SetupService.extractBearerToken(req);
       if (!this.setup.verifyAdminToken(token)) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Admin token required' });
@@ -4754,7 +4904,7 @@ class Hub extends Service {
   }
 
   _handleSettingsRefreshRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const token = SetupService.extractBearerToken(req) || (req.body && req.body.token);
       if (!token) {
         return res.status(401).json({ error: 'Unauthorized', message: 'Current token required for refresh.' });
@@ -4769,7 +4919,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinBlocksListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const status = await this._collectBitcoinStatus({ force: true });
       if (!status || !status.available) {
         return res.status(503).json(status || { status: 'error', message: 'Bitcoin service unavailable' });
@@ -4823,7 +4973,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinPeersListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) {
         return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -4834,7 +4984,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinNetworkInfoRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) {
         return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -4953,7 +5103,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinCrowdfundingListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const rows = Array.from(this._crowdfundingCampaigns.values())
         .map((c) => this._publicCrowdfundingView(c))
@@ -5039,7 +5189,7 @@ class Hub extends Service {
    * Outputs-only PSBT: one output to the campaign vault; donors add inputs with SIGHASH_ALL|ANYONECANPAY.
    */
   _handleBitcoinCrowdfundingAcpDonationPsbtRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const id = String((req.params && req.params.campaignId) || '').trim();
       const c = this._crowdfundingCampaigns.get(id);
@@ -5075,7 +5225,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinCrowdfundingGetRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const id = String((req.params && req.params.campaignId) || '').trim();
       const c = this._crowdfundingCampaigns.get(id);
@@ -5115,7 +5265,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinCrowdfundingPayoutPsbtRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       this._loadCrowdfundingCampaignsIfNeeded();
       const id = String((req.params && req.params.campaignId) || '').trim();
       const c = this._crowdfundingCampaigns.get(id);
@@ -5312,7 +5462,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinBlockByHeightRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const heightParam = req && req.params ? req.params.height : null;
@@ -5325,7 +5475,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinBlockViewRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const hash = req && req.params ? req.params.blockhash : null;
@@ -5336,7 +5486,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinTransactionsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const limit = Math.max(1, Math.min(100, Number(req.query.limit || 25)));
@@ -5365,7 +5515,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinTransactionViewRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const txhash = req && req.params ? req.params.txhash : null;
@@ -5462,7 +5612,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletSummaryRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5557,7 +5707,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletAddressRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const address = await bitcoin.getUnusedAddress();
@@ -5574,7 +5724,7 @@ class Hub extends Service {
    * Compatible with Fabric CLI and Blockstream-style chain_stats/mempool_stats.
    */
   _handleBitcoinAddressInfoRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5639,7 +5789,7 @@ class Hub extends Service {
    * Requires txindex. Works for any on-chain address.
    */
   _handleBitcoinAddressBalanceRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5675,7 +5825,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletUtxosRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5737,7 +5887,7 @@ class Hub extends Service {
    * created our UTXOs). Requires txindex for getrawtransaction.
    */
   _handleBitcoinWalletTransactionsRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -5865,7 +6015,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinWalletSendRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const body = req.body || {};
       const rpcToken = body.adminToken || body.token;
       if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(rpcToken)) {
@@ -5913,7 +6063,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinFaucetRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       try {
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
@@ -5988,7 +6138,7 @@ class Hub extends Service {
   }
 
   _handleBitcoinPaymentsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
@@ -6018,7 +6168,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinStatusRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) {
         return res.status(503).json({
@@ -6039,7 +6189,7 @@ class Hub extends Service {
   }
 
   _handlePeeringServiceRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const peering = this._getPeeringService();
       if (!peering) {
         return res.status(503).json({
@@ -6060,7 +6210,7 @@ class Hub extends Service {
   }
 
   _handlePeeringAttestationRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const peering = this._getPeeringService();
       if (!peering) {
         return res.status(503).json({ status: 'error', message: 'Peering service is disabled on this Hub node.' });
@@ -6077,7 +6227,7 @@ class Hub extends Service {
   }
 
   _handleChallengeServiceRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const challenge = this._getChallengeService();
       if (!challenge) {
         return res.status(503).json({
@@ -6102,7 +6252,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinDepositRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
 
@@ -6149,7 +6299,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinSessionsListRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const limit = Math.max(1, Math.min(200, Number(req.query.limit || 25)));
@@ -6166,7 +6316,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinSessionViewRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
@@ -6181,7 +6331,7 @@ class Hub extends Service {
   }
 
   _handlePayjoinProposalSubmitRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
@@ -6218,7 +6368,7 @@ class Hub extends Service {
         message: 'Admin token required. The Hub wallet co-signs an additional input (regtest / ops).'
       });
     }
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
@@ -6621,7 +6771,7 @@ class Hub extends Service {
   }
 
   _handleLightningStatusRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const stub = this.settings.lightning && this.settings.lightning.stub === true;
       if (stub) {
         return res.status(200).json({
@@ -6706,7 +6856,7 @@ class Hub extends Service {
   }
 
   _handleLightningCollectionRequest (req, res) {
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       const stub = this.settings.lightning && this.settings.lightning.stub === true;
       const pathName = req && req.path ? req.path : '/services/lightning';
       if (stub) {
@@ -6782,7 +6932,7 @@ class Hub extends Service {
         message: 'Lightning runs automatically with regtest. Use regtest for local development.'
       });
     }
-    return this._jsonOrShell(req, res, async () => {
+    return this.http.jsonOrShell(req, res, async () => {
       try {
         const result = await this._serializedLightningRpc(() =>
           this.lightning._makeRPCRequest('close', [channelId])
@@ -6832,7 +6982,7 @@ class Hub extends Service {
     }
 
     if (this.lightning) {
-      return this._jsonOrShell(req, res, async () => {
+      return this.http.jsonOrShell(req, res, async () => {
         try {
           if (pathName.endsWith('/invoices') || pathName.includes('/invoice')) {
             const amountSats = Number(body.amountSats || 0);
@@ -7531,6 +7681,12 @@ class Hub extends Service {
         }
       }
 
+      if (this.http && typeof this.http.setApplicationHtml === 'function') {
+        this.http.setApplicationHtml(this.applicationString);
+      } else if (this.http && this.http.settings && typeof this.http.settings === 'object') {
+        this.http.settings.applicationString = this.applicationString;
+      }
+
       // Load DEVELOPERS.md into buffer
       const devMdPath = path.resolve(__dirname, '../DEVELOPERS.md');
       try {
@@ -7647,7 +7803,9 @@ class Hub extends Service {
       // Settings API: GET /settings (list + setup status), POST /settings (bootstrap when not configured)
       this.http._addRoute('GET', '/settings', this._handleSettingsListRequest.bind(this));
       this.http._addRoute('POST', '/settings', this._handleSettingsBootstrapRequest.bind(this));
+      this.http._addRoute('POST', '/settings/verify-setup-ui', this._handleSettingsVerifySetupUiRequest.bind(this));
       this.http._addRoute('POST', '/settings/refresh', this._handleSettingsRefreshRequest.bind(this));
+      this.http._addRoute('POST', '/settings/self-destruct', this._handleSettingsSelfDestructRequest.bind(this));
       this.http._addRoute('GET', '/settings/:name', this._handleSettingsGetRequest.bind(this));
       this.http._addRoute('PUT', '/settings/:name', this._handleSettingsPutRequest.bind(this));
 
@@ -8032,7 +8190,7 @@ class Hub extends Service {
         }
       });
 
-      // Request a peer's inventory (e.g., list of documents) using INVENTORY_REQUEST.
+      // Request a peer's inventory (e.g., list of documents) using FABRIC_DOCUMENT_OFFER (legacy: INVENTORY_REQUEST).
       // Params: (idOrAddress, kind = 'documents', options?)
       // options: { buyerRefundPublicKey?, htlcLocktimeBlocks?, htlcAmountSats?, inventoryTarget?, inventoryRelayTtl? }
       // — `inventoryTarget` = Fabric id of the seller when `idOrAddress` is a relay (next hop) only.
@@ -8064,8 +8222,9 @@ class Hub extends Service {
           const optTtl = Number(options.inventoryRelayTtl);
           if (Number.isFinite(optTtl) && optTtl > 0) relayTtl = Math.min(16, Math.round(optTtl));
 
+          const k = String(kind || 'documents').trim().toLowerCase();
           const payload = {
-            type: 'INVENTORY_REQUEST',
+            type: k === 'documents' ? FABRIC_DOCUMENT_OFFER : 'INVENTORY_REQUEST',
             actor: { id: this.agent.identity.id },
             object: {
               kind: kind || 'documents',
@@ -9939,105 +10098,6 @@ class Hub extends Service {
         };
       });
 
-      // WebRTC Peer Mesh Management
-      // Register a browser client's WebRTC peer ID for peer discovery
-      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
-        const info = params[0] || {};
-        const peerId = info.peerId;
-        if (!peerId) return { status: 'error', message: 'peerId required' };
-
-        console.debug('[HUB] RegisterWebRTCPeer:', peerId);
-
-        // Ensures a registry entry for this peer id (Bridge registers on load);
-        // augments metadata and lastSeen for ListWebRTCPeers / mesh discovery.
-        const existing = this.http.webrtcPeers.get(peerId);
-        const now = Date.now();
-        if (existing) {
-          existing.metadata = info.metadata || existing.metadata;
-          existing.registeredAt = now;
-          existing.lastSeen = now;
-          this.http.webrtcPeers.set(peerId, existing);
-        } else {
-          this.http.webrtcPeers.set(peerId, {
-            id: peerId,
-            connectedAt: now,
-            status: 'registered',
-            metadata: info.metadata || {},
-            registeredAt: now,
-            lastSeen: now,
-            meshSessionCount: 0
-          });
-        }
-        const cur = this.http.webrtcPeers.get(peerId);
-        if (cur && (cur.meshSessionCount == null || Number.isNaN(Number(cur.meshSessionCount)))) {
-          cur.meshSessionCount = 0;
-          this.http.webrtcPeers.set(peerId, cur);
-        }
-
-        pushNetworkStatus();
-        return { status: 'success', peerId };
-      });
-
-      // List available WebRTC peers for mesh connections
-      this.http._registerMethod('ListWebRTCPeers', (...params) => {
-        const options = params[0] || {};
-        const excludeSelf = options.excludeSelf !== false;
-        const requestingPeerId = options.peerId;
-        const now = Date.now();
-        const maxAgeMs = Number(this.settings.webrtcPeerMaxAgeMs || 2 * 60 * 1000);
-        const maxCandidates = Number(this.settings.webrtcPeerCandidateLimit || 16);
-
-        // Keep the requesting peer active while it continues polling.
-        if (requestingPeerId && this.http.webrtcPeers.has(requestingPeerId)) {
-          const self = this.http.webrtcPeers.get(requestingPeerId);
-          self.lastSeen = now;
-          if (!self.registeredAt) self.registeredAt = now;
-          if (!self.connectedAt) self.connectedAt = now;
-          this.http.webrtcPeers.set(requestingPeerId, self);
-        }
-
-        // Prune stale browser peer registrations so dead sessions do not crowd
-        // candidate selection for active clients.
-        for (const [id, entry] of this.http.webrtcPeers.entries()) {
-          if (!entry || typeof entry !== 'object') {
-            this.http.webrtcPeers.delete(id);
-            continue;
-          }
-          const seenAt = Number(entry.lastSeen || entry.registeredAt || entry.connectedAt || 0);
-          if (!seenAt || (now - seenAt) > maxAgeMs) {
-            this.http.webrtcPeers.delete(id);
-          }
-        }
-
-        const peers = this.http.webrtcPeerList || [];
-        const filtered = excludeSelf && requestingPeerId
-          ? peers.filter(p => p.id !== requestingPeerId)
-          : peers;
-
-        console.debug('[HUB] ListWebRTCPeers:', filtered.length, 'peers available');
-
-        return {
-          type: 'ListWebRTCPeersResult',
-          peers: filtered
-            .sort((a, b) => {
-              const bSeen = Number(b.lastSeen || b.registeredAt || b.connectedAt || 0);
-              const aSeen = Number(a.lastSeen || a.registeredAt || a.connectedAt || 0);
-              return bSeen - aSeen;
-            })
-            .slice(0, maxCandidates)
-            .map(p => ({
-            id: p.id,
-            peerId: p.id,
-            connectedAt: p.connectedAt,
-            lastSeen: Number(p.lastSeen || p.registeredAt || p.connectedAt || 0) || undefined,
-            registeredAt: Number(p.registeredAt || p.connectedAt || 0) || undefined,
-            status: p.status,
-            metadata: p.metadata,
-            meshSessionCount: Number(p.meshSessionCount || 0) || 0
-          }))
-        };
-      });
-
       const bumpWebRtcMeshSession = (pid) => {
         const id = pid != null ? String(pid) : '';
         if (!id || !this.http.webrtcPeers.has(id)) return;
@@ -10499,7 +10559,7 @@ class Hub extends Service {
           }
 
           const responsePayload = {
-            type: 'INVENTORY_RESPONSE',
+            type: kind === 'documents' ? FABRIC_DOCUMENT_OFFER_RESPONSE : 'INVENTORY_RESPONSE',
             actor: { id: this.agent.identity.id },
             object: {
               kind,
@@ -10548,10 +10608,10 @@ class Hub extends Service {
         }
       });
 
-      // When this node requested a remote inventory (or relays a response), Fabric delivers INVENTORY_RESPONSE here.
+      // When this node requested a remote inventory (or relays a response), Fabric delivers a document-offer response here.
       this.agent.on('inventoryResponse', async ({ message, origin }) => {
         try {
-          if (!message || message.type !== 'INVENTORY_RESPONSE' || !message.object) return;
+          if (!message || !isDocumentInventoryResponseType(message.type) || !message.object) return;
           const kind = String((message.object && message.object.kind) || '').trim().toLowerCase();
           if (!kind) return;
           if (!['documents', 'mainchain', 'mainchain-blocks'].includes(kind)) return;
@@ -10638,6 +10698,105 @@ class Hub extends Service {
 
       await this.agent.start();
       await this.http.start();
+
+      // @fabric/http `start()` registers default RegisterWebRTCPeer / ListWebRTCPeers (JSON-RPC).
+      // Re-bind Hub's mesh registry + candidate logic so POST /services/rpc does not use the stock handlers.
+      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
+        const info = params[0] || {};
+        const peerId = info.peerId;
+        if (!peerId) return { status: 'error', message: 'peerId required' };
+
+        console.debug('[HUB] RegisterWebRTCPeer:', peerId);
+
+        // Ensures a registry entry for this peer id (Bridge registers on load);
+        // augments metadata and lastSeen for ListWebRTCPeers / mesh discovery.
+        const existing = this.http.webrtcPeers.get(peerId);
+        const now = Date.now();
+        if (existing) {
+          existing.metadata = info.metadata || existing.metadata;
+          existing.registeredAt = now;
+          existing.lastSeen = now;
+          this.http.webrtcPeers.set(peerId, existing);
+        } else {
+          this.http.webrtcPeers.set(peerId, {
+            id: peerId,
+            connectedAt: now,
+            status: 'registered',
+            metadata: info.metadata || {},
+            registeredAt: now,
+            lastSeen: now,
+            meshSessionCount: 0
+          });
+        }
+        const cur = this.http.webrtcPeers.get(peerId);
+        if (cur && (cur.meshSessionCount == null || Number.isNaN(Number(cur.meshSessionCount)))) {
+          cur.meshSessionCount = 0;
+          this.http.webrtcPeers.set(peerId, cur);
+        }
+
+        pushNetworkStatus();
+        return { status: 'success', peerId };
+      });
+
+      this.http._registerMethod('ListWebRTCPeers', (...params) => {
+        const options = params[0] || {};
+        const excludeSelf = options.excludeSelf !== false;
+        const requestingPeerId = options.peerId;
+        const now = Date.now();
+        const maxAgeMs = Number(this.settings.webrtcPeerMaxAgeMs || 2 * 60 * 1000);
+        const maxCandidates = Number(this.settings.webrtcPeerCandidateLimit || 16);
+
+        // Keep the requesting peer active while it continues polling.
+        if (requestingPeerId && this.http.webrtcPeers.has(requestingPeerId)) {
+          const self = this.http.webrtcPeers.get(requestingPeerId);
+          self.lastSeen = now;
+          if (!self.registeredAt) self.registeredAt = now;
+          if (!self.connectedAt) self.connectedAt = now;
+          this.http.webrtcPeers.set(requestingPeerId, self);
+        }
+
+        // Prune stale browser peer registrations so dead sessions do not crowd
+        // candidate selection for active clients.
+        for (const [id, entry] of this.http.webrtcPeers.entries()) {
+          if (!entry || typeof entry !== 'object') {
+            this.http.webrtcPeers.delete(id);
+            continue;
+          }
+          const seenAt = Number(entry.lastSeen || entry.registeredAt || entry.connectedAt || 0);
+          if (!seenAt || (now - seenAt) > maxAgeMs) {
+            this.http.webrtcPeers.delete(id);
+          }
+        }
+
+        const peers = this.http.webrtcPeerList || [];
+        const filtered = excludeSelf && requestingPeerId
+          ? peers.filter(p => p.id !== requestingPeerId)
+          : peers;
+
+        console.debug('[HUB] ListWebRTCPeers:', filtered.length, 'peers available');
+
+        return {
+          type: 'ListWebRTCPeersResult',
+          peers: filtered
+            .sort((a, b) => {
+              const bSeen = Number(b.lastSeen || b.registeredAt || b.connectedAt || 0);
+              const aSeen = Number(a.lastSeen || a.registeredAt || a.connectedAt || 0);
+              return bSeen - aSeen;
+            })
+            .slice(0, maxCandidates)
+            .map(p => ({
+            id: p.id,
+            peerId: p.id,
+            connectedAt: p.connectedAt,
+            lastSeen: Number(p.lastSeen || p.registeredAt || p.connectedAt || 0) || undefined,
+            registeredAt: Number(p.registeredAt || p.connectedAt || 0) || undefined,
+            status: p.status,
+            metadata: p.metadata,
+            meshSessionCount: Number(p.meshSessionCount || 0) || 0
+          }))
+        };
+      });
+
       this._loadWorkQueueStrategyFromSettings();
       this._ensureWorker();
       if (!this._workQueueTimer) {

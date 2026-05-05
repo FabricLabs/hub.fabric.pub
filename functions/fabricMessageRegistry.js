@@ -59,6 +59,8 @@ const OUTER_WIRE_TYPES = [
 const INNER_DOMAIN_PENDING_PROMOTION = [
   { innerType: 'INVENTORY_REQUEST', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned },
   { innerType: 'INVENTORY_RESPONSE', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned },
+  { innerType: 'FABRIC_DOCUMENT_OFFER', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned, notes: 'Canonical document-offer request; aliases INVENTORY_REQUEST on wire (@fabric/core).' },
+  { innerType: 'FABRIC_DOCUMENT_OFFER_RESPONSE', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned, notes: 'Canonical document-offer reply; aliases INVENTORY_RESPONSE on wire (@fabric/core).' },
   { innerType: 'P2P_FILE_SEND', typicalCarrier: 'Peer P2P / GenericMessage fanout', stability: Stability.stable },
   { innerType: 'P2P_CHAT_MESSAGE', typicalCarrier: 'P2P / WebRTC / ChatMessage', stability: Stability.stable },
   { innerType: 'P2P_PEER_GOSSIP', typicalCarrier: 'GenericMessage / P2P_RELAY', stability: Stability.stable },
