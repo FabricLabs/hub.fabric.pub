@@ -3,8 +3,7 @@
 const crypto = require('crypto');
 const { getDelegationSessionById } = require('./fabricDelegation');
 const { serveSpaShellIfHtmlNavigation } = require('./httpSpaShell');
-
-const DESKTOP_LOGIN_PREFIX = 'fabric:hub-login:1';
+const { DESKTOP_LOGIN_PREFIX } = require('./fabricDesktopLoginVerify');
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_SESSIONS = 256;
 
@@ -372,7 +371,7 @@ function mountFabricDesktopAuthHttp (hub) {
 }
 
 module.exports = {
-  DESKTOP_LOGIN_PREFIX,
+  DESKTOP_LOGIN_PREFIX, // re-export for callers expecting fabricDesktopAuth
   SESSION_TTL_MS,
   buildLoginMessage,
   randomNonce,

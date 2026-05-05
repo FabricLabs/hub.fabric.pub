@@ -56,10 +56,10 @@ describe('fabricHubLocalIdentity fabricHdRole', () => {
     );
   });
 
-  it('fabricPlaintextSigningUnlockable is true for plaintext accountNode', () => {
+  it('fabricPlaintextSigningUnlockable is false for plaintext accountNode', () => {
     assert.strictEqual(
       fabricPlaintextSigningUnlockable({ fabricHdRole: 'accountNode', xprv: 'xprv9test' }),
-      true
+      false
     );
   });
 

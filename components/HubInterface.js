@@ -17,7 +17,8 @@ const {
   readStorageJSON,
   writeStorageString,
   writeStorageJSON,
-  removeStorageKey
+  removeStorageKey,
+  clearFabricBrowserIdentityLocal
 } = require('../functions/fabricBrowserState');
 const { hasCompletedPostSetupBrowserIdentity } = require('../functions/fabricPostSetupBrowserIdentity');
 const {
@@ -518,40 +519,10 @@ class HubInterface extends React.Component {
 
     try {
       if (typeof window !== 'undefined') {
-        // Dev-only: window.FABRIC_DEV_BROWSER_SEED (+ optional FABRIC_DEV_BROWSER_PASSPHRASE) from
-        // assets/config.local.js or hub HTML injection (FABRIC_DEV_PUSH_BROWSER_IDENTITY). Sharing the
-        // node mnemonic with the browser is discouraged except for local regtest.
-        const devPhraseRaw = window.FABRIC_DEV_BROWSER_SEED || window.FABRIC_DEV_BROWSER_MNEMONIC;
-        const devPhrase = devPhraseRaw ? String(devPhraseRaw).trim() : '';
-        const devPassRaw = window.FABRIC_DEV_BROWSER_PASSPHRASE || window.FABRIC_DEV_PASSPHRASE;
-        const devPass = devPassRaw != null && String(devPassRaw).trim() !== '' ? String(devPassRaw) : undefined;
-        const devForce = window.FABRIC_DEV_BROWSER_IDENTITY === 'force';
-        if (devPhrase) {
-          try {
-            const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
-            const r = storeUnlockedIdentityFromMnemonic({
-              seed: devPhrase,
-              passphrase: devPass,
-              force: devForce
-            });
-            if (r.ok && typeof console !== 'undefined' && console.warn) {
-              console.warn(
-                '[HUB] Stored local identity from FABRIC_DEV_BROWSER_* (development only; prefer a separate browser key when possible).'
-              );
-            } else if (!r.ok && devForce && typeof console !== 'undefined' && console.warn) {
-              console.warn('[HUB] FABRIC_DEV_BROWSER_* bootstrap failed:', safeIdentityErr(r.error));
-            }
-          } catch (e) {
-            if (typeof console !== 'undefined' && console.warn) {
-              console.warn('[HUB] FABRIC_DEV_BROWSER_* ignored:', safeIdentityErr(e));
-            }
-          }
-        }
-
         const parsed = readStorageJSON('fabric.identity.local', null);
         if (parsed && (parsed.id || parsed.xpub)) {
           try {
-            const bl = buildLocalFabricIdentityPayload(parsed, { unlockPlaintextMaster: true });
+            const bl = buildLocalFabricIdentityPayload(parsed);
             if (bl.resolved && bl.record) {
               const r = bl.record;
               initialLocalIdentity = {
@@ -649,6 +620,7 @@ class HubInterface extends React.Component {
     this._dismissFederationInviteBanner = this._dismissFederationInviteBanner.bind(this);
     this._openIdentityModalForUser = this._openIdentityModalForUser.bind(this);
     this._closeHubIdentityModal = this._closeHubIdentityModal.bind(this);
+    this._clearUnlockedSessionOnClose = this._clearUnlockedSessionOnClose.bind(this);
     this._verifySetupUiSecret = this._verifySetupUiSecret.bind(this);
     /** Coalesce rapid Bridge / page unlock prompts so the identity modal does not strobe. */
     this._openIdentityModalCoolDownUntil = 0;
@@ -832,6 +804,14 @@ class HubInterface extends React.Component {
     this.setState({ uiIdentityOpen: false });
   }
 
+  _clearUnlockedSessionOnClose () {
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem('fabric.identity.unlocked');
+      }
+    } catch (_) {}
+  }
+
   openIdentityManager () {
     if (typeof this.props.onOpenIdentityManager === 'function') {
       this.props.onOpenIdentityManager();
@@ -1002,6 +982,15 @@ class HubInterface extends React.Component {
   }
 
   _handleIdentityManagerForget () {
+    try { removeStorageKey(DELEGATION_STORAGE_KEY); } catch (_) {}
+    try { removeStorageKey('fabric.linkedDevices'); } catch (_) {}
+    try { notifyDelegationStorageChanged(); } catch (_) {}
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && chrome.storage.local.remove) {
+        chrome.storage.local.remove(['fabric.identity.ext']);
+      }
+    } catch (_) {}
+    try { clearFabricBrowserIdentityLocal(); } catch (_) {}
     try { clearSpendXpubWatch(); } catch (_) {}
     this.setState({
       uiLocalIdentity: null,
@@ -1068,7 +1057,7 @@ class HubInterface extends React.Component {
         }
 
         try {
-          const bl = buildLocalFabricIdentityPayload(nextPayload, { unlockPlaintextMaster: true });
+          const bl = buildLocalFabricIdentityPayload(nextPayload);
           if (!bl.resolved || !bl.record) return {};
           const r = bl.record;
           return {
@@ -1207,15 +1196,18 @@ class HubInterface extends React.Component {
     this._onGlobalStateUpdate = (e) => {
       const d = e && e.detail;
       if (d && d.operation && d.operation.path === '/bitcoin') {
-        const idn = this.state.uiLocalIdentity || this.props.auth || null;
+        const idn = this.state.uiLocalIdentity || null;
         if (idn && idn.xpub) this._refreshClientBalance();
       }
     };
     this._onClientBalanceUpdate = () => {
-      const idn = this.state.uiLocalIdentity || this.props.auth || null;
+      const idn = this.state.uiLocalIdentity || null;
       if (idn && idn.xpub) this._refreshClientBalance();
     };
     if (typeof window !== 'undefined') {
+      // Strict lock policy: always clear unlocked key material on close/unload.
+      this._clearUnlockedSessionOnClose();
+      window.addEventListener('beforeunload', this._clearUnlockedSessionOnClose);
       window.addEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
       this._onFabricHubAdminTokenSaved = () => {
@@ -1279,13 +1271,15 @@ class HubInterface extends React.Component {
       if (this._onFabricOpenIdentityManager) {
         window.removeEventListener('fabricOpenIdentityManager', this._onFabricOpenIdentityManager);
       }
+      window.removeEventListener('beforeunload', this._clearUnlockedSessionOnClose);
+      this._clearUnlockedSessionOnClose();
       if (this._adminTokenRefreshInterval) clearInterval(this._adminTokenRefreshInterval);
     }
   }
 
   componentDidUpdate (prevProps, prevState) {
-    const prevId = prevState.uiLocalIdentity || prevProps.auth || {};
-    const nextId = this.state.uiLocalIdentity || this.props.auth || {};
+    const prevId = prevState.uiLocalIdentity || {};
+    const nextId = this.state.uiLocalIdentity || {};
     const prevXpub = prevId.xpub;
     const nextXpub = nextId.xpub;
     const prevFab = prevId.fabricAccountIndex;
@@ -1294,7 +1288,7 @@ class HubInterface extends React.Component {
   }
 
   async _refreshClientBalance (forceRefresh = false) {
-    const identity = this.state.uiLocalIdentity || this.props.auth || null;
+    const identity = this.state.uiLocalIdentity || null;
     const wallet = getSpendWalletContext(identity || {});
     if (!wallet.walletId || !wallet.xpub) {
       this.setState({ clientBalance: null, clientBalanceLoading: false });
@@ -1549,10 +1543,10 @@ class HubInterface extends React.Component {
     const services = networkStatus && networkStatus.state && networkStatus.state.services;
     const bitcoin = resolveBitcoinFromNetworkStatus(networkStatus);
 
-    // Auth: prefer in-session local identity (with id/xpub) so button shows identity after login
+    // Identity is local-browser identity only. Do not fall back to props auth.
     const local = this.state.uiLocalIdentity;
     const hasLocal = local && (local.id || local.xpub);
-    const effectiveAuth = hasLocal ? local : this.props.auth;
+    const effectiveAuth = hasLocal ? local : null;
     // Locked chip: derive only from shell identity fields — never trust orphan uiHasLockedIdentity when
     // local is empty (TopPanel still merges persisted storage into the chip and could show "Locked"
     // if hasLockedIdentity stayed true from a stale callback).
@@ -1563,7 +1557,7 @@ class HubInterface extends React.Component {
     );
     const publicHubVisitor = computePublicHubVisitor({
       localIdentity: local,
-      propsAuth: this.props.auth
+      propsAuth: null
     });
     const openIdentityForGate = () => this._openIdentityModalForUser();
     const pv = (el) => wrapPublicVisitorGate(publicHubVisitor, openIdentityForGate, el);
@@ -2134,13 +2128,17 @@ class HubInterface extends React.Component {
                         if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
                           try { this.bridgeRef.current.clearAllDocuments(); } catch (e) {}
                         }
+                        try { clearSpendXpubWatch(); } catch (_) {}
                         try {
                           if (typeof window !== 'undefined') {
-                            removeStorageKey('fabric.identity.local');
+                            clearFabricBrowserIdentityLocal();
                             removeStorageKey(DELEGATION_STORAGE_KEY);
+                            removeStorageKey('fabric.linkedDevices');
                             notifyDelegationStorageChanged();
-                            if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
                             removeStorageKey('fabric:documents');
+                            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && chrome.storage.local.remove) {
+                              chrome.storage.local.remove(['fabric.identity.ext']);
+                            }
                           }
                         } catch (e) {}
                         this.setState({

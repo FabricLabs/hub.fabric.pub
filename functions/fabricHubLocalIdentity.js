@@ -11,81 +11,14 @@ const {
 
 const LOCAL_IDENTITY_PASSWORD_MIN = 8;
 
-function buildLocalFabricIdentityPayload (parsed = {}, opts = {}) {
+function buildLocalFabricIdentityPayload (parsed = {}) {
   if (!parsed || typeof parsed !== 'object') return { resolved: false, record: null };
 
   try {
     if (parsed.xprv && !parsed.passwordProtected) {
-      const unlockPlain = !!(opts && opts.unlockPlaintextMaster);
-
-      /** Protocol signing node only (m/44'/7778'/n'/0/0), not HD master. */
-      if (parsed.fabricHdRole === 'accountNode') {
-        const trimmed = String(parsed.xprv).trim();
-        const mat = identityFromFabricProtocolSigningXprv(trimmed);
-        const acctIdx =
-          parsed.fabricAccountIndex != null && String(parsed.fabricAccountIndex).trim() !== ''
-            ? Math.floor(Number(parsed.fabricAccountIndex))
-            : 0;
-        return {
-          resolved: true,
-          record: {
-            id: mat.id,
-            xpub: mat.xpub,
-            xprv: null,
-            masterXprv: null,
-            masterXpub: null,
-            fabricIdentityMode: 'account',
-            fabricAccountIndex: acctIdx,
-            fabricHdRole: 'accountNode',
-            plaintextUnlockAvailable: !!unlockPlain,
-            passwordProtected: false
-          }
-        };
-      }
-
-      const masterXpriv = parsed.masterXprv ? String(parsed.masterXprv).trim() : String(parsed.xprv).trim();
-
-      if (parsed.fabricIdentityMode === 'account') {
-        const acctIdx =
-          parsed.fabricAccountIndex != null && String(parsed.fabricAccountIndex).trim() !== ''
-            ? Math.floor(Number(parsed.fabricAccountIndex))
-            : 0;
-        const dk = deriveFabricAccountIdentityKeys(masterXpriv, acctIdx, 0);
-        const masterXp =
-          parsed.masterXpub && String(parsed.masterXpub).trim()
-            ? String(parsed.masterXpub).trim()
-            : fabricRootXpubFromMasterXprv(masterXpriv);
-        return {
-          resolved: true,
-          record: {
-            id: dk.id,
-            xpub: dk.xpub,
-            xprv: null,
-            masterXprv: unlockPlain ? null : masterXpriv,
-            masterXpub: masterXp,
-            fabricIdentityMode: 'account',
-            fabricHdRole: 'master',
-            fabricAccountIndex: dk.fabricAccountIndex,
-            plaintextUnlockAvailable: !!unlockPlain,
-            passwordProtected: false
-          }
-        };
-      }
-
-      const ident = new Identity({ xprv: masterXpriv });
-      return {
-        resolved: true,
-        record: {
-          id: ident.id,
-          xpub: ident.key.xpub,
-          xprv: unlockPlain ? null : masterXpriv,
-          fabricIdentityMode: 'master',
-          fabricHdRole: 'master',
-          fabricAccountIndex: 0,
-          plaintextUnlockAvailable: !!unlockPlain,
-          passwordProtected: false
-        }
-      };
+      // Strict model: never treat plaintext on-disk private keys as valid state.
+      // Identity-at-rest must be encrypted (passwordProtected) or watch-only (xpub only).
+      return { resolved: false, record: null };
     }
 
     if (parsed.passwordProtected && parsed.id && parsed.xpub && parsed.xprvEnc && parsed.passwordSalt) {
@@ -165,16 +98,15 @@ function buildLocalFabricIdentityPayload (parsed = {}, opts = {}) {
 
 /** Prefer `masterXprv` then legacy `xprv` for HD master-only storage (plaintext). */
 function plaintextMasterFromStored (parsed) {
-  if (!parsed || typeof parsed !== 'object' || parsed.passwordProtected) return '';
-  if (parsed.fabricHdRole === 'accountNode' || parsed.fabricHdRole === 'watchAccount') return '';
-  return String(parsed.masterXprv || parsed.xprv || '').trim();
+  if (!parsed || typeof parsed !== 'object') return '';
+  // Strict model: plaintext key material at rest is unsupported.
+  return '';
 }
 
 /** Plaintext on disk can unlock signing: HD master (`masterXprv`/`xprv`) or account-node-only `xprv`. */
 function fabricPlaintextSigningUnlockable (parsed) {
-  if (!parsed || typeof parsed !== 'object' || parsed.passwordProtected) return false;
-  if (plaintextMasterFromStored(parsed)) return true;
-  if (parsed.fabricHdRole === 'accountNode' && String(parsed.xprv || '').trim()) return true;
+  if (!parsed || typeof parsed !== 'object') return false;
+  // Strict model: plaintext key material at rest is unsupported.
   return false;
 }
 

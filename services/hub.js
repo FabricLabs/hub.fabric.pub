@@ -216,15 +216,10 @@ class Hub extends Service {
       },
       routes: [
         // TODO: define all resource routes at the Resource level
-        { method: 'POST', route: '/contracts', handler: ROUTES.contracts.create.bind(this) },
         { method: 'GET', route: '/contracts', handler: ROUTES.contracts.list.bind(this) },
         { method: 'GET', route: '/contracts/:id', handler: ROUTES.contracts.view.bind(this) },
-        { method: 'POST', route: '/documents', handler: ROUTES.documents.create.bind(this) },
         { method: 'GET', route: '/documents', handler: ROUTES.documents.list.bind(this) },
-        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) },
-        { method: 'POST', route: '/peers', handler: ROUTES.peers.create.bind(this) },
-        { method: 'GET', route: '/peers', handler: ROUTES.peers.list.bind(this) },
-        { method: 'GET', route: '/peers/:id', handler: ROUTES.peers.view.bind(this) }
+        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) }
       ],
       commitments: [],
       constraints: {
@@ -633,6 +628,14 @@ class Hub extends Service {
           components: {
             list: 'DocumentHome',
             view: 'DocumentView'
+          }
+        },
+        Peer: {
+          route: '/peers',
+          type: Entity,
+          components: {
+            list: 'HubInterface',
+            view: 'HubInterface'
           }
         },
         Index: {

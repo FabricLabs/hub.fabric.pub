@@ -212,7 +212,7 @@ describe('@fabric/hub', function () {
       });
 
       describe('POST /contracts', function () {
-        it('should return not implemented error', async function () {
+        it('should create a contract resource redirect', async function () {
           const contractData = {
             name: 'Test Contract',
             type: 'agreement',
@@ -221,17 +221,17 @@ describe('@fabric/hub', function () {
 
           const response = await makeRequest('POST', '/contracts', contractData);
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/contracts/'), 'Location should target the new contract');
         });
 
-        it('should handle empty request body', async function () {
+        it('should create an empty contract payload', async function () {
           const response = await makeRequest('POST', '/contracts', {});
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/contracts/'), 'Location should target the new contract');
         });
       });
 
@@ -265,30 +265,30 @@ describe('@fabric/hub', function () {
       });
 
       describe('POST /peers', function () {
-        it('should return not implemented error', async function () {
+        it('should create a peer resource redirect', async function () {
           const response = await makeRequest('POST', '/peers', { name: 'test-peer', address: 'localhost:8080' });
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/peers/'), 'Location should target the new peer');
         });
 
-        it('should handle empty request body', async function () {
+        it('should create an empty peer payload', async function () {
           const response = await makeRequest('POST', '/peers', {});
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/peers/'), 'Location should target the new peer');
         });
       });
 
       describe('GET /peers/:id', function () {
-        it('should return not implemented error for specific peer', async function () {
+        it('should return not found for unknown peer id', async function () {
           const response = await makeRequest('GET', '/peers/test-peer-id');
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
+          assert.strictEqual(response.status, 404, 'Should return 404 status');
           assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.body.message, 'Peer not found');
         });
       });
     });
@@ -311,7 +311,7 @@ describe('@fabric/hub', function () {
       });
 
       describe('POST /documents', function () {
-        it('should return not implemented error', async function () {
+        it('should create a document resource redirect', async function () {
           const documentData = {
             title: 'Test Document',
             content: 'This is a test document content',
@@ -320,17 +320,17 @@ describe('@fabric/hub', function () {
 
           const response = await makeRequest('POST', '/documents', documentData);
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/documents/'), 'Location should target the new document');
         });
 
-        it('should handle empty request body', async function () {
+        it('should create an empty document payload', async function () {
           const response = await makeRequest('POST', '/documents', {});
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/documents/'), 'Location should target the new document');
         });
 
         it('should handle malformed JSON', async function () {
@@ -375,18 +375,18 @@ describe('@fabric/hub', function () {
       });
 
       describe('GET /documents/:id', function () {
-        it('should return empty object for an unknown specific document', async function () {
+        it('should return 404 for unknown document IDs', async function () {
           const response = await makeRequest('GET', '/documents/test-document-id');
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.deepStrictEqual(response.body, {}, 'Unknown documents should return an empty object');
+          assert.strictEqual(response.status, 404, 'Should return 404 status');
+          assert.strictEqual(response.body.error, 'Document not found');
         });
 
-        it('should handle non-existent document ID', async function () {
+        it('should return 404 for non-existent document IDs', async function () {
           const response = await makeRequest('GET', '/documents/non-existent-id');
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.deepStrictEqual(response.body, {}, 'Non-existent documents should return an empty object');
+          assert.strictEqual(response.status, 404, 'Should return 404 status');
+          assert.strictEqual(response.body.error, 'Document not found');
         });
       });
     });
@@ -395,17 +395,15 @@ describe('@fabric/hub', function () {
       it('should accept JSON content type for POST requests', async function () {
         const response = await makeRequest('POST', '/peers', { test: 'data' }, { 'Content-Type': 'application/json' });
 
-        assert.strictEqual(response.status, 200, 'Should return 200 status');
-        assert.strictEqual(response.body.status, 'error');
-        assert.strictEqual(response.body.message, 'Not yet implemented.');
+        assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+        assert.ok(response.headers.location && response.headers.location.startsWith('/peers/'));
       });
 
       it('should handle requests without content type header', async function () {
         const response = await makeRequest('POST', '/documents', { test: 'data' }, {});
 
-        assert.strictEqual(response.status, 200, 'Should return 200 status');
-        assert.strictEqual(response.body.status, 'error');
-        assert.strictEqual(response.body.message, 'Not yet implemented.');
+        assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+        assert.ok(response.headers.location && response.headers.location.startsWith('/documents/'));
       });
     });
 
@@ -583,10 +581,8 @@ describe('@fabric/hub', function () {
         it('should return HTML for POST requests with text/html Accept header', async function () {
           const response = await makeRequest('POST', '/peers', { name: 'test-peer' }, { 'Accept': 'text/html' });
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.ok(response.headers['content-type'].includes('text/html'), 'Should return HTML content type');
-          assert.ok(typeof response.body === 'string', 'Response should be a string');
-          assert.ok(response.body.includes('<html'), 'Response should contain HTML');
+          assert.strictEqual(response.status, 303, 'Should return redirect status');
+          assert.ok(response.headers.location && response.headers.location.startsWith('/peers/'));
         });
 
         it('should return HTML for specific peer with text/html Accept header', async function () {

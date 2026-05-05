@@ -37,7 +37,8 @@ const LEGACY_KEY_PATHS = {
   'fabric:documents': '/documents',
   'fabric:messages': '/messages',
   'fabric:distributeProposals': '/distributeProposals',
-  'fabric.peers.primaryFabricAddress': '/peers/primaryFabricAddress'
+  'fabric.peers.primaryFabricAddress': '/peers/primaryFabricAddress',
+  'fabric.identity.lockTimeoutMinutes': '/preferences/identityLockTimeoutMinutes'
 };
 
 function hasLocalStorage () {
@@ -71,6 +72,12 @@ function store () {
 
 function pathForLegacyKey (legacyKey) {
   return LEGACY_KEY_PATHS[String(legacyKey || '').trim()] || null;
+}
+
+/** True when nested `/identity/local` is useless but legacy `fabric.identity.local` may still hold truth. */
+function fabricIdentityLocalNestedLooksEmpty (obj) {
+  if (obj == null || typeof obj !== 'object') return true;
+  return !(obj.id || obj.xpub || obj.xprvEnc);
 }
 
 function readStorageString (legacyKey) {
@@ -136,6 +143,15 @@ function readStorageJSON (legacyKey, fallback) {
   } catch (e) {
     fromLegacy = undefined;
   }
+  if (
+    String(legacyKey) === 'fabric.identity.local' &&
+    hasPath &&
+    hasLegacy &&
+    fabricIdentityLocalNestedLooksEmpty(fromPath) &&
+    !fabricIdentityLocalNestedLooksEmpty(fromLegacy)
+  ) {
+    return fromLegacy;
+  }
   if (hasPath) return fromPath;
   if (hasLegacy) return fromLegacy;
   return fallback;
@@ -173,6 +189,63 @@ function removeStorageKey (legacyKey) {
   }
 }
 
+/**
+ * Remove `identity.local` from persisted `fabric:state` JSON when present (defensive).
+ * The nested-store singleton can otherwise keep serving `/identity/local` after a partial delete.
+ */
+function scrubFabricStateIdentitySubtree (w) {
+  if (!w || !w.localStorage) return;
+  try {
+    const raw = w.localStorage.getItem(FABRIC_STATE_KEY);
+    if (!raw) return;
+    const st = JSON.parse(raw);
+    if (!st || typeof st !== 'object' || Array.isArray(st)) return;
+    if (!Object.prototype.hasOwnProperty.call(st, 'identity')) return;
+    const idNode = st.identity;
+    if (!idNode || typeof idNode !== 'object' || Array.isArray(idNode)) return;
+    if (Object.prototype.hasOwnProperty.call(idNode, 'local')) {
+      delete idNode.local;
+    }
+    if (Object.keys(idNode).length === 0) {
+      delete st.identity;
+    }
+    w.localStorage.setItem(FABRIC_STATE_KEY, JSON.stringify(st));
+  } catch (e) {}
+}
+
+/**
+ * Full browser Fabric identity wipe for Forget / Destroy: nested `fabric:state` path,
+ * legacy `fabric.identity.local`, session unlock blob, dev-seed suppression marker.
+ * Resets the `fabric:state` singleton so the next read sees disk truth.
+ */
+function clearFabricBrowserIdentityLocal () {
+  if (!hasLocalStorage()) return false;
+  const w = getFabricBrowserGlobal();
+  if (!w || !w.localStorage) return false;
+  try {
+    const path = pathForLegacyKey('fabric.identity.local');
+    try {
+      if (path) store().DELETE(path);
+    } catch (e) {}
+    try {
+      w.localStorage.removeItem('fabric.identity.local');
+    } catch (e) {}
+    scrubFabricStateIdentitySubtree(w);
+    resetFabricBrowserStateStore();
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem('fabric.identity.unlocked');
+      }
+    } catch (e) {}
+    try {
+      w.localStorage.removeItem('fabric.identity.devSeedSuppressedFor');
+    } catch (e) {}
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 module.exports = {
   FABRIC_STATE_KEY,
   store,
@@ -183,6 +256,7 @@ module.exports = {
   writeStorageString,
   readStorageJSON,
   writeStorageJSON,
-  removeStorageKey
+  removeStorageKey,
+  clearFabricBrowserIdentityLocal
 };
 
