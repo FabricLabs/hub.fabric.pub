@@ -29,6 +29,7 @@ const {
   submitPayjoinProposal,
   applyPayjoinAcpHubBoost
 } = require('../functions/bitcoinClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   parseBitcoinUriForPayjoin,
   extractFabricPayjoinSessionIdFromPjUrl,
@@ -47,7 +48,6 @@ const { SATS_PER_BTC } = require('../constants');
 const QrScannerModal = require('./QrScannerModal');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
-const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   loadFederationSpendingPrefs,
   mergePaymentMemoWithFederation
@@ -261,7 +261,10 @@ class BitcoinPaymentsHome extends React.Component {
     const identity = (this.props && this.props.identity) || {};
     const wallet = getSpendWalletContext(identity);
     const nextReceive = getNextReceiveWalletContext(identity);
-    const upstream = this.state.upstream;
+    const upstream = {
+      ...this.state.upstream,
+      hubAdminToken: readHubAdminTokenFromBrowser(this.props && this.props.adminToken) || ''
+    };
     const network = (this.props.bitcoin && this.props.bitcoin.network) ? String(this.props.bitcoin.network).toLowerCase() : 'regtest';
     const deepLinkPatch = computeMakePaymentDeepLinkPatch(this.props);
     this.setState({ loading: true, error: null, wallet, ...deepLinkPatch });
@@ -271,7 +274,7 @@ class BitcoinPaymentsHome extends React.Component {
         fetchWalletSummary(upstream, wallet, { network }).catch(() => ({})),
         fetchReceiveAddress(upstream, nextReceive, { network, identity }).catch(() => ''),
         fetchUTXOs(upstream, wallet, { network }).catch(() => []),
-        fetchPayments(upstream, wallet, { limit: 50 }).catch(() => []),
+        fetchPayments(upstream, wallet, { limit: 50, network }).catch(() => []),
         fetchPayjoinSessions(upstream, { limit: 50, includeExpired: true }).catch(() => []),
         fetchWalletTransactions(upstream, wallet, { limit: 50, network }).catch(() => []),
         fetchPayjoinCapabilities(upstream).catch(() => ({ available: false })),

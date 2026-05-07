@@ -1046,14 +1046,25 @@ async function callBitcoinServiceMethod (baseUrl, method, params = {}, apiToken 
   });
 }
 
-async function fetchExplorerDataAtBase (settings = {}) {
+async function fetchExplorerDataAtBase (settings = {}, wallet = {}, options = {}) {
   const baseUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
   if (!baseUrl) return { blocks: [], transactions: [] };
 
   if (isBitcoinServiceEndpoint(baseUrl)) {
+    const netRaw = options.network != null ? String(options.network) : '';
+    const net = netRaw ? netRaw.toLowerCase() : 'regtest';
+    const listTxParams = { limit: 10 };
+    const adminTok = options.adminToken != null ? String(options.adminToken).trim() : '';
+    if (adminTok) {
+      listTxParams.adminToken = adminTok;
+    } else if (wallet && wallet.xpub) {
+      const addrs = deriveWatchAddresses(wallet, net, 25, 25);
+      if (addrs.length > 0) listTxParams.addresses = addrs.join(',');
+    }
+    const rpcTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
     const [blocksData, txData] = await Promise.all([
-      callBitcoinServiceMethod(baseUrl, 'ListBlocks', { limit: 10 }, settings.apiToken).catch(() => []),
-      callBitcoinServiceMethod(baseUrl, 'ListTransactions', { limit: 10 }, settings.apiToken).catch(() => [])
+      callBitcoinServiceMethod(baseUrl, 'ListBlocks', { limit: 10 }, rpcTok).catch(() => []),
+      callBitcoinServiceMethod(baseUrl, 'ListTransactions', listTxParams, rpcTok).catch(() => [])
     ]);
     return {
       blocks: pickArray(blocksData, ['blocks', 'items', 'results', 'data']),
@@ -1079,16 +1090,17 @@ async function fetchExplorerDataAtBase (settings = {}) {
   };
 }
 
-async function fetchExplorerData (settings = {}) {
-  return fetchExplorerDataAtBase(settings);
+async function fetchExplorerData (settings = {}, wallet = {}, options = {}) {
+  return fetchExplorerDataAtBase(settings, wallet, options);
 }
 
 async function fetchBitcoinStatusAtBase (settings = {}) {
   const baseUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
   if (!baseUrl) return { available: false, status: 'UNAVAILABLE' };
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const result = await tryRequests(baseUrl, [
     { path: '' }
-  ], settings.apiToken);
+  ], authTok);
   return pickObject(result ? result.data : {}, ['status', 'result', 'data']);
 }
 
@@ -1157,9 +1169,10 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
   }
 
   const path = params.toString() ? `/${encodedId}?${params.toString()}` : `/${encodedId}`;
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const summary = await tryRequests(baseUrl, [
     { path }
-  ], settings.apiToken);
+  ], authTok);
 
   const raw = pickObject(summary ? summary.data : {}, ['wallet', 'data']);
   if (raw && typeof raw === 'object') {
@@ -1270,9 +1283,10 @@ async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
   const qs = params.toString();
   const path = qs ? `/${walletId}/utxos?${qs}` : `/${walletId}/utxos`;
 
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const result = await tryRequests(baseUrl, [
     { path }
-  ], settings.apiToken);
+  ], authTok);
 
   return pickArray(result ? result.data : {}, ['utxos', 'items', 'results', 'data']);
 }
@@ -1295,7 +1309,8 @@ async function fetchWalletTransactions (settings = {}, wallet = {}, options = {}
   }
 
   const path = `/${encodeURIComponent(walletId)}/transactions?${params.toString()}`;
-  const result = await tryRequests(baseUrl, [{ path }], settings.apiToken);
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+  const result = await tryRequests(baseUrl, [{ path }], authTok);
   return pickArray(result ? result.data : {}, ['transactions', 'items', 'results', 'data']);
 }
 
@@ -1408,9 +1423,19 @@ async function fetchPayments (settings = {}, wallet = {}, options = {}) {
   if (!baseUrl) return [];
   const limit = Math.max(1, Math.min(100, Number(options.limit || 25)));
   const walletId = encodeURIComponent(wallet.walletId || '');
+  const params = new URLSearchParams();
+  params.set('walletId', wallet.walletId || '');
+  params.set('limit', String(limit));
+  const netRaw = options.network != null ? String(options.network) : '';
+  const net = netRaw ? netRaw.toLowerCase() : 'regtest';
+  if (wallet && wallet.xpub) {
+    const addrs = deriveWatchAddresses(wallet, net, 25, 25);
+    if (addrs.length > 0) params.set('addresses', addrs.join(','));
+  }
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const result = await tryRequests(baseUrl, [
-    { path: `?walletId=${walletId}&limit=${limit}` }
-  ], settings.apiToken);
+    { path: `?${params.toString()}` }
+  ], authTok);
   return pickArray(result ? result.data : {}, ['payments', 'items', 'results', 'data']);
 }
 

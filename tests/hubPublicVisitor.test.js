@@ -7,13 +7,20 @@ const {
 } = require('../functions/hubPublicVisitor');
 
 describe('hubPublicVisitor', function () {
-  it('treats watch-only local identity (xpub only, not desktop-linked) as visitor', function () {
+  it('is a visitor when there is no local identity', function () {
+    assert.strictEqual(
+      computePublicHubVisitor({ localIdentity: null, propsAuth: null }),
+      true
+    );
+  });
+
+  it('treats watch-only local identity (xpub only) as enrolled shell user, not anonymous visitor', function () {
     assert.strictEqual(
       computePublicHubVisitor({
         localIdentity: { id: 'a', xpub: 'xpub661MyMwAqRbcF6GygV6Q6XAg8dqhPvDuhYHGniequi6HMbYhNNH5XC13Np3qRANHVD2mmnNGtMGBfDT69s2ovpHLr7q8syoAuyWqtRGEsYQ' },
         propsAuth: null
       }),
-      true
+      false
     );
   });
 

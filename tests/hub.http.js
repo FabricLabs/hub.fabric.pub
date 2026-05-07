@@ -781,6 +781,12 @@ describe('@fabric/hub', function () {
           assert.strictEqual(response.status, 403);
           assert.strictEqual(response.body.status, 'error');
         });
+
+        it('GET /payments returns 503 when Bitcoin is disabled', async function () {
+          const response = await makeRequest('GET', '/payments?limit=5', null, jsonApi);
+          assert.strictEqual(response.status, 503);
+          assert.strictEqual(response.body.status, 'error');
+        });
       });
 
       it('GET /sessions/:sessionId/delegation/audit returns 403 without Bearer token', async function () {

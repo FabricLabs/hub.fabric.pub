@@ -3886,6 +3886,20 @@ class Hub extends Service {
     return Number.isFinite(n) ? Math.round(n) : undefined;
   }
 
+  /**
+   * Removes Hub-wallet-specific fields from {@link _collectBitcoinStatus} for unauthenticated HTTP clients.
+   * @param {object} full
+   * @returns {object}
+   */
+  _redactBitcoinStatusForNonAdmin (full) {
+    if (!full || typeof full !== 'object') return full;
+    const out = { ...full };
+    delete out.recentTransactions;
+    delete out.balance;
+    delete out.beacon;
+    return out;
+  }
+
   _sanitizeBitcoinStatusForPublic (full) {
     if (!full || typeof full !== 'object') return { available: false, status: 'UNKNOWN', message: 'No status.' };
     const mempoolInfo = full.mempoolInfo && typeof full.mempoolInfo === 'object' ? full.mempoolInfo : null;
@@ -4635,10 +4649,15 @@ class Hub extends Service {
   _handleBitcoinStatusRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const status = await this._collectBitcoinStatus({ force: true });
+      const token = this._extractOptionalAdminTokenFromRequest(req);
+      const isAdmin = this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(token);
       // Always 200 so the client receives balance/beacon/message even when unavailable
-      const body = status && typeof status === 'object'
+      let body = status && typeof status === 'object'
         ? { ...status, balance: status.balance != null ? status.balance : 0, beacon: status.beacon || { balanceSats: 0, clock: 0 } }
         : { available: false, status: 'UNAVAILABLE', balance: 0, beacon: { balanceSats: 0, clock: 0 }, message: 'Bitcoin status unknown.' };
+      if (!isAdmin && body && typeof body === 'object') {
+        body = this._redactBitcoinStatusForNonAdmin(body);
+      }
       return res.status(200).json(body);
     });
   }
@@ -5611,6 +5630,74 @@ class Hub extends Service {
     }
   }
 
+  /**
+   * Setup admin token from `Authorization: Bearer` or `?adminToken=` (GET ergonomics).
+   * @param {object} req
+   * @returns {string|null}
+   */
+  _extractOptionalAdminTokenFromRequest (req) {
+    const bearer = SetupService.extractBearerToken(req);
+    if (bearer) return bearer;
+    const q = req.query && req.query.adminToken;
+    if (q != null && String(q).trim()) return String(q).trim();
+    return null;
+  }
+
+  /**
+   * @param {object} req
+   * @param {object} res
+   * @returns {boolean} false when 403 already sent
+   */
+  _requireAdminTokenForHubWalletHttp (req, res) {
+    const token = this._extractOptionalAdminTokenFromRequest(req);
+    if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(token)) {
+      res.status(403).json({
+        status: 'error',
+        message: 'Admin token required to access the Hub node Bitcoin wallet.'
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Mempool payment summaries (same JSON shape as legacy GET /payments) filtered to txs paying watched addresses.
+   * @param {object} bitcoin
+   * @param {Set<string>} watchAddrs
+   * @param {number} limit
+   */
+  async _filterMempoolPaymentSummariesForAddresses (bitcoin, watchAddrs, limit) {
+    if (!watchAddrs || watchAddrs.size === 0) return [];
+    const verbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
+    const txids = Object.keys(verbose || {})
+      .sort((a, b) => Number((verbose[b] && verbose[b].time) || 0) - Number((verbose[a] && verbose[a].time) || 0));
+    const out = [];
+    for (const txid of txids) {
+      if (out.length >= limit) break;
+      try {
+        const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
+        if (!tx || !Array.isArray(tx.vout)) continue;
+        let touches = false;
+        for (const v of tx.vout) {
+          const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
+          if (addr && watchAddrs.has(addr)) {
+            touches = true;
+            break;
+          }
+        }
+        if (!touches) continue;
+        out.push({
+          txid,
+          time: (verbose[txid] && verbose[txid].time) || tx.time || null,
+          fee: verbose[txid] && verbose[txid].fee != null ? verbose[txid].fee : null,
+          vsize: verbose[txid] && verbose[txid].vsize != null ? verbose[txid].vsize : null,
+          value: Array.isArray(tx.vout) ? tx.vout.reduce((acc, v) => acc + Number(v.value || 0), 0) : null
+        });
+      } catch (_) {}
+    }
+    return out;
+  }
+
   _handleBitcoinWalletSummaryRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
@@ -5684,6 +5771,8 @@ class Hub extends Service {
         });
       }
 
+      if (!this._requireAdminTokenForHubWalletHttp(req, res)) return;
+
       const balances = await bitcoin.getBalances().catch(() => ({}));
       const trustedBTC = balances && balances.trusted != null ? balances.trusted : 0;
       const untrustedBTC = balances && balances.untrusted_pending != null ? balances.untrusted_pending : 0;
@@ -5710,6 +5799,7 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res)) return;
       const address = await bitcoin.getUnusedAddress();
       return res.json({
         walletId: (req.params && req.params.walletId) || (req.query && req.query.walletId) || bitcoin.walletName,
@@ -5872,6 +5962,8 @@ class Hub extends Service {
         });
       }
 
+      if (!this._requireAdminTokenForHubWalletHttp(req, res)) return;
+
       const utxos = await bitcoin._listUnspent();
       return res.json({
         walletId: String(walletId || bitcoin.walletName),
@@ -5985,6 +6077,8 @@ class Hub extends Service {
           message: 'xpub required for non-Hub wallet. Provide ?xpub=... for watch-only transaction list.'
         });
       }
+
+      if (!this._requireAdminTokenForHubWalletHttp(req, res)) return;
 
       const listTx = await bitcoin._makeRPCRequest('listtransactions', ['*', 100]).catch(() => []);
       const txids = [...new Set((listTx || []).map((t) => t.txid).filter(Boolean))].slice(0, limit);
@@ -6143,27 +6237,37 @@ class Hub extends Service {
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
       const limit = Math.max(1, Math.min(100, Number(req.query.limit || 25)));
-      const verbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
-      const txids = Object.keys(verbose || {})
-        .sort((a, b) => Number((verbose[b] && verbose[b].time) || 0) - Number((verbose[a] && verbose[a].time) || 0))
-        .slice(0, limit);
+      const token = this._extractOptionalAdminTokenFromRequest(req);
+      const isAdmin = this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(token);
 
-      const payments = await Promise.all(txids.map(async (txid) => {
-        try {
-          const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
-          return {
-            txid,
-            time: (verbose[txid] && verbose[txid].time) || tx.time || null,
-            fee: verbose[txid] && verbose[txid].fee != null ? verbose[txid].fee : null,
-            vsize: verbose[txid] && verbose[txid].vsize != null ? verbose[txid].vsize : null,
-            value: Array.isArray(tx.vout) ? tx.vout.reduce((acc, v) => acc + Number(v.value || 0), 0) : null
-          };
-        } catch (e) {
-          return null;
-        }
-      }));
+      if (isAdmin) {
+        const verbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
+        const txids = Object.keys(verbose || {})
+          .sort((a, b) => Number((verbose[b] && verbose[b].time) || 0) - Number((verbose[a] && verbose[a].time) || 0))
+          .slice(0, limit);
 
-      return res.json(payments.filter(Boolean));
+        const payments = await Promise.all(txids.map(async (txid) => {
+          try {
+            const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
+            return {
+              txid,
+              time: (verbose[txid] && verbose[txid].time) || tx.time || null,
+              fee: verbose[txid] && verbose[txid].fee != null ? verbose[txid].fee : null,
+              vsize: verbose[txid] && verbose[txid].vsize != null ? verbose[txid].vsize : null,
+              value: Array.isArray(tx.vout) ? tx.vout.reduce((acc, v) => acc + Number(v.value || 0), 0) : null
+            };
+          } catch (e) {
+            return null;
+          }
+        }));
+
+        return res.json(payments.filter(Boolean));
+      }
+
+      const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+      const watchAddrs = new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean));
+      const filtered = await this._filterMempoolPaymentSummariesForAddresses(bitcoin, watchAddrs, limit);
+      return res.json(filtered);
     });
   }
 
@@ -6454,27 +6558,46 @@ class Hub extends Service {
       }
       case 'listtransactions': {
         const limit = Math.max(1, Math.min(100, Number(params.limit || 25)));
-        const verbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
-        const txids = Object.keys(verbose || {})
-          .sort((a, b) => Number((verbose[b] && verbose[b].time) || 0) - Number((verbose[a] && verbose[a].time) || 0))
-          .slice(0, limit);
+        const rpcToken = params.adminToken || params.token;
+        const isAdmin = this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(rpcToken);
 
-        const transactions = await Promise.all(txids.map(async (txid) => {
-          try {
-            const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
-            return {
-              ...tx,
-              confirmations: 0,
-              blockhash: null,
-              height: null,
-              time: (verbose[txid] && verbose[txid].time) || tx.time || null
-            };
-          } catch (e) {
-            return null;
-          }
+        if (isAdmin) {
+          const verbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
+          const txids = Object.keys(verbose || {})
+            .sort((a, b) => Number((verbose[b] && verbose[b].time) || 0) - Number((verbose[a] && verbose[a].time) || 0))
+            .slice(0, limit);
+
+          const transactions = await Promise.all(txids.map(async (txid) => {
+            try {
+              const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
+              return {
+                ...tx,
+                confirmations: 0,
+                blockhash: null,
+                height: null,
+                time: (verbose[txid] && verbose[txid].time) || tx.time || null
+              };
+            } catch (e) {
+              return null;
+            }
+          }));
+
+          return transactions.filter(Boolean);
+        }
+
+        const addressesParam = String(params.addresses || '').trim();
+        const watchAddrs = new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean));
+        const rows = await this._filterMempoolPaymentSummariesForAddresses(bitcoin, watchAddrs, limit);
+        return rows.map((row) => ({
+          txid: row.txid,
+          confirmations: 0,
+          blockhash: null,
+          height: null,
+          time: row.time,
+          fee: row.fee,
+          vsize: row.vsize,
+          value: row.value
         }));
-
-        return transactions.filter(Boolean);
       }
       case 'listpeers':
       case 'getpeerinfo': {
@@ -6535,6 +6658,10 @@ class Hub extends Service {
         }
       }
       case 'getwalletsummary': {
+        const rpcToken = params.adminToken || params.token;
+        if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(rpcToken)) {
+          return { status: 'error', message: 'Admin token required to read the Hub wallet summary.' };
+        }
         const walletId = String(params.walletId || bitcoin.walletName || '');
         const balances = await bitcoin.getBalances().catch(() => ({}));
         return {
@@ -6549,11 +6676,19 @@ class Hub extends Service {
         };
       }
       case 'getwalletaddress': {
+        const rpcToken = params.adminToken || params.token;
+        if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(rpcToken)) {
+          return { status: 'error', message: 'Admin token required for Hub wallet receive addresses.' };
+        }
         const walletId = String(params.walletId || bitcoin.walletName || '');
         const address = await bitcoin.getUnusedAddress();
         return { walletId, network: bitcoin.network, address };
       }
       case 'listwalletutxos': {
+        const rpcToken = params.adminToken || params.token;
+        if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(rpcToken)) {
+          return { status: 'error', message: 'Admin token required to list Hub wallet UTXOs.' };
+        }
         const walletId = String(params.walletId || bitcoin.walletName || '');
         const utxos = await bitcoin._listUnspent();
         return {

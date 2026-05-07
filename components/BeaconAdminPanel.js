@@ -4,6 +4,7 @@ const React = require('react');
 const { Link } = require('react-router-dom');
 const { Header, Icon, Message, Segment, Button, Loader } = require('semantic-ui-react');
 const { fetchBitcoinStatus, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const {
   REGTEST_EPOCH_INTERVAL_MINUTES,
@@ -30,7 +31,10 @@ function BeaconAdminPanel () {
   const refresh = React.useCallback(async () => {
     setError(null);
     try {
-      const upstream = loadUpstreamSettings();
+      const upstream = {
+        ...loadUpstreamSettings(),
+        hubAdminToken: readHubAdminTokenFromBrowser(null) || ''
+      };
       const s = await fetchBitcoinStatus(upstream);
       setStatus(s && typeof s === 'object' ? s : null);
     } catch (e) {

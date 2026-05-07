@@ -1319,26 +1319,13 @@ class HubInterface extends React.Component {
           unconfirmedSats,
           fromCache: !!summary._fromCache
         };
-        const prev = this.state.clientBalance;
-        const changed = !prev ||
-          String(prev.walletId || '') !== String(nextClient.walletId || '') ||
-          Math.round(prev.balanceSats) !== Math.round(balanceSats) ||
-          Math.round(prev.confirmedSats) !== Math.round(confirmedSats) ||
-          Math.round(prev.unconfirmedSats) !== Math.round(unconfirmedSats);
         this.setState({ clientBalance: nextClient, clientBalanceLoading: false });
         if (identity && String(identity.xprv || '').trim()) {
           try { saveSpendXpubWatchForIdentity(identity, wallet); } catch (_) {}
         }
-        if (changed && typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('clientBalanceUpdate', {
-            detail: {
-              walletId: wallet.walletId,
-              balanceSats,
-              confirmedSats,
-              unconfirmedSats
-            }
-          }));
-        }
+        /* Do not dispatch clientBalanceUpdate here: Bitcoin/Payments screens already emit it for Bridge
+         * wallet notices. Re-dispatching after refresh echoed the same logical update twice and could
+         * shift confirmed/unconfirmed split between duplicate fetches → duplicate “incoming” toasts. */
       } else {
         this.setState({ clientBalance: null, clientBalanceLoading: false });
       }

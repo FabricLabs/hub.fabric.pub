@@ -14,8 +14,8 @@ function hasPersistedFabricIdentity () {
 }
 
 /**
- * True when `localIdentity` or `propsAuth` carries an unlocked signing material (xprv or legacy private).
- * Password-locked or watch-only profiles (xpub only) are not "logged in" for operator UI.
+ * True when `localIdentity` or `propsAuth` carries signing material in memory (xprv or legacy private).
+ * Locked or watch-only shells still need unlock/import before signing even when this is false.
  * @param {{ localIdentity?: object|null, propsAuth?: object|null }} args
  * @returns {boolean}
  */
@@ -26,27 +26,21 @@ function hasUnlockedHubSigningIdentity ({ localIdentity, propsAuth }) {
 }
 
 /**
- * True until the user has an unlocked Fabric identity (signing key in memory), or another enrolled path.
- * Hides operator nav, More menu, and `pv()`-gated pages until create/unlock — not merely "has xpub on disk".
+ * True only for anonymous browsers with **no** enrolled Hub shell identity.
  *
- * Exceptions (not treated as anonymous visitors): password-protected (or legacy plaintext-unlock) identity
- * on disk; Fabric Hub desktop login (`linkedFromDesktop` watch profile); or an active external-signing
- * delegation token after desktop login.
- * Generic watch-only xpub-only profiles stay visitors until they unlock/import signing keys.
+ * Once `HubInterface` has hydrated `localIdentity` from disk (password-locked, watch-only xpub, or
+ * desktop-linked profile), we return **false** so the normal shell renders — TopPanel shows
+ * Unlock / watch-only / signed-in — instead of replacing routes with {@link PublicVisitorGate}.
+ *
+ * Signing-protected flows still require `xprv` in memory or delegation elsewhere.
+ *
  * @param {{ localIdentity?: object|null, propsAuth?: object|null }} args
  * @returns {boolean}
  */
 function computePublicHubVisitor ({ localIdentity, propsAuth }) {
   if (hasUnlockedHubSigningIdentity({ localIdentity, propsAuth })) return false;
-  const lockedEnrollment = !!(
-    localIdentity &&
-    (localIdentity.passwordProtected || localIdentity.plaintextUnlockAvailable)
-  );
-  if (lockedEnrollment) return false;
   if (
     localIdentity &&
-    localIdentity.linkedFromDesktop &&
-    localIdentity.xpub &&
     (localIdentity.id || localIdentity.xpub)
   ) {
     return false;

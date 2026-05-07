@@ -11,6 +11,7 @@ const {
   loadUpstreamSettings,
   requestFaucet
 } = require('../functions/bitcoinClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { computeHubWalletSpendHints } = require('../functions/bitcoinSpendBounds');
 const { SATS_PER_BTC } = require('../constants');
 
@@ -49,7 +50,10 @@ class FaucetHome extends React.Component {
   }
 
   async refreshHubWalletStatus () {
-    const upstream = loadUpstreamSettings();
+    const upstream = {
+      ...loadUpstreamSettings(),
+      hubAdminToken: readHubAdminTokenFromBrowser(this.props && this.props.adminToken) || ''
+    };
     this.setState({ hubBitcoinLoading: true, hubBitcoinError: null, upstream });
     try {
       const detail = await fetchBitcoinStatus(upstream);
