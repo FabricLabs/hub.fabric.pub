@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 
 const Sandbox = require('@fabric/http/types/sandbox');
 const { FIXTURE_XPRV } = require('@fabric/core/constants');
+const Key = require('@fabric/core/types/key');
 
 const HUB_E2E = process.env.HUB_E2E === '1' || process.env.HUB_E2E === 'true';
 const HUB_URL = process.env.HUB_URL || 'http://localhost:18080/';
@@ -315,15 +316,16 @@ async function clickNavLink (page, text) {
   }, text);
 }
 
-/** Unlocked test identity so operator nav and `pv()` routes match integration expectations. */
+/** Watch-only master xpub so `buildLocalFabricIdentityPayload` resolves and `pv()` routes render (no plaintext xprv at rest). */
 async function seedBrowserUnlockedTestIdentity (page) {
-  const xprv = FIXTURE_XPRV;
+  const key = new Key({ xprv: FIXTURE_XPRV });
+  const xpub = key.xpub;
   await page.evaluate((xp) => {
     try {
-      window.localStorage.setItem('fabric.identity.local', JSON.stringify({ xprv: xp }));
+      window.localStorage.setItem('fabric.identity.local', JSON.stringify({ xpub: xp }));
       if (window.sessionStorage) window.sessionStorage.removeItem('fabric.identity.unlocked');
     } catch (e) { /* ignore */ }
-  }, xprv);
+  }, xpub);
 }
 
 async function openMoreDropdownAndClick (page, itemText) {
@@ -937,6 +939,17 @@ describe('Browser Interface', function () {
         await sandbox.browser.evaluate(() => {
           try {
             window.localStorage.removeItem('fabric.hub.adminToken');
+            window.localStorage.removeItem('fabric.hub.adminTokenExpiresAt');
+            const key = 'fabric:state';
+            const raw = window.localStorage.getItem(key);
+            if (raw) {
+              const st = JSON.parse(raw);
+              if (st && st.hub && typeof st.hub === 'object') {
+                delete st.hub.adminToken;
+                delete st.hub.adminTokenExpiresAt;
+              }
+              window.localStorage.setItem(key, JSON.stringify(st));
+            }
           } catch (e) { /* ignore */ }
         });
         await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'load', timeout: 15000 });
