@@ -3,7 +3,8 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 const { Button, Header, Icon, List, Segment } = require('semantic-ui-react');
-const { fetchBitcoinStatus, fetchExplorerData, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { fetchBitcoinStatus, fetchExplorerData, loadUpstreamSettings, getSpendWalletContext } = require('../functions/bitcoinClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { formatSatsDisplay } = require('../functions/formatSats');
 
 function trimHash (value) {
@@ -31,9 +32,20 @@ class BitcoinBlockList extends React.Component {
   async refresh () {
     this.setState({ loading: true });
     try {
+      const spend = getSpendWalletContext(this.props.identity || {});
+      const net = (this.props.bitcoin && this.props.bitcoin.network)
+        ? String(this.props.bitcoin.network).toLowerCase()
+        : 'regtest';
+      const adminTok = (this.props.adminToken != null && String(this.props.adminToken).trim())
+        ? String(this.props.adminToken).trim()
+        : '';
+      const upstreamAdmin = {
+        ...this.state.upstream,
+        hubAdminToken: adminTok || readHubAdminTokenFromBrowser(null) || ''
+      };
       const [data, status] = await Promise.all([
-        fetchExplorerData(this.state.upstream).catch(() => ({})),
-        fetchBitcoinStatus(this.state.upstream).catch(() => ({}))
+        fetchExplorerData(upstreamAdmin, spend, { network: net, adminToken: adminTok }).catch(() => ({})),
+        fetchBitcoinStatus(upstreamAdmin).catch(() => ({}))
       ]);
       const explorerBlocks = Array.isArray(data && data.blocks) ? data.blocks : [];
       const explorerTxs = Array.isArray(data && data.transactions) ? data.transactions : [];

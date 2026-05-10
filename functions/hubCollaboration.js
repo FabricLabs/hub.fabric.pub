@@ -19,10 +19,25 @@ const MAX_INVITATIONS = 200;
 const MAX_GROUPS = 100;
 const DEFAULT_INVITE_TTL_MS = 14 * 24 * 3600 * 1000;
 const COLLAB_INVITE_PREFIX = '[COLLAB_INVITATION] ';
+/** 16 bytes hex from {@link newId} (prefix + 32 hex chars) */
+const COLLAB_ID_SUFFIX_HEX_LEN = 32;
+const CONTACT_ID_RE = new RegExp(`^cnt_[0-9a-f]{${COLLAB_ID_SUFFIX_HEX_LEN}}$`, 'i');
+const INVITATION_ID_RE = new RegExp(`^inv_[0-9a-f]{${COLLAB_ID_SUFFIX_HEX_LEN}}$`, 'i');
+const GROUP_ID_RE = new RegExp(`^grp_[0-9a-f]{${COLLAB_ID_SUFFIX_HEX_LEN}}$`, 'i');
 const TAPROOT_INTERNAL_NUMS = Buffer.from(
   '50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0',
   'hex'
 );
+
+function hasStoreKey (obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function readContact (store, id) {
+  const k = String(id || '').trim();
+  if (!CONTACT_ID_RE.test(k) || !hasStoreKey(store.contacts, k)) return undefined;
+  return store.contacts[k];
+}
 
 function emptyStore () {
   return {
@@ -141,15 +156,25 @@ function hubPublicOrigin (hub) {
   if (env) return env;
   const port = hub.http && hub.http.settings && hub.http.settings.port ? Number(hub.http.settings.port) : 8080;
   const host = hub.http && hub.http.settings && hub.http.settings.hostname ? String(hub.http.settings.hostname) : '127.0.0.1';
-  const scheme = process.env.FABRIC_HUB_PUBLIC_SCHEME === 'http' ? 'http' : 'http';
+  const scheme = process.env.FABRIC_HUB_PUBLIC_SCHEME === 'https' ? 'https' : 'http';
   return `${scheme}://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
 }
 
+function escapeHtmlAttribute (s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function invitationEmailHtml (acceptUrl, declineUrl) {
+  const a = escapeHtmlAttribute(acceptUrl);
+  const d = escapeHtmlAttribute(declineUrl);
   return `<!doctype html><html><body>
 <p>You have been invited to collaborate on a Fabric Hub.</p>
-<p><a href="${acceptUrl}">Accept invitation</a></p>
-<p><a href="${declineUrl}">Decline</a></p>
+<p><a href="${a}">Accept invitation</a></p>
+<p><a href="${d}">Decline</a></p>
 </body></html>`;
 }
 
@@ -201,7 +226,8 @@ function relayInviteToPeer (hub, fabricPeerId, event) {
   try {
     if (!hub || typeof hub._resolvePeerAddress !== 'function' || typeof hub._sendVectorToPeer !== 'function') return false;
     const address = hub._resolvePeerAddress(fabricPeerId);
-    if (!address || !hub.agent || !hub.agent.connections || !hub.agent.connections[address]) return false;
+    const conns = hub.agent && hub.agent.connections;
+    if (!address || !conns || !hasStoreKey(conns, address)) return false;
     const payload = {
       type: 'P2P_CHAT_MESSAGE',
       actor: { id: hub.agent.identity && hub.agent.identity.id ? hub.agent.identity.id : 'hub' },
@@ -232,7 +258,10 @@ function flattenGroupPubkeys (store, groupId, stack) {
     return { xOnlyHexList: [], missing: [{ ref: groupId, reason: 'group cycle' }] };
   }
   s.add(groupId);
-  const g = store.groups[groupId];
+  if (!GROUP_ID_RE.test(String(groupId || '').trim())) {
+    return { xOnlyHexList: [], missing: [{ ref: String(groupId), reason: 'invalid group id' }] };
+  }
+  const g = hasStoreKey(store.groups, groupId) ? store.groups[groupId] : null;
   if (!g || typeof g !== 'object') {
     return { xOnlyHexList: [], missing: [{ ref: groupId, reason: 'unknown group' }] };
   }
@@ -249,7 +278,7 @@ function flattenGroupPubkeys (store, groupId, stack) {
       if (!n.ok) missing.push({ ref: `members[${i}]`, reason: n.message });
       else xOnlyHexList.push(n.xOnlyHex);
     } else if (t === 'contact') {
-      const c = store.contacts[String(m.contactId || '')];
+      const c = readContact(store, m.contactId);
       if (!c) missing.push({ ref: String(m.contactId), reason: 'unknown contact' });
       else if (!c.publicKeyHex) missing.push({ ref: String(m.contactId), reason: 'contact has no publicKeyHex' });
       else {
@@ -258,9 +287,14 @@ function flattenGroupPubkeys (store, groupId, stack) {
         else xOnlyHexList.push(n.xOnlyHex);
       }
     } else if (t === 'group') {
-      const sub = flattenGroupPubkeys(store, String(m.groupId || ''), new Set(s));
-      xOnlyHexList.push(...sub.xOnlyHexList);
-      missing.push(...sub.missing);
+      const gid = String(m.groupId || '').trim();
+      if (!GROUP_ID_RE.test(gid)) {
+        missing.push({ ref: gid, reason: 'invalid nested group id' });
+      } else {
+        const sub = flattenGroupPubkeys(store, gid, new Set(s));
+        xOnlyHexList.push(...sub.xOnlyHexList);
+        missing.push(...sub.missing);
+      }
     } else {
       missing.push({ ref: `members[${i}]`, reason: `unknown member type ${t || '(empty)'}` });
     }
@@ -365,8 +399,9 @@ async function addContact (hub, body) {
 
 async function deleteContact (hub, id) {
   const st = loadStore(hub.fs);
-  if (!st.contacts[id]) throw new Error('contact not found');
-  delete st.contacts[id];
+  const k = String(id || '').trim();
+  if (!CONTACT_ID_RE.test(k) || !hasStoreKey(st.contacts, k)) throw new Error('contact not found');
+  Reflect.deleteProperty(st.contacts, k);
   await saveStore(hub.fs, st);
   return { ok: true };
 }
@@ -394,7 +429,7 @@ async function createInvitation (hub, body) {
   if (!email && !requestedPeerId) throw new Error('Provide invite email or recipientPeerIdentity (id1...)');
   const ttl = Math.max(3600000, Math.min(90 * 24 * 3600000, Number(body.ttlMs || DEFAULT_INVITE_TTL_MS)));
   const groupId = body.groupId ? String(body.groupId).trim() : '';
-  if (groupId && !st.groups[groupId]) throw new Error('group not found');
+  if (groupId && (!GROUP_ID_RE.test(groupId) || !hasStoreKey(st.groups, groupId))) throw new Error('group not found');
   const token = crypto.randomBytes(32).toString('hex');
   const id = newId('inv_');
   const now = Date.now();
@@ -474,7 +509,9 @@ async function createInvitation (hub, body) {
 
 async function verifyInvitationToken (hub, id, token) {
   const st = loadStore(hub.fs);
-  const inv = st.invitations[id];
+  const k = String(id || '').trim();
+  if (!INVITATION_ID_RE.test(k)) return { valid: false, reason: 'unknown invitation' };
+  const inv = hasStoreKey(st.invitations, k) ? st.invitations[k] : null;
   if (!inv) return { valid: false, reason: 'unknown invitation' };
   const now = Date.now();
   if (inv.expiresAt && now > inv.expiresAt) return { valid: false, reason: 'expired' };
@@ -488,8 +525,10 @@ async function declineInvitation (hub, id, token) {
   const v = await verifyInvitationToken(hub, id, token);
   if (!v.valid) return v;
   const st = loadStore(hub.fs);
-  st.invitations[id].status = 'declined';
-  st.invitations[id].updatedAt = Date.now();
+  const k = String(id || '').trim();
+  if (!INVITATION_ID_RE.test(k) || !hasStoreKey(st.invitations, k)) return { valid: false, reason: 'unknown invitation' };
+  st.invitations[k].status = 'declined';
+  st.invitations[k].updatedAt = Date.now();
   await saveStore(hub.fs, st);
   return { ok: true, status: 'declined' };
 }
@@ -498,16 +537,19 @@ async function acceptInvitation (hub, id, token) {
   const v = await verifyInvitationToken(hub, id, token);
   if (!v.valid) return v;
   const st = loadStore(hub.fs);
-  st.invitations[id].status = 'accepted';
-  st.invitations[id].updatedAt = Date.now();
+  const k = String(id || '').trim();
+  if (!INVITATION_ID_RE.test(k) || !hasStoreKey(st.invitations, k)) return { valid: false, reason: 'unknown invitation' };
+  st.invitations[k].status = 'accepted';
+  st.invitations[k].updatedAt = Date.now();
   await saveStore(hub.fs, st);
   return { ok: true, status: 'accepted' };
 }
 
 async function deleteInvitation (hub, id) {
   const st = loadStore(hub.fs);
-  if (!st.invitations[id]) throw new Error('invitation not found');
-  delete st.invitations[id];
+  const k = String(id || '').trim();
+  if (!INVITATION_ID_RE.test(k) || !hasStoreKey(st.invitations, k)) throw new Error('invitation not found');
+  Reflect.deleteProperty(st.invitations, k);
   await saveStore(hub.fs, st);
   return { ok: true };
 }
@@ -556,7 +598,9 @@ async function getGroup (hub, id) {
 
 async function updateGroup (hub, id, body) {
   const st = loadStore(hub.fs);
-  const g = st.groups[id];
+  const k = String(id || '').trim();
+  if (!GROUP_ID_RE.test(k) || !hasStoreKey(st.groups, k)) throw new Error('group not found');
+  const g = st.groups[k];
   if (!g) throw new Error('group not found');
   if (body.name != null) g.name = String(body.name).trim().slice(0, 200);
   if (body.description != null) g.description = String(body.description).slice(0, 2000);
@@ -568,23 +612,26 @@ async function updateGroup (hub, id, body) {
 
 async function deleteGroup (hub, id) {
   const st = loadStore(hub.fs);
-  if (!st.groups[id]) throw new Error('group not found');
+  const k = String(id || '').trim();
+  if (!GROUP_ID_RE.test(k) || !hasStoreKey(st.groups, k)) throw new Error('group not found');
   for (const g of Object.values(st.groups)) {
     if (!g || !Array.isArray(g.members)) continue;
     for (const m of g.members) {
-      if (m && String(m.type).toLowerCase() === 'group' && String(m.groupId) === id) {
+      if (m && String(m.type).toLowerCase() === 'group' && String(m.groupId) === k) {
         throw new Error('group is referenced as nested member of another group');
       }
     }
   }
-  delete st.groups[id];
+  Reflect.deleteProperty(st.groups, k);
   await saveStore(hub.fs, st);
   return { ok: true };
 }
 
 async function addGroupMember (hub, groupId, body) {
   const st = loadStore(hub.fs);
-  const g = st.groups[groupId];
+  const gid = String(groupId || '').trim();
+  if (!GROUP_ID_RE.test(gid) || !hasStoreKey(st.groups, gid)) throw new Error('group not found');
+  const g = st.groups[gid];
   if (!g) throw new Error('group not found');
   const t = String(body.type || '').toLowerCase();
   const members = Array.isArray(g.members) ? g.members : [];
@@ -598,13 +645,13 @@ async function addGroupMember (hub, groupId, body) {
     });
   } else if (t === 'contact') {
     const cid = String(body.contactId || '').trim();
-    if (!st.contacts[cid]) throw new Error('contact not found');
+    if (!readContact(st, cid)) throw new Error('contact not found');
     members.push({ type: 'contact', contactId: cid });
   } else if (t === 'group') {
-    const gid = String(body.groupId || '').trim();
-    if (!gid || gid === groupId) throw new Error('invalid nested group');
-    if (!st.groups[gid]) throw new Error('nested group not found');
-    members.push({ type: 'group', groupId: gid });
+    const nested = String(body.groupId || '').trim();
+    if (!nested || nested === gid) throw new Error('invalid nested group');
+    if (!GROUP_ID_RE.test(nested) || !hasStoreKey(st.groups, nested)) throw new Error('nested group not found');
+    members.push({ type: 'group', groupId: nested });
   } else {
     throw new Error('member type must be pubkey, contact, or group');
   }
@@ -616,7 +663,9 @@ async function addGroupMember (hub, groupId, body) {
 
 async function removeGroupMember (hub, groupId, index) {
   const st = loadStore(hub.fs);
-  const g = st.groups[groupId];
+  const gid = String(groupId || '').trim();
+  if (!GROUP_ID_RE.test(gid) || !hasStoreKey(st.groups, gid)) throw new Error('group not found');
+  const g = st.groups[gid];
   if (!g) throw new Error('group not found');
   const members = Array.isArray(g.members) ? g.members : [];
   const i = Number(index);
@@ -658,7 +707,9 @@ async function upsertCollaborationGroupFromFederationValidators (hub, body) {
 
   const groupId = body.groupId ? String(body.groupId).trim() : '';
   if (groupId) {
+    if (!GROUP_ID_RE.test(groupId)) throw new Error('group not found');
     const st = loadStore(hub.fs);
+    if (!hasStoreKey(st.groups, groupId)) throw new Error('group not found');
     const g = st.groups[groupId];
     if (!g) throw new Error('group not found');
     const members = Array.isArray(g.members) ? g.members : [];
@@ -668,11 +719,17 @@ async function upsertCollaborationGroupFromFederationValidators (hub, body) {
         throw new Error('Cannot replace members: group contains contacts or nested groups. Remove them first or create a new group.');
       }
     }
-    while (true) {
+    let clearGuard = 0;
+    const maxRemovals = 5000;
+    while (clearGuard < maxRemovals) {
       const cur = loadStore(hub.fs).groups[groupId];
       const len = Array.isArray(cur && cur.members) ? cur.members.length : 0;
       if (!len) break;
+      clearGuard++;
       await removeGroupMember(hub, groupId, 0);
+    }
+    if (clearGuard >= maxRemovals) {
+      throw new Error('Could not clear group members: aborting');
     }
     const patch = { threshold: thr };
     if (body.name != null && String(body.name).trim()) {
@@ -699,9 +756,10 @@ async function upsertCollaborationGroupFromFederationValidators (hub, body) {
 
 async function multisigPreview (hub, groupId) {
   const st = loadStore(hub.fs);
-  if (!st.groups[groupId]) throw new Error('group not found');
-  const { xOnlyHexList, missing } = flattenGroupPubkeys(st, groupId);
-  const g = st.groups[groupId];
+  const k = String(groupId || '').trim();
+  if (!GROUP_ID_RE.test(k) || !hasStoreKey(st.groups, k)) throw new Error('group not found');
+  const { xOnlyHexList, missing } = flattenGroupPubkeys(st, k);
+  const g = st.groups[k];
   const m = Math.max(1, Math.min(xOnlyHexList.length || 1, Number(g.threshold || 1)));
   const fingerprint = xOnlyHexList.length ? policyFingerprint(m, xOnlyHexList) : null;
   let receiveAddress = '';
@@ -754,7 +812,7 @@ async function multisigPreview (hub, groupId) {
     }
   }
   return {
-    groupId,
+    groupId: k,
     threshold: m,
     uniquePubkeys: xOnlyHexList.length,
     xOnlyPubkeysSorted: xOnlyHexList,
@@ -782,7 +840,7 @@ async function multisigPreview (hub, groupId) {
 
 function registerHttp (hub) {
   const json = (req, res, fn) => {
-    return hub._jsonOnly(req, res, fn);
+    return hub.http.jsonOnly(req, res, fn);
   };
 
   hub.http._addRoute('GET', '/services/collaboration', (req, res) => json(req, res, async () => {

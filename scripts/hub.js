@@ -44,12 +44,23 @@ function bitcoinDataDirForNetwork (root, network) {
   return path.join(root, rel);
 }
 
-// Merge setup settings from stores/hub/settings.json (written during first-time setup)
-const setupPath = path.join(userDataRoot, 'stores', 'hub', 'settings.json');
+// Merge setup settings from internal Hub STATE store (`settings`).
+const statePath = path.join(userDataRoot, 'stores', 'hub', 'STATE');
+let setup = {};
 try {
-  if (fs.existsSync(setupPath)) {
-    const raw = fs.readFileSync(setupPath, 'utf8');
-    const setup = JSON.parse(raw);
+  if (fs.existsSync(statePath)) {
+    const rawState = fs.readFileSync(statePath, 'utf8');
+    const parsedState = JSON.parse(rawState);
+    const candidate = parsedState && typeof parsedState === 'object' ? parsedState.settings : null;
+    if (candidate && typeof candidate === 'object') {
+      setup = candidate;
+    }
+  }
+} catch (e) {
+  setup = {};
+}
+try {
+  if (setup && typeof setup === 'object' && Object.keys(setup).length) {
     const parseVal = (v) => {
       if (v === undefined || v === null) return undefined;
       if (typeof v === 'string') {
@@ -108,7 +119,7 @@ try {
   // Ignore; use defaults from local.js
 }
 
-// Explicit Bitcoin env wins over first-time setup (e.g. `npm run start:mainnet-local` while settings.json still says regtest).
+// Explicit Bitcoin env wins over first-time setup (e.g. `npm run start:mainnet-local` while settings still says regtest).
 if (process.env.FABRIC_BITCOIN_NETWORK && String(process.env.FABRIC_BITCOIN_NETWORK).trim()) {
   settings = {
     ...settings,
@@ -130,16 +141,10 @@ if (Object.prototype.hasOwnProperty.call(process.env, 'FABRIC_BITCOIN_MANAGED') 
   };
 }
 
-// Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.json.
+// Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.
 // Without this, settings/local.js default interface would be 0.0.0.0. CLI/dev without FABRIC_HUB_USER_DATA keeps LAN-open default.
 if (process.env.FABRIC_HUB_USER_DATA && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
-  let sharedDefined = false;
-  try {
-    if (fs.existsSync(setupPath)) {
-      const disk = JSON.parse(fs.readFileSync(setupPath, 'utf8'));
-      sharedDefined = disk && Object.prototype.hasOwnProperty.call(disk, 'HTTP_SHARED_MODE');
-    }
-  } catch (_) {}
+  const sharedDefined = setup && Object.prototype.hasOwnProperty.call(setup, 'HTTP_SHARED_MODE');
   if (!sharedDefined) {
     settings = {
       ...settings,

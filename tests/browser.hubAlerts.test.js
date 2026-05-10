@@ -17,19 +17,21 @@ function prepareIsolatedHubUserData () {
   const hubStore = path.join(root, 'stores', 'hub');
   fs.mkdirSync(hubStore, { recursive: true });
   fs.writeFileSync(
-    path.join(hubStore, 'settings.json'),
+    path.join(hubStore, 'STATE'),
     JSON.stringify({
-      NODE_NAME: 'Hub',
-      NODE_PERSONALITY: '["helpful"]',
-      NODE_TEMPERATURE: '0',
-      NODE_GOALS: '[]',
-      BITCOIN_NETWORK: 'regtest',
-      BITCOIN_MANAGED: 'false',
-      LIGHTNING_MANAGED: 'true',
-      DISK_ALLOCATION_MB: '1024',
-      COST_PER_BYTE_SATS: '0.01',
-      IS_CONFIGURED: true
-    })
+      settings: {
+        NODE_NAME: 'Hub',
+        NODE_PERSONALITY: '["helpful"]',
+        NODE_TEMPERATURE: '0',
+        NODE_GOALS: '[]',
+        BITCOIN_NETWORK: 'regtest',
+        BITCOIN_MANAGED: 'false',
+        LIGHTNING_MANAGED: 'true',
+        DISK_ALLOCATION_MB: '1024',
+        COST_PER_BYTE_SATS: '0.01',
+        IS_CONFIGURED: true
+      }
+    }, null, 2)
   );
   return root;
 }

@@ -2,7 +2,8 @@
 
 const {
   readStorageString,
-  writeStorageString
+  writeStorageString,
+  removeStorageKey
 } = require('./fabricBrowserState');
 
 /**
@@ -41,7 +42,20 @@ function saveHubAdminTokenToBrowser (token) {
   return false;
 }
 
+function clearHubAdminTokenFromBrowser () {
+  try {
+    if (typeof window !== 'undefined') {
+      removeStorageKey('fabric.hub.adminToken');
+      removeStorageKey('fabric.hub.adminTokenExpiresAt');
+      window.dispatchEvent(new CustomEvent('fabricHubAdminTokenSaved', { detail: { ok: false, cleared: true } }));
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
 module.exports = {
   readHubAdminTokenFromBrowser,
-  saveHubAdminTokenToBrowser
+  saveHubAdminTokenToBrowser,
+  clearHubAdminTokenFromBrowser
 };

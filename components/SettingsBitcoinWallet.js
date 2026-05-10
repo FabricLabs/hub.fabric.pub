@@ -8,7 +8,7 @@ const React = require('react');
 const { Link } = require('react-router-dom');
 const { Header, Icon, Message, Segment } = require('semantic-ui-react');
 const {
-  BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX,
+  getBitcoinBip44AccountForIdentity,
   getSpendWalletContext
 } = require('../functions/bitcoinClient');
 const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
@@ -21,7 +21,7 @@ function trimMiddle (s, left = 14, right = 10) {
 
 function SettingsBitcoinWallet ({ identity }) {
   const xpub = identity && identity.xpub ? String(identity.xpub) : '';
-  const acct = BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX;
+  const acct = getBitcoinBip44AccountForIdentity(identity || {});
   const spend = React.useMemo(() => getSpendWalletContext(identity || {}), [identity]);
 
   return (
@@ -32,9 +32,9 @@ function SettingsBitcoinWallet ({ identity }) {
           <Header.Content>Bitcoin wallet &amp; derivation</Header.Content>
         </Header>
         <p style={{ color: '#666', margin: '0 0 1em', maxWidth: '40rem', lineHeight: 1.45 }}>
-          Your <strong>Fabric identity</strong> is the master key. All Hub and browser Bitcoin payment flows use a single BIP44 Bitcoin account under that
-          master: <code style={{ whiteSpace: 'nowrap' }}>{`m/44'/0'/${acct}'`}</code> (account {acct}). External addresses use chain <code>0/*</code>; change uses <code>1/*</code>.
-          There is no separate “second wallet”—only this account for on-chain balance, invoices, and client-signed sends.
+          Your <strong>Fabric identity</strong> is the master key. Hub and browser Bitcoin payment flows use one BIP44 Bitcoin account under that
+          master — by default account <strong>0</strong>; in Fabric <strong>multi-account</strong> mode the Bitcoin account index matches the Fabric account you select in the identity dialog:
+          {' '}<code style={{ whiteSpace: 'nowrap' }}>{`m/44'/0'/${acct}'`}</code> (account {acct}). External addresses use chain <code>0/*</code>; change uses <code>1/*</code>.
         </p>
         <Message info size="small" style={{ marginBottom: '1em' }}>
           <Message.Header>Identity wallet vs Hub node wallet</Message.Header>

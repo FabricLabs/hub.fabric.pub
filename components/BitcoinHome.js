@@ -313,16 +313,23 @@ class BitcoinHome extends React.Component {
     const spendWallet = getSpendWalletContext(identity);
     const nextReceive = getNextReceiveWalletContext(identity);
     const upstream = this.state.upstream;
+    const upstreamAdmin = {
+      ...upstream,
+      hubAdminToken: this._hubAdminToken() || ''
+    };
 
     this.setState({ loading: !spendWallet.walletId, refreshing: true, error: null });
 
     const network = (this.state.bitcoinStatus && this.state.bitcoinStatus.network) ? String(this.state.bitcoinStatus.network).toLowerCase() : '';
-    const summaryTask = fetchWalletSummaryWithCache(upstream, spendWallet, { network }).catch(() => ({}));
-    const explorerTask = fetchExplorerData(upstream).catch(() => ({ blocks: [], transactions: [] }));
-    const bitcoinStatusTask = fetchBitcoinStatus(upstream).catch(() => ({ available: false, status: 'UNAVAILABLE' }));
+    const summaryTask = fetchWalletSummaryWithCache(upstreamAdmin, spendWallet, { network }).catch(() => ({}));
+    const explorerTask = fetchExplorerData(upstreamAdmin, spendWallet, {
+      network,
+      adminToken: this._hubAdminToken() || ''
+    }).catch(() => ({ blocks: [], transactions: [] }));
+    const bitcoinStatusTask = fetchBitcoinStatus(upstreamAdmin).catch(() => ({ available: false, status: 'UNAVAILABLE' }));
     const lightningStatusTask = fetchLightningStatus(upstream).catch(() => ({ available: false, status: 'UNAVAILABLE' }));
     const lightningChannelsTask = fetchLightningChannels(upstream).catch(() => ({ channels: [], outputs: [] }));
-    const utxoTask = fetchUTXOs(upstream, spendWallet).catch(() => []);
+    const utxoTask = fetchUTXOs(upstreamAdmin, spendWallet).catch(() => []);
     const payjoinCapabilitiesTask = fetchPayjoinCapabilities(upstream).catch(() => ({ available: false }));
     const payjoinSessionsTask = fetchPayjoinSessions(upstream, { limit: 25, includeExpired: false }).catch(() => []);
     const payjoinSessionTask = this.state.payjoinSessionId

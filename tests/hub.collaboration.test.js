@@ -79,24 +79,27 @@ describe('hubCollaboration', function () {
     const pk = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
     const n = hubCollaboration.normalizeSecpPublicKey(pk);
     assert.strictEqual(n.ok, true);
+    // Must match GROUP_ID_RE in functions/hubCollaboration.js: grp_ + 32 hex chars
+    const grpInner = 'grp_' + '1'.repeat(32);
+    const grpOuter = 'grp_' + '2'.repeat(32);
     const store = hubCollaboration.emptyStore();
-    store.groups.grp_inner = {
-      id: 'grp_inner',
+    store.groups[grpInner] = {
+      id: grpInner,
       name: 'inner',
       threshold: 1,
       members: [{ type: 'pubkey', publicKeyHex: n.xOnlyHex }],
       createdAt: 1,
       updatedAt: 1
     };
-    store.groups.grp_outer = {
-      id: 'grp_outer',
+    store.groups[grpOuter] = {
+      id: grpOuter,
       name: 'outer',
       threshold: 1,
-      members: [{ type: 'group', groupId: 'grp_inner' }],
+      members: [{ type: 'group', groupId: grpInner }],
       createdAt: 1,
       updatedAt: 1
     };
-    const flat = hubCollaboration.flattenGroupPubkeys(store, 'grp_outer');
+    const flat = hubCollaboration.flattenGroupPubkeys(store, grpOuter);
     assert.deepStrictEqual(flat.missing, []);
     assert.strictEqual(flat.xOnlyHexList.length, 1);
     assert.strictEqual(flat.xOnlyHexList[0], n.xOnlyHex);

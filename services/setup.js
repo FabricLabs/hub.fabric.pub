@@ -6,11 +6,10 @@
  * verifies admin auth via Token.verifySigned, and supports token refresh.
  */
 
-const crypto = require('crypto');
 const Token = require('@fabric/core/types/token');
 
-const SETTINGS_FILE = 'settings.json';
-const ADMIN_TOKEN_FILE = 'admin-token.json'; // Legacy: read-only for backward compat; never written
+const STATE_FILE = 'STATE';
+const SETTINGS_KEY = 'settings';
 const GLOBAL_SETTINGS = [
   'NODE_NAME',
   'NODE_PERSONALITY',
@@ -38,10 +37,12 @@ class SetupService {
   constructor (settings = {}) {
     this.settings = Object.assign({
       fs: null,
-      key: null
+      key: null,
+      state: null
     }, settings);
     this.fs = this.settings.fs;
     this._rootKey = this.settings.key;
+    this._state = this.settings.state;
   }
 
   /**
@@ -49,15 +50,7 @@ class SetupService {
    * @returns {{configured: boolean, needsSetup: boolean}}
    */
   getSetupStatus () {
-    if (!this.fs) return { configured: false, needsSetup: true };
-    const raw = this.fs.readFile(SETTINGS_FILE);
-    if (!raw) return { configured: false, needsSetup: true };
-    let settings;
-    try {
-      settings = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(raw.toString('utf8'));
-    } catch {
-      return { configured: false, needsSetup: true };
-    }
+    const settings = this._loadSettings();
     const isConfigured = settings.IS_CONFIGURED === true || settings.IS_CONFIGURED === 'true';
     return {
       configured: !!isConfigured,
@@ -65,13 +58,10 @@ class SetupService {
     };
   }
 
-  /**
-   * Load settings from filesystem.
-   * @returns {Object}
-   */
-  _loadSettings () {
+  _loadStateContent () {
+    if (this._state && typeof this._state === 'object') return this._state;
     if (!this.fs) return {};
-    const raw = this.fs.readFile(SETTINGS_FILE);
+    const raw = this.fs.readFile(STATE_FILE);
     if (!raw) return {};
     try {
       return typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(raw.toString('utf8'));
@@ -80,13 +70,33 @@ class SetupService {
     }
   }
 
+  async _saveStateContent (content) {
+    if (!this.fs) throw new Error('Filesystem not available');
+    if (this._state && typeof this._state === 'object' && content !== this._state) {
+      Object.assign(this._state, content);
+    }
+    await this.fs.publish(STATE_FILE, JSON.stringify(content, null, '  '));
+  }
+
+  /**
+   * Load settings from filesystem.
+   * @returns {Object}
+   */
+  _loadSettings () {
+    const state = this._loadStateContent();
+    const root = state && typeof state === 'object' ? state[SETTINGS_KEY] : null;
+    if (!root || typeof root !== 'object') return {};
+    return root;
+  }
+
   /**
    * Save settings to filesystem.
    * @param {Object} settings
    */
   async _saveSettings (settings) {
-    if (!this.fs) throw new Error('Filesystem not available');
-    await this.fs.publish(SETTINGS_FILE, settings);
+    const state = this._loadStateContent();
+    state[SETTINGS_KEY] = settings;
+    await this._saveStateContent(state);
   }
 
   /**
@@ -210,27 +220,13 @@ class SetupService {
 
   /**
    * Verify an admin token. Uses Token.verifySigned (cryptographic signature); no server-side storage.
-   * Falls back to legacy stored-token comparison for existing deployments.
    * @param {string} bearerToken
    * @returns {boolean}
    */
   verifyAdminToken (bearerToken) {
     if (!bearerToken || typeof bearerToken !== 'string') return false;
-    if (this._rootKey && Token.verifySigned(bearerToken, this._rootKey) !== null) return true;
-    if (!this.fs) return false;
-    const raw = this.fs.readFile(ADMIN_TOKEN_FILE);
-    if (!raw) return false;
-    try {
-      const stored = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(raw.toString('utf8'));
-      const storedToken = stored && stored.token;
-      if (!storedToken) return false;
-      const a = Buffer.from(bearerToken, 'utf8');
-      const b = Buffer.from(storedToken, 'utf8');
-      if (a.length !== b.length) return false;
-      return crypto.timingSafeEqual(a, b);
-    } catch {
-      return false;
-    }
+    if (!this._rootKey) return false;
+    return Token.verifySigned(bearerToken, this._rootKey) !== null;
   }
 
   /**
@@ -246,6 +242,7 @@ class SetupService {
 }
 
 SetupService.GLOBAL_SETTINGS = GLOBAL_SETTINGS;
-SetupService.SETTINGS_FILE = SETTINGS_FILE;
+SetupService.STATE_FILE = STATE_FILE;
+SetupService.SETTINGS_KEY = SETTINGS_KEY;
 
 module.exports = SetupService;

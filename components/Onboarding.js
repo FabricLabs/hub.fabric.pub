@@ -44,7 +44,8 @@ class Onboarding extends React.Component {
       diskAllocationMb: props.diskAllocationMb || '1024',
       costPerByteSats: (props.costPerByteSats != null && String(props.costPerByteSats).trim() !== '') ? String(props.costPerByteSats) : '0.01',
       saving: false,
-      error: null
+      error: null,
+      setupUiSecret: ''
     };
   }
 
@@ -62,6 +63,11 @@ class Onboarding extends React.Component {
     this.setState({ saving: true, error: null });
     try {
       const baseUrl = this.getBaseUrl();
+      const needsSecret = !!this.props.requiresSetupUiSecret;
+      const secretTrim = String(this.state.setupUiSecret || '').trim();
+      if (needsSecret && !secretTrim) {
+        throw new Error('Enter the operator setup secret (FABRIC_HUB_SETUP_UI_SECRET).');
+      }
       const response = await fetch(`${baseUrl}/settings`, {
         method: 'POST',
         headers: {
@@ -69,6 +75,7 @@ class Onboarding extends React.Component {
           'Accept': 'application/json'
         },
         body: JSON.stringify({
+          ...(needsSecret ? { setupUiSecret: secretTrim, SETUP_UI_SECRET: secretTrim } : {}),
           NODE_NAME: this.state.nodeName.trim() || 'Hub',
           NODE_PERSONALITY: JSON.stringify(['helpful']),
           NODE_TEMPERATURE: 0,
@@ -130,6 +137,7 @@ class Onboarding extends React.Component {
 
     return (
       <Modal
+        data-testid="hub-onboarding-modal"
         open={open}
         onClose={() => {}}
         size="small"
@@ -176,6 +184,7 @@ class Onboarding extends React.Component {
               <Form.Field>
                 <Checkbox
                   label="Launch managed Bitcoin node (bitcoind)"
+                  data-testid="hub-onboarding-bitcoin-managed"
                   checked={this.state.bitcoinManaged}
                   onChange={(e, { checked }) => this.setState({ bitcoinManaged: !!checked })}
                 />
@@ -250,6 +259,7 @@ class Onboarding extends React.Component {
               </Form.Field>
               <Form.Field>
                 <Checkbox
+                  data-testid="hub-onboarding-lightning-managed"
                   label="Launch managed Lightning node (lightningd)"
                   checked={this.state.lightningManaged}
                   onChange={(e, { checked }) => this.setState({ lightningManaged: !!checked })}
@@ -283,6 +293,21 @@ class Onboarding extends React.Component {
                   Managed signet/testnet runs bitcoind locally. Signet has predictable ~1 min blocks; testnet uses PoW and can be unstable.
                 </Message>
               )}
+              {this.props.requiresSetupUiSecret ? (
+                <Form.Field>
+                  <label>Operator setup secret</label>
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    placeholder="Same as FABRIC_HUB_SETUP_UI_SECRET on the server"
+                    value={this.state.setupUiSecret}
+                    onChange={(e) => this.setState({ setupUiSecret: e.target.value })}
+                  />
+                  <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+                    Required to authorize first-time configuration when the hub is protected with an environment secret.
+                  </small>
+                </Form.Field>
+              ) : null}
             </Form>
             {error && (
               <Message negative>
@@ -294,6 +319,7 @@ class Onboarding extends React.Component {
         </Modal.Content>
         <Modal.Actions>
           <Button
+            data-testid="hub-onboarding-complete-setup"
             primary
             loading={saving}
             disabled={saving}

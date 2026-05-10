@@ -3,14 +3,14 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 const { Icon, Message } = require('semantic-ui-react');
-const { BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX } = require('../functions/bitcoinClient');
+const { getBitcoinBip44AccountForIdentity } = require('../functions/bitcoinClient');
 
 /**
- * Fabric identity is the master; Bitcoin receive/change for payments use one fixed BIP44 account under it.
+ * Fabric identity is the master; Bitcoin receive/change follow the active BIP44 account (matches Fabric account index when enabled).
  */
 function BitcoinWalletBranchBar ({ identity }) {
   const xpub = identity && identity.xpub ? String(identity.xpub) : '';
-  const acct = BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX;
+  const acct = getBitcoinBip44AccountForIdentity(identity || {});
 
   return (
     <Message
@@ -42,8 +42,7 @@ function BitcoinWalletBranchBar ({ identity }) {
             </p>
           ) : (
             <p style={{ margin: 0, color: '#888', fontSize: '0.88em' }}>
-              Use the <strong>Identity</strong> control in the top bar (shows <strong>Locked</strong> when your signing key is not loaded), or{' '}
-              <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, to unlock and derive receive addresses.
+              Open <strong>Identity</strong> (top bar) or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> to unlock and derive receive addresses. Switch Fabric account in the identity dialog when using multi-account mode.
             </p>
           )}
         </div>

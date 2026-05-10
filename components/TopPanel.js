@@ -15,6 +15,7 @@ const {
   Segment
 } = require('semantic-ui-react');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const { plaintextMasterFromStored } = require('../functions/fabricHubLocalIdentity');
 const {
   readUiNotifications,
   UPDATED_EVENT,
@@ -26,6 +27,7 @@ const {
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
+const { buildLocalFabricIdentityPayload } = require('../functions/fabricHubLocalIdentity');
 
 function TopPanel (props) {
   const location = useLocation();
@@ -75,26 +77,41 @@ function TopPanel (props) {
   // Fallback for short-lived parent state gaps right after identity create/login:
   // if props lag for a render, derive id/xpub from persisted local storage so the
   // chip does not flash back to "Login".
+  // Must use the same resolution rules as HubInterface / IdentityManager — not raw JSON fields —
+  // or the chip can show Watch-only/Locked while the shell has no effective identity (e.g. strict
+  // no-plaintext-at-rest records, or cleared/forgotten state that still has stray keys).
   const persistedIdentity = React.useMemo(() => {
     try {
       if (typeof window === 'undefined') return null;
       const parsed = readStorageJSON('fabric.identity.local', null);
       if (!parsed || (!parsed.id && !parsed.xpub)) return null;
+      const bl = buildLocalFabricIdentityPayload(parsed);
+      if (!bl.resolved || !bl.record) return null;
+      const r = bl.record;
       return {
-        id: parsed.id ? String(parsed.id) : undefined,
-        xpub: parsed.xpub ? String(parsed.xpub) : undefined
+        id: r.id != null ? String(r.id) : undefined,
+        xpub: r.xpub != null ? String(r.xpub) : undefined
       };
     } catch (e) {
       return null;
     }
   }, [hasLocalIdentity, localIdentity && localIdentity.xpub, auth && auth.xpub]);
+  const plaintextXprvOnDisk = React.useMemo(() => {
+    try {
+      const p = readStorageJSON('fabric.identity.local', null);
+      return !!(p && plaintextMasterFromStored(p));
+    } catch (e) {
+      return false;
+    }
+  }, [hasLocalIdentity, localIdentity && localIdentity.xpub, hasLockedIdentity]);
   const identitySource = localIdentity || auth || persistedIdentity;
   const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
   // Password-protected identity without xprv in memory → show Locked (unlock flow).
   // xpub / watch-only (no password) → show Watch-only (upgrade/import path), not "Locked".
   const passwordProtectedIdentity = !!(localIdentity && localIdentity.passwordProtected);
   const isPasswordLocked = hasAnyLocalIdentity && !isAuthed && (hasLockedIdentity || passwordProtectedIdentity);
-  const isWatchOnlyIdentity = hasAnyLocalIdentity && !isAuthed && !passwordProtectedIdentity && !!identitySource;
+  const isWatchOnlyIdentity = hasAnyLocalIdentity && !isAuthed && !passwordProtectedIdentity && !!identitySource &&
+    !hasLockedIdentity;
   const isLockedState = isPasswordLocked || isWatchOnlyIdentity;
   /** True when we can derive a client wallet id and show a live balance in the chip. */
   const canShowClientBalance = !!(
@@ -498,7 +515,6 @@ function TopPanel (props) {
           </Label>
         )}
         {isAuthed ? (
-          <div style={{ display: 'inline-block' }}>
             <Dropdown
               trigger={
                 <Button size="small" primary title="Identity — menu or lock">
@@ -521,7 +537,7 @@ function TopPanel (props) {
                   title="Hub WebSocket URL and bridge options"
                 />
                 <Dropdown.Divider />
-                {localIdentity && localIdentity.passwordProtected ? (
+                {localIdentity && localIdentity.xprv && (localIdentity.passwordProtected || plaintextXprvOnDisk) ? (
                   <Dropdown.Item
                     icon="lock"
                     text="Lock identity"
@@ -535,7 +551,6 @@ function TopPanel (props) {
                 <Dropdown.Item icon="trash" text="Destroy identity" onClick={() => { onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>
             </Dropdown>
-          </div>
         ) : (
           <Button
             size="small"

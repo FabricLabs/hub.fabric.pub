@@ -20,6 +20,20 @@ function linkedFabricResolvePaths () {
   }
   return out;
 }
+
+/** @fabric/http `assets/` so dev server can serve `semantic.min.css` + `/themes/...` (same paths as the Hub’s second static root). */
+function resolveFabricHttpAssetsDir () {
+  try {
+    const main = require.resolve('@fabric/http');
+    const dir = path.join(path.resolve(path.dirname(main), '..'), 'assets');
+    const check = path.join(dir, 'semantic.min.css');
+    if (fs.existsSync(check)) {
+      return fs.realpathSync(dir);
+    }
+  } catch (_) { /* not installed */ }
+  return null;
+}
+
 const TerserPlugin = require('terser-webpack-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 
@@ -27,6 +41,29 @@ module.exports = (env, argv) => {
   const mode = argv.mode || 'development';
   const hubProxyOrigin = process.env.FABRIC_HUB_DEV_PROXY
     || `http://127.0.0.1:${process.env.FABRIC_HUB_PORT || 8080}`;
+
+  const devServerStatic = [
+    {
+      directory: path.join(__dirname, 'assets'),
+      publicPath: '/',
+      watch: true
+    }
+  ];
+  const fabricHttpAssets = resolveFabricHttpAssetsDir();
+  if (fabricHttpAssets) {
+    devServerStatic.push({
+      directory: fabricHttpAssets,
+      publicPath: '/',
+      watch: true
+    });
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[webpack] @fabric/http assets/ not found (expected semantic.min.css). Install the package or `npm run link:fabric` ' +
+        'and run `npm run build:semantic` in the fabric-http clone.'
+    );
+  }
+
   return {
   mode,
   devtool: 'eval-source-map',
@@ -114,16 +151,11 @@ module.exports = (env, argv) => {
     }
   },
   devServer: {
+    // With `true`, paths containing a file extension (e.g. .css, .woff2) do not get index.html (default dot rule)
     historyApiFallback: true,
     hot: true,
     port: 3000,
-    static: [
-      {
-        directory: path.join(__dirname, 'assets'),
-        publicPath: '/',
-        watch: true
-      }
-    ],
+    static: devServerStatic,
     // Proxy backend services when running via webpack-dev-server
     // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
     proxy: [
