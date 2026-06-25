@@ -990,6 +990,18 @@ function normalizeWalletsBaseUrl (value) {
   return normalized;
 }
 
+/** Canonical watch-only xpub HTTP API (`GET …/xpub`, `/xpub/utxos`, `/xpub/transactions`). */
+function normalizeXpubWatchBaseUrl (value) {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return '/services/bitcoin/xpub';
+  if (normalized === '/payments') return '/services/bitcoin/xpub';
+  if (/\/services\/bitcoin$/i.test(normalized)) return `${normalized}/xpub`;
+  if (/\/services\/bitcoin\/wallets$/i.test(normalized)) return normalized.replace(/\/wallets$/i, '/xpub');
+  if (/\/services\/bitcoin\/payments$/i.test(normalized)) return normalized.replace(/\/payments$/i, '/xpub');
+  if (/\/wallet$/i.test(normalized)) return normalized.replace(/\/wallet$/i, '/xpub');
+  return normalized;
+}
+
 function normalizePaymentsBaseUrl (value) {
   const normalized = normalizeBaseUrl(value);
   if (!normalized) return '/payments';
@@ -1153,15 +1165,47 @@ async function fetchTransactionHex (settings = {}, txhash = '') {
 }
 
 async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
+  const xpub = wallet.xpub ? String(wallet.xpub).trim() : '';
+  const walletId = String(wallet.walletId || '').trim();
+  if (!xpub && !walletId) return {};
+
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+
+  if (xpub) {
+    const baseUrl = normalizeXpubWatchBaseUrl(settings.paymentsBaseUrl);
+    if (!baseUrl) return {};
+    const params = new URLSearchParams();
+    params.set('xpub', xpub);
+    const network = options.network != null ? String(options.network) : '';
+    if (network) {
+      const addrs = deriveWatchAddresses(wallet, network, 25, 25);
+      if (addrs.length > 0) params.set('addresses', addrs.join(','));
+    }
+    const q = params.toString();
+    const summary = await tryRequests(baseUrl, [{ path: q ? `?${q}` : '' }], authTok);
+    const raw = pickObject(summary ? summary.data : {}, ['wallet', 'data']);
+    if (raw && typeof raw === 'object') {
+      const balanceSats = raw.balanceSats ?? raw.balance_sats;
+      const confirmedSats = raw.confirmedSats ?? raw.confirmed_sats ?? balanceSats;
+      const unconfirmedSats = raw.unconfirmedSats ?? raw.unconfirmed_sats;
+      const fromSummary = (v) => (v != null && typeof v === 'number') ? Math.round(v * 100000000) : undefined;
+      const result = {
+        ...raw,
+        balanceSats: balanceSats != null ? Number(balanceSats) : (raw.summary && raw.summary.trusted != null ? fromSummary(raw.summary.trusted) : undefined),
+        confirmedSats: confirmedSats != null ? Number(confirmedSats) : (raw.summary && raw.summary.trusted != null ? fromSummary(raw.summary.trusted) : undefined),
+        unconfirmedSats: unconfirmedSats != null ? Number(unconfirmedSats) : (raw.summary && raw.summary.untrustedPending != null ? fromSummary(raw.summary.untrustedPending) : undefined)
+      };
+      setCachedBalance(walletId || `xpub:${xpub.slice(0, 48)}`, result);
+      return result;
+    }
+    return raw;
+  }
+
   const baseUrl = normalizeWalletsBaseUrl(settings.paymentsBaseUrl);
   if (!baseUrl) return {};
 
-  const walletId = String(wallet.walletId || '').trim();
-  if (!walletId) return {};
-
   const encodedId = encodeURIComponent(walletId);
   const params = new URLSearchParams();
-  if (wallet.xpub) params.set('xpub', wallet.xpub);
   const network = options.network != null ? String(options.network) : '';
   if (network && wallet.xpub) {
     const addrs = deriveWatchAddresses(wallet, network, 25, 25);
@@ -1169,7 +1213,6 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
   }
 
   const path = params.toString() ? `/${encodedId}?${params.toString()}` : `/${encodedId}`;
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const summary = await tryRequests(baseUrl, [
     { path }
   ], authTok);
@@ -1202,6 +1245,8 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
  */
 async function fetchWalletSummaryWithCache (settings = {}, wallet = {}, options = {}) {
   const walletId = String(wallet.walletId || '').trim();
+  const xpub = wallet.xpub ? String(wallet.xpub).trim() : '';
+  const cacheKey = walletId || (xpub ? `xpub:${xpub.slice(0, 48)}` : '');
   const bypassCache = !!(options.bypassCache || options.maxCacheAgeMs === 0);
   const maxCacheAgeMs = bypassCache ? 0 : (options.maxCacheAgeMs != null ? Number(options.maxCacheAgeMs) : BALANCE_CACHE_MAX_AGE_MS);
 
@@ -1214,7 +1259,7 @@ async function fetchWalletSummaryWithCache (settings = {}, wallet = {}, options 
     // Fall through to cache
   }
 
-  const cached = getCachedBalance(walletId, Infinity);
+  const cached = cacheKey ? getCachedBalance(cacheKey, Infinity) : null;
   if (cached) {
     return {
       balanceSats: cached.balanceSats,
@@ -1267,23 +1312,39 @@ async function fetchReceiveAddress (settings = {}, wallet = {}, options = {}) {
 }
 
 async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
+  const xpub = wallet.xpub ? String(wallet.xpub).trim() : '';
+  const walletIdEnc = encodeURIComponent(wallet.walletId || '');
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+
+  if (xpub) {
+    const baseUrl = normalizeXpubWatchBaseUrl(settings.paymentsBaseUrl);
+    if (!baseUrl) return [];
+    const params = new URLSearchParams();
+    params.set('xpub', xpub);
+    const network = options.network != null ? String(options.network) : '';
+    if (network) {
+      const addrs = deriveWatchAddresses(wallet, network, 25, 25);
+      if (addrs.length > 0) params.set('addresses', addrs.join(','));
+    }
+    const qs = params.toString();
+    const path = qs ? `/utxos?${qs}` : '/utxos';
+    const result = await tryRequests(baseUrl, [{ path }], authTok);
+    return pickArray(result ? result.data : {}, ['utxos', 'items', 'results', 'data']);
+  }
+
   const baseUrl = normalizeWalletsBaseUrl(settings.paymentsBaseUrl);
   if (!baseUrl) return [];
-
-  const walletId = encodeURIComponent(wallet.walletId || '');
-  if (!walletId) return [];
+  if (!walletIdEnc) return [];
 
   const params = new URLSearchParams();
-  if (wallet.xpub) params.set('xpub', wallet.xpub);
   const network = options.network != null ? String(options.network) : '';
   if (network && wallet.xpub) {
     const addrs = deriveWatchAddresses(wallet, network, 25, 25);
     if (addrs.length > 0) params.set('addresses', addrs.join(','));
   }
   const qs = params.toString();
-  const path = qs ? `/${walletId}/utxos?${qs}` : `/${walletId}/utxos`;
+  const path = qs ? `/${walletIdEnc}/utxos?${qs}` : `/${walletIdEnc}/utxos`;
 
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const result = await tryRequests(baseUrl, [
     { path }
   ], authTok);
@@ -1292,15 +1353,32 @@ async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
 }
 
 async function fetchWalletTransactions (settings = {}, wallet = {}, options = {}) {
+  const xpub = wallet.xpub ? String(wallet.xpub).trim() : '';
+  const walletId = String(wallet.walletId || '').trim();
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 50)));
+  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+
+  if (xpub) {
+    const baseUrl = normalizeXpubWatchBaseUrl(settings.paymentsBaseUrl);
+    if (!baseUrl) return [];
+    const params = new URLSearchParams();
+    params.set('xpub', xpub);
+    params.set('limit', String(limit));
+    const network = options.network != null ? String(options.network) : '';
+    if (network) {
+      const addrs = deriveWatchAddresses(wallet, network, 25, 25);
+      if (addrs.length > 0) params.set('addresses', addrs.join(','));
+    }
+    const path = `/transactions?${params.toString()}`;
+    const result = await tryRequests(baseUrl, [{ path }], authTok);
+    return pickArray(result ? result.data : {}, ['transactions', 'items', 'results', 'data']);
+  }
+
   const baseUrl = normalizeWalletsBaseUrl(settings.paymentsBaseUrl);
   if (!baseUrl) return [];
-
-  const walletId = String(wallet.walletId || '').trim();
   if (!walletId) return [];
 
-  const limit = Math.max(1, Math.min(100, Number(options.limit || 50)));
   const params = new URLSearchParams();
-  if (wallet.xpub) params.set('xpub', wallet.xpub);
   params.set('limit', String(limit));
   const network = options.network != null ? String(options.network) : '';
   if (network && wallet.xpub) {
@@ -1309,7 +1387,6 @@ async function fetchWalletTransactions (settings = {}, wallet = {}, options = {}
   }
 
   const path = `/${encodeURIComponent(walletId)}/transactions?${params.toString()}`;
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
   const result = await tryRequests(baseUrl, [{ path }], authTok);
   return pickArray(result ? result.data : {}, ['transactions', 'items', 'results', 'data']);
 }

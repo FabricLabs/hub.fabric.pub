@@ -69,7 +69,15 @@ module.exports = Object.assign({}, defaults, {
      * Listed L1 prices for inventory / Document Market (HTLC purchase flow). Set to 0 to omit `purchasePriceSats`.
      */
     documentInventoryBlockPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_BLOCK_PRICE_SATS || 1000),
-    documentInventoryTransactionPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_TX_PRICE_SATS || 100)
+    documentInventoryTransactionPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_TX_PRICE_SATS || 100),
+    /**
+     * When non-empty, HTTP watch-only xpub routes that call `scantxoutset` require this shared secret:
+     * **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**, **`GET /services/bitcoin/xpub/transactions`**
+     * (canonical; query **`?xpub=`**), and legacy **`GET /services/bitcoin/wallets/:walletId`** with **`?xpub=`** when `:walletId` ≠ Hub wallet name.
+     * Clients: `Authorization: Bearer`, `?apiToken=` / `?xpubQueryToken=`, or `X-Fabric-Xpub-Query-Token`.
+     * Empty/unset keeps anonymous xpub queries (local dev / legacy). Non-empty `FABRIC_BITCOIN_XPUB_QUERY_TOKEN` overrides at runtime in `Hub` constructor.
+     */
+    xpubQueryToken: (process.env.FABRIC_BITCOIN_XPUB_QUERY_TOKEN && String(process.env.FABRIC_BITCOIN_XPUB_QUERY_TOKEN).trim()) || ''
   },
   payjoin: {
     enable: process.env.FABRIC_PAYJOIN_ENABLE ? process.env.FABRIC_PAYJOIN_ENABLE !== 'false' : true,

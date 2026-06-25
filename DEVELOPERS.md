@@ -71,6 +71,9 @@ To enable a stub Lightning backend so the L2 buttons work without a real node: `
 ### Faucet (regtest)
 The **Faucet** on the Bitcoin page sends sats from the Beacon/Hub wallet to a given address. Regtest only; max 1,000,000 sats per request. Requires the Hub wallet to have balance (e.g. from Generate Block or Beacon epochs). `POST /services/bitcoin/faucet` with body `{ address, amountSats? }`.
 
+### Watch-only xpub HTTP queries (`scantxoutset`)
+Public hubs should set **`FABRIC_BITCOIN_XPUB_QUERY_TOKEN`** (or `settings.bitcoin.xpubQueryToken`) to a long random secret. When set, canonical watch-only **`scantxoutset`** endpoints **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**, and **`GET /services/bitcoin/xpub/transactions`** (all require **`?xpub=`**), and legacy **`GET /services/bitcoin/wallets/:walletId`** with **`?xpub=`** when `:walletId` is not the Hub’s loaded wallet, return **403** unless the client sends the same token via **`Authorization: Bearer`**, **`?apiToken=`** / **`?xpubQueryToken=`**, or header **`X-Fabric-Xpub-Query-Token`**. Omit the env var for local-only hubs where anonymous xpub scans are acceptable.
+
 ## Recent Changes (Contributor Context)
 
 ### 1) Payjoin Service Added

@@ -356,6 +356,12 @@ class Hub extends Service {
       this.settings.bitcoin.managed = true;
       if (!rpcportProvided) this.settings.bitcoin.rpcport = 18443;
     }
+    if (this.settings.bitcoin) {
+      const xpubTok = process.env.FABRIC_BITCOIN_XPUB_QUERY_TOKEN;
+      if (xpubTok != null && String(xpubTok).trim()) {
+        this.settings.bitcoin.xpubQueryToken = String(xpubTok).trim();
+      }
+    }
 
     // Vector Clock
     this.clock = this.settings.clock;
@@ -5661,6 +5667,275 @@ class Hub extends Service {
   }
 
   /**
+   * When `settings.bitcoin.xpubQueryToken` is set (e.g. `FABRIC_BITCOIN_XPUB_QUERY_TOKEN`), HTTP watch-only
+   * xpub routes that run `scantxoutset` — **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**,
+   * **`GET /services/bitcoin/xpub/transactions`**, and legacy **`GET /services/bitcoin/wallets/:walletId`** with
+   * **`?xpub=`** when `:walletId` ≠ the Hub wallet name — require this shared secret.
+   * @param {object} req
+   * @param {object} res
+   * @returns {boolean} false when 403 already sent
+   */
+  _authorizeBitcoinXpubQueryHttp (req, res) {
+    const required = this.settings.bitcoin && this.settings.bitcoin.xpubQueryToken
+      ? String(this.settings.bitcoin.xpubQueryToken).trim()
+      : '';
+    if (!required) return true;
+
+    const bearer = SetupService.extractBearerToken(req) || '';
+    const qTok = req.query && (req.query.apiToken != null ? String(req.query.apiToken).trim() : '');
+    const qXpub = req.query && (req.query.xpubQueryToken != null ? String(req.query.xpubQueryToken).trim() : '');
+    const h = req.headers || {};
+    const headerTok = (h['x-fabric-xpub-query-token'] || h['x-fabric-api-token'] || '');
+    const headerStr = typeof headerTok === 'string' ? headerTok.trim() : '';
+
+    const ok =
+      bearer === required ||
+      qTok === required ||
+      qXpub === required ||
+      headerStr === required;
+    if (ok) return true;
+
+    res.status(403).json({
+      status: 'error',
+      message: 'Bitcoin xpub query token required for this hub. Send Authorization: Bearer <token>, ?apiToken=, ?xpubQueryToken=, or X-Fabric-Xpub-Query-Token matching FABRIC_BITCOIN_XPUB_QUERY_TOKEN.'
+    });
+    return false;
+  }
+
+  /**
+   * Watch-only xpub balance (scantxoutset on BIP84 descriptors) + optional mempool amounts for ?addresses=
+   * @param {object} bitcoin
+   * @param {string} xpub
+   * @param {string} addressesParam comma-separated watch addresses
+   * @returns {Promise<object>} JSON fields (no walletId)
+   */
+  async _bitcoinXpubWatchSummaryPayload (bitcoin, xpub, addressesParam = '') {
+    const network = bitcoin.network || 'regtest';
+    const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
+    const totalBTC = result && typeof result.total_amount === 'number' ? result.total_amount : 0;
+    const confirmedSats = Math.round(totalBTC * 100000000);
+
+    let unconfirmedSats = 0;
+    const ap = String(addressesParam || '').trim();
+    if (ap) {
+      const watchAddrs = new Set(ap.split(',').map((a) => String(a).trim()).filter(Boolean));
+      if (watchAddrs.size > 0) {
+        const mempoolTxids = await bitcoin._makeRPCRequest('getrawmempool', []).catch(() => []);
+        for (const txid of (Array.isArray(mempoolTxids) ? mempoolTxids : []).slice(0, 100)) {
+          try {
+            const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]).catch(() => null);
+            if (!tx || !Array.isArray(tx.vout)) continue;
+            for (const v of tx.vout) {
+              const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
+              if (addr && watchAddrs.has(addr)) {
+                unconfirmedSats += Math.round(Number(v.value || 0) * 100000000);
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    const totalSats = confirmedSats + unconfirmedSats;
+
+    return {
+      network,
+      balanceSats: totalSats,
+      confirmedSats,
+      unconfirmedSats,
+      summary: {
+        trusted: confirmedSats / 100000000,
+        untrustedPending: unconfirmedSats / 100000000,
+        immature: 0
+      },
+      balance: totalSats / 100000000,
+      unspents: (result && Array.isArray(result.unspents)) ? result.unspents : [],
+      keysHeldByServer: false
+    };
+  }
+
+  /**
+   * @param {object} bitcoin
+   * @param {string} xpub
+   * @returns {Promise<object>} { network, utxos, keysHeldByServer }
+   */
+  async _bitcoinXpubWatchUtxosPayload (bitcoin, xpub) {
+    const network = bitcoin.network || 'regtest';
+    const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
+    const raw = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+    const utxos = raw.map((u) => ({
+      txid: u.txid,
+      vout: u.vout,
+      amount: u.amount,
+      amountSats: Math.round(Number(u.amount || 0) * 100000000),
+      desc: u.desc,
+      scriptPubKey: u.scriptPubKey,
+      height: u.height
+    }));
+    return { network, utxos, keysHeldByServer: false };
+  }
+
+  /**
+   * @param {object} bitcoin
+   * @param {string} xpub
+   * @param {string} addressesParam
+   * @param {number} limit
+   * @returns {Promise<object>} { network, transactions, keysHeldByServer }
+   */
+  async _bitcoinXpubWatchTransactionsPayload (bitcoin, xpub, addressesParam = '', limit = 50) {
+    const network = bitcoin.network || 'regtest';
+    const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
+    const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
+    const confirmedTxids = new Set(unspents.map((u) => u.txid).filter(Boolean));
+
+    const mempoolTxids = new Set();
+    const ap = String(addressesParam || '').trim();
+    if (ap) {
+      const watchAddrs = new Set(ap.split(',').map((a) => String(a).trim()).filter(Boolean));
+      if (watchAddrs.size > 0) {
+        const mempool = await bitcoin._makeRPCRequest('getrawmempool', []).catch(() => []);
+        for (const txid of (Array.isArray(mempool) ? mempool : []).slice(0, 100)) {
+          if (confirmedTxids.has(txid)) continue;
+          try {
+            const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]).catch(() => null);
+            if (!tx || !Array.isArray(tx.vout)) continue;
+            for (const v of tx.vout) {
+              const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
+              if (addr && watchAddrs.has(addr)) {
+                mempoolTxids.add(txid);
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    const allTxids = [...new Set([...confirmedTxids, ...mempoolTxids])].slice(0, limit);
+    const watchAddrsForOurAmount = ap ? new Set(ap.split(',').map((a) => String(a).trim()).filter(Boolean)) : new Set();
+
+    const transactions = await Promise.all(allTxids.map(async (txid) => {
+      try {
+        const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
+        const totalOut = Array.isArray(tx.vout) ? tx.vout.reduce((acc, v) => acc + Number(v.value || 0), 0) : 0;
+        let ourAmount = (unspents.filter((u) => u.txid === txid) || []).reduce((acc, u) => acc + Number(u.amount || 0), 0);
+        if (ourAmount === 0 && watchAddrsForOurAmount.size > 0 && Array.isArray(tx.vout)) {
+          for (const v of tx.vout) {
+            const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
+            if (addr && watchAddrsForOurAmount.has(addr)) ourAmount += Number(v.value || 0);
+          }
+        }
+        return {
+          txid,
+          confirmations: tx.confirmations != null ? tx.confirmations : 0,
+          blockhash: tx.blockhash || null,
+          blocktime: tx.blocktime || null,
+          time: tx.time || tx.blocktime || null,
+          value: totalOut,
+          ourAmount,
+          vin: tx.vin || [],
+          vout: tx.vout || []
+        };
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    const sorted = transactions.filter(Boolean).sort((a, b) => {
+      const at = Number(a.blocktime || a.time || 0);
+      const bt = Number(b.blocktime || b.time || 0);
+      return bt - at;
+    });
+
+    return {
+      network,
+      transactions: this._decorateTransactionsWithFabricLabels(sorted),
+      keysHeldByServer: false
+    };
+  }
+
+  _handleBitcoinXpubSummaryRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      if (!xpub) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'xpub query parameter is required for watch-only balance.'
+        });
+      }
+      if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
+      try {
+        const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+        const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam);
+        return res.json(body);
+      } catch (err) {
+        if (this.settings.debug) console.error('[HUB] scantxoutset xpub API:', err && err.message);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to fetch address-based balance. Ensure txindex is enabled if needed.',
+          details: err && err.message ? err.message : String(err)
+        });
+      }
+    });
+  }
+
+  _handleBitcoinXpubUtxosRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      if (!xpub) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'xpub query parameter is required for watch-only UTXOs.'
+        });
+      }
+      if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
+      try {
+        const body = await this._bitcoinXpubWatchUtxosPayload(bitcoin, xpub);
+        return res.json(body);
+      } catch (err) {
+        if (this.settings.debug) console.error('[HUB] scantxoutset xpub UTXOs:', err && err.message);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to list UTXOs for xpub. Ensure txindex is enabled.',
+          details: err && err.message ? err.message : String(err)
+        });
+      }
+    });
+  }
+
+  _handleBitcoinXpubTransactionsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      if (!xpub) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'xpub query parameter is required for watch-only transaction list.'
+        });
+      }
+      if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
+      const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+      try {
+        const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+        const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit);
+        return res.json(body);
+      } catch (err) {
+        if (this.settings.debug) console.error('[HUB] xpub transactions API:', err && err.message);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to fetch wallet transactions. Ensure txindex is enabled.',
+          details: err && err.message ? err.message : String(err)
+        });
+      }
+    });
+  }
+
+  /**
    * Mempool payment summaries (same JSON shape as legacy GET /payments) filtered to txs paying watched addresses.
    * @param {object} bitcoin
    * @param {Set<string>} watchAddrs
@@ -5710,50 +5985,11 @@ class Hub extends Service {
       const isClientWallet = !isHubWallet && xpub;
 
       if (isClientWallet) {
+        if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const network = bitcoin.network || 'regtest';
-          const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
-          const totalBTC = result && typeof result.total_amount === 'number' ? result.total_amount : 0;
-          const confirmedSats = Math.round(totalBTC * 100000000);
-
-          let unconfirmedSats = 0;
           const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
-          if (addressesParam) {
-            const watchAddrs = new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean));
-            if (watchAddrs.size > 0) {
-              const mempoolTxids = await bitcoin._makeRPCRequest('getrawmempool', []).catch(() => []);
-              for (const txid of (Array.isArray(mempoolTxids) ? mempoolTxids : []).slice(0, 100)) {
-                try {
-                  const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]).catch(() => null);
-                  if (!tx || !Array.isArray(tx.vout)) continue;
-                  for (const v of tx.vout) {
-                    const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
-                    if (addr && watchAddrs.has(addr)) {
-                      unconfirmedSats += Math.round(Number(v.value || 0) * 100000000);
-                    }
-                  }
-                } catch (_) {}
-              }
-            }
-          }
-
-          const totalSats = confirmedSats + unconfirmedSats;
-
-          return res.json({
-            walletId,
-            network,
-            balanceSats: totalSats,
-            confirmedSats,
-            unconfirmedSats,
-            summary: {
-              trusted: confirmedSats / 100000000,
-              untrustedPending: unconfirmedSats / 100000000,
-              immature: 0
-            },
-            balance: totalSats / 100000000,
-            unspents: (result && Array.isArray(result.unspents)) ? result.unspents : [],
-            keysHeldByServer: false
-          });
+          const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam);
+          return res.json({ ...body, walletId });
         } catch (err) {
           if (this.settings.debug) console.error('[HUB] scantxoutset for client wallet:', err && err.message);
           return res.status(500).json({
@@ -5925,26 +6161,10 @@ class Hub extends Service {
       const isClientWallet = !isHubWallet && xpub;
 
       if (isClientWallet) {
+        if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const network = bitcoin.network || 'regtest';
-          const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
-          const raw = (result && Array.isArray(result.unspents)) ? result.unspents : [];
-          const utxos = raw.map((u) => ({
-            txid: u.txid,
-            vout: u.vout,
-            amount: u.amount,
-            amountSats: Math.round(Number(u.amount || 0) * 100000000),
-            desc: u.desc,
-            scriptPubKey: u.scriptPubKey,
-            height: u.height
-          }));
-
-          return res.json({
-            walletId,
-            network,
-            utxos,
-            keysHeldByServer: false
-          });
+          const body = await this._bitcoinXpubWatchUtxosPayload(bitcoin, xpub);
+          return res.json({ ...body, walletId });
         } catch (err) {
           if (this.settings.debug) console.error('[HUB] scantxoutset for client wallet UTXOs:', err && err.message);
           return res.status(500).json({
@@ -5990,77 +6210,11 @@ class Hub extends Service {
       const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
 
       if (isClientWallet) {
+        if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const network = bitcoin.network || 'regtest';
-          const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
-          const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
-          const confirmedTxids = new Set(unspents.map((u) => u.txid).filter(Boolean));
-
-          const mempoolTxids = new Set();
           const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
-          if (addressesParam) {
-            const watchAddrs = new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean));
-            if (watchAddrs.size > 0) {
-              const mempool = await bitcoin._makeRPCRequest('getrawmempool', []).catch(() => []);
-              for (const txid of (Array.isArray(mempool) ? mempool : []).slice(0, 100)) {
-                if (confirmedTxids.has(txid)) continue;
-                try {
-                  const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]).catch(() => null);
-                  if (!tx || !Array.isArray(tx.vout)) continue;
-                  for (const v of tx.vout) {
-                    const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
-                    if (addr && watchAddrs.has(addr)) {
-                      mempoolTxids.add(txid);
-                      break;
-                    }
-                  }
-                } catch (_) {}
-              }
-            }
-          }
-
-          const allTxids = [...new Set([...confirmedTxids, ...mempoolTxids])].slice(0, limit);
-          const watchAddrsForOurAmount = addressesParam ? new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean)) : new Set();
-
-          const transactions = await Promise.all(allTxids.map(async (txid) => {
-            try {
-              const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
-              const totalOut = Array.isArray(tx.vout) ? tx.vout.reduce((acc, v) => acc + Number(v.value || 0), 0) : 0;
-              let ourAmount = (unspents.filter((u) => u.txid === txid) || []).reduce((acc, u) => acc + Number(u.amount || 0), 0);
-              if (ourAmount === 0 && watchAddrsForOurAmount.size > 0 && Array.isArray(tx.vout)) {
-                for (const v of tx.vout) {
-                  const addr = v.scriptPubKey && v.scriptPubKey.address ? String(v.scriptPubKey.address) : '';
-                  if (addr && watchAddrsForOurAmount.has(addr)) ourAmount += Number(v.value || 0);
-                }
-              }
-              return {
-                txid,
-                confirmations: tx.confirmations != null ? tx.confirmations : 0,
-                blockhash: tx.blockhash || null,
-                blocktime: tx.blocktime || null,
-                time: tx.time || tx.blocktime || null,
-                value: totalOut,
-                ourAmount,
-                vin: tx.vin || [],
-                vout: tx.vout || []
-              };
-            } catch (e) {
-              return null;
-            }
-          }));
-
-          const sorted = transactions.filter(Boolean).sort((a, b) => {
-            const at = Number(a.blocktime || a.time || 0);
-            const bt = Number(b.blocktime || b.time || 0);
-            return bt - at;
-          });
-
-          return res.json({
-            walletId,
-            network,
-            transactions: this._decorateTransactionsWithFabricLabels(sorted),
-            keysHeldByServer: false
-          });
+          const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit);
+          return res.json({ ...body, walletId });
         } catch (err) {
           if (this.settings.debug) console.error('[HUB] wallet transactions for xpub:', err && err.message);
           return res.status(500).json({
@@ -7866,6 +8020,9 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/bitcoin/blocks/:blockhash', this._handleBitcoinBlockViewRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/transactions', this._handleBitcoinTransactionsListRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/transactions/:txhash', this._handleBitcoinTransactionViewRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/xpub/utxos', this._handleBitcoinXpubUtxosRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/xpub/transactions', this._handleBitcoinXpubTransactionsRequest.bind(this));
+      this.http._addRoute('GET', '/services/bitcoin/xpub', this._handleBitcoinXpubSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/wallets', this._handleBitcoinWalletSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/wallets/:walletId', this._handleBitcoinWalletSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/addresses', this._handleBitcoinWalletAddressRequest.bind(this));
