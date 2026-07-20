@@ -7,9 +7,6 @@ added 1425 packages, and audited 1426 packages in 1m
 
 23 vulnerabilities (12 moderate, 11 high)
 
-To address issues that do not require attention, run:
-  npm audit fix
-
 To address all issues possible (including breaking changes), run:
   npm audit fix --force
 
