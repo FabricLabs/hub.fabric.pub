@@ -10605,6 +10605,36 @@ class Hub extends Service {
         }
       });
 
+      // Contract namespace events (CONTRACT_PUBLISH / CONTRACT_MESSAGE). The
+      // core Peer relays these across the mesh; the hub tracks them lightly.
+      //
+      // NOTE: do NOT append CONTRACT_MESSAGE to the Fabric message log — that
+      // generates a chain block + fs.publish per call, and app namespaces (e.g.
+      // GoonCitizen) can emit these at high volume. Keep an in-memory rolling
+      // summary instead. CONTRACT_PUBLISH is rare (namespace declaration) and is
+      // recorded once per contract id for audit.
+      this._contractNamespaces = this._contractNamespaces || new Set();
+      this._contractMessageCounts = this._contractMessageCounts || Object.create(null);
+      this.agent.on('contract:publish', (ev) => {
+        const contract = ev && ev.contract ? String(ev.contract) : null;
+        if (!contract || this._contractNamespaces.has(contract)) return;
+        this._contractNamespaces.add(contract);
+        Promise.resolve()
+          .then(() => this._appendFabricMessage('ContractPublish', { contract, signer: (ev && ev.signer) || null }))
+          .catch((err) => {
+            if (this.settings && this.settings.debug) console.error('[HUB] contract:publish record failed:', err && err.message ? err.message : err);
+          });
+      });
+      this.agent.on('contract:message', (ev) => {
+        const contract = ev && ev.contract ? String(ev.contract) : null;
+        if (!contract) return;
+        this._contractMessageCounts[contract] = (this._contractMessageCounts[contract] || 0) + 1;
+        if (this.settings && this.settings.debug) {
+          const body = (ev && ev.object) || {};
+          console.log('[HUB:CONTRACT]', contract, body.type || null, 'count=', this._contractMessageCounts[contract]);
+        }
+      });
+
       // BitcoinBlock gossip is relayed peer-to-peer in @fabric/core Peer; no WebSocket fan-out unless we add a subscription later.
       this.agent.on('bitcoinBlock', ({ message, origin }) => {
         const from = origin && origin.name ? origin.name : '';
