@@ -1,11 +1,20 @@
 $ npm i
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated glob@8.1.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+npm warn deprecated tar@6.2.1: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
-added 1425 packages, and audited 1426 packages in 1m
+added 1357 packages, and audited 1358 packages in 2m
 
-205 packages are looking for funding
+208 packages are looking for funding
   run `npm fund` for details
 
-23 vulnerabilities (12 moderate, 11 high)
+43 vulnerabilities (10 moderate, 32 high, 1 critical)
 
 To address all issues possible (including breaking changes), run:
   npm audit fix --force
@@ -14,3 +23,12 @@ Some issues need review, and may require choosing
 a different dependency.
 
 Run `npm audit` for details.
+npm warn allow-scripts 6 packages have install scripts not yet covered by allowScripts:
+npm warn allow-scripts   @fabric/core@0.1.0-RC1 (install: node scripts/install-native.js)
+npm warn allow-scripts   electron@36.3.2 (postinstall: node install.js)
+npm warn allow-scripts   @soatok/elliptic-to-noble@9999.0.0 (postinstall: node postinstall.js)
+npm warn allow-scripts   zeromq@6.5.0 (install: node ./script/install.js)
+npm warn allow-scripts   puppeteer@24.37.5 (postinstall: node install.mjs)
+npm warn allow-scripts   classic-level@3.0.0 (install: node-gyp-build)
+npm warn allow-scripts
+npm warn allow-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.

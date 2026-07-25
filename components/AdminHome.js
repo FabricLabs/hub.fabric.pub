@@ -8,10 +8,12 @@ const { fetchBitcoinStatus, loadUpstreamSettings } = require('../functions/bitco
 const {
   loadHubUiFeatureFlags,
   setHubUiFeatureFlag,
+  setAllHubUiFeatureFlags,
   FLAG_KEYS,
   anyBitcoinSubFeatureEnabled,
   fetchPersistedHubUiFeatureFlags,
-  persistHubUiFeatureFlags
+  persistHubUiFeatureFlags,
+  documentMarketUiFlags
 } = require('../functions/hubUiFeatureFlags');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BeaconAdminPanel = require('./BeaconAdminPanel');
@@ -323,6 +325,21 @@ function AdminHome (props) {
       return;
     }
     setUiFlagsPersistMsg('Persisted to hub settings (disk) and restored on startup.');
+  };
+
+  const applyDocumentMarketPreset = async () => {
+    const next = setAllHubUiFeatureFlags(documentMarketUiFlags());
+    setUiFlags(next);
+    if (!adminToken) {
+      setUiFlagsPersistMsg('Document market preset saved in this browser only. Save admin token to persist on hub disk.');
+      return;
+    }
+    const result = await persistHubUiFeatureFlags(next, adminToken);
+    if (!result.ok) {
+      setUiFlagsPersistMsg(`Document market preset in browser; hub-disk save failed: ${result.message || 'unknown error'}`);
+      return;
+    }
+    setUiFlagsPersistMsg('Document market preset persisted to hub settings (disk).');
   };
 
   const runWorkerNow = async () => {
@@ -653,14 +670,25 @@ function AdminHome (props) {
 
       <Divider section />
 
-      <Header as="h3" id="admin-ui-visibility-heading">Feature visibility (this browser)</Header>
+      <Header as="h3" id="admin-ui-visibility-heading">Feature visibility</Header>
       <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Optional areas of the UI are <strong>off by default</strong>. When a toggle is off, that area is hidden for{' '}
-        <strong>everyone</strong> using this browser profile (including operators) until you turn it back on.
+        Defaults favor the <strong>Document market</strong> (Documents, Peers, Bitcoin invoices/explorer).
+        When a toggle is off, that area is hidden for this browser profile until you turn it back on.
         Home, Documents, Contracts, Settings, Security, and this Admin page stay available.
-        Toggles below take effect when saved (including Activities, Features, explorer, and Invoices).
-        Choices are cached in the browser Fabric state store and, with admin token, persisted to hub settings on disk and restored at startup.
+        Each browser merges local cache with hub-stored defaults when loaded; with admin token, saves persist to hub disk.
       </p>
+      <Button
+        type="button"
+        size="small"
+        primary
+        basic
+        id="fabric-hub-ui-flag-document-market-preset"
+        style={{ marginBottom: '0.75em' }}
+        onClick={() => { applyDocumentMarketPreset(); }}
+      >
+        <Icon name="file alternate outline" aria-hidden="true" />
+        Document market preset
+      </Button>
       {uiFlagsPersistMsg ? (
         <Message info size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setUiFlagsPersistMsg(null)}>
           {uiFlagsPersistMsg}

@@ -35,6 +35,7 @@ const {
   fabricIdentityNeedFullKeyPlain
 } = require('../functions/hubIdentityUiHints');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags');
 
 const DEFAULT_PUBLISH_PRICE_SATS = '25';
 const TXID_HEX_64 = /^[a-fA-F0-9]{64}$/;
@@ -712,6 +713,9 @@ function DocumentDetail (props) {
     || props.bridgeRef?.current?.lastNetworkStatus?.fabricPeerId
     || null;
   const bridgeForWire = props.bridgeRef && props.bridgeRef.current;
+  const serverFlags = loadServerFeatureFlags(bridgeForWire);
+  const distributeEnabled = !!serverFlags.distribute;
+  const documentPurchaseEnabled = serverFlags.documentPurchase !== false;
   const distributeModalNoLocalWire = !!(bridgeForWire && typeof bridgeForWire.hasLocalWireSigningKey === 'function' && !bridgeForWire.hasLocalWireSigningKey());
   /** Publish / pay-to-distribute require an unlocked Fabric identity so JSON-RPC is Schnorr-signed and local bytes are available. */
   const needsIdentityUnlock = !props.hasDocumentKey;
@@ -1132,7 +1136,8 @@ function DocumentDetail (props) {
             <p style={{ marginBottom: '0.75em', color: 'rgba(0,0,0,0.7)' }}>
               How this document exists on your node and on the hub. <strong>Author</strong> is the creator’s document id (lineage);
               <strong> publisher</strong> is the Fabric peer id of the hub that hosts the published listing.
-              <strong> Publish</strong> advertises it; <strong> Distribute</strong> pays for multi-node storage contracts; <strong> Purchase</strong> uses L1 HTLC when a price is set.
+              <strong> Publish</strong> with a price seals content (ciphertext-at-rest); buyers pay an L1 HTLC that reveals the decryption key.
+              {distributeEnabled ? <> <strong> Distribute</strong> (optional) bonds multi-node storage contracts.</> : null}
             </p>
             <List relaxed>
               <List.Item>
@@ -1426,7 +1431,7 @@ function DocumentDetail (props) {
                   }
                 />
               )}
-              {canPurchase && (
+              {canPurchase && documentPurchaseEnabled && (
                 <Button
                   size="small"
                   color="orange"
@@ -1454,32 +1459,35 @@ function DocumentDetail (props) {
                   Purchase ({formatSatsDisplay(docPurchasePriceSats)} sats)
                 </Button>
               )}
-              <Button
-                size="small"
-                basic={!storageContractId}
-                color={storageContractId ? 'purple' : undefined}
-                icon
-                labelPosition="left"
-                onClick={() => {
-                  if (storageContractId) {
-                    navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
-                    return;
+              {distributeEnabled || storageContractId ? (
+                <Button
+                  size="small"
+                  basic={!storageContractId}
+                  color={storageContractId ? 'purple' : undefined}
+                  icon
+                  labelPosition="left"
+                  onClick={() => {
+                    if (storageContractId) {
+                      navigate(`/contracts/${encodeURIComponent(storageContractId)}`);
+                      return;
+                    }
+                    if (!distributeEnabled) return;
+                    if (id) {
+                      setDistributeError(null);
+                      setDistributeOpen(true);
+                    }
+                  }}
+                  disabled={!id || needsIdentityUnlock || (!storageContractId && !distributeEnabled)}
+                  title={
+                    needsIdentityUnlock
+                      ? 'Unlock your identity to start pay-to-distribute (signed requests, real L1 bond)'
+                      : (storageContractId ? 'View storage contract' : 'Distribute this document across other nodes')
                   }
-                  if (id) {
-                    setDistributeError(null);
-                    setDistributeOpen(true);
-                  }
-                }}
-                disabled={!id || needsIdentityUnlock}
-                title={
-                  needsIdentityUnlock
-                    ? 'Unlock your identity to start pay-to-distribute (signed requests, real L1 bond)'
-                    : (storageContractId ? 'View storage contract' : 'Distribute this document across other nodes')
-                }
-              >
-                <Icon name={storageContractId ? 'cloud' : 'cloud upload'} />
-                {storageContractId ? 'Distributed' : 'Distribute'}
-              </Button>
+                >
+                  <Icon name={storageContractId ? 'cloud' : 'cloud upload'} />
+                  {storageContractId ? 'Distributed' : 'Distribute'}
+                </Button>
+              ) : null}
               <Button
                 size="small"
                 basic
@@ -1627,7 +1635,7 @@ function DocumentDetail (props) {
 
         <Modal
           size="small"
-          open={distributeOpen}
+          open={distributeEnabled && distributeOpen}
           onClose={() => {
             if (distributeBusy || distributeBridgeBusy || peerOfferBusy) return;
             setDistributeOpen(false);
@@ -2092,7 +2100,7 @@ function DocumentDetail (props) {
           <Header icon="bitcoin" content="Purchase document (HTLC)" />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              Pay the on-chain invoice (P2TR HTLC). The hub checks that your transaction pays this address for at least the listed amount, then returns ciphertext you can open; the binding matches the <strong>Paid access</strong> description on this page (Fabric <code>DocumentPublish</code> envelope / <code>CreatePurchaseInvoice</code>). Payment is a <strong>real L1 broadcast</strong> (mempool then confirmations).
+              Pay the on-chain invoice. For priced sealed documents the hub stores ciphertext-at-rest; after L1 payment verification it reveals the AES decryption key (HTLC preimage). Same-hub <strong>Claim &amp; Unlock</strong> returns plaintext; peer inventory HTLC delivers ciphertext then auto-unlocks via <code>HTLC_KEY_REVEAL</code>.
             </p>
             {needsIdentityUnlock && (
               <Message warning size="small" style={{ marginTop: '0.75em' }}>

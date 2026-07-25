@@ -118,12 +118,12 @@ function BeaconAdminPanel () {
             Beacon Federation contract
           </Button>
           <Button as={Link} to="/sidechains" basic size="small" style={{ marginTop: '0.5em', marginLeft: '0.35em' }}>
-            Sidechain &amp; demo
+            Sidechain
           </Button>
         </React.Fragment>
       ) : (
         <p style={{ color: '#888', fontSize: '0.9em', marginTop: '0.75em', marginBottom: 0, lineHeight: 1.45 }}>
-          Enable <strong>Sidechain</strong> under Admin → Feature visibility to open Beacon Federation and the sidechain demo from here.
+          Enable <strong>Sidechain</strong> under Admin → Feature visibility to open Beacon Federation and the sidechain tools from here.
         </p>
       )}
     </Segment>

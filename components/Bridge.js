@@ -17,7 +17,7 @@ const {
 // Fabric Types
 const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
-const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER } = require('@fabric/core/constants');
+const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, MAGIC_BYTES } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
 const { pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
@@ -53,6 +53,7 @@ const {
   BRIDGE_INBOUND_WIRE_MAX_BYTES,
   FabricTransportSession
 } = require('../functions/fabricTransportSession');
+const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChatNormalize');
 
 const COLLAB_INVITE_PREFIX = '[COLLAB_INVITATION] ';
 
@@ -775,9 +776,16 @@ class Bridge extends React.Component {
    */
   getPeerDisplayName (actorId) {
     if (!actorId || typeof actorId !== 'string') return actorId || 'unknown';
+    // Mesh-advertised alias (P2P_PEER_ALIAS) preferred over node-local nickname.
+    if (this._peerAliasById && this._peerAliasById[actorId]) {
+      const meshAlias = String(this._peerAliasById[actorId]).trim();
+      if (meshAlias) return meshAlias;
+    }
     const ns = this.state?.networkStatus || this.state?.lastNetworkStatus;
     const peers = Array.isArray(ns?.peers) ? ns.peers : [];
     const peer = peers.find((p) => p && (p.id === actorId || p.address === actorId));
+    const meshFromPeer = peer && (peer.alias || peer.nickname) && String(peer.alias || peer.nickname).trim();
+    if (meshFromPeer) return meshFromPeer;
     const nickname = peer && peer.nickname && String(peer.nickname).trim();
     if (nickname) return nickname;
     const xFromFabric = peer && extractPeerXpub(peer);
@@ -989,6 +997,103 @@ class Bridge extends React.Component {
         globalState: this.globalState
       }
     }));
+  }
+
+  /**
+   * Parse chat content as HTLC_KEY_REVEAL (AES decryption key = HTLC preimage).
+   * @returns {{ settlementId?: string, documentId: string, preimageHex: string, paymentHashHex?: string }|null}
+   */
+  _parseHtlcKeyReveal (content) {
+    if (!content || typeof content !== 'string') return null;
+    const trimmed = content.trim();
+    if (!trimmed.startsWith('{')) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || parsed.type !== 'HTLC_KEY_REVEAL') return null;
+      const documentId = parsed.documentId ? String(parsed.documentId) : '';
+      const preimageHex = String(parsed.preimageHex || '').trim().replace(/^0x/i, '');
+      if (!documentId || !/^[0-9a-fA-F]{64}$/.test(preimageHex)) return null;
+      return {
+        settlementId: parsed.settlementId ? String(parsed.settlementId) : undefined,
+        documentId,
+        preimageHex: preimageHex.toLowerCase(),
+        paymentHashHex: parsed.paymentHashHex ? String(parsed.paymentHashHex).toLowerCase() : undefined
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Apply HTLC_KEY_REVEAL: auto-unlock pending ciphertext when document id matches.
+   * @returns {boolean} true when consumed (even if unlock deferred/failed)
+   */
+  _handleHtlcKeyReveal (content) {
+    const reveal = this._parseHtlcKeyReveal(content);
+    if (!reveal) return false;
+    const docs = this.globalState.documents || {};
+    let targetId = reveal.documentId;
+    if (!docs[targetId] || !docs[targetId].htlcPendingDecrypt) {
+      const alt = Object.keys(docs).find((k) => {
+        const d = docs[k];
+        return d && d.htlcPendingDecrypt && (
+          String(d.id) === reveal.documentId ||
+          String(d.sha256 || '') === reveal.documentId ||
+          String(k) === reveal.documentId
+        );
+      });
+      if (alt) targetId = alt;
+    }
+    const run = async () => {
+      try {
+        const result = await this.unlockHtlcEncryptedDocument(targetId, reveal.preimageHex);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('htlcKeyRevealApplied', {
+            detail: {
+              documentId: targetId,
+              settlementId: reveal.settlementId,
+              ok: !!(result && result.ok),
+              error: result && result.error
+            }
+          }));
+        }
+      } catch (e) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('htlcKeyRevealApplied', {
+            detail: {
+              documentId: targetId,
+              settlementId: reveal.settlementId,
+              ok: false,
+              error: e && e.message ? e.message : String(e)
+            }
+          }));
+        }
+      }
+    };
+    // Ciphertext may arrive slightly after the reveal; retry briefly.
+    const tryUnlock = async () => {
+      const doc = this.globalState.documents && this.globalState.documents[targetId];
+      if (doc && doc.htlcPendingDecrypt) {
+        await run();
+        return;
+      }
+      setTimeout(async () => {
+        const again = this.globalState.documents && this.globalState.documents[targetId];
+        if (again && again.htlcPendingDecrypt) await run();
+        else if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('htlcKeyRevealApplied', {
+            detail: {
+              documentId: targetId,
+              settlementId: reveal.settlementId,
+              ok: false,
+              error: 'No pending HTLC ciphertext for this document yet.'
+            }
+          }));
+        }
+      }, 800);
+    };
+    tryUnlock();
+    return true;
   }
 
   /**
@@ -1415,7 +1520,8 @@ class Bridge extends React.Component {
 
   /**
    * After inventory HTLC phase 2, ciphertext is stored locally until the buyer supplies the
-   * same 32-byte preimage used for the on-chain hashlock (sha256(document bytes)).
+   * same 32-byte preimage used for the on-chain hashlock (content key K for sealed docs).
+   * Prefer automatic unlock via HTLC_KEY_REVEAL after payment verification.
    * @param {string} documentId
    * @param {string} preimageHex - 64 hex chars
    * @returns {Promise<{ ok: boolean, error?: string }>}
@@ -2696,7 +2802,10 @@ class Bridge extends React.Component {
             this.sendToWebRTCPeer(peerId, { type: 'pong', timestamp: Date.now() });
             this._webrtcRewardPeer(peerId, 1, 'answered-ping');
             break;
+          // Opcode (0x61) + wire/friendly names + legacy WebRTC alias.
+          case P2P_PEER_GOSSIP:
           case 'P2P_PEER_GOSSIP':
+          case 'PeerGossip':
           case 'webrtc-peer-gossip': {
             const peers = Array.isArray(payload.object && payload.object.peers)
               ? payload.object.peers
@@ -2728,14 +2837,16 @@ class Bridge extends React.Component {
             }
             break;
           }
-          case 'P2P_PEERING_OFFER': {
+          case P2P_PEERING_OFFER:
+          case 'P2P_PEERING_OFFER':
+          case 'PeeringOffer': {
             const obj = payload.object || payload;
             const slots = Number(obj.slots || obj.needed || 1);
             const transport = obj.transport || 'webrtc';
             if (transport === 'webrtc' && slots > 0 && this.peerId) {
               const offererId = (payload.actor && payload.actor.id) || peerId;
               if (offererId !== this.peerId && !this.webrtcPeers.has(offererId) && !this._connectingPeers.has(offererId)) {
-                console.debug('[BRIDGE]', 'Received', P2P_PEERING_OFFER, 'from', peerId, '- attempting connect');
+                console.debug('[BRIDGE]', 'Received', Message.canonicalTypeName(P2P_PEERING_OFFER), 'from', peerId, '- attempting connect');
                 this.handlePeerCandidates([{ id: offererId, peerId: offererId, lastSeen: Date.now(), source: 'peeringOffer' }]);
               }
               this._webrtcRewardPeer(peerId, 1, 'peering-offer');
@@ -2806,18 +2917,46 @@ class Bridge extends React.Component {
             }
             break;
           }
+          case 'P2P_PEER_ALIAS': {
+            const name = (payload.object && payload.object.name != null)
+              ? String(payload.object.name).trim()
+              : (payload.name != null ? String(payload.name).trim() : '');
+            const aliasText = name || (typeof payload === 'string' ? payload.trim() : '');
+            if (aliasText) {
+              this._peerAliasById = this._peerAliasById || {};
+              const signerId = (payload.actor && payload.actor.id) || peerId;
+              this._peerAliasById[signerId] = aliasText.slice(0, 64);
+              if (this._isConnected && this.ws && this.ws.readyState === 1) {
+                this._sendJSONRPC({
+                  method: 'RelayFromWebRTC',
+                  params: [{
+                    fromPeerId: peerId,
+                    envelope: {
+                      original: aliasText.slice(0, 64),
+                      originalType: 'P2P_PEER_ALIAS',
+                      hops: [{ from: peerId, at: Date.now() }]
+                    }
+                  }]
+                });
+              }
+              this._webrtcRewardPeer(peerId, 1, 'peer-alias');
+            }
+            break;
+          }
           case 'P2P_CHAT_MESSAGE': {
-            const text = (payload.object && payload.object.content) || payload.text || payload.content || '';
+            const normalized = normalizeP2pChatMessage(payload, { defaultActorId: peerId });
+            const text = chatTextOf(normalized || payload);
             const trimmed = typeof text === 'string' ? text.trim() : '';
+            if (this._handleHtlcKeyReveal(trimmed)) break;
             const proposal = this._parseDistributeProposal(trimmed, payload);
             if (proposal) {
               this._storeDistributeProposal(proposal);
               break;
             }
-            if (!trimmed) break;
-            const created = (payload.object && payload.object.created) || payload.created || Date.now();
-            const actorId = (payload.actor && payload.actor.id) || payload.actorId || peerId;
-            const incomingClientId = (payload.object && payload.object.clientId) || payload.clientId || null;
+            if (!trimmed || !normalized) break;
+            const created = (normalized.object && normalized.object.created) || Date.now();
+            const actorId = (normalized.actor && normalized.actor.id) || peerId;
+            const incomingClientId = (normalized.object && normalized.object.clientId) || null;
 
             // Create a local chat representation for the UI
             try {
@@ -2826,7 +2965,7 @@ class Bridge extends React.Component {
                   content: {
                     type: 'P2P_CHAT_MESSAGE',
                     address: peerId,
-                    text,
+                    text: trimmed,
                     created
                   }
                 });
@@ -2837,14 +2976,9 @@ class Bridge extends React.Component {
                 break;
               }
 
-              const chat = {
-                type: 'P2P_CHAT_MESSAGE',
+              const chat = Object.assign({}, normalized, {
                 actor: { id: actorId },
-                object: {
-                  content: trimmed,
-                  created,
-                  clientId
-                },
+                object: Object.assign({}, normalized.object, { clientId }),
                 target: peerId,
                 status: 'received',
                 transport: 'webrtc',
@@ -2852,7 +2986,7 @@ class Bridge extends React.Component {
                   via: 'mesh',
                   fromPeerId: peerId
                 }
-              };
+              });
 
               this.globalState.messages = this.globalState.messages || {};
               this.globalState.messages[clientId] = chat;
@@ -2865,10 +2999,10 @@ class Bridge extends React.Component {
               }));
               this._persistMessages();
 
-              // Relay to WebSocket bridge: wrap in P2P_RELAY envelope to preserve original + signature for onion routing.
+              // Relay UTF-8 text body (not a JSON chat envelope) into Hub → Fabric TCP.
               if (this._isConnected && this.ws && this.ws.readyState === 1) {
                 const envelope = {
-                  original: JSON.stringify(chat),
+                  original: trimmed,
                   originalType: 'P2P_CHAT_MESSAGE',
                   hops: [{ from: peerId, at: Date.now() }]
                 };
@@ -2978,7 +3112,8 @@ class Bridge extends React.Component {
       }
     }
     return {
-      type: P2P_PEER_GOSSIP,
+      // JSON / WebRTC app frames use the wire name; AMP opcode remains P2P_PEER_GOSSIP (0x61).
+      type: Message.canonicalTypeName(P2P_PEER_GOSSIP),
       actor: { id: this.peerId },
       object: { peers, timestamp: now, relayTtl: 8 },
       timestamp: now
@@ -2991,7 +3126,7 @@ class Bridge extends React.Component {
    */
   _buildPeeringOfferPayload (slots = 1) {
     return {
-      type: P2P_PEERING_OFFER,
+      type: Message.canonicalTypeName(P2P_PEERING_OFFER),
       actor: { id: this.peerId },
       object: { slots, transport: 'webrtc', timestamp: Date.now(), relayTtl: 8 },
       timestamp: Date.now()
@@ -3719,9 +3854,13 @@ class Bridge extends React.Component {
 
       // Handle different message data types
       let buffer;
-      if (msg.data instanceof ArrayBuffer) {
+      if (Buffer.isBuffer(msg.data)) {
+        buffer = msg.data;
+      } else if (msg.data instanceof Uint8Array) {
+        buffer = Buffer.from(msg.data.buffer, msg.data.byteOffset, msg.data.byteLength);
+      } else if (msg.data instanceof ArrayBuffer) {
         buffer = Buffer.from(msg.data);
-      } else if (msg.data instanceof Blob) {
+      } else if (typeof Blob !== 'undefined' && msg.data instanceof Blob) {
         const arrayBuffer = await msg.data.arrayBuffer();
         buffer = Buffer.from(arrayBuffer);
       } else if (typeof msg.data === 'string') {
@@ -3780,6 +3919,39 @@ class Bridge extends React.Component {
         default:
           console.debug('[BRIDGE]', 'Unhandled message type:', message.type);
           break;
+        case 'P2P_CHAT_MESSAGE': {
+          // First-class mesh chat: body = UTF-8 text. Route through WebRTC chat handler shape.
+          const text = message.raw && message.raw.data
+            ? message.raw.data.toString('utf8')
+            : (typeof message.data === 'string' ? message.data : String(message.body || ''));
+          if (tKind === SESSION_KIND_WEBRTC && tSessionId) {
+            this.handleWebRTCPeerMessage(tSessionId, {
+              type: 'P2P_CHAT_MESSAGE',
+              actor: { id: tSessionId },
+              object: { content: text, created: Date.now() }
+            });
+          }
+          break;
+        }
+        case 'P2P_PEER_ALIAS': {
+          const alias = message.raw && message.raw.data
+            ? message.raw.data.toString('utf8')
+            : (typeof message.data === 'string' ? message.data : String(message.body || ''));
+          const name = String(alias || '').trim().slice(0, 64);
+          if (name) {
+            this._peerAliasById = this._peerAliasById || {};
+            const id = tKind === SESSION_KIND_WEBRTC && tSessionId ? tSessionId : (this._getIdentityId && this._getIdentityId());
+            if (id) this._peerAliasById[id] = name;
+            if (tKind === SESSION_KIND_WEBRTC && tSessionId) {
+              this.handleWebRTCPeerMessage(tSessionId, {
+                type: 'P2P_PEER_ALIAS',
+                actor: { id: tSessionId },
+                object: { name }
+              });
+            }
+          }
+          break;
+        }
         case 'P2P_MESSAGE_RECEIPT':
           // Server ack for a delivered inbound message; JSONCall path does not require client handling.
           break;
@@ -4093,7 +4265,9 @@ class Bridge extends React.Component {
           break;
         case 'GENERIC_MESSAGE':
         case 'GenericMessage':
-          // Check for FileMessage and Inventory responses (broadcast as GenericMessage when type unknown)
+        case 'P2P_BASE_MESSAGE':
+          // GENERIC_MESSAGE (15103) is the live transitional carrier; P2P_BASE_MESSAGE
+          // remains accepted for pre-fix / PeerMessage frames that carried the same JSON.
           try {
             const parsed = JSON.parse(message.body);
             const bridgeEnv = fabricBridgeEnvelope.tryParse(parsed);
@@ -4106,6 +4280,16 @@ class Bridge extends React.Component {
                   messageId: parsed.object.activityMessageId || null,
                   documentId: parsed.object.documentId || null
                 }
+              }));
+              break;
+            }
+            if (parsed && (
+              parsed.type === 'TrackedApplicationContractPublish' ||
+              parsed.type === 'TrackedApplicationContractAccepted' ||
+              parsed.type === 'TrackedApplicationContractRejected'
+            ) && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabric:trackedApplicationContract', {
+                detail: { type: parsed.type, object: parsed.object || null }
               }));
               break;
             }
@@ -4157,8 +4341,21 @@ class Bridge extends React.Component {
               break;
             }
 
+            // P2P_PEER_ALIAS from Fabric P2P (Hub GenericMessage fan-out)
+            if (parsed && parsed.type === 'P2P_PEER_ALIAS') {
+              const name = (parsed.object && parsed.object.name != null)
+                ? String(parsed.object.name).trim()
+                : '';
+              const signerId = (parsed.actor && parsed.actor.id) ? String(parsed.actor.id) : null;
+              if (name && signerId) {
+                this._peerAliasById = this._peerAliasById || {};
+                this._peerAliasById[signerId] = name.slice(0, 64);
+              }
+              break;
+            }
+
             // P2P_PEER_GOSSIP from Fabric P2P (broadcast by Hub)
-            if (parsed && parsed.type === P2P_PEER_GOSSIP && Array.isArray(parsed.object && parsed.object.peers)) {
+            if (parsed && Message.typeEquals(parsed.type, P2P_PEER_GOSSIP) && Array.isArray(parsed.object && parsed.object.peers)) {
               this._recordPeerGossipTopology(parsed, null);
               const peers = parsed.object.peers;
               const candidates = peers.map((p) => ({
@@ -4173,7 +4370,7 @@ class Bridge extends React.Component {
             }
 
             // P2P_PEERING_OFFER from Fabric P2P (broadcast by Hub)
-            if (parsed && parsed.type === P2P_PEERING_OFFER && parsed.object) {
+            if (parsed && Message.typeEquals(parsed.type, P2P_PEERING_OFFER) && parsed.object) {
               const obj = parsed.object;
               const slots = Number(obj.slots || obj.needed || 1);
               const transport = obj.transport || 'webrtc';
@@ -4226,6 +4423,22 @@ class Bridge extends React.Component {
           break;
         case 'P2P_RELAY':
           try {
+            // Peer-mesh layout: body = raw inner Message bytes (magic + header + body).
+            const relayRaw = message.raw && Buffer.isBuffer(message.raw.data)
+              ? message.raw.data
+              : null;
+            if (
+              relayRaw &&
+              relayRaw.length >= FABRIC_WIRE_HEADER_SIZE &&
+              relayRaw.readUInt32BE(0) === MAGIC_BYTES
+            ) {
+              this.onSocketMessage({
+                data: relayRaw,
+                _fabricTransport: { sessionId: HUB_FABRIC_SESSION_ID, kind: SESSION_KIND_HUB }
+              });
+              break;
+            }
+            // Hub↔browser layout: JSON { original, originalType, hops }.
             const envelope = JSON.parse(message.body);
             const original = envelope && envelope.original;
             const originalType = envelope && envelope.originalType;
@@ -4241,7 +4454,7 @@ class Bridge extends React.Component {
               });
               break;
             }
-            if (originalType === P2P_PEER_GOSSIP) {
+            if (Message.typeEquals(originalType, P2P_PEER_GOSSIP)) {
               const parsed = typeof original === 'string' ? JSON.parse(original) : original;
               this._recordPeerGossipTopology(parsed, null);
               const peers = Array.isArray(parsed && parsed.object && parsed.object.peers) ? parsed.object.peers : [];
@@ -4255,7 +4468,7 @@ class Bridge extends React.Component {
               if (candidates.length > 0) this.handlePeerCandidates(candidates);
               break;
             }
-            if (originalType === P2P_PEERING_OFFER) {
+            if (Message.typeEquals(originalType, P2P_PEERING_OFFER)) {
               const parsed = typeof original === 'string' ? JSON.parse(original) : original;
               const obj = (parsed && parsed.object) || {};
               const transport = obj.transport || 'webrtc';
@@ -4303,16 +4516,18 @@ class Bridge extends React.Component {
               chat = typeof original === 'string' ? JSON.parse(original) : original;
             }
             if (!chat || chat.type !== 'P2P_CHAT_MESSAGE') break;
-            const content = (chat.object && chat.object.content) || '';
-            const proposal = this._parseDistributeProposal(content, chat);
+            const normalizedChat = normalizeP2pChatMessage(chat) || chat;
+            const content = chatTextOf(normalizedChat);
+            if (this._handleHtlcKeyReveal(content)) break;
+            const proposal = this._parseDistributeProposal(content, normalizedChat);
             if (proposal) {
               this._storeDistributeProposal(proposal);
               break;
             }
-            if (this._tryDispatchFederationContractInviteFromChat(content, chat)) {
+            if (this._tryDispatchFederationContractInviteFromChat(content, normalizedChat)) {
               break;
             }
-            if (this._tryDispatchCollaborationInviteFromChat(content, chat)) {
+            if (this._tryDispatchCollaborationInviteFromChat(content, normalizedChat)) {
               break;
             }
             const relayOfferPrefix = `[${DOCUMENT_OFFER}] `;
@@ -4324,14 +4539,16 @@ class Bridge extends React.Component {
                 }
               } catch (_) { /* ignore */ }
             }
-            const created = (chat.object && chat.object.created) || chat.created || Date.now();
-            const id = `chat:${created}:${(chat.actor && chat.actor.id) || 'unknown'}`;
+            if (!content.trim()) break;
+            const created = (normalizedChat.object && normalizedChat.object.created) || chat.created || Date.now();
+            const id = (normalizedChat.object && normalizedChat.object.id) ||
+              `chat:${created}:${(normalizedChat.actor && normalizedChat.actor.id) || 'unknown'}`;
             this.globalState.messages = this.globalState.messages || {};
-            const clientId = chat.object && chat.object.clientId;
+            const clientId = normalizedChat.object && normalizedChat.object.clientId;
             if (clientId && this.globalState.messages[clientId]) {
               delete this.globalState.messages[clientId];
             }
-            this.globalState.messages[id] = Object.assign({}, chat, {
+            this.globalState.messages[id] = Object.assign({}, normalizedChat, {
               transport: 'relay',
               delivery: { via: 'bridge', hops: envelope.hops || [] }
             });
@@ -4349,8 +4566,10 @@ class Bridge extends React.Component {
         case 'CHAT_MESSAGE':
         case 'ChatMessage':
           try {
-            const chat = JSON.parse(message.body);
-            const content = (chat && chat.object && chat.object.content) || '';
+            const rawChat = JSON.parse(message.body);
+            const chat = normalizeP2pChatMessage(rawChat) || rawChat;
+            const content = chatTextOf(chat);
+            if (this._handleHtlcKeyReveal(content)) break;
             // Check for Distribute Proposal (structured JSON in chat content)
             const proposal = this._parseDistributeProposal(content, chat);
             if (proposal) {
@@ -4374,8 +4593,11 @@ class Bridge extends React.Component {
               } catch (_) { /* ignore malformed demo line */ }
             }
 
+            if (!content.trim()) break;
+
             const created = (chat && chat.object && chat.object.created) || (chat && chat.created) || Date.now();
-            const id = `chat:${created}:${(chat && chat.actor && chat.actor.id) || 'unknown'}`;
+            const id = (chat && chat.object && chat.object.id) ||
+              `chat:${created}:${(chat && chat.actor && chat.actor.id) || 'unknown'}`;
             this.globalState.messages = this.globalState.messages || {};
 
             if (this.settings && this.settings.debug) {
@@ -4385,6 +4607,7 @@ class Bridge extends React.Component {
                 console.log('[BRIDGE:CHAT]', JSON.stringify({
                   actorId: chat && chat.actor && chat.actor.id,
                   clientId: chat && chat.object && chat.object.clientId,
+                  channel: chat && chat.object && chat.object.channel,
                   created
                 }));
               } catch (e) {
@@ -4510,6 +4733,7 @@ class Bridge extends React.Component {
       } catch (_) {}
       try {
         if (typeof window !== 'undefined') {
+          window.__FABRIC_LAST_NETWORK_STATUS__ = result;
           window.dispatchEvent(new CustomEvent('networkStatusUpdate', { detail: { networkStatus: result } }));
         }
       } catch (_) {}
@@ -4756,11 +4980,28 @@ class Bridge extends React.Component {
     const created = body && body.created ? body.created : Date.now();
     const clientId = body && body.clientId;
     const actorId = this._getIdentityId() || (body && body.actor && body.actor.id) || null;
-    const payload = {
-      type: 'P2P_CHAT_MESSAGE',
-      actor: actorId ? { id: actorId } : { id: null },
-      object: { content: text, created, clientId }
-    };
+    // Prefer first-class AMP UTF-8 body on the data channel when we can sign.
+    let payload = text;
+    try {
+      const signingKey = this.settings.signingKey || this.key;
+      if (typeof Message !== 'undefined' && Message.fromVector && signingKey) {
+        const msg = Message.fromVector(['P2P_CHAT_MESSAGE', String(text)]);
+        if (typeof msg.signWithKey === 'function') msg.signWithKey(signingKey);
+        payload = msg;
+      } else {
+        payload = {
+          type: 'P2P_CHAT_MESSAGE',
+          actor: actorId ? { id: actorId } : { id: null },
+          object: { content: text, created, clientId }
+        };
+      }
+    } catch (_) {
+      payload = {
+        type: 'P2P_CHAT_MESSAGE',
+        actor: actorId ? { id: actorId } : { id: null },
+        object: { content: text, created, clientId }
+      };
+    }
     const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
     const deliveredTo = recipients.length;
     this._lastWebRTCChatDeliveryCount = deliveredTo;
@@ -4805,11 +5046,19 @@ class Bridge extends React.Component {
     // In WebRTC mode, also fan out over the mesh, but keep the hub RPC as
     // the canonical network propagation path.
     if (this.preferWebRTCChat) {
-      const payload = {
+      let payload = {
         type: 'P2P_CHAT_MESSAGE',
         actor: actorId ? { id: actorId } : { id: null },
         object: { content: text, created, clientId }
       };
+      try {
+        const signingKey = this.settings.signingKey || this.key;
+        if (typeof Message !== 'undefined' && Message.fromVector && signingKey) {
+          const msg = Message.fromVector(['P2P_CHAT_MESSAGE', String(text)]);
+          if (typeof msg.signWithKey === 'function') msg.signWithKey(signingKey);
+          payload = msg;
+        }
+      } catch (_) { /* keep JSON fallback for mesh UI */ }
       const recipients = this.broadcastToWebRTCPeersWithRecipients(payload);
       const deliveredTo = recipients.length;
       this._lastWebRTCChatDeliveryCount = deliveredTo;
@@ -5158,7 +5407,22 @@ class Bridge extends React.Component {
   sendSetPeerNicknameRequest (idOrAddress, nickname) {
     const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
     if (!resolved) return;
-    const clean = nickname == null ? '' : String(nickname);
+    const clean = nickname == null ? '' : String(nickname).trim().slice(0, 64);
+    try {
+      const selfId = this._getIdentityId && this._getIdentityId();
+      if (clean && selfId && (resolved === selfId || resolved === 'self' || resolved === 'me')) {
+        this._peerAliasById = this._peerAliasById || {};
+        this._peerAliasById[selfId] = clean;
+        const signingKey = this.settings.signingKey || this.key;
+        let aliasPayload = { type: 'P2P_PEER_ALIAS', actor: { id: selfId }, object: { name: clean } };
+        if (Message && Message.fromVector && signingKey) {
+          const msg = Message.fromVector(['P2P_PEER_ALIAS', clean]);
+          if (typeof msg.signWithKey === 'function') msg.signWithKey(signingKey);
+          aliasPayload = msg;
+        }
+        this.broadcastToWebRTCPeersWithRecipients(aliasPayload);
+      }
+    } catch (_) { /* best-effort mesh alias */ }
     try {
       const payload = { method: 'SetPeerNickname', params: [resolved, clean] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);

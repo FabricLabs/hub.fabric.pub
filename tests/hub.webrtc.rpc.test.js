@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+const Message = require('@fabric/core/types/message');
+const { MAGIC_BYTES, HEADER_SIZE } = require('@fabric/core/constants');
 const Hub = require('../services/hub');
 
 describe('Hub WebRTC RPC methods', function () {
@@ -147,6 +149,21 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(ok.status, 'success');
     assert.strictEqual(broadcasts.length, 1, 'should broadcast to WebSocket clients');
     assert.strictEqual(relayP2pCalls.length, 1, 'should relay to Fabric P2P');
+
+    // WS fanout keeps JSON hops envelope for Bridge.
+    const wsRelay = broadcasts[0];
+    assert.strictEqual(wsRelay.type, 'P2P_RELAY');
+    const wsEnv = JSON.parse(wsRelay.body);
+    assert.strictEqual(wsEnv.originalType, 'P2P_CHAT_MESSAGE');
+    assert.ok(Array.isArray(wsEnv.hops) && wsEnv.hops.length >= 1);
+
+    // TCP Peer path uses raw inner Message bytes (core onion layout).
+    const p2pRelay = relayP2pCalls[0].msg;
+    assert.strictEqual(p2pRelay.type, 'P2P_RELAY');
+    const innerBuf = p2pRelay.raw.data;
+    assert.ok(Buffer.isBuffer(innerBuf) && innerBuf.length >= HEADER_SIZE);
+    assert.strictEqual(innerBuf.readUInt32BE(0), MAGIC_BYTES);
+    assert.strictEqual(Message.fromBuffer(innerBuf).type, 'P2P_CHAT_MESSAGE');
 
     const tooManyHops = {
       fromPeerId: 'webrtc-peer-a',

@@ -4,7 +4,8 @@ const assert = require('assert');
 const {
   buildLoginMessage,
   DESKTOP_LOGIN_PREFIX,
-  originsMatchForDesktopSession
+  originsMatchForDesktopSession,
+  hasClientSignatureBody
 } = require('../functions/fabricDesktopAuth');
 
 describe('fabricDesktopAuth', function () {
@@ -33,5 +34,17 @@ describe('fabricDesktopAuth', function () {
       originsMatchForDesktopSession('http://192.168.1.6:8080', 'http://192.168.1.5:8080'),
       false
     );
+  });
+
+  it('hasClientSignatureBody detects player-login completion payloads', function () {
+    assert.strictEqual(hasClientSignatureBody({}), false);
+    assert.strictEqual(hasClientSignatureBody({ signature: 'aa', pubkeyHex: 'bb' }), false);
+    const sig = 'a'.repeat(128);
+    const pub = '02' + 'ab'.repeat(32);
+    assert.strictEqual(hasClientSignatureBody({
+      signature: sig,
+      pubkeyHex: pub,
+      identity: { id: 'id1test', xpub: 'xpub661MyMwAqRbc' }
+    }), true);
   });
 });

@@ -88,7 +88,7 @@ function DistributedFederationPanel (props) {
         <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
           {!hideSidechainNavLink ? (
             <React.Fragment>
-              <Link to="/sidechains">Sidechain &amp; demo</Link>
+              <Link to="/sidechains">Statechain</Link>
               {' · '}
             </React.Fragment>
           ) : null}
@@ -252,7 +252,7 @@ function DistributedFederationPanel (props) {
       <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
         {!hideSidechainNavLink ? (
           <React.Fragment>
-            <Link to="/sidechains">Sidechain &amp; demo</Link>
+            <Link to="/sidechains">Statechain</Link>
             {' · '}
           </React.Fragment>
         ) : null}

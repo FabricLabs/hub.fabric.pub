@@ -333,7 +333,7 @@ function TopPanel (props) {
               <Dropdown.Item as={Link} to="/services/bitcoin/crowdfunds" icon="heart outline" text="Crowdfunds" />
             ) : null}
             {uiFlags.sidechain && !publicHubVisitor ? (
-              <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Sidechain & demo" />
+              <Dropdown.Item as={Link} to="/sidechains" icon="random" text="Statechain" />
             ) : null}
             {hasHubAdminPeerNav ? (
               <Dropdown.Item

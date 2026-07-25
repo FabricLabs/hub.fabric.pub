@@ -984,7 +984,7 @@ function PeerDetail (props) {
                   const actor = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && chat.actor?.id)
                     ? bridgeInstance.getPeerDisplayName(chat.actor.id)
                     : rawActor;
-                  const content = (chat.object && (chat.object.content || chat.object.text)) || '';
+                  const content = (chat.object && (chat.object.content || chat.object.body || chat.object.text)) || '';
                   const isPending = chat.status === 'pending';
                   const isQueued = chat.status === 'queued';
                   const style = {

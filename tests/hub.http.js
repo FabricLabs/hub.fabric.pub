@@ -805,12 +805,14 @@ describe('@fabric/hub', function () {
         const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
         assert.strictEqual(create.status, 200, JSON.stringify(create.body));
         assert.strictEqual(create.body.ok, true);
+        assert.strictEqual(create.body.acceptsClientSignature, true);
         const sid = create.body.sessionId;
         assert.ok(typeof sid === 'string' && sid.length > 16);
 
         const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {});
         assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
         assert.strictEqual(sign.body.ok, true);
+        assert.strictEqual(sign.body.signer, 'hub');
 
         const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
         assert.strictEqual(g1.status, 200);
@@ -820,6 +822,53 @@ describe('@fabric/hub', function () {
         const g2 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
         assert.strictEqual(g2.status, 404);
         assert.strictEqual(g2.body.ok, false);
+      });
+
+      it('desktop login accepts client-signed player completion (Schnorr over challenge)', async function () {
+        const Key = require('@fabric/core/types/key');
+        const Identity = require('@fabric/core/types/identity');
+        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
+        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
+        const sid = create.body.sessionId;
+        const message = create.body.message;
+        assert.ok(typeof message === 'string' && message.length > 20);
+
+        const key = new Key();
+        const ident = new Identity(key);
+        const signature = key.signSchnorr(Buffer.from(message, 'utf8')).toString('hex');
+        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
+          signature,
+          pubkeyHex: key.pubkey,
+          identity: { id: ident.id, xpub: key.xpub }
+        });
+        assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
+        assert.strictEqual(sign.body.ok, true);
+        assert.strictEqual(sign.body.signer, 'client');
+        assert.strictEqual(String(sign.body.identity.id), String(ident.id));
+
+        const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
+        assert.strictEqual(g1.status, 200);
+        assert.strictEqual(g1.body.status, 'signed');
+        assert.strictEqual(g1.body.signer, 'client');
+        assert.ok(g1.body.delegationToken);
+      });
+
+      it('desktop login rejects tampered client signature', async function () {
+        const Key = require('@fabric/core/types/key');
+        const Identity = require('@fabric/core/types/identity');
+        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
+        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
+        const sid = create.body.sessionId;
+        const key = new Key();
+        const ident = new Identity(key);
+        const badSig = 'ab'.repeat(64);
+        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
+          signature: badSig,
+          pubkeyHex: key.pubkey,
+          identity: { id: ident.id, xpub: key.xpub }
+        });
+        assert.strictEqual(sign.status, 400, JSON.stringify(sign.body));
+        assert.strictEqual(sign.body.ok, false);
       });
 
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {

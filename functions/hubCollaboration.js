@@ -228,16 +228,8 @@ function relayInviteToPeer (hub, fabricPeerId, event) {
     const address = hub._resolvePeerAddress(fabricPeerId);
     const conns = hub.agent && hub.agent.connections;
     if (!address || !conns || !hasStoreKey(conns, address)) return false;
-    const payload = {
-      type: 'P2P_CHAT_MESSAGE',
-      actor: { id: hub.agent.identity && hub.agent.identity.id ? hub.agent.identity.id : 'hub' },
-      object: {
-        content: `${COLLAB_INVITE_PREFIX}${JSON.stringify(event)}`,
-        created: Date.now()
-      },
-      target: String(fabricPeerId)
-    };
-    hub._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', JSON.stringify(payload)]);
+    const text = `${COLLAB_INVITE_PREFIX}${JSON.stringify(event)}`;
+    hub._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', text]);
     return true;
   } catch (e) {
     console.warn('[HUB:COLLAB] invite relay failed:', e && e.message ? e.message : e);

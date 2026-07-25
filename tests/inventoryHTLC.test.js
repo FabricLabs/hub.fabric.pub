@@ -4,13 +4,21 @@ const assert = require('assert');
 const crypto = require('crypto');
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('@fabric/core/types/ecc');
-const ecpairMod = require('ecpair');
-const ECPairFactory = typeof ecpairMod === 'function' ? ecpairMod : (ecpairMod.default || ecpairMod.ECPairFactory);
 const inventoryHtlc = require('../functions/inventoryHtlc');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
 
-const ecpair = ECPairFactory(ecc);
 bitcoin.initEccLib(ecc);
+
+function randomKeyPair () {
+  let priv;
+  do {
+    priv = crypto.randomBytes(32);
+  } while (!ecc.isPrivate(priv));
+  return {
+    privateKey: priv,
+    publicKey: Buffer.from(ecc.pointFromScalar(priv, true))
+  };
+}
 
 describe('inventoryHtlc', function () {
   it('buildHtlcFundingHints produces BIP21 bitcoin: URI', function () {
@@ -64,8 +72,8 @@ describe('inventoryHtlc', function () {
   });
 
   it('prepareInventoryHtlcSellerClaimPsbt + sign extracts valid claim tx hex', function () {
-    const seller = ecpair.makeRandom();
-    const buyer = ecpair.makeRandom();
+    const seller = randomKeyPair();
+    const buyer = randomKeyPair();
     const preimage = crypto.randomBytes(32);
     const paymentHash32 = inventoryHtlc.hash256(preimage);
     const built = inventoryHtlc.buildInventoryHtlcP2tr({
@@ -102,8 +110,8 @@ describe('inventoryHtlc', function () {
   });
 
   it('prepareInventoryHtlcBuyerRefundPsbt + sign extracts valid refund tx hex', function () {
-    const seller = ecpair.makeRandom();
-    const buyer = ecpair.makeRandom();
+    const seller = randomKeyPair();
+    const buyer = randomKeyPair();
     const preimage = crypto.randomBytes(32);
     const paymentHash32 = inventoryHtlc.hash256(preimage);
     const lockHeight = 500_000;

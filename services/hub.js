@@ -47,7 +47,8 @@ function timingSafeSha256Utf8Match (provided, expected) {
   }
 }
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
-const { SATS_PER_BTC } = require('../constants');
+const { SATS_PER_BTC, FEATURE_FLAGS, publicFeatureFlags } = require('../constants');
+const documentContentKey = require('../functions/documentContentKey');
 
 // Fabric Types
 const Chain = require('@fabric/core/types/chain'); // fabric chains
@@ -82,6 +83,7 @@ const DistributedExecution = require('../functions/fabricDistributedExecution');
 const {
   P2P_PEERING_OFFER,
   P2P_PEER_GOSSIP,
+  P2P_PEER_ALIAS,
   MAX_PEERS,
   HEADER_SIZE,
   P2P_CHAIN_SYNC_REQUEST
@@ -128,7 +130,15 @@ const {
   isDocumentInventoryResponseType
 } = require('../functions/fabricDocumentOfferEnvelope');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
+const documentPaymentHash = require('../functions/documentPaymentHash');
 const sidechainState = require('../functions/sidechainState');
+const trackedApplicationContracts = require('../functions/trackedApplicationContracts');
+const contractStatechains = require('../functions/contractStatechains');
+const { normalizeP2pChatMessage, chatActorIdOf } = require('../functions/fabricChatNormalize');
+const {
+  buildInnerWireBuffer,
+  wrapPeerP2pRelay
+} = require('../functions/fabricWebRtcP2pRelay');
 const documentOfferEscrow = require('../functions/documentOfferEscrow');
 const federationContractInvite = require('../functions/federationContractInvite');
 const federationVault = require('../functions/federationVault');
@@ -140,6 +150,7 @@ const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const Fabric = require('../services/fabric');
 const SetupService = require('../services/setup');
 const { mountFabricDesktopAuthHttp } = require('../functions/fabricDesktopAuth');
+const { mountFabricDeviceLinkHttp } = require('../functions/fabricDeviceLink');
 const {
   mountFabricDelegationHttp,
   postDelegationSignatureMessage,
@@ -519,7 +530,23 @@ class Hub extends Service {
     this.distributedHttp = new FabricDistributedExecutionHTTP({
       basePath: '/services/distributed',
       getManifest: () => this._getDistributedManifestJson(),
-      getEpochStatus: () => this._getDistributedEpochJson()
+      getEpochStatus: () => this._getDistributedEpochJson(),
+      getSidechainState: () => this._getSidechainStateJson(),
+      submitSidechainStatePatch: (params) => this._submitSidechainStatePatch(params),
+      getSidechainJournal: (req) => {
+        const q = (req && req.query) || {};
+        return this._getSidechainJournalJson({
+          limit: q.limit,
+          includePatches: q.includePatches === '1' || q.includePatches === 'true'
+        });
+      },
+      getSidechainSnapshots: (req) => {
+        const q = (req && req.query) || {};
+        return this._getSidechainSnapshotsJson({
+          limit: q.limit,
+          includeContent: q.includeContent === '1' || q.includeContent === 'true'
+        });
+      }
     });
 
     this.beacon = new Beacon({
@@ -562,6 +589,9 @@ class Hub extends Service {
     /** Pending browser ↔ Fabric Hub desktop login sessions (see functions/fabricDesktopAuth.js). */
     /** @type {Map<string, Object>} */
     this._desktopAuthSessions = new Map();
+    /** Mutual device-link sessions (see functions/fabricDeviceLink.js). */
+    /** @type {Map<string, Object>} */
+    this._deviceLinkSessions = new Map();
     /** @type {Map<string, Object>} */
     this._delegationRegistry = new Map();
     /** @type {Map<string, Object>} */
@@ -592,8 +622,10 @@ class Hub extends Service {
     // `settings.state` template. Otherwise `getSetupStatus()` runs before `start()` merges disk (`needsSetup` stays
     // true on early GET /settings / desktop reload). Passing `state: null` forces filesystem reads.
     this.setup = new SetupService({ fs: this.fs, key: this._rootKey, state: null });
-    /** Sidechain global document + logical clock ({ version, clock, content }); see functions/sidechainState.js */
+    /** Sidechain document + logical clock; see @fabric/core/functions/sidechainState */
     this._sidechainState = sidechainState.loadState(this.fs);
+    /** Serialize patch submits + reorg rewind (linearize statechain mutations). */
+    this._sidechainSerialize = sidechainState.createSerializeQueue();
     /** Serialize beacon reorg handling so sidechain rewind completes before downstream refresh. */
     this._beaconReorgChain = Promise.resolve();
 
@@ -1426,31 +1458,21 @@ class Hub extends Service {
 
   /**
    * Cache chat messages in Hub state so browser reloads can rehydrate from GetNetworkStatus.
-   * This keeps global chat visible across refreshes without waiting for new live events.
-   * @param {object} chat Chat payload ({ type, actor, object.content, object.created, object.clientId? }).
+   * Accepts Hub classic (`object.content`) and GoonCitizen (`object.body` / channel / handle).
+   * @param {object} chat Chat payload
    * @returns {{ id: string, message: object }|null}
    */
   _cacheChatMessage (chat = {}) {
     try {
-      if (!chat || typeof chat !== 'object') return null;
-      const content = chat && chat.object && chat.object.content != null
-        ? String(chat.object.content)
-        : '';
-      if (!content.trim()) return null;
-      const actorId = chat && chat.actor && chat.actor.id
-        ? String(chat.actor.id)
-        : ((this.agent && this.agent.identity && this.agent.identity.id) ? String(this.agent.identity.id) : 'unknown');
-      const created = Number((chat && chat.object && chat.object.created) || chat.created || Date.now());
-      const entry = {
-        type: 'P2P_CHAT_MESSAGE',
-        actor: { id: actorId },
-        object: {
-          content,
-          created: Number.isFinite(created) ? created : Date.now(),
-          ...(chat && chat.object && chat.object.clientId ? { clientId: String(chat.object.clientId) } : {})
-        }
-      };
-      const id = `chat:${entry.object.created}:${actorId}`;
+      const defaultActorId = (this.agent && this.agent.identity && this.agent.identity.id)
+        ? String(this.agent.identity.id)
+        : 'unknown';
+      const entry = normalizeP2pChatMessage(chat, { defaultActorId });
+      if (!entry) return null;
+      const actorId = chatActorIdOf(entry) || defaultActorId;
+      const id = entry.object && entry.object.id
+        ? String(entry.object.id)
+        : `chat:${entry.object.created}:${actorId}`;
       this._state.messages = this._state.messages || {};
       this._state.messages[id] = entry;
       return { id, message: entry };
@@ -2111,7 +2133,8 @@ class Hub extends Service {
         key: this._rootKey,
         federationValidators: validators,
         federationThreshold,
-        getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon()
+        getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon(),
+        getContractsSnapshotForEpoch: () => this._getContractsSnapshotForBeacon()
       });
     } catch (e) {
       console.warn('[HUB:FEDERATION] beacon.attach reapply failed:', e && e.message ? e.message : e);
@@ -2141,8 +2164,17 @@ class Hub extends Service {
       version: 1,
       programId: (this.settings.distributed && this.settings.distributed.programId) || '@fabric/hub',
       programHash: String(programHash),
-      allowedMessageTypes: ['BEACON_EPOCH', 'SIDECHAIN_STATE_PATCH', 'P2P_CHAT_MESSAGE', 'P2P_FILE_SEND', 'JSONCall'],
-      federation: null
+      allowedMessageTypes: [
+        'BEACON_EPOCH',
+        'SIDECHAIN_STATE_PATCH',
+        'P2P_CHAT_MESSAGE',
+        'P2P_FILE_SEND',
+        'JSONCall',
+        'CONTRACT_PUBLISH',
+        'CONTRACT_MESSAGE'
+      ],
+      federation: null,
+      sidechainPolicy: this._getSidechainPathPolicy()
     };
     const fp = this._getEffectiveFederationPolicyForDistributedHttp();
     if (fp.validators.length) {
@@ -2150,6 +2182,11 @@ class Hub extends Service {
     }
     const parsed = DistributedExecution.parseDistributedManifestV1(manifest);
     const out = parsed.ok ? { ...parsed.manifest } : { ...manifest };
+    try {
+      out.trackedApplicationContracts = this._getTrackedContractsSummary();
+    } catch (_) {
+      out.trackedApplicationContracts = null;
+    }
     try {
       let hubId = (this.agent && this.agent.id) ? String(this.agent.id).trim() : '';
       if (!hubId && this._rootKey && this._rootKey.pubkey) {
@@ -2180,6 +2217,77 @@ class Hub extends Service {
   }
 
   /**
+   * Contract path policy for statechain patches (settings.distributed.sidechainPolicy or env).
+   * @returns {object|null}
+   */
+  _getSidechainPathPolicy () {
+    const ensureNamespaces = (policy) => {
+      if (!policy) return policy;
+      const allowed = Array.isArray(policy.allowedPathPrefixes)
+        ? policy.allowedPathPrefixes.slice()
+        : null;
+      if (!allowed) return policy;
+      if (!allowed.includes('/namespaces')) allowed.push('/namespaces');
+      if (!allowed.includes('/gooncitizen')) allowed.push('/gooncitizen');
+      return Object.assign({}, policy, { allowedPathPrefixes: allowed });
+    };
+
+    const fromSettings = this.settings.distributed && this.settings.distributed.sidechainPolicy;
+    if (fromSettings && typeof fromSettings === 'object') {
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy(fromSettings));
+    }
+    const allowed = process.env.FABRIC_SIDECHAIN_ALLOWED_PATHS;
+    if (allowed && String(allowed).trim()) {
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy({
+        allowedPathPrefixes: String(allowed).split(',').map((s) => s.trim()).filter(Boolean),
+        maxOps: Math.max(1, Number(process.env.FABRIC_SIDECHAIN_MAX_OPS) || 64)
+      }));
+    }
+    const maxOps = process.env.FABRIC_SIDECHAIN_MAX_OPS;
+    if (maxOps != null && String(maxOps).trim() !== '') {
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy({ maxOps: Math.max(1, Number(maxOps) || 64) }));
+    }
+    // null = no path restrictions (`/namespaces` seals allowed).
+    return null;
+  }
+
+  _getSidechainStateJson () {
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    return {
+      type: 'SidechainState',
+      version: this._sidechainState.version != null ? Number(this._sidechainState.version) : 1,
+      clock: Number(this._sidechainState.clock) || 0,
+      stateDigest: sidechainState.stateDigest(this._sidechainState),
+      content: this._sidechainState.content || {},
+      policy: this._getSidechainPathPolicy()
+    };
+  }
+
+  _getSidechainJournalJson (params = {}) {
+    const req = (params && typeof params === 'object') ? params : {};
+    return {
+      type: 'SidechainJournal',
+      ...sidechainState.summarizeJournal(this.fs, {
+        limit: req.limit,
+        includePatches: !!req.includePatches
+      })
+    };
+  }
+
+  _getSidechainSnapshotsJson (params = {}) {
+    const req = (params && typeof params === 'object') ? params : {};
+    return {
+      type: 'SidechainSnapshots',
+      ...sidechainState.summarizeSnapshots(this.fs, {
+        limit: req.limit,
+        includeContent: !!req.includeContent
+      })
+    };
+  }
+
+  /**
    * Snapshot of sidechain logical head for Beacon epoch payloads (`payload.sidechain`).
    * @returns {{ clock: number, stateDigest: string }}
    */
@@ -2194,16 +2302,433 @@ class Hub extends Service {
   }
 
   /**
+   * Snapshot of accepted tracked application contracts for Beacon epochs (`payload.contracts`).
+   * This is the federation-facing state root of published contracts the operator accepted.
+   * @returns {{ clock: number, stateDigest: string, kind: string, acceptedCount: number }}
+   */
+  _getContractsSnapshotForBeacon () {
+    const state = this._ensureTrackedContracts();
+    return trackedApplicationContracts.beaconSnapshot(state);
+  }
+
+  _ensureTrackedContracts () {
+    if (!this._trackedApplicationContracts) {
+      this._trackedApplicationContracts = trackedApplicationContracts.loadState(this.fs);
+    }
+    return this._trackedApplicationContracts;
+  }
+
+  _getTrackedContractsSummary () {
+    return trackedApplicationContracts.summarize(this._ensureTrackedContracts());
+  }
+
+  async _persistTrackedContracts () {
+    const state = this._ensureTrackedContracts();
+    await trackedApplicationContracts.persistState(this.fs, state);
+    return state;
+  }
+
+  _broadcastTrackedContractsEvent (type, object) {
+    try {
+      if (typeof this.http.broadcast !== 'function') return;
+      const payload = JSON.stringify({ type, object: object || {} });
+      const msg = Message.fromVector(['GenericMessage', payload]);
+      if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+      this.http.broadcast(msg);
+    } catch (err) {
+      if (this.settings && this.settings.debug) {
+        console.warn('[HUB] tracked contracts broadcast failed:', err && err.message ? err.message : err);
+      }
+    }
+  }
+
+  /**
+   * Ingest CONTRACT_PUBLISH into the pending tracked-application-contract queue.
+   * @param {{ contract?: string, object?: object, signer?: string|null, origin?: object }} ev
+   */
+  async _recordTrackedContractPublish (ev = {}) {
+    const contractId = ev && ev.contract ? String(ev.contract) : null;
+    if (!contractId) return null;
+    const state = this._ensureTrackedContracts();
+    const originName = ev.origin && (ev.origin.name || ev.origin.id) ? String(ev.origin.name || ev.origin.id) : null;
+    const result = trackedApplicationContracts.recordPublish(state, {
+      contractId,
+      definition: ev.object || {},
+      signer: ev.signer || null,
+      origin: originName
+    });
+    await this._persistTrackedContracts();
+    if (result.status === 'pending') {
+      this._broadcastTrackedContractsEvent('TrackedApplicationContractPublish', result.entry);
+    }
+    return result;
+  }
+
+  async _acceptTrackedApplicationContract (params = {}) {
+    const req = (params && typeof params === 'object') ? params : {};
+    const token = String(req.adminToken || req.token || '').trim();
+    if (!this.setup || !this.setup.verifyAdminToken(token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const contractId = req.contractId != null ? String(req.contractId).trim() : '';
+    if (!contractId) return { status: 'error', message: 'contractId required' };
+    try {
+      const state = this._ensureTrackedContracts();
+      const entry = trackedApplicationContracts.acceptContract(state, contractId, {
+        acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || null
+      });
+
+      // ADR-001: provision contract Statechain + seal head into Hub `/namespaces/<id>`.
+      const parentContractId = entry.definition && entry.definition.parentContract
+        ? String(entry.definition.parentContract)
+        : null;
+      if (!this._sidechainState) {
+        this._sidechainState = sidechainState.loadState(this.fs);
+      }
+      const provisioned = await contractStatechains.provisionAcceptedContract(
+        this.fs,
+        this._sidechainState,
+        {
+          contractId,
+          name: entry.name || null,
+          parentContractId
+        },
+        this._getSidechainPathPolicy()
+      );
+      if (provisioned.ok && provisioned.parentState) {
+        this._sidechainState = provisioned.parentState;
+        if (provisioned.head && provisioned.head.stateDigest) {
+          trackedApplicationContracts.updateContractStateDigest(
+            state,
+            contractId,
+            provisioned.head.stateDigest
+          );
+        }
+      } else if (!provisioned.ok) {
+        console.warn('[HUB] contract statechain provision:', provisioned.error || 'failed');
+      }
+
+      this._syncTrackedContractDigestsFromSidechainUnlocked();
+      await this._persistTrackedContracts();
+      this._broadcastTrackedContractsEvent('TrackedApplicationContractAccepted', entry);
+      return {
+        status: 'success',
+        type: 'AcceptTrackedApplicationContractResult',
+        contract: entry,
+        contractSidechain: provisioned.ok
+          ? {
+            paths: provisioned.contractChain && provisioned.contractChain.paths,
+            head: provisioned.head || null
+          }
+          : null,
+        stateRoot: state.stateRoot,
+        summary: trackedApplicationContracts.summarize(state)
+      };
+    } catch (err) {
+      if (err && err.code === 'NOT_FOUND') {
+        return { status: 'error', message: 'unknown contract publish' };
+      }
+      return { status: 'error', message: err && err.message ? err.message : String(err) };
+    }
+  }
+
+  async _rejectTrackedApplicationContract (params = {}) {
+    const req = (params && typeof params === 'object') ? params : {};
+    const token = String(req.adminToken || req.token || '').trim();
+    if (!this.setup || !this.setup.verifyAdminToken(token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const contractId = req.contractId != null ? String(req.contractId).trim() : '';
+    if (!contractId) return { status: 'error', message: 'contractId required' };
+    try {
+      const state = this._ensureTrackedContracts();
+      const result = trackedApplicationContracts.rejectContract(state, contractId, {
+        rejectedBy: (this.agent && this.agent.identity && this.agent.identity.id) || null
+      });
+      await this._persistTrackedContracts();
+      this._broadcastTrackedContractsEvent('TrackedApplicationContractRejected', result);
+      return {
+        status: 'success',
+        type: 'RejectTrackedApplicationContractResult',
+        ...result,
+        stateRoot: state.stateRoot,
+        summary: trackedApplicationContracts.summarize(state)
+      };
+    } catch (err) {
+      if (err && err.code === 'NOT_FOUND') {
+        return { status: 'error', message: 'unknown contract publish' };
+      }
+      return { status: 'error', message: err && err.message ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * When sidechain app payloads change (e.g. `/gooncitizen` or `/namespaces/<id>`),
+   * refresh matching accepted contract state digests so the next Beacon epoch seals
+   * the new contracts root (ADR-001).
+   */
+  _syncTrackedContractDigestsFromSidechainUnlocked () {
+    const state = this._ensureTrackedContracts();
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    const content = (this._sidechainState && this._sidechainState.content) || {};
+    let changed = false;
+
+    const namespaces = content.namespaces && typeof content.namespaces === 'object'
+      ? content.namespaces
+      : {};
+    for (const id of Object.keys(state.accepted || {})) {
+      const head = namespaces[id];
+      if (head && head.stateDigest) {
+        const updated = trackedApplicationContracts.updateContractStateDigest(
+          state,
+          id,
+          String(head.stateDigest)
+        );
+        if (updated) changed = true;
+      }
+    }
+
+    const gc = content.gooncitizen;
+    if (gc && typeof gc === 'object') {
+      const digest = gc.digest != null ? String(gc.digest) : null;
+      const gcContractId = gc.contractId != null ? String(gc.contractId) : null;
+      for (const id of Object.keys(state.accepted || {})) {
+        const entry = state.accepted[id];
+        const match = (gcContractId && id === gcContractId) ||
+          (entry && String(entry.name || '').toLowerCase() === 'gooncitizen');
+        if (!match || !digest) continue;
+        const updated = trackedApplicationContracts.updateContractStateDigest(state, id, digest);
+        if (updated) changed = true;
+      }
+    }
+    return changed;
+  }
+
+  async _syncTrackedContractDigestsFromSidechain () {
+    const changed = this._syncTrackedContractDigestsFromSidechainUnlocked();
+    if (changed) await this._persistTrackedContracts();
+    return changed;
+  }
+
+  /**
+   * Contract Statechain head for an accepted CONTRACT_PUBLISH namespace (ADR-001).
+   * @param {{ contractId?: string }} params
+   */
+  _getContractSidechainStateJson (params = {}) {
+    const contractId = params.contractId != null ? String(params.contractId).trim() : '';
+    if (!contractId) return { status: 'error', message: 'contractId required' };
+    const tracked = this._ensureTrackedContracts();
+    if (!tracked.accepted || !tracked.accepted[contractId]) {
+      return { status: 'error', message: 'contract not accepted into Beacon-tracked set' };
+    }
+    try {
+      const paths = sidechainState.storePathsForContract(contractId);
+      const state = sidechainState.loadStateAt(this.fs, paths.state);
+      const head = sidechainState.namespaceHeadFromState(contractId, state, {
+        name: tracked.accepted[contractId].name || null,
+        parentContractId: tracked.accepted[contractId].definition &&
+          tracked.accepted[contractId].definition.parentContract
+          ? String(tracked.accepted[contractId].definition.parentContract)
+          : null
+      });
+      return {
+        type: 'ContractSidechainState',
+        contractId,
+        paths,
+        clock: state.clock,
+        stateDigest: head.stateDigest,
+        content: state.content || {},
+        head,
+        parentSealPath: sidechainState.parentSealPath(contractId)
+      };
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Patch a contract-namespace Statechain, then seal its head into Hub `/namespaces/<id>`.
+   * Auth: same as root sidechain (federation witness or admin token).
+   */
+  async _submitContractSidechainStatePatch (params = {}) {
+    const run = this._sidechainSerialize || ((fn) => fn());
+    return run(() => this._submitContractSidechainStatePatchUnlocked(params));
+  }
+
+  async _submitContractSidechainStatePatchUnlocked (params = {}) {
+    const req = (params && typeof params === 'object') ? params : {};
+    const contractId = req.contractId != null ? String(req.contractId).trim() : '';
+    if (!contractId) return { status: 'error', message: 'contractId required' };
+    const tracked = this._ensureTrackedContracts();
+    if (!tracked.accepted || !tracked.accepted[contractId]) {
+      return { status: 'error', message: 'contract not accepted into Beacon-tracked set' };
+    }
+
+    const patches = req.patches;
+    if (!Array.isArray(patches) || !patches.length) {
+      return { status: 'error', message: 'patches required' };
+    }
+
+    const validators = this._distributedFederationValidatorsFromEnv();
+    const threshold = this._distributedFederationThresholdEffective();
+    const federationWitness = req.federationWitness || null;
+    const adminToken = req.adminToken || req.token;
+
+    // Authorize using a commitment over contract Statechain patch (same string shape as root).
+    const paths = sidechainState.storePathsForContract(contractId);
+    const contractState = sidechainState.loadStateAt(this.fs, paths.state);
+    const basisClock = req.basisClock != null ? Number(req.basisClock) : Number(contractState.clock) || 0;
+    if (basisClock !== (Number(contractState.clock) || 0)) {
+      return { status: 'error', message: `basisClock mismatch (have ${contractState.clock})` };
+    }
+    const basisDigest = sidechainState.stateDigest(contractState);
+    const proposal = { basisClock, basisDigest, patches };
+    const msgBuf = Buffer.from(sidechainState.signingStringForSidechainStatePatch(proposal), 'utf8');
+    if (validators.length > 0) {
+      const ok = DistributedExecution.verifyFederationWitnessOnMessage(
+        msgBuf,
+        federationWitness,
+        validators,
+        threshold
+      );
+      if (!ok) {
+        return { status: 'error', message: 'federationWitness invalid or insufficient' };
+      }
+    } else if (!this.setup.verifyAdminToken(adminToken)) {
+      return { status: 'error', message: 'adminToken required (no federation validators configured)' };
+    }
+
+    const applied = await contractStatechains.applyPatchesToContractStatechain(
+      this.fs,
+      contractId,
+      patches,
+      null
+    );
+    if (!applied.ok) {
+      return { status: 'error', message: applied.error || 'contract statechain patch failed' };
+    }
+
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    const entry = tracked.accepted[contractId];
+    const sealed = await contractStatechains.sealNamespaceHeadIntoParent(
+      this.fs,
+      this._sidechainState,
+      contractId,
+      {
+        name: entry.name || null,
+        parentContractId: entry.definition && entry.definition.parentContract
+          ? String(entry.definition.parentContract)
+          : null
+      },
+      this._getSidechainPathPolicy()
+    );
+    if (sealed.ok && sealed.parentState) {
+      this._sidechainState = sealed.parentState;
+    }
+    if (applied.head && applied.head.stateDigest) {
+      trackedApplicationContracts.updateContractStateDigest(tracked, contractId, applied.head.stateDigest);
+      await this._persistTrackedContracts();
+    }
+
+    return {
+      status: 'success',
+      type: 'SubmitContractSidechainStatePatchResult',
+      contractId,
+      clock: applied.state.clock,
+      stateDigest: applied.newDigest,
+      head: applied.head,
+      parentSeal: sealed.ok ? sealed.head : null,
+      parentStateDigest: sealed.ok && sealed.parentState
+        ? sidechainState.stateDigest(sealed.parentState)
+        : null
+    };
+  }
+
+  /**
    * Apply JSON Patch to sidechain `content` after federation witness or admin token.
+   * Serialized with other statechain mutations; appends journal entry for unsealed recovery.
    * @param {object} params
    * @returns {Promise<object>}
    */
   async _submitSidechainStatePatch (params = {}) {
+    const run = this._sidechainSerialize || ((fn) => fn());
+    return run(() => this._submitSidechainStatePatchUnlocked(params));
+  }
+
+  /**
+   * Apply sidechain patches from a trusted Hub-internal caller (no admin /
+   * federation check). Used by application aggregators (e.g. GoonCitizen on
+   * goon.vc) before Beacon epochs seal `payload.sidechain` + SNAPSHOTS.
+   * @param {object[]} patches RFC6902 ops on `content`
+   * @returns {Promise<object>}
+   */
+  async _applySidechainPatchesTrusted (patches) {
+    const run = this._sidechainSerialize || ((fn) => fn());
+    return run(() => this._applySidechainPatchesTrustedUnlocked(patches));
+  }
+
+  async _applySidechainPatchesTrustedUnlocked (patches) {
+    if (!Array.isArray(patches) || !patches.length) {
+      return { status: 'error', message: 'patches required' };
+    }
+    const policy = this._getSidechainPathPolicy();
+    const state = this._sidechainState || sidechainState.loadState(this.fs);
+    const basisClock = Number(state.clock) || 0;
+    const basisDigest = sidechainState.stateDigest(state);
+    const proposal = { basisClock, basisDigest, patches };
+
+    const applied = sidechainState.applyPatchesToState(state, patches, policy);
+    if (!applied.ok) {
+      return { status: 'error', message: applied.error || 'patch failed' };
+    }
+
+    this._sidechainState = applied.state;
+    try {
+      await sidechainState.persistState(this.fs, this._sidechainState);
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : String(e) };
+    }
+
+    const patchDigest = sidechainState.patchCommitmentDigestHex(proposal);
+    try {
+      sidechainState.appendJournalEntrySync(this.fs, {
+        basisClock,
+        clock: this._sidechainState.clock,
+        basisDigest: applied.basisDigest,
+        newDigest: applied.newDigest,
+        patchDigest,
+        patches
+      });
+    } catch (e) {
+      console.warn('[HUB:SIDECHAIN] Journal append failed:', e && e.message ? e.message : e);
+    }
+
+    try {
+      await this._syncTrackedContractDigestsFromSidechain();
+    } catch (e) {
+      console.warn('[HUB:CONTRACTS] digest sync after trusted patch failed:', e && e.message ? e.message : e);
+    }
+
+    return {
+      type: 'ApplySidechainPatchesTrustedResult',
+      clock: this._sidechainState.clock,
+      stateDigest: sidechainState.stateDigest(this._sidechainState),
+      patchDigest,
+      content: this._sidechainState.content
+    };
+  }
+
+  async _submitSidechainStatePatchUnlocked (params = {}) {
     const req = (params && typeof params === 'object') ? params : {};
     const patches = req.patches;
     const basisClock = req.basisClock != null ? Number(req.basisClock) : NaN;
     const federationWitness = req.federationWitness || null;
     const adminToken = req.adminToken || req.token;
+    const policy = this._getSidechainPathPolicy();
 
     const validators = this._distributedFederationValidatorsFromEnv();
     const threshold = this._distributedFederationThresholdEffective();
@@ -2238,7 +2763,7 @@ class Hub extends Service {
       return { status: 'error', message: 'adminToken required (no federation validators configured)' };
     }
 
-    const applied = sidechainState.applyPatchesToState(state, patches);
+    const applied = sidechainState.applyPatchesToState(state, patches, policy);
     if (!applied.ok) {
       return { status: 'error', message: applied.error || 'patch failed' };
     }
@@ -2250,11 +2775,31 @@ class Hub extends Service {
       return { status: 'error', message: e && e.message ? e.message : String(e) };
     }
 
+    const patchDigest = sidechainState.patchCommitmentDigestHex(proposal);
+    try {
+      sidechainState.appendJournalEntrySync(this.fs, {
+        basisClock,
+        clock: this._sidechainState.clock,
+        basisDigest: applied.basisDigest,
+        newDigest: applied.newDigest,
+        patchDigest,
+        patches
+      });
+    } catch (e) {
+      console.warn('[HUB:SIDECHAIN] Journal append failed:', e && e.message ? e.message : e);
+    }
+
+    try {
+      await this._syncTrackedContractDigestsFromSidechain();
+    } catch (e) {
+      console.warn('[HUB:CONTRACTS] digest sync after sidechain patch failed:', e && e.message ? e.message : e);
+    }
+
     return {
       type: 'SubmitSidechainStatePatchResult',
       clock: this._sidechainState.clock,
       stateDigest: sidechainState.stateDigest(this._sidechainState),
-      patchDigest: sidechainState.patchCommitmentDigestHex(proposal),
+      patchDigest,
       content: this._sidechainState.content
     };
   }
@@ -2267,6 +2812,7 @@ class Hub extends Service {
     const removed = Array.isArray(info.removedBeaconClocks) ? info.removedBeaconClocks : [];
     if (removed.length) {
       sidechainState.pruneSnapshotsForRemovedBeaconClocksSync(this.fs, removed);
+      sidechainState.pruneJournalForRemovedBeaconClocksSync(this.fs, removed);
     }
 
     const b = this.beacon;
@@ -2284,25 +2830,24 @@ class Hub extends Service {
     const tipBeaconClock = Number(lastPayload.clock);
     sidechainState.pruneSnapshotsAfterBeaconClockSync(this.fs, tipBeaconClock);
 
-    let restored = sidechainState.loadSnapshotForBeaconClock(this.fs, tipBeaconClock);
-    if (!restored) {
-      const st = sidechainState.loadState(this.fs);
-      const dig = sidechainState.stateDigest(st);
-      const want = lastPayload.sidechain && lastPayload.sidechain.stateDigest;
-      if (want && dig === want) {
-        restored = st;
-      } else {
-        restored = sidechainState.createInitialState();
-        console.warn('[HUB:SIDECHAIN] Reorg: no snapshot for beacon clock', tipBeaconClock, '- reset to genesis (digest mismatch or missing snapshot)');
-      }
+    const resolved = sidechainState.resolveStateForBeaconTip({
+      tipPayload: lastPayload,
+      snapshot: sidechainState.loadSnapshotForBeaconClock(this.fs, tipBeaconClock),
+      loadedState: sidechainState.loadState(this.fs),
+      journalEntries: sidechainState.loadJournalDoc(this.fs).entries,
+      policy: this._getSidechainPathPolicy(),
+      replayUnsealed: true
+    });
+    if (resolved.warning) {
+      console.warn('[HUB:SIDECHAIN] Reorg:', resolved.warning);
     }
-
-    this._sidechainState = restored;
-    await sidechainState.persistState(this.fs, restored);
+    this._sidechainState = resolved.state;
+    await sidechainState.persistState(this.fs, resolved.state);
   }
 
   /**
    * Align in-memory `sidechain/STATE` with the persisted beacon epoch chain tip (snapshots written each epoch).
+   * Same restore policy as reorg: snapshot → digest-match → genesis, then replay unsealed journal.
    */
   async _reconcileSidechainToBeaconTip () {
     const b = this.beacon;
@@ -2315,21 +2860,19 @@ class Hub extends Service {
     }
 
     const tipBeaconClock = Number(lastPayload.clock);
-    let next = sidechainState.loadSnapshotForBeaconClock(this.fs, tipBeaconClock);
-    if (!next) {
-      const st = this._sidechainState || sidechainState.loadState(this.fs);
-      const dig = sidechainState.stateDigest(st);
-      const want = lastPayload.sidechain && lastPayload.sidechain.stateDigest;
-      if (want && dig === want) {
-        next = st;
-      } else {
-        console.warn('[HUB:SIDECHAIN] Startup: missing snapshot for tip beacon clock', tipBeaconClock, '- keeping loaded STATE');
-        return;
-      }
+    const resolved = sidechainState.resolveStateForBeaconTip({
+      tipPayload: lastPayload,
+      snapshot: sidechainState.loadSnapshotForBeaconClock(this.fs, tipBeaconClock),
+      loadedState: this._sidechainState || sidechainState.loadState(this.fs),
+      journalEntries: sidechainState.loadJournalDoc(this.fs).entries,
+      policy: this._getSidechainPathPolicy(),
+      replayUnsealed: true
+    });
+    if (resolved.warning) {
+      console.warn('[HUB:SIDECHAIN] Startup:', resolved.warning);
     }
-
-    this._sidechainState = next;
-    await sidechainState.persistState(this.fs, next);
+    this._sidechainState = resolved.state;
+    await sidechainState.persistState(this.fs, resolved.state);
   }
 
   _getDistributedEpochJson () {
@@ -2344,6 +2887,12 @@ class Hub extends Service {
     if (summary.last && summary.last.payload) {
       lastDigest = DistributedExecution.epochCommitmentDigestHex(summary.last.payload);
     }
+    let contracts = null;
+    try {
+      contracts = this._getContractsSnapshotForBeacon();
+    } catch (_) {
+      contracts = null;
+    }
     return {
       service: 'distributed',
       beacon: {
@@ -2354,7 +2903,8 @@ class Hub extends Service {
         lastCommitmentDigest: lastDigest,
         last: summary.last,
         federation: this._getEffectiveFederationPolicyForDistributedHttp()
-      }
+      },
+      contracts
     };
   }
 
@@ -3096,6 +3646,73 @@ class Hub extends Service {
    * @param {Object|null} [fileRelayMeta] - When set, each chunk includes `deliveryFabricId` / `fileRelayTtl` so intermediaries can forward (HTLC phase 2 over a relay).
    * @returns {Promise<{status: string, document: (Object|undefined), message: (string|undefined)}>}
    */
+  /**
+   * Seal a document for priced publish: ciphertext-at-rest + hub-only content key K.
+   * @param {string} documentId
+   * @param {object} parsed - documents/{id}.json body
+   * @returns {Promise<{ parsed: object, key: Buffer }>}
+   */
+  async _sealDocumentForPricedPublish (documentId, parsed) {
+    if (documentContentKey.isSealedDocument(parsed)) {
+      const key = documentContentKey.readContentKey(this.fs, documentId);
+      if (!key) throw new Error('sealed document missing content key on hub');
+      return { parsed, key };
+    }
+    if (!parsed || !parsed.contentBase64) throw new Error('document content not available to seal');
+    const plain = Buffer.from(String(parsed.contentBase64), 'base64');
+    const sizeErr = this._validateDocumentSize(plain);
+    if (sizeErr) throw new Error(sizeErr.message || 'document too large to seal');
+    const sealed = documentContentKey.sealPlaintext(plain);
+    await documentContentKey.writeContentKey(this.fs, documentId, sealed.key);
+    const next = {
+      ...parsed,
+      contentBase64: sealed.ciphertext.toString('base64'),
+      size: sealed.ciphertext.length,
+      encryption: sealed.encryption,
+      sealedAt: new Date().toISOString()
+    };
+    await this.fs.publish(`documents/${documentId}.json`, next);
+    if (this._state.documents && this._state.documents[documentId]) {
+      this._state.documents[documentId] = {
+        ...this._state.documents[documentId],
+        size: next.size,
+        encryption: next.encryption,
+        sealedAt: next.sealedAt
+      };
+    }
+    return { parsed: next, key: sealed.key };
+  }
+
+  /**
+   * Buyer-targeted HTLC key reveal (never embed preimage in relayed file chunks).
+   * @param {string} address - next-hop connection key
+   * @param {object} payload
+   * @param {{ deliveryFabricId?: string, fileRelayTtl?: number }|null} [relayMeta]
+   */
+  _sendHtlcKeyRevealToPeer (address, payload, relayMeta = null) {
+    if (!address || !this.agent.connections[address]) {
+      return { status: 'error', message: 'peer not connected' };
+    }
+    const body = {
+      type: 'HTLC_KEY_REVEAL',
+      settlementId: payload.settlementId,
+      documentId: payload.documentId,
+      preimageHex: payload.preimageHex,
+      paymentHashHex: payload.paymentHashHex || null,
+      created: Date.now()
+    };
+    if (relayMeta && relayMeta.deliveryFabricId) {
+      let ttl = Number(relayMeta.fileRelayTtl);
+      if (!Number.isFinite(ttl) || ttl <= 0) ttl = INVENTORY_FILE_RELAY_TTL;
+      ttl = Math.min(16, Math.max(1, Math.round(ttl)));
+      body.deliveryFabricId = String(relayMeta.deliveryFabricId).trim();
+      body.fileRelayTtl = ttl;
+    }
+    // Mesh body = UTF-8 text (HTLC reveal JSON as opaque text, not a chat envelope).
+    this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', JSON.stringify(body)]);
+    return { status: 'success' };
+  }
+
   async _sendDocumentToPeerAddress (address, docOrId, fileRelayMeta = null, htlcEncrypt = null) {
     if (!address || !this.agent.connections[address]) {
       return { status: 'error', message: 'peer not connected' };
@@ -3130,16 +3747,25 @@ class Hub extends Service {
       if (preimageBuf.length !== 32) {
         return { status: 'error', message: 'HTLC preimage must be 32 bytes.' };
       }
-      const iv = crypto.randomBytes(12);
-      const cipher = crypto.createCipheriv('aes-256-gcm', preimageBuf, iv);
-      const enc = Buffer.concat([cipher.update(buf), cipher.final()]);
-      const tag = cipher.getAuthTag();
-      buf = Buffer.concat([enc, tag]);
-      htlcFileV1Header = {
-        v: 1,
-        iv: iv.toString('base64'),
-        paymentHashHex: crypto.createHash('sha256').update(preimageBuf).digest('hex')
-      };
+      // Sealed-at-rest: content is already AES-GCM(K); send as-is with seal IV (do not double-encrypt).
+      if (documentContentKey.isSealedDocument(doc) && doc.encryption && doc.encryption.iv) {
+        htlcFileV1Header = {
+          v: 1,
+          iv: String(doc.encryption.iv),
+          paymentHashHex: documentContentKey.paymentHashHexFromKey(preimageBuf)
+        };
+      } else {
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', preimageBuf, iv);
+        const enc = Buffer.concat([cipher.update(buf), cipher.final()]);
+        const tag = cipher.getAuthTag();
+        buf = Buffer.concat([enc, tag]);
+        htlcFileV1Header = {
+          v: 1,
+          iv: iv.toString('base64'),
+          paymentHashHex: crypto.createHash('sha256').update(preimageBuf).digest('hex')
+        };
+      }
     }
 
     const totalChunks = Math.max(1, Math.ceil(buf.length / P2P_FILE_CHUNK_BYTES));
@@ -3199,6 +3825,8 @@ class Hub extends Service {
 
   async _attachHtlcToInventoryItems (items, message, htlcDirectConn, requesterFabricId, relayReturnHop = null) {
     const obj = (message && message.object) || {};
+    if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) return items;
+
     const buyerHex = String(obj.buyerRefundPublicKey || '').trim();
     if (!buyerHex || !/^[0-9a-fA-F]{66}$/.test(buyerHex)) return items;
 
@@ -3260,15 +3888,24 @@ class Hub extends Service {
       const sizeErr = this._validateDocumentSize(contentBuffer);
       if (sizeErr) return meta;
 
-      // Preimage = sha256(DocumentPublish Fabric Message bytes); same binding as CreatePurchaseInvoice.
-      let preimage;
+      // Prefer content-key K (sealed priced docs); else DocumentPublish envelope hash (legacy).
+      let paymentHash;
       try {
-        preimage = publishedDocumentEnvelope.inventoryHtlcPreimage32(docIdNorm, parsed);
+        const contentKey = documentContentKey.readContentKey(this.fs, docIdNorm);
+        const resolved = documentPaymentHash.resolveDocumentContentHashHex({
+          documentId: docIdNorm,
+          parsed,
+          contentKey: contentKey || undefined,
+          sealed: !!(contentKey && documentContentKey.isSealedDocument(parsed))
+        });
+        paymentHash = Buffer.from(resolved.contentHashHex, 'hex');
+        meta.contentHash = resolved.contentHashHex;
+        meta.contentHashHex = resolved.contentHashHex;
+        meta.binding = resolved.binding;
       } catch (e) {
-        console.warn('[HUB] inventory HTLC: publish envelope preimage failed:', e && e.message ? e.message : e);
+        console.warn('[HUB] inventory HTLC: payment hash resolve failed:', e && e.message ? e.message : e);
         return meta;
       }
-      const paymentHash = inventoryHtlc.hash256(preimage);
       let built;
       try {
         built = inventoryHtlc.buildInventoryHtlcP2tr({
@@ -3323,7 +3960,7 @@ class Hub extends Service {
           refundLockHeight: refundHeight,
           locktimeDeltaBlocks: lockBlocks,
           sellerPublicKeyHex: sellerPub.toString('hex'),
-          note: 'Fund this Taproot output for the agreed amount (BIP21 URI when supported). After confirmation the seller pushes phase 2 (AES-GCM ciphertext; unlock preimage = sha256(canonical Fabric DocumentPublish message wrapping the stored document JSON fields)). Same preimage as JSON-RPC CreatePurchaseInvoice content-hash chain. Buyer refund path: CLTV after refundLockHeight using buyerRefundPublicKey from the request. See INVENTORY_HTLC_ONCHAIN.md for manual seller claim.',
+          note: 'Fund this Taproot output for the agreed amount (BIP21 URI when supported). After confirmation the seller pushes ciphertext and reveals the AES decryption key (HTLC preimage) to the buyer. For priced sealed documents the preimage is the content key K. Buyer refund path: CLTV after refundLockHeight. See INVENTORY_HTLC_ONCHAIN.md.',
           walletHint: 'Send to paymentAddress with at least amountSats; many wallets accept bitcoin: Taproot URIs. Fee is separate from invoice amount.'
         }
       };
@@ -3415,9 +4052,21 @@ class Hub extends Service {
       });
     }
 
+    // Reveal K to the buyer on a separate message (not inside relayed file chunks).
+    try {
+      this._sendHtlcKeyRevealToPeer(addr, {
+        settlementId,
+        documentId: s.documentId,
+        preimageHex: s.preimageHex,
+        paymentHashHex: s.paymentHashHex
+      }, fileRelayMeta);
+    } catch (revealErr) {
+      console.warn('[HUB] HTLC_KEY_REVEAL send failed:', revealErr && revealErr.message ? revealErr.message : revealErr);
+    }
+
     s.status = 'COMPLETED';
-    console.debug('[HUB] INVENTORY HTLC phase 2: sent document', s.documentId, 'to', addr, 'txid', txid);
-    return _htlcResult({ status: 'success', settlementId, documentId: s.documentId, txid });
+    console.debug('[HUB] INVENTORY HTLC phase 2: sent document + key reveal', s.documentId, 'to', addr, 'txid', txid);
+    return _htlcResult({ status: 'success', settlementId, documentId: s.documentId, txid, keyRevealed: true });
   }
 
   /**
@@ -7487,7 +8136,8 @@ class Hub extends Service {
       key: this._rootKey,
       federationValidators: _fedVals,
       federationThreshold: _fedVals.length ? _fedThrRaw : Math.max(1, _fedThrRaw),
-      getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon()
+      getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon(),
+      getContractsSnapshotForEpoch: () => this._getContractsSnapshotForBeacon()
     });
 
     this.beacon.on('epoch', (epochPayload) => {
@@ -7511,6 +8161,15 @@ class Hub extends Service {
             console.warn('[HUB:SIDECHAIN] Epoch sidechain digest mismatch vs hub state; snapshot uses in-memory STATE');
           }
           sidechainState.saveSnapshotForBeaconClockSync(this.fs, bc, this._sidechainState);
+          try {
+            sidechainState.sealJournalThroughSidechainClockSync(
+              this.fs,
+              Number(this._sidechainState.clock) || 0,
+              bc
+            );
+          } catch (e) {
+            console.warn('[HUB:SIDECHAIN] Journal seal failed:', e && e.message ? e.message : e);
+          }
           if (this.fs && typeof this.fs.synchronize === 'function') {
             this.fs.synchronize().catch((e) => {
               console.warn('[HUB:SIDECHAIN] Filesystem synchronize after snapshot failed:', e && e.message ? e.message : e);
@@ -7539,6 +8198,27 @@ class Hub extends Service {
         .catch((e) => {
           console.warn('[HUB:SIDECHAIN] Reorg handling failed:', e && e.message ? e.message : e);
         });
+    });
+
+    this.beacon.on('federation:sign-request', (signRequest) => {
+      try {
+        if (typeof this.http.broadcast !== 'function') return;
+        const payload = JSON.stringify(signRequest);
+        const msg = Message.fromVector(['GenericMessage', payload]);
+        if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+        this.http.broadcast(msg);
+        if (this.agent && typeof this.agent.relayFrom === 'function') {
+          this.agent.relayFrom('_hub', msg).catch(() => {});
+        }
+        console.log(
+          '[HUB:BEACON] Federation sign request pending:',
+          signRequest && signRequest.commitmentDigest
+            ? String(signRequest.commitmentDigest).slice(0, 16) + '…'
+            : '?'
+        );
+      } catch (e) {
+        console.warn('[HUB:BEACON] federation:sign-request broadcast failed:', e && e.message ? e.message : e);
+      }
     });
 
     await this.beacon.start();
@@ -8103,6 +8783,7 @@ class Hub extends Service {
 
       mountFabricDelegationHttp(this);
       mountFabricDesktopAuthHttp(this);
+      mountFabricDeviceLinkHttp(this);
 
       // Configure routes
       this._addAllRoutes();
@@ -8461,16 +9142,16 @@ class Hub extends Service {
             // independent of how we resolve the network connection.
             target: targetValue
           };
-
           if (clientId) chatPayload.object.clientId = clientId;
 
-          const vector = ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)];
-          this._sendVectorToPeer(address, vector);
+          // Mesh wire: UTF-8 text only.
+          this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', String(text)]);
 
-          // Locally echo the chat message so this hub's UI clients
-          // also see messages it sends to peers.
+          // Locally echo so this hub's UI clients also see messages it sends to peers.
           try {
-            this.agent.emit('chat', chatPayload);
+            this.agent.emit('chat', { text: String(text), type: 'P2P_CHAT_MESSAGE' }, {
+              signer: actorId
+            });
           } catch (echoErr) {
             console.warn('[HUB] Failed to locally echo peer chat message:', echoErr);
           }
@@ -8575,30 +9256,36 @@ class Hub extends Service {
       });
 
       // Submit a chat message for broadcast to all connected clients AND all Fabric nodes.
-      // Params: (body: { text: string, clientId?: string, actor?: { id } })
+      // Params: (body: { text|content|body, clientId?, channel?, handle?, actor?: { id } })
+      // Compatible with Hub classic and GoonCitizen ChatManager wire shapes.
       this.http._registerMethod('SubmitChatMessage', (...params) => {
         const body = params[0] || params;
-        const text = typeof body === 'string' ? body : (body && (body.text || body.content)) || '';
-        if (!text) return { status: 'error', message: 'message text required' };
-        const clientId = body && body.clientId ? String(body.clientId) : null;
-        const actorId = (body && body.actor && body.actor.id) ? body.actor.id : this.agent.identity.id;
-        const created = Date.now();
-        const chatPayload = {
+        const text = typeof body === 'string'
+          ? body
+          : (body && (body.text || body.content || body.body ||
+            (body.object && (body.object.content || body.object.body)))) || '';
+        const actorId = (body && body.actor && body.actor.id)
+          ? String(body.actor.id)
+          : this.agent.identity.id;
+        const chatPayload = normalizeP2pChatMessage({
           type: 'P2P_CHAT_MESSAGE',
           actor: { id: actorId },
-          object: { content: text, created }
-        };
-        if (clientId) chatPayload.object.clientId = clientId;
+          object: {
+            content: text,
+            clientId: (body && (body.clientId || (body.object && body.object.clientId))) || undefined
+          }
+        }, { defaultActorId: actorId, signer: actorId });
+        if (!chatPayload) return { status: 'error', message: 'message text required' };
         try {
           this._cacheChatMessage(chatPayload);
           const relay = Message.fromVector(['ChatMessage', JSON.stringify(chatPayload)]);
           if (this._rootKey && this._rootKey.private) relay.signWithKey(this._rootKey);
-          // Broadcast to all WebSocket clients
+          // Broadcast to all WebSocket clients (HTTP edge may use JSON ChatMessage)
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(relay);
           }
-          // Relay to all Fabric P2P peers (origin '_client' so we don't skip any connection)
-          const p2pMsg = Message.fromVector(['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)]).signWithKey(this.agent.key);
+          // Mesh: first-class P2P_CHAT_MESSAGE with UTF-8 text body only
+          const p2pMsg = Message.fromVector(['P2P_CHAT_MESSAGE', String(text)]).signWithKey(this.agent.key);
           this.agent.relayFrom('_client', p2pMsg);
           return { status: 'success' };
         } catch (err) {
@@ -8822,6 +9509,9 @@ class Hub extends Service {
       // Create a pay-to-distribute invoice: returns address + amount for L1 payment.
       // Params: ({ documentId, amountSats, durationYears?, challengeCadence?, responseDeadline? })
       this.http._registerMethod('CreateDistributeInvoice', async (...params) => {
+        if (!FEATURE_FLAGS.DISTRIBUTE) {
+          return { status: 'error', message: 'Distribute is disabled (FABRIC_FEATURE_DISTRIBUTE)', documentId: null };
+        }
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         if (!documentId) return { status: 'error', message: 'documentId required', documentId: null };
@@ -8866,6 +9556,9 @@ class Hub extends Service {
       // Send a distribute proposal to a peer (offer to pay them to host a file).
       // Params: (idOrAddress, { documentId, amountSats, config?, document?, documentName? })
       this.http._registerMethod('SendDistributeProposal', (...params) => {
+        if (!FEATURE_FLAGS.DISTRIBUTE) {
+          return { type: 'SendDistributeProposalResult', status: 'error', message: 'Distribute is disabled (FABRIC_FEATURE_DISTRIBUTE)' };
+        }
         const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         const body = params[1] || params[0];
         const proposal = typeof body === 'object' ? body : {};
@@ -8904,14 +9597,7 @@ class Hub extends Service {
             documentName: proposal.documentName || (proposal.document && proposal.document.name) || documentId
           };
           const text = JSON.stringify(payload);
-          const chatPayload = {
-            type: 'P2P_CHAT_MESSAGE',
-            actor: { id: this.agent.identity.id },
-            object: { content: text, created: Date.now() },
-            target: targetValue
-          };
-          const vector = ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)];
-          this._sendVectorToPeer(address, vector);
+          this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', text]);
           return {
             type: 'SendDistributeProposalResult',
             status: 'success',
@@ -8932,6 +9618,9 @@ class Hub extends Service {
       // Accept a distribute proposal: create invoice and send acceptance to proposer.
       // Params: ({ proposalId, documentId, amountSats, config, senderAddress })
       this.http._registerMethod('AcceptDistributeProposal', async (...params) => {
+        if (!FEATURE_FLAGS.DISTRIBUTE) {
+          return { status: 'error', message: 'Distribute is disabled (FABRIC_FEATURE_DISTRIBUTE)' };
+        }
         const proposal = params[0] || {};
         const documentId = this._normalizeDocumentId(proposal.documentId);
         const amountSats = Number(proposal.amountSats || 0);
@@ -8974,14 +9663,7 @@ class Hub extends Service {
           const text = JSON.stringify(acceptancePayload);
           const resolved = this._resolvePeerAddress(senderAddress);
           if (resolved && this.agent.connections[resolved]) {
-            const chatPayload = {
-              type: 'P2P_CHAT_MESSAGE',
-              actor: { id: this.agent.identity.id },
-              object: { content: text, created: Date.now() },
-              target: senderAddress
-            };
-            const vector = ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)];
-            this._sendVectorToPeer(resolved, vector);
+            this._sendVectorToPeer(resolved, ['P2P_CHAT_MESSAGE', text]);
           }
           return {
             type: 'AcceptDistributeProposalResult',
@@ -9004,6 +9686,7 @@ class Hub extends Service {
 
       // Publish a document ID into the global store (hub node state.collections.documents)
       // Params: (id: string | { id: string, purchasePriceSats?: number })
+      // Priced publish seals content (AES-GCM content key K) for inventory HTLC key-reveal.
       this.http._registerMethod('PublishDocument', async (...params) => {
         const arg = params[0];
         const id = this._normalizeDocumentId(arg && (arg.id || arg));
@@ -9011,11 +9694,19 @@ class Hub extends Service {
           ? Math.max(0, Number(arg.purchasePriceSats))
           : 0;
         if (!id) return { status: 'error', message: 'id required' };
+        if (purchasePriceSats > 0 && !FEATURE_FLAGS.DOCUMENT_PURCHASE) {
+          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: id };
+        }
         try {
           // Ensure the document exists locally
           const raw = this.fs.readFile(`documents/${id}.json`);
           if (!raw) return { status: 'error', message: 'document not found', documentId: id };
-          const parsed = JSON.parse(raw);
+          let parsed = JSON.parse(raw);
+
+          if (purchasePriceSats > 0) {
+            const sealed = await this._sealDocumentForPricedPublish(id, parsed);
+            parsed = sealed.parsed;
+          }
 
           // Global store lives in this Service's state (this._state.content)
           this._state.content.collections = this._state.content.collections || {};
@@ -9037,7 +9728,10 @@ class Hub extends Service {
             revision: parsed.revision || 1,
             edited: parsed.edited || parsed.created || now,
             published: now,
-            ...(purchasePriceSats > 0 ? { purchasePriceSats } : {})
+            ...(purchasePriceSats > 0 ? { purchasePriceSats } : {}),
+            ...(documentContentKey.isSealedDocument(parsed)
+              ? { encryption: { scheme: parsed.encryption.scheme, contentSha256: parsed.encryption.contentSha256 } }
+              : {})
           };
           if (!exists) {
             this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
@@ -9087,6 +9781,9 @@ class Hub extends Service {
       // Create an HTLC purchase invoice for a published document. Returns address + amount.
       // Params: ({ documentId, amountSats? }) — amountSats defaults to document's purchasePriceSats
       this.http._registerMethod('CreatePurchaseInvoice', async (...params) => {
+        if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) {
+          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: null };
+        }
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         if (!documentId) return { status: 'error', message: 'documentId required', documentId: null };
@@ -9122,20 +9819,36 @@ class Hub extends Service {
           };
         }
 
-        let contentHash;
+        const contentKey = documentContentKey.readContentKey(this.fs, documentId);
+        let resolved;
         try {
-          contentHash = publishedDocumentEnvelope.purchaseContentHashHex(documentId, parsed);
+          resolved = documentPaymentHash.resolveDocumentContentHashHex({
+            documentId,
+            parsed,
+            contentKey: contentKey || undefined,
+            sealed: !!(contentKey && documentContentKey.isSealedDocument(parsed))
+          });
         } catch (e) {
           return {
             status: 'error',
-            message: e && e.message ? e.message : 'document publish envelope hash failed',
+            message: e && e.message ? e.message : 'document payment hash resolve failed',
             documentId
           };
         }
+        const contentHash = resolved.contentHashHex;
+        const sealed = resolved.binding === 'sealed';
 
         const address = await bitcoin.getUnusedAddress();
         const now = new Date().toISOString();
-        this._purchaseRequests[documentId] = { address, amountSats, contentHash, createdAt: now };
+        this._purchaseRequests[documentId] = {
+          address,
+          amountSats,
+          contentHash,
+          contentHashHex: contentHash,
+          binding: resolved.binding,
+          sealed,
+          createdAt: now
+        };
 
         return {
           type: 'CreatePurchaseInvoiceResult',
@@ -9143,14 +9856,20 @@ class Hub extends Service {
           address,
           amountSats,
           contentHash,
+          contentHashHex: contentHash,
+          binding: resolved.binding,
+          sealed,
           network: bitcoin.network || 'regtest',
           expiresAt: now
         };
       });
 
-      // Claim an HTLC purchase: verify payment, verify publish-envelope hash (see publishedDocumentEnvelope.js), return document.
+      // Claim purchase: verify L1 payment; for sealed docs return plaintext + content key preimage.
       // Params: ({ documentId, txid })
       this.http._registerMethod('ClaimPurchase', async (...params) => {
+        if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) {
+          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: null };
+        }
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         const txid = config.txid ? String(config.txid).trim() : null;
@@ -9178,14 +9897,36 @@ class Hub extends Service {
         const contentBase64 = parsed.contentBase64;
         if (!contentBase64) return { status: 'error', message: 'document content not available', documentId };
 
+        const contentKey = documentContentKey.readContentKey(this.fs, documentId);
         let contentHash;
+        let outContentBase64 = contentBase64;
+        let preimageHex = null;
         try {
-          contentHash = publishedDocumentEnvelope.purchaseContentHashHex(documentId, parsed);
+          const resolved = documentPaymentHash.resolveDocumentContentHashHex({
+            documentId,
+            parsed,
+            contentKey: contentKey || undefined,
+            sealed: !!(pending.sealed && contentKey && documentContentKey.isSealedDocument(parsed))
+          });
+          contentHash = resolved.contentHashHex;
         } catch (e) {
-          return { status: 'error', message: 'Document publish envelope hash failed.', documentId };
+          return { status: 'error', message: 'Document payment hash resolve failed.', documentId };
         }
-        if (contentHash !== pending.contentHash) {
-          return { status: 'error', message: 'Content hash mismatch. HTLC unlock failed.', documentId };
+        if (contentHash !== pending.contentHash && contentHash !== pending.contentHashHex) {
+          return { status: 'error', message: 'Content hash mismatch. Unlock failed.', documentId };
+        }
+        if (pending.sealed && contentKey && documentContentKey.isSealedDocument(parsed)) {
+          try {
+            const plain = documentContentKey.openCiphertext(
+              Buffer.from(contentBase64, 'base64'),
+              contentKey,
+              parsed.encryption.iv
+            );
+            outContentBase64 = plain.toString('base64');
+            preimageHex = contentKey.toString('hex');
+          } catch (e) {
+            return { status: 'error', message: e && e.message ? e.message : 'Failed to open sealed content', documentId };
+          }
         }
 
         delete this._purchaseRequests[documentId];
@@ -9199,14 +9940,18 @@ class Hub extends Service {
             mime: parsed.mime,
             size: parsed.size,
             sha256: parsed.sha256,
-            contentBase64,
-            contentHash
+            contentBase64: outContentBase64,
+            contentHash,
+            ...(preimageHex ? { preimageHex } : {})
           }
         };
       });
 
       // Set purchase price for a published document. Admin or document owner.
       this.http._registerMethod('SetDocumentPrice', async (...params) => {
+        if (!FEATURE_FLAGS.DOCUMENT_PURCHASE && Number(params[0] && (params[0].purchasePriceSats || params[0].amountSats)) > 0) {
+          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)' };
+        }
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         const purchasePriceSats = Math.max(0, Number(config.purchasePriceSats || config.amountSats || 0));
@@ -9217,6 +9962,22 @@ class Hub extends Service {
         const entry = collections && collections[documentId];
         if (!entry || !entry.published) {
           return { status: 'error', message: 'document not found or not published' };
+        }
+
+        if (purchasePriceSats > 0) {
+          try {
+            const raw = this.fs.readFile(`documents/${documentId}.json`);
+            if (raw) {
+              const sealed = await this._sealDocumentForPricedPublish(documentId, JSON.parse(raw));
+              entry.size = sealed.parsed.size;
+              entry.encryption = {
+                scheme: sealed.parsed.encryption.scheme,
+                contentSha256: sealed.parsed.encryption.contentSha256
+              };
+            }
+          } catch (e) {
+            return { status: 'error', message: e && e.message ? e.message : 'failed to seal document for priced listing' };
+          }
         }
 
         entry.purchasePriceSats = purchasePriceSats > 0 ? purchasePriceSats : undefined;
@@ -9794,23 +10555,82 @@ class Hub extends Service {
         }
       });
 
-      // Sidechain global state (JSON Patch on `content`); epochs embed `payload.sidechain` from this head.
+      // Sidechain / statechain global state (JSON Patch on `content`); epochs embed `payload.sidechain`.
       this.http._registerMethod('GetSidechainState', async () => {
-        const st = this._sidechainState || sidechainState.loadState(this.fs);
-        this._sidechainState = st;
-        return {
-          type: 'SidechainState',
-          version: st.version,
-          clock: st.clock,
-          stateDigest: sidechainState.stateDigest(st),
-          content: st.content
-        };
+        return this._getSidechainStateJson();
+      });
+
+      // Params: { limit?, includePatches? }
+      this.http._registerMethod('GetSidechainJournal', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._getSidechainJournalJson(req);
+      });
+
+      // Params: { limit?, includeContent? }
+      this.http._registerMethod('GetSidechainSnapshots', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._getSidechainSnapshotsJson(req);
       });
 
       // Params: { patches, basisClock, federationWitness? } or adminToken when no federation validators.
       this.http._registerMethod('SubmitSidechainStatePatch', async (...params) => {
         const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
         return this._submitSidechainStatePatch(req);
+      });
+
+      // Tracked application contracts (CONTRACT_PUBLISH → operator Accept → Beacon `payload.contracts`).
+      this.http._registerMethod('ListTrackedApplicationContracts', (...params) => {
+        void params;
+        return this._getTrackedContractsSummary();
+      });
+
+      // Params: { contractId, adminToken|token }
+      this.http._registerMethod('AcceptTrackedApplicationContract', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._acceptTrackedApplicationContract(req);
+      });
+
+      // Params: { contractId, adminToken|token }
+      this.http._registerMethod('RejectTrackedApplicationContract', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._rejectTrackedApplicationContract(req);
+      });
+
+      // ADR-001: contract Statechain for an accepted CONTRACT_PUBLISH id.
+      this.http._registerMethod('GetContractSidechainState', (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._getContractSidechainStateJson(req);
+      });
+
+      // Params: { contractId, patches, basisClock?, federationWitness?, adminToken? }
+      this.http._registerMethod('SubmitContractSidechainStatePatch', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._submitContractSidechainStatePatch(req);
+      });
+
+      // Beacon Federation signature collection (threshold Schnorr over epoch commitment).
+      this.http._registerMethod('ListPendingBeaconEpochSignatures', (...params) => {
+        void params;
+        if (!this.beacon || typeof this.beacon.listPendingFederationEpochRounds !== 'function') {
+          return { type: 'PendingBeaconEpochSignatures', rounds: [] };
+        }
+        return {
+          type: 'PendingBeaconEpochSignatures',
+          rounds: this.beacon.listPendingFederationEpochRounds()
+        };
+      });
+
+      // Params: { commitmentDigest, pubkey, signature } — BIP340 over signingStringForBeaconEpoch
+      this.http._registerMethod('SubmitBeaconEpochSignature', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        if (!this.beacon || typeof this.beacon.submitFederationEpochSignature !== 'function') {
+          return { status: 'error', message: 'Beacon not available' };
+        }
+        return this.beacon.submitFederationEpochSignature(
+          req.commitmentDigest,
+          req.pubkey,
+          req.signature || req.signatureHex
+        );
       });
 
       this.http._registerMethod('GetDistributedFederationPolicy', (...params) => {
@@ -9998,16 +10818,10 @@ class Hub extends Service {
           invitedAt: Date.now()
         });
         const actorId = this.agent.identity.id;
-        const chatPayload = {
-          type: 'P2P_CHAT_MESSAGE',
-          actor: { id: actorId },
-          object: { content, created: Date.now() },
-          target: targetValue
-        };
         try {
-          this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', JSON.stringify(chatPayload)]);
+          this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', String(content)]);
           try {
-            this.agent.emit('chat', chatPayload);
+            this.agent.emit('chat', { text: String(content), type: 'P2P_CHAT_MESSAGE' }, { signer: actorId });
           } catch (echoErr) {
             console.warn('[HUB] Failed to locally echo peer chat message:', echoErr);
           }
@@ -10070,6 +10884,8 @@ class Hub extends Service {
           peers: mergeFabricPeersWithWebRtcRegistry(this.agent.knownPeers, this.http.webrtcPeerList || []),
           // Browser WebRTC mesh peers (registered via RegisterWebRTCPeer / Bridge)
           webrtcPeers: this.http.webrtcPeerList || [],
+          /** Server process FEATURE_FLAGS (see constants.js / FABRIC_FEATURE_*). */
+          featureFlags: publicFeatureFlags(),
           // settings: this.settings,
           state: this.http.state,
           xpub: this._rootKey.xpub
@@ -10329,19 +11145,35 @@ class Hub extends Service {
       this._fabricPeeringOfferIntervalId = setInterval(maybeBroadcastFabricPeeringOffer, FABRIC_PEERING_OFFER_INTERVAL_MS);
 
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
+      // When the target is this hub's own identity, also broadcast P2P_PEER_ALIAS (UTF-8 nickname).
       // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
       this.http._registerMethod('SetPeerNickname', (...params) => {
         const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         const nickname = params[1] != null ? params[1] : (params[0] && params[0].nickname);
         if (!idOrAddress) return { status: 'error', message: 'id or address required' };
         try {
-          const clean = nickname == null ? '' : String(nickname).trim();
+          const clean = nickname == null ? '' : String(nickname).trim().slice(0, 64);
           const registry = this.agent._state && this.agent._state.peers ? this.agent._state.peers : {};
           const addressToId = this.agent._addressToId || {};
           const key = registry[idOrAddress] ? idOrAddress : (addressToId[idOrAddress] || idOrAddress);
-          this.agent._upsertPeerRegistry(key, { id: key, nickname: clean || null });
+          this.agent._upsertPeerRegistry(key, { id: key, nickname: clean || null, alias: clean || null });
+          const selfId = this.agent && this.agent.identity && this.agent.identity.id
+            ? String(this.agent.identity.id)
+            : '';
+          const selfPub = this.agent && this.agent.key && this.agent.key.pubkey
+            ? String(this.agent.key.pubkey)
+            : '';
+          const isSelf = key === selfId || key === selfPub ||
+            String(idOrAddress) === selfId || String(idOrAddress) === selfPub ||
+            String(idOrAddress) === 'self' || String(idOrAddress) === 'me';
+          if (isSelf && clean && typeof this.agent._announceAlias === 'function') {
+            this.agent._announceAlias(clean);
+          } else if (isSelf && clean) {
+            const aliasMsg = Message.fromVector(['P2P_PEER_ALIAS', clean]).signWithKey(this.agent.key);
+            this.agent.relayFrom('_hub', aliasMsg);
+          }
           pushNetworkStatus();
-          return { status: 'success' };
+          return { status: 'success', broadcastAlias: !!(isSelf && clean) };
         } catch (err) {
           console.error('[HUB] SetPeerNickname error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'failed' };
@@ -10471,9 +11303,21 @@ class Hub extends Service {
       });
 
       // Relay messages received via WebRTC data channel to WebSocket clients (and Fabric P2P).
-      // Wraps in P2P_RELAY envelope to preserve original message + signature for onion routing.
+      // Two P2P_RELAY body layouts (intentional):
+      //   • Hub↔browser WS — JSON { original, originalType, hops } (Bridge + hop UI)
+      //   • Fabric TCP Peer — raw inner Message bytes (@fabric/core Peer._handleFabricMessage)
       // Include BitcoinBlock so browser mesh can forward chain-head summaries to Fabric P2P via the hub (same shape as ZMQ-driven gossip).
-      const RELAYABLE_ORIGINAL_TYPES = ['P2P_CHAT_MESSAGE', P2P_PEER_GOSSIP, P2P_PEERING_OFFER, 'fabric-message', 'BitcoinBlock'];
+      const RELAYABLE_ORIGINAL_TYPES = [
+        'P2P_CHAT_MESSAGE',
+        'P2P_PEER_GOSSIP',
+        P2P_PEER_GOSSIP,
+        'P2P_PEERING_OFFER',
+        P2P_PEERING_OFFER,
+        'P2P_PEER_ALIAS',
+        P2P_PEER_ALIAS,
+        'fabric-message',
+        'BitcoinBlock'
+      ];
       this.http._registerMethod('RelayFromWebRTC', (...params) => {
         const body = params[0] || params;
         const fromPeerId = body && body.fromPeerId ? String(body.fromPeerId) : null;
@@ -10516,12 +11360,16 @@ class Hub extends Service {
             originalType,
             hops: [...hops, { from: fromPeerId, at: now }]
           };
+          // Browser path: keep JSON hops envelope for Bridge.
           const relayMsg = Message.fromVector(['P2P_RELAY', JSON.stringify(relayPayload)]);
           if (this._rootKey && this._rootKey.private) relayMsg.signWithKey(this._rootKey);
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(relayMsg);
           }
-          const p2pRelay = Message.fromVector(['P2P_RELAY', JSON.stringify(relayPayload)]).signWithKey(this.agent.key);
+          // Peer mesh path: raw inner Message bytes (preserves fabric-message signatures).
+          const signKey = (this.agent && this.agent.key) || this._rootKey;
+          const innerBuf = buildInnerWireBuffer(original, originalType, signKey);
+          const p2pRelay = wrapPeerP2pRelay(innerBuf, signKey);
           this.agent.relayFrom('_webrtc', p2pRelay);
           return { status: 'success' };
         } catch (err) {
@@ -10580,21 +11428,64 @@ class Hub extends Service {
       };
 
       // Broadcast chat messages received from the P2P network to UI clients.
-      // The UI Bridge will parse `ChatMessage` and append it to client-side state.
-      this.agent.on('chat', (chat) => {
+      // Peer emits ({ text }, { origin, signer }) for first-class UTF-8 P2P_CHAT_MESSAGE.
+      this.agent.on('chat', (chat, meta = {}) => {
         try {
-          const originPeer = chat && chat._origin ? String(chat._origin) : '';
-          this._ingestOfferFromChatMessage(chat, originPeer);
-          this._cacheChatMessage(chat);
+          const originPeer = (meta && meta.origin && meta.origin.name)
+            ? String(meta.origin.name)
+            : (chat && chat._origin ? String(chat._origin) : '');
+          const defaultActorId = (this.agent && this.agent.identity && this.agent.identity.id)
+            ? String(this.agent.identity.id)
+            : 'unknown';
+          const normalized = normalizeP2pChatMessage(chat, {
+            defaultActorId,
+            signer: meta && meta.signer ? meta.signer : null
+          });
+          if (!normalized) return;
+
+          // Relay HTLC_KEY_REVEAL toward deliveryFabricId (same hop shape as inventory file relay).
+          try {
+            const text = (normalized.object && typeof normalized.object.content === 'string')
+              ? normalized.object.content.trim()
+              : '';
+            if (text.startsWith('{')) {
+              const reveal = JSON.parse(text);
+              if (reveal && reveal.type === 'HTLC_KEY_REVEAL' && reveal.deliveryFabricId && reveal.preimageHex) {
+                const destId = String(reveal.deliveryFabricId).trim();
+                const selfId = this.agent && this.agent.identity && this.agent.identity.id
+                  ? String(this.agent.identity.id)
+                  : '';
+                if (destId && destId !== selfId) {
+                  let ttl = Number(reveal.fileRelayTtl);
+                  if (!Number.isFinite(ttl) || ttl <= 0) ttl = INVENTORY_FILE_RELAY_TTL;
+                  ttl = Math.min(16, Math.max(0, Math.round(ttl) - 1));
+                  if (ttl > 0) {
+                    const nextAddr = this._resolvePeerAddress(destId);
+                    if (nextAddr && this.agent.connections[nextAddr] && nextAddr !== originPeer) {
+                      this._sendHtlcKeyRevealToPeer(nextAddr, {
+                        settlementId: reveal.settlementId,
+                        documentId: reveal.documentId,
+                        preimageHex: reveal.preimageHex,
+                        paymentHashHex: reveal.paymentHashHex
+                      }, { deliveryFabricId: destId, fileRelayTtl: ttl });
+                    }
+                  }
+                }
+              }
+            }
+          } catch (_) { /* ignore relay parse errors */ }
+
+          this._ingestOfferFromChatMessage(normalized, originPeer);
+          this._cacheChatMessage(normalized);
           if (this.settings && this.settings.debug) {
             try {
-              console.log('[HUB:CHAT]', JSON.stringify(chat));
+              console.log('[HUB:CHAT]', JSON.stringify(normalized));
             } catch (e) {
-              console.log('[HUB:CHAT]', chat);
+              console.log('[HUB:CHAT]', normalized);
             }
           }
 
-          const payload = typeof chat === 'string' ? chat : JSON.stringify(chat);
+          const payload = JSON.stringify(normalized);
           const msg = Message.fromVector(['ChatMessage', payload]);
           if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
           if (typeof this.http.broadcast === 'function') {
@@ -10605,22 +11496,51 @@ class Hub extends Service {
         }
       });
 
-      // Contract namespace events (CONTRACT_PUBLISH / CONTRACT_MESSAGE). The
-      // core Peer relays these across the mesh; the hub tracks them lightly.
-      //
-      // NOTE: do NOT append CONTRACT_MESSAGE to the Fabric message log — that
-      // generates a chain block + fs.publish per call, and app namespaces (e.g.
-      // GoonCitizen) can emit these at high volume. Keep an in-memory rolling
-      // summary instead. CONTRACT_PUBLISH is rare (namespace declaration) and is
-      // recorded once per contract id for audit.
+      // Mesh nickname announcements (P2P_PEER_ALIAS UTF-8 body).
+      this.agent.on('peerAlias', (ev) => {
+        try {
+          const alias = ev && ev.alias != null ? String(ev.alias).trim().slice(0, 64) : '';
+          const signer = ev && ev.signer ? String(ev.signer) : null;
+          if (!alias || !signer) return;
+          if (typeof this.agent._upsertPeerRegistry === 'function') {
+            this.agent._upsertPeerRegistry(signer, { id: signer, alias, nickname: alias });
+          }
+          const payload = JSON.stringify({
+            type: 'P2P_PEER_ALIAS',
+            actor: { id: signer },
+            object: { name: alias }
+          });
+          const msg = Message.fromVector(['GenericMessage', payload]);
+          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
+          if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+        } catch (err) {
+          console.error('[HUB] Failed to broadcast peer alias:', err);
+        }
+      });
+
+      // Contract namespace events (CONTRACT_PUBLISH / CONTRACT_MESSAGE).
+      // CONTRACT_PUBLISH → pending tracked application contract (operator Accept
+      // seals into Beacon `payload.contracts` state root). CONTRACT_MESSAGE stays
+      // in-memory only (high volume from app namespaces like GoonCitizen).
       this._contractNamespaces = this._contractNamespaces || new Set();
       this._contractMessageCounts = this._contractMessageCounts || Object.create(null);
       this.agent.on('contract:publish', (ev) => {
         const contract = ev && ev.contract ? String(ev.contract) : null;
-        if (!contract || this._contractNamespaces.has(contract)) return;
-        this._contractNamespaces.add(contract);
+        if (!contract) return;
+        const firstSeen = !this._contractNamespaces.has(contract);
+        if (firstSeen) this._contractNamespaces.add(contract);
         Promise.resolve()
-          .then(() => this._appendFabricMessage('ContractPublish', { contract, signer: (ev && ev.signer) || null }))
+          .then(async () => {
+            await this._recordTrackedContractPublish(ev || {});
+            if (firstSeen) {
+              await this._appendFabricMessage('ContractPublish', {
+                contract,
+                signer: (ev && ev.signer) || null,
+                name: (ev && ev.object && ev.object.name) || null
+              });
+            }
+          })
           .catch((err) => {
             if (this.settings && this.settings.debug) console.error('[HUB] contract:publish record failed:', err && err.message ? err.message : err);
           });

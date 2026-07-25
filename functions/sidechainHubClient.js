@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Browser helpers for Hub sidechain + distributed epoch HTTP surfaces.
- * Uses same-origin `/services/rpc` and `/services/distributed/epoch` (works for LAN hubs
+ * Browser helpers for Hub sidechain / statechain + distributed epoch HTTP surfaces.
+ * Uses same-origin `/services/rpc` and `/services/distributed/*` (works for LAN hubs
  * like `http://192.168.50.5:8080` when the UI is loaded from that origin).
  */
 
@@ -36,22 +36,37 @@ async function hubJsonRpc (method, params = []) {
 }
 
 /**
+ * @param {string} path
  * @returns {Promise<{ ok: boolean, data?: object, error?: string }>}
  */
-async function fetchDistributedEpoch () {
+async function fetchDistributedJson (path) {
   try {
-    const res = await fetch('/services/distributed/epoch', { headers: { Accept: 'application/json' } });
+    const res = await fetch(path, { headers: { Accept: 'application/json' } });
     let data = null;
     try {
       data = await res.json();
     } catch (_) {}
     if (!res.ok) {
-      return { ok: false, error: res.statusText || `HTTP ${res.status}` };
+      return { ok: false, error: (data && data.message) || res.statusText || `HTTP ${res.status}` };
     }
     return { ok: true, data: data && typeof data === 'object' ? data : {} };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };
   }
+}
+
+/**
+ * @returns {Promise<{ ok: boolean, data?: object, error?: string }>}
+ */
+async function fetchDistributedEpoch () {
+  return fetchDistributedJson('/services/distributed/epoch');
+}
+
+/**
+ * @returns {Promise<{ ok: boolean, data?: object, error?: string }>}
+ */
+async function fetchDistributedManifest () {
+  return fetchDistributedJson('/services/distributed/manifest');
 }
 
 /**
@@ -61,6 +76,24 @@ async function getSidechainState () {
   const out = await hubJsonRpc('GetSidechainState', []);
   if (!out.ok) return { ok: false, error: out.error };
   return { ok: true, state: out.result };
+}
+
+/**
+ * @param {{ limit?: number, includePatches?: boolean }} [opts]
+ */
+async function getSidechainJournal (opts = {}) {
+  const out = await hubJsonRpc('GetSidechainJournal', [opts]);
+  if (!out.ok) return { ok: false, error: out.error };
+  return { ok: true, journal: out.result };
+}
+
+/**
+ * @param {{ limit?: number, includeContent?: boolean }} [opts]
+ */
+async function getSidechainSnapshots (opts = {}) {
+  const out = await hubJsonRpc('GetSidechainSnapshots', [opts]);
+  if (!out.ok) return { ok: false, error: out.error };
+  return { ok: true, snapshots: out.result };
 }
 
 /**
@@ -78,7 +111,11 @@ async function submitSidechainStatePatch (p) {
 
 module.exports = {
   hubJsonRpc,
+  fetchDistributedJson,
   fetchDistributedEpoch,
+  fetchDistributedManifest,
   getSidechainState,
+  getSidechainJournal,
+  getSidechainSnapshots,
   submitSidechainStatePatch
 };

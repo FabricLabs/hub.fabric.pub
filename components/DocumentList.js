@@ -28,6 +28,7 @@ const { formatSatsDisplay } = require('../functions/formatSats');
 const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags');
 const HubPagination = require('./HubPagination');
 const { useHubListPagination } = require('../functions/hubListPagination');
 const { compareDocumentsByHostOfferThenPurchasePrice } = require('../functions/sortDocumentsByHostOfferThenPrice');
@@ -109,6 +110,8 @@ function DocumentsPage (props) {
     ? null
     : (publishedRaw && typeof publishedRaw === 'object' ? publishedRaw : {});
   const fabricPeerId = networkStatus && networkStatus.fabricPeerId ? String(networkStatus.fabricPeerId) : null;
+  const serverFlags = loadServerFeatureFlags(current);
+  const distributeEnabled = !!serverFlags.distribute;
 
   const documentsLoadingSubtext = !current
     ? 'Connecting to the hub (WebSocket bridge)…'
@@ -453,9 +456,14 @@ function DocumentsPage (props) {
           <Segment loading={busy}>
             <Header as="h3">Add content</Header>
             <p style={{ color: '#666' }}>
-              Select a file or create a document from text. <strong>Publish</strong> adds the doc to the hub catalog (free).
-              <strong> Distribute</strong> (long-term storage contracts) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
-              <Link to="/services/bitcoin">Bitcoin</Link> (or <Link to="/payments">Payments</Link> when enabled in Admin).
+              Select a file or create a document from text. <strong>Publish</strong> with a price seals content (ciphertext-at-rest);
+              buyers pay an L1 HTLC that reveals the decryption key (Peers inventory or Claim &amp; Unlock).
+              {distributeEnabled ? (
+                <>
+                  {' '}<strong>Distribute</strong> (optional storage bonds) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
+                  <Link to="/services/bitcoin">Bitcoin</Link>.
+                </>
+              ) : null}
             </p>
             <Button
               size="small"
@@ -518,13 +526,15 @@ function DocumentsPage (props) {
           </Segment>
         )}
 
-        <Segment>
-          <Header as="h3">
-            <Icon name="gift" />
-            Offers
-          </Header>
-          <DistributeProposalsList bridgeRef={props.bridgeRef} embedded />
-        </Segment>
+        {distributeEnabled ? (
+          <Segment>
+            <Header as="h3">
+              <Icon name="gift" />
+              Offers
+            </Header>
+            <DistributeProposalsList bridgeRef={props.bridgeRef} embedded />
+          </Segment>
+        ) : null}
 
         <Segment>
           <Header as="h3">Documents</Header>

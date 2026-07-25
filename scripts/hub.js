@@ -233,8 +233,11 @@ async function main (input = {}) {
   });
 
   hub.on('chat', function (chat) {
-    const ts = new Date(chat.object.created);
-    console.log('[FABRIC:CHAT]', `[${ts.toISOString()}]`, `[@${chat.actor.id}]: ${chat.object.content}`);
+    const obj = (chat && chat.object) || {};
+    const text = obj.content || obj.body || '';
+    const actor = (chat && chat.actor && chat.actor.id) || 'unknown';
+    const ts = new Date(obj.created || Date.now());
+    console.log('[FABRIC:CHAT]', `[${ts.toISOString()}]`, `[@${actor}]: ${text}`);
   });
 
   hub.on('connections:open', function (peer) {

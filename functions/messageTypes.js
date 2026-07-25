@@ -27,6 +27,14 @@ const {
   FEDERATION_CONTRACT_INVITE_RESPONSE
 } = require('./federationContractInvite');
 
+/** Fabric log types for application-namespace events (see APPLICATION_NAMESPACES). */
+const CONTRACT_PUBLISH_LOG = 'ContractPublish';
+const CONTRACT_MESSAGE_LOG = 'ContractMessage';
+
+/** Beacon Federation epoch signature collection (ADR-001; GenericMessage body `type`). */
+const FEDERATION_SIGN_REQUEST = 'FederationSignRequest';
+const FEDERATION_SIGN_RESPONSE = 'FederationSignResponse';
+
 /**
  * Whether `m` is a delegation-signing activity row (pending UI / notifications).
  * Accepts the legacy alias written before the name was aligned with the Fabric log.
@@ -45,5 +53,9 @@ module.exports = {
   DOCUMENT_OFFER,
   FEDERATION_CONTRACT_INVITE,
   FEDERATION_CONTRACT_INVITE_RESPONSE,
+  CONTRACT_PUBLISH_LOG,
+  CONTRACT_MESSAGE_LOG,
+  FEDERATION_SIGN_REQUEST,
+  FEDERATION_SIGN_RESPONSE,
   isDelegationSignatureRequestActivity
 };

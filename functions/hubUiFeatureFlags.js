@@ -4,8 +4,8 @@ const { store, getFabricBrowserGlobal } = require('./fabricBrowserState');
 
 /**
  * Browser-only feature visibility for the hub SPA (`fabric:state` → `ui.featureFlags`).
- * Defaults favor full Hub surfaces unless the operator disables a flag (or enables Advanced Mode
- * ergonomics explicitly). Persisted `{ value }` from `GET /settings/HUB_UI_FEATURE_FLAGS` overwrites locals.
+ * Defaults favor the **Document market** (Documents + Peers + Bitcoin invoices/explorer).
+ * Persisted `{ value }` from `GET /settings/HUB_UI_FEATURE_FLAGS` overwrites locals.
  *
  * **`advancedMode`** is still used for UX that truly needs an explicit “power user” opt-in elsewhere.
  *
@@ -40,21 +40,27 @@ const FLAG_KEYS = [
 /** @deprecated No keys are forced on; kept as an empty list for older callers. */
 const ALWAYS_ON_FLAG_KEYS = [];
 
+/** Document-market profile: peers + invoices/explorer; unrelated surfaces off. */
 function defaultFlags () {
   return {
     promo: false,
     advancedMode: false,
     peers: true,
-    activities: true,
-    features: true,
-    sidechain: true,
+    activities: false,
+    features: false,
+    sidechain: false,
     bitcoinPayments: false,
     bitcoinInvoices: true,
     bitcoinResources: false,
     bitcoinExplorer: true,
     bitcoinLightning: false,
-    bitcoinCrowdfund: true
+    bitcoinCrowdfund: false
   };
+}
+
+/** Alias for Admin preset / callers that want an explicit name. */
+function documentMarketUiFlags () {
+  return defaultFlags();
 }
 
 function hasStoredUiFlagShape (raw) {
@@ -108,6 +114,23 @@ function loadHubUiFeatureFlags () {
   } catch (e) {
     return defaultFlags();
   }
+}
+
+/**
+ * Test / automation hook: keep in-memory `fabric:state` and localStorage aligned.
+ * Installed once on first browser access (Hub SPA + Puppeteer helpers).
+ */
+function installHubUiFeatureFlagsWindowApi () {
+  const w = getFabricBrowserGlobal();
+  if (!w || w.__fabricHubUiFeatureFlags) return;
+  w.__fabricHubUiFeatureFlags = {
+    load: loadHubUiFeatureFlags,
+    setAll: setAllHubUiFeatureFlags,
+    set: setHubUiFeatureFlag,
+    save: saveHubUiFeatureFlags,
+    persist: persistHubUiFeatureFlags,
+    defaultFlags
+  };
 }
 
 function saveHubUiFeatureFlags (flags) {
@@ -169,7 +192,14 @@ async function fetchPersistedHubUiFeatureFlags () {
   if (!getFabricBrowserGlobal() || typeof fetch !== 'function') {
     return loadHubUiFeatureFlags();
   }
+  installHubUiFeatureFlagsWindowApi();
   try {
+    // Re-read localStorage first so Puppeteer / other-tab writes are not clobbered by a stale
+    // in-memory fabric:state singleton (common browser-test race).
+    try {
+      if (typeof store().load === 'function') store().load();
+    } catch (_) { /* ignore */ }
+
     const res = await fetch(`/settings/${encodeURIComponent(SETTINGS_KEY)}`, {
       method: 'GET',
       headers: { Accept: 'application/json' }
@@ -185,8 +215,12 @@ async function fetchPersistedHubUiFeatureFlags () {
         raw = null;
       }
     }
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return loadHubUiFeatureFlags();
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !hasStoredUiFlagShape(raw)) {
+      return loadHubUiFeatureFlags();
+    }
     const localBefore = loadHubUiFeatureFlags();
+    // Server wins for keys it sets; local keeps keys only present client-side (e.g. test toggles
+    // applied after a prior boot). Explicit server `false` still disables a feature.
     const next = normalizeFlags({ ...localBefore, ...raw });
     saveHubUiFeatureFlags(next);
     return next;
@@ -249,7 +283,9 @@ module.exports = {
   subscribeHubUiFeatureFlags,
   fetchPersistedHubUiFeatureFlags,
   persistHubUiFeatureFlags,
+  installHubUiFeatureFlagsWindowApi,
   anyBitcoinSubFeatureEnabled,
   defaultHubUiFeatureFlags: defaultFlags,
+  documentMarketUiFlags,
   HUB_UI_FEATURE_FLAGS_SETTING_KEY: SETTINGS_KEY
 };

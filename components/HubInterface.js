@@ -25,7 +25,8 @@ const {
   loadHubUiFeatureFlags,
   setHubUiFeatureFlag,
   subscribeHubUiFeatureFlags,
-  fetchPersistedHubUiFeatureFlags
+  fetchPersistedHubUiFeatureFlags,
+  installHubUiFeatureFlagsWindowApi
 } = require('../functions/hubUiFeatureFlags');
 // Dependencies
 const React = require('react');
@@ -296,7 +297,7 @@ function UnknownRouteShell () {
         {uf.sidechain ? (
           <>
             {' · '}
-            <Link to="/sidechains">Sidechain &amp; demo</Link>
+            <Link to="/sidechains">Statechain</Link>
           </>
         ) : null}
       </p>
@@ -1246,6 +1247,7 @@ class HubInterface extends React.Component {
       else toastify.info(msg, opts);
     });
     if (typeof window !== 'undefined') {
+      installHubUiFeatureFlagsWindowApi();
       this._hubUiUnsub = subscribeHubUiFeatureFlags(() => this.forceUpdate());
       fetchPersistedHubUiFeatureFlags().then(() => this.forceUpdate()).catch(() => {});
     }
@@ -2795,16 +2797,18 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/collaboration"
-                    element={pv((
+                    element={(
                       readHubAdminTokenFromBrowser(this.state.adminToken)
-                        ? (
+                        ? pv((
                           <CollaborationHome
                             bridgeRef={this.bridgeRef}
                             adminToken={this.state.adminToken}
                           />
-                          )
+                        ))
+                        // Redirect must not sit inside PublicVisitorGate — the gate replaces
+                        // children with a sign-in panel and would leave the URL on /collaboration.
                         : (<Navigate to="/settings" replace />)
-                    ))}
+                    )}
                   />
                   <Route
                     path="/settings"

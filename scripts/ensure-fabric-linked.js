@@ -5,6 +5,9 @@
  * Distributed execution helpers are vendored under `functions/fabricDistributedExecution*.js`
  * so plain `npm install` works when git tarballs omit `@fabric/core` / `@fabric/http` files.
  * Optional: `npm run link:fabric` for full local monorepo development.
+ *
+ * Beacon requires `@fabric/core` Chain federation helpers (`Chain.create`, etc.). A published
+ * / npm-install tree without those APIs will crash at `new Beacon` — fail here instead.
  */
 
 const path = require('path');
@@ -13,7 +16,9 @@ const root = path.join(__dirname, '..');
 const paths = [
   path.join(root, 'functions', 'fabricDistributedExecution.js'),
   path.join(root, 'functions', 'fabricDistributedExecutionHttp.js'),
-  '@fabric/core/types/key'
+  '@fabric/core/types/key',
+  '@fabric/core/types/chain',
+  '@fabric/core/functions/sidechainState'
 ];
 
 let ok = true;
@@ -23,6 +28,20 @@ for (const p of paths) {
   } catch (e) {
     ok = false;
     console.error(`[hub] Cannot resolve "${p}" (${e && e.code ? e.code : 'MODULE_NOT_FOUND'}).`);
+  }
+}
+
+if (ok) {
+  try {
+    const Chain = require('@fabric/core/types/chain');
+    if (typeof Chain.create !== 'function') {
+      ok = false;
+      console.error('[hub] @fabric/core/types/chain is missing Chain.create (Beacon federation API).');
+      console.error(`[hub] Resolved: ${require.resolve('@fabric/core/types/chain')}`);
+    }
+  } catch (e) {
+    ok = false;
+    console.error(`[hub] Failed to load @fabric/core/types/chain: ${e && e.message ? e.message : e}`);
   }
 }
 

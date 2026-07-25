@@ -4,6 +4,7 @@ const React = require('react');
 const { Link } = require('react-router-dom');
 const { Button, Header, Icon, Segment, List, Message } = require('semantic-ui-react');
 const DistributedFederationPanel = require('./DistributedFederationPanel');
+const TrackedApplicationContractsPanel = require('./TrackedApplicationContractsPanel');
 const {
   REGTEST_EPOCH_INTERVAL_MINUTES,
   NON_REGTEST_CADENCE_LABEL,
@@ -51,8 +52,9 @@ function BeaconFederationHome () {
 
       <Header as="h3">L1 binding, Fabric sealing, and reproducibility</Header>
       <p style={{ color: '#555', maxWidth: '44rem', lineHeight: 1.5, marginBottom: '0.5em' }}>
-        <strong>What is anchored where:</strong> each <code>BEACON_EPOCH</code> payload names a concrete Bitcoin tip (<strong>height + block hash</strong>) and may carry an optional{' '}
-        <code>sidechain: {'{'} clock, stateDigest {'}'}</code> binding to the logical sidechain head. The hub persists the ordered epoch chain on disk (<code>beacon/CHAIN</code>) with Merkle metadata for consistency checks.
+        <strong>What is anchored where:</strong> each <code>BEACON_EPOCH</code> payload names a concrete Bitcoin tip (<strong>height + block hash</strong>) and seals{' '}
+        <code>contracts: {'{'} clock, stateDigest {'}'}</code> — the state root of <strong>published application contracts</strong> this operator has accepted into the Beacon-tracked set.
+        An optional <code>sidechain</code> head may also appear for operational state. The hub persists the ordered epoch chain on disk (<code>beacon/CHAIN</code>) with Merkle metadata for consistency checks.
         That is <strong>verifiable against your own bitcoind</strong> (or explorer) independently of Fabric peers.
       </p>
       <p style={{ color: '#555', maxWidth: '44rem', lineHeight: 1.5, marginBottom: '0.65em' }}>
@@ -97,6 +99,8 @@ function BeaconFederationHome () {
       <Header as="h3" style={{ marginTop: '1.25em' }}>This hub (live policy)</Header>
       <DistributedFederationPanel size="small" marginBottom="1em" />
 
+      <TrackedApplicationContractsPanel />
+
       <Header as="h3">Operator checklist</Header>
       <List bulleted relaxed>
         <List.Item>Configure validator pubkeys and threshold under <Link to="/federations">Federations</Link> (or <Link to="/settings/federation">Settings → Distributed federation</Link>).</List.Item>
@@ -108,7 +112,8 @@ function BeaconFederationHome () {
           {' '}and federation invites from peer detail (admin).
         </List.Item>
         <List.Item>
-          Sidechain head and patches: <Link to="/sidechains">Sidechain &amp; demo</Link>;
+          Accept inbound <code>CONTRACT_PUBLISH</code> offers (above) so they enter the Beacon contracts state root; sidechain app payloads:{' '}
+          <Link to="/sidechains">Statechain</Link>;
           <>
             {' '}
             <Link to="/activities">Activity log</Link> shows <strong>Bitcoin blocks</strong> and hub log events; <Link to="/notifications">Notifications</Link> (bell) lists wallet and Payjoin toasts.

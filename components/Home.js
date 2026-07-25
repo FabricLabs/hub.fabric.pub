@@ -541,46 +541,6 @@ class Home extends React.Component {
               <PromoHero onDismiss={() => this.setState({ promoDismissed: true })} />
             ) : null}
 
-            {/* ─── Stat cards row ─── */}
-            <Grid columns={4} stackable doubling style={{ marginBottom: '0.5em' }}>
-              <Grid.Column>
-                <StatCard
-                  icon="circle"
-                  color={bridgeFabricPaused ? 'yellow' : (isOnline ? 'green' : 'grey')}
-                  label="Fabric state"
-                  value={bridgeFabricPaused ? 'Paused' : (isOnline ? 'Online' : 'Offline')}
-                  sub={(state && state.status) || null}
-                />
-              </Grid.Column>
-              <Grid.Column>
-                <StatCard
-                  icon="sitemap"
-                  color="blue"
-                  label={uf.peers && hasHubAdminForPeers ? 'TCP peers' : 'Peers'}
-                  value={uf.peers && hasHubAdminForPeers ? `${connectedPeers.length} / ${peers.length}` : '—'}
-                  sub={uf.peers && hasHubAdminForPeers && webrtcPeers.length > 0 ? `${webrtcPeers.length} WebRTC` : (uf.peers && hasHubAdminForPeers ? null : 'admin token required')}
-                />
-              </Grid.Column>
-              <Grid.Column>
-                <StatCard
-                  icon="file alternate outline"
-                  color="teal"
-                  label="Published docs"
-                  value={publishedCount}
-                  sub={clockVal != null ? `hub clock ${clockVal}` : null}
-                />
-              </Grid.Column>
-              <Grid.Column>
-                <StatCard
-                  icon="bitcoin"
-                  color={bitcoin && bitcoin.available ? 'orange' : 'grey'}
-                  label="Bitcoin"
-                  value={bitcoin ? (bitcoin.available ? (bitcoin.height != null ? `#${bitcoin.height}` : 'Ready') : 'Off') : '—'}
-                  sub={bitcoin && bitcoin.available && bitcoin.network ? String(bitcoin.network) : null}
-                />
-              </Grid.Column>
-            </Grid>
-
             {/* ─── Main content ─── */}
             <Card fluid data-home-network-tick={this.state.networkStatusRenderTick}>
               <Card.Content>

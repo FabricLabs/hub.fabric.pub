@@ -3,9 +3,27 @@
 const crypto = require('crypto');
 const { getDelegationSessionById } = require('./fabricDelegation');
 const { serveSpaShellIfHtmlNavigation } = require('./httpSpaShell');
-const { DESKTOP_LOGIN_PREFIX } = require('./fabricDesktopLoginVerify');
+const {
+  DESKTOP_LOGIN_PREFIX,
+  verifyFabricDesktopLoginSignedPayload
+} = require('./fabricDesktopLoginVerify');
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_SESSIONS = 256;
+
+/**
+ * True when the request body is a client-signed player login completion
+ * (Passport / GoonCitizen / any wallet holding the user key). Empty body
+ * keeps the legacy Hub-node self-sign path.
+ */
+function hasClientSignatureBody (body) {
+  if (!body || typeof body !== 'object') return false;
+  if (typeof body.signature !== 'string' || !/^[a-f0-9]{128}$/i.test(body.signature.trim())) return false;
+  if (typeof body.pubkeyHex !== 'string' || !/^[a-f0-9]{66}$/i.test(body.pubkeyHex.trim())) return false;
+  const identity = body.identity;
+  if (!identity || typeof identity !== 'object') return false;
+  if (typeof identity.xpub !== 'string' || !identity.xpub.trim()) return false;
+  return true;
+}
 
 function randomSessionId () {
   return crypto.randomBytes(24).toString('hex');
@@ -16,7 +34,8 @@ function randomNonce () {
 }
 
 /**
- * Canonical message signed by the Hub identity (Schnorr / BIP340) for browser ↔ desktop linking.
+ * Canonical challenge message for Fabric login sessions (Schnorr / BIP340).
+ * Signed by either the Hub node (legacy desktop link) or a player client key.
  * @param {string} sessionId
  * @param {string} origin - e.g. http://127.0.0.1:8080
  * @param {string} nonce
@@ -188,7 +207,11 @@ function handleSessionCreate (hub, req, res) {
       sessionId,
       message,
       nonce,
-      protocolUrl: `fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`
+      // hub = site origin that holds the session (desktop/extension callback base).
+      protocolUrl: `fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`,
+      // Both completion modes share the same challenge; clients pick one.
+      signingModes: ['client', 'hub'],
+      acceptsClientSignature: true
     });
   } catch (err) {
     console.error('[HUB:SESSIONS:CREATE]', err && err.stack ? err.stack : err);
@@ -196,6 +219,18 @@ function handleSessionCreate (hub, req, res) {
   }
 }
 
+/**
+ * Complete a pending login session.
+ *
+ * **Client-signed (player login):** body `{ signature, pubkeyHex, identity: { id, xpub } }`
+ * — BIP340 over the server-stored challenge. Used by Passport / GoonCitizen /
+ * any wallet. Crypto verification is the authenticator (sessionId is
+ * unguessable; message binds origin).
+ *
+ * **Hub self-sign (legacy desktop link):** empty / non-client body — Hub signs
+ * with its root key so a browser can adopt this node's watch-only identity.
+ * Requires loopback or Origin/Referer matching the session origin.
+ */
 function handleDesktopSign (hub, req, res) {
   try {
     const sessionId = req && req.params && req.params.sessionId
@@ -213,10 +248,54 @@ function handleDesktopSign (hub, req, res) {
       return;
     }
 
+    const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+
+    if (hasClientSignatureBody(body)) {
+      // Always verify against the server-held challenge — never trust a client `message`.
+      const payload = {
+        signature: String(body.signature).trim(),
+        pubkeyHex: String(body.pubkeyHex).trim(),
+        message: session.message,
+        identity: {
+          id: body.identity.id != null ? body.identity.id : null,
+          xpub: String(body.identity.xpub).trim()
+        }
+      };
+      const verified = verifyFabricDesktopLoginSignedPayload(payload, {
+        sessionId,
+        origin: session.origin
+      });
+      if (!verified.ok) {
+        sendJson(res, 400, { ok: false, error: verified.error || 'invalid client signature' });
+        return;
+      }
+
+      session.status = 'signed';
+      session.signedAt = Date.now();
+      session.signer = 'client';
+      session.signature = payload.signature.toLowerCase();
+      session.pubkeyHex = payload.pubkeyHex.toLowerCase();
+      session.identity = {
+        id: payload.identity.id != null ? String(payload.identity.id) : null,
+        xpub: payload.identity.xpub
+      };
+
+      sendJson(res, 200, {
+        ok: true,
+        sessionId,
+        signer: 'client',
+        signature: session.signature,
+        pubkeyHex: session.pubkeyHex,
+        message: session.message,
+        identity: session.identity
+      });
+      return;
+    }
+
     if (!isLocalRequest(req) && !clientMayPollDesktopSession(req, session.origin)) {
       sendJson(res, 403, {
         ok: false,
-        error: 'POST .../signatures requires loopback or client Origin/Referer matching session origin'
+        error: 'POST .../signatures (hub self-sign) requires loopback or client Origin/Referer matching session origin'
       });
       return;
     }
@@ -241,6 +320,7 @@ function handleDesktopSign (hub, req, res) {
 
     session.status = 'signed';
     session.signedAt = Date.now();
+    session.signer = 'hub';
     session.signature = signature.toString('hex');
     session.pubkeyHex = pubkeyHex;
     session.identity = identity;
@@ -248,6 +328,7 @@ function handleDesktopSign (hub, req, res) {
     sendJson(res, 200, {
       ok: true,
       sessionId,
+      signer: 'hub',
       signature: session.signature,
       pubkeyHex,
       message: session.message,
@@ -322,7 +403,9 @@ function handleSessionGet (hub, req, res) {
         origin: session.origin,
         message: session.message,
         nonce: session.nonce,
-        createdAt: session.createdAt
+        createdAt: session.createdAt,
+        signingModes: ['client', 'hub'],
+        acceptsClientSignature: true
       });
       return;
     }
@@ -338,13 +421,15 @@ function handleSessionGet (hub, req, res) {
           identityId: session.identity && session.identity.id != null ? session.identity.id : null,
           xpub: session.identity && session.identity.xpub ? session.identity.xpub : null,
           linkedAt: Date.now(),
-          label: 'browser',
-          sessionId
+          label: session.signer === 'client' ? 'fabric-client' : 'browser',
+          sessionId,
+          signer: session.signer || 'hub'
         });
       }
       const payload = {
         ok: true,
         status: 'signed',
+        signer: session.signer || 'hub',
         identity: session.identity,
         delegationToken,
         signature: session.signature,
@@ -377,5 +462,9 @@ module.exports = {
   randomNonce,
   randomSessionId,
   originsMatchForDesktopSession,
+  hasClientSignatureBody,
+  handleSessionCreate,
+  handleSessionGet,
+  handleDesktopSign,
   mountFabricDesktopAuthHttp
 };

@@ -42,4 +42,17 @@ describe('fabricMessageRegistry', function () {
     assert.strictEqual(registry.findOuterByName('CONTRACT_PUBLISH').opcodeDec, constants.P2P_CONTRACT_PUBLISH);
     assert.strictEqual(registry.findOuterByName('CONTRACT_MESSAGE').opcodeDec, constants.P2P_CONTRACT_MESSAGE);
   });
+
+  it('P2P_CONTRACT_* aliases share opcodes with CONTRACT_*', function () {
+    assert.strictEqual(registry.findOuterByName('P2P_CONTRACT_PUBLISH').opcodeDec, constants.P2P_CONTRACT_PUBLISH);
+    assert.strictEqual(registry.findOuterByName('P2P_CONTRACT_MESSAGE').opcodeDec, constants.P2P_CONTRACT_MESSAGE);
+    assert.strictEqual(registry.findOuterByName('P2P_CONTRACT_PROPOSAL').opcodeDec, constants.CONTRACT_PROPOSAL_TYPE);
+  });
+
+  it('APPLICATION_CONTRACT_BODY_TYPES lists shared namespace body types', function () {
+    const types = registry.APPLICATION_CONTRACT_BODY_TYPES.map((r) => r.type);
+    assert.ok(types.includes('GroupChat'));
+    assert.ok(types.includes('FederationContractInvite'));
+    assert.ok(types.includes('MissionBroadcast'));
+  });
 });

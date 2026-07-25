@@ -191,7 +191,7 @@ function SettingsHome () {
           <Card as={Link} to="/sidechains" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
-                <Icon name="random" aria-hidden="true" /> Sidechain &amp; demo
+                <Icon name="random" aria-hidden="true" /> Statechain
               </Card.Header>
               <Card.Description>
                 Global state, JSON patches, and operator context (same route as <strong>More</strong> → Sidechain).

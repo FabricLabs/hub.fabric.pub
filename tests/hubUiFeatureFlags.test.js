@@ -89,15 +89,17 @@ describe('hubUiFeatureFlags', function () {
     assert.strictEqual(f.peers, true);
   });
 
-  it('empty {} in storage resets to bundled defaults (avoids malformed partial storage)', function () {
+  it('empty {} in storage resets to bundled document-market defaults', function () {
     setupWindowStorage();
     setFabricUiFeatureFlags({});
     const f = flags.loadHubUiFeatureFlags();
     assert.strictEqual(f.peers, true);
-    assert.strictEqual(f.features, true);
-    assert.strictEqual(f.activities, true);
-    assert.strictEqual(f.sidechain, true);
-    assert.strictEqual(f.bitcoinCrowdfund, true);
+    assert.strictEqual(f.features, false);
+    assert.strictEqual(f.activities, false);
+    assert.strictEqual(f.sidechain, false);
+    assert.strictEqual(f.bitcoinCrowdfund, false);
+    assert.strictEqual(f.bitcoinInvoices, true);
+    assert.strictEqual(f.bitcoinExplorer, true);
   });
 
   it('normalizeFlags honors peers false and explicit false for former always-on keys (UI-58)', function () {
@@ -115,5 +117,23 @@ describe('hubUiFeatureFlags', function () {
     assert.strictEqual(f.activities, false);
     assert.strictEqual(f.bitcoinExplorer, false);
     assert.strictEqual(f.bitcoinInvoices, false);
+  });
+
+  it('fetchPersistedHubUiFeatureFlags reloads localStorage before merging (browser-test race)', async function () {
+    setupWindowStorage();
+    flags.installHubUiFeatureFlagsWindowApi();
+    flags.saveHubUiFeatureFlags({ activities: false, features: false });
+    // Simulate Puppeteer writing fabric:state while an in-memory store is stale.
+    global.window.localStorage.setItem('fabric:state', JSON.stringify({
+      ui: { featureFlags: { activities: true, features: true } }
+    }));
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, setting: 'HUB_UI_FEATURE_FLAGS', value: null })
+    });
+    const next = await flags.fetchPersistedHubUiFeatureFlags();
+    assert.strictEqual(next.activities, true);
+    assert.strictEqual(next.features, true);
   });
 });

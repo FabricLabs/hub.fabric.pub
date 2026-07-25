@@ -43,16 +43,36 @@ const OUTER_WIRE_TYPES = [
   { name: 'P2P_CHAT_MESSAGE', opcodeDec: 104, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'First-class peer chat frame (0x68). Relayed with per-hop re-sign for key-pinning continuity; author carried in body.' },
   { name: 'Ping', opcodeDec: 18, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PING keepalive.' },
   { name: 'Pong', opcodeDec: 19, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PONG response.' },
-  { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Relay envelope (original + originalType + hops).' },
+  { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Peer mesh: body = raw inner Message bytes. Hub↔browser WS may still use JSON { original, originalType, hops }.' },
   { name: 'P2P_MESSAGE_RECEIPT', opcodeDec: 68, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Server ack after handling inbound frame.' },
   { name: 'JSONBlob', opcodeDec: 15104, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'GENERIC+1; JSON payload, prefer named type when available.' },
-  { name: 'GenericMessage', opcodeDec: 15103, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'Placeholder outer type; prefer dedicated opcode + structured body.' },
+  { name: 'GenericMessage', opcodeDec: 15103, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'Registered in @fabric/core as GENERIC_MESSAGE (15103); prefer dedicated opcodes when stable.' },
   { name: 'PeerMessage', opcodeDec: 49, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'P2P_BASE_MESSAGE; generic peer payload carrier.' },
   { name: 'DocumentPublish', opcodeDec: 998, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Document publish.' },
   { name: 'DocumentRequest', opcodeDec: 999, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Document request.' },
   { name: 'ContractProposal', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Batched messages + chain Merkle root + JSON Patch (+ optional PSBT); optional `contractId` namespace; see @fabric/core docs/CONTRACT_PROPOSAL.md.' },
-  { name: 'CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Publishes a contract definition; registers under a deterministic Actor id (contract namespace). Emits contract:publish (0x5f).' },
-  { name: 'CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Namespaced contract event; body carries `contract: <id>`. Dispatch routes by namespace (contract:message). State ops apply only to locally registered contracts (0x60).' }
+  { name: 'CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Publishes a contract definition; registers under a deterministic Actor id (contract namespace). Emits contract:publish (0x5f). Alias: P2P_CONTRACT_PUBLISH. See @fabric/core docs/APPLICATION_NAMESPACES.md.' },
+  { name: 'CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Namespaced contract event; body carries `contract: <id>`. Dispatch routes by namespace (contract:message). State ops apply only to locally registered contracts (0x60). Alias: P2P_CONTRACT_MESSAGE.' },
+  // Encode aliases (same opcodes) — Message.fromVector accepts these names.
+  { name: 'P2P_CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_PUBLISH (0x5f).' },
+  { name: 'P2P_CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_MESSAGE (0x60).' },
+  { name: 'P2P_CONTRACT_PROPOSAL', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of ContractProposal / CONTRACT_PROPOSAL (0x8a).' }
+];
+
+/**
+ * Shared CONTRACT_MESSAGE body `type` strings (application namespaces).
+ * Prefer `@fabric/core/functions/applicationNamespaces` when the linked core
+ * exports it; this list is kept in sync for Hub-only installs.
+ */
+const APPLICATION_CONTRACT_BODY_TYPES = [
+  { type: 'FederationContractInvite', apps: ['hub', 'gooncitizen'], notes: 'Hub-shaped join / co-signer invite (v2 + proposedPolicy).' },
+  { type: 'FederationContractInviteResponse', apps: ['hub', 'gooncitizen'], notes: 'Accept / reject invite.' },
+  { type: 'MissionCreated', apps: ['gooncitizen'], notes: 'Network mission register upsert (GoonCitizen genesis).' },
+  { type: 'MissionBroadcast', apps: ['gooncitizen'], notes: 'Network mission offer.' },
+  { type: 'SCEventBatch', apps: ['gooncitizen'], notes: 'Log / event batch.' },
+  { type: 'GroupChat', apps: ['gooncitizen'], notes: 'Group Federation channel chat.' },
+  { type: 'GroupChange', apps: ['gooncitizen'], notes: 'Group membership / meta change.' },
+  { type: 'GroupShare', apps: ['gooncitizen'], notes: 'Group-scoped share (e.g. mission offer).' }
 ];
 
 /**
@@ -74,7 +94,8 @@ const INNER_DOMAIN_PENDING_PROMOTION = [
 ];
 
 function outerTypeNames () {
-  return OUTER_WIRE_TYPES.map((t) => t.name);
+  // Unique names only (aliases share opcodes with canonical rows).
+  return [...new Set(OUTER_WIRE_TYPES.map((t) => t.name))];
 }
 
 function findOuterByName (name) {
@@ -94,6 +115,7 @@ module.exports = {
   SUGGESTED_HUB_OPCODE_BLOCK_START,
   SUGGESTED_HUB_OPCODE_BLOCK_END,
   OUTER_WIRE_TYPES,
+  APPLICATION_CONTRACT_BODY_TYPES,
   INNER_DOMAIN_PENDING_PROMOTION,
   outerTypeNames,
   findOuterByName,
