@@ -18,7 +18,8 @@ Downstream applications (e.g. **sensemaker**) inherit Hub as the browser gateway
 
 ## `@fabric/http`
 
-- **Branch** — Hub currently depends on `FabricLabs/fabric-http#feature/v0.1.0-RC1` (see `package.json`).
+- **Branch** — see `package.json` for the pinned git ref (`feature/rsi` or release tag).
+- **Invite JSON** — `functions/federationContractInvite` (FederationContractInvite v1/v2 + GoonCitizen `groupId` / `groupName` / `inviteePubkey`). Hub and GoonCitizen re-export; do **not** reintroduce parse/build in `@fabric/core`.
 - **Lift here (reduce Hub/sensemaker glue)** — Single **JSON-RPC over HTTP** pipeline: `POST /services/rpc` with `{ method, params }`, shared error shape, optional **`jsonrpc: '2.0'`** in responses. **Route precedence** so `GET /sessions/:id/delegation/audit` and `POST /services/rpc` are not swallowed by SPA fallbacks. **WebSocket** `JSONCall` should mirror HTTP method registration so delegation works over either transport.
 - **CORS** — If downstream serves UI from a different origin than the Hub API, centralize CORS + preflight in **fabric-http** rather than per-app.
 
@@ -32,6 +33,8 @@ Downstream applications (e.g. **sensemaker**) inherit Hub as the browser gateway
 | Logical sidechain document | `@fabric/core/functions/sidechainState` | `functions/sidechainState.js` (re-export) |
 | Accept `CONTRACT_PUBLISH` → `sidechains/<id>/` + parent `/namespaces/<id>` seal | `@fabric/core/functions/contractStatechains` | `functions/contractStatechains.js` |
 | Beacon k-of-n epoch Schnorr rounds | `@fabric/core/functions/beaconFederationSigning` | `functions/beaconFederationSigning.js` |
+| Contract-namespace tip Schnorr (`ContractStateTip`) | `@fabric/core/functions/contractStateSigning` | `functions/contractStateSigning.js` — **update Hub docs/RPC if tip kind changes** |
+| Contract Taproot failover ladder (`after`/`until`/migrate) | `@fabric/core/functions/contractTaproot` | `functions/federationVault.js` (re-export); Beacon treasury via `toAddress(spendLadder)` |
 | Shared outer / body / activity type catalogs | `@fabric/core/functions/applicationNamespaces` | Hub + GoonCitizen message-type modules |
 | Node `fs` contract sidechain (desktop/relay) | `@fabric/core/functions/contractSidechainLocal` | GoonCitizen `functions/contractSidechain.js` |
 
