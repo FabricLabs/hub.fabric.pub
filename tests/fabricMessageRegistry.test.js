@@ -38,6 +38,17 @@ describe('fabricMessageRegistry', function () {
     }
   });
 
+  it('P2P_FORWARD opcode matches @fabric/core directed onion', function () {
+    const row = registry.findOuterByName('P2P_FORWARD');
+    assert.ok(row, 'P2P_FORWARD should be registered');
+    assert.strictEqual(row.encoding, registry.PayloadEncoding.structuredBinary);
+    if (typeof constants.P2P_FORWARD === 'number') {
+      assert.strictEqual(row.opcodeDec, constants.P2P_FORWARD);
+    } else {
+      assert.strictEqual(row.opcodeDec, 69);
+    }
+  });
+
   it('contract outer types match @fabric/core opcodes', function () {
     assert.strictEqual(registry.findOuterByName('CONTRACT_PUBLISH').opcodeDec, constants.P2P_CONTRACT_PUBLISH);
     assert.strictEqual(registry.findOuterByName('CONTRACT_MESSAGE').opcodeDec, constants.P2P_CONTRACT_MESSAGE);
@@ -54,5 +65,14 @@ describe('fabricMessageRegistry', function () {
     assert.ok(types.includes('GroupChat'));
     assert.ok(types.includes('FederationContractInvite'));
     assert.ok(types.includes('MissionBroadcast'));
+    assert.ok(types.includes('GameStateSnapshot'), 'GameStateSnapshot from core applicationNamespaces');
+    try {
+      const core = require('@fabric/core/functions/applicationNamespaces');
+      for (const key of Object.keys(core.CONTRACT_BODY_TYPES)) {
+        assert.ok(types.includes(key), `missing core CONTRACT_BODY_TYPES.${key}`);
+      }
+    } catch (_) {
+      // Linked core without applicationNamespaces — meta fallback still covers GameStateSnapshot.
+    }
   });
 });

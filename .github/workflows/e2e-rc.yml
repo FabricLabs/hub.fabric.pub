@@ -1,0 +1,68 @@
+# Optional release-candidate gate: browser E2E (full Hub) + Payjoin HTTP flow.
+# Triggers: version tags (v*) and manual workflow_dispatch. Default branch CI stays npm run ci only.
+name: E2E RC
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  e2e-browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hub
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hub
+      - uses: actions/checkout@v4
+        with:
+          repository: FabricLabs/fabric-http
+          ref: feature/v0.1.0-RC1
+          path: fabric-http
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: 'hub/.nvmrc'
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+      - run: npm ci
+      - run: npx puppeteer browsers install chrome
+      - run: npm run build
+      - name: Isolated Hub data dir (avoid local stores/hub/settings.json forcing managed bitcoind)
+        run: |
+          echo "FABRIC_HUB_USER_DATA=${{ runner.temp }}/hub-e2e-browser" >> $GITHUB_ENV
+          mkdir -p "${{ runner.temp }}/hub-e2e-browser/stores/hub"
+      - name: Browser E2E (HUB_E2E)
+        run: HUB_E2E=1 npm run test:e2e-browser
+        env:
+          HUB_URL: http://127.0.0.1:18080/
+          FABRIC_PORT: '17777'
+
+  e2e-payjoin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hub
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hub
+      - uses: actions/checkout@v4
+        with:
+          repository: FabricLabs/fabric-http
+          ref: feature/v0.1.0-RC1
+          path: fabric-http
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: 'hub/.nvmrc'
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+      - run: npm ci
+      - run: npx puppeteer browsers install chrome
+      - run: npm run build
+      - name: Payjoin E2E (Hub child + verify-payjoin-e2e)
+        run: bash scripts/ci-e2e-payjoin.sh
+        env:
+          FABRIC_PORT: '17777'

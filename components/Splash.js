@@ -14,7 +14,7 @@ const { PITCH_CTA_TEXT } = require('../locales/en');
 
 // Dependencies
 const React = require('react');
-const { Link, Navigate, Route, Routes, Switch } = require('react-router-dom');
+const { Link, Navigate, Route, Routes } = require('react-router-dom');
 
 // Semantic UI
 const {

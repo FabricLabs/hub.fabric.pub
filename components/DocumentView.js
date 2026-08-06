@@ -1288,7 +1288,27 @@ function DocumentDetail (props) {
                 <Message info style={{ marginTop: '0.75em' }}>
                   <Message.Header>HTLC-encrypted delivery</Message.Header>
                   <p style={{ margin: '0.5em 0 0.75em', fontSize: '0.95em' }}>
-                    This file was sent after an inventory HTLC was funded. Use the same 32-byte preimage that appears in the seller&apos;s on-chain claim witness (Taproot hashlock). That preimage is <code>SHA256</code> of the canonical Fabric <code>DocumentPublish</code> message (AMP wire bytes) wrapping the stored document fields — the same binding as JSON-RPC <code>CreatePurchaseInvoice</code> <code>contentHash</code> (payment hash is <code>SHA256</code> of the preimage). Implemented in <code>@fabric/core/functions/publishedDocumentEnvelope</code>.
+                    This file was sent after an inventory HTLC was funded. Enter the same
+                    32-byte preimage that appears in the seller&apos;s on-chain claim witness
+                    (Taproot hashlock). Binding depends on how the document was listed:
+                  </p>
+                  <ul style={{ margin: '0 0 0.75em 1.25em', padding: 0, fontSize: '0.95em' }}>
+                    <li>
+                      <strong>Priced / sealed:</strong> preimage is the AES content key{' '}
+                      <code>K</code>; payment hash is <code>SHA256(K)</code>.
+                    </li>
+                    <li>
+                      <strong>Legacy unsealed:</strong> preimage is{' '}
+                      <code>SHA256</code> of the <em>unsigned</em> Fabric{' '}
+                      <code>DocumentPublish</code> envelope (signature field all zeros — not a
+                      signed gossip frame). Payment hash / invoice{' '}
+                      <code>contentHash</code> is <code>SHA256(preimage)</code>.
+                    </li>
+                  </ul>
+                  <p style={{ margin: '0 0 0.75em', fontSize: '0.9em', color: '#666' }}>
+                    Canonical helpers: <code>@fabric/core/functions/documentPaymentHash</code>{' '}
+                    (<code>resolveDocumentContentHashHex</code>) and{' '}
+                    <code>publishedDocumentEnvelope</code>.
                   </p>
                   {doc.htlcPaymentHashHex && (
                     <div style={{ fontSize: '0.88em', marginBottom: '0.5em', wordBreak: 'break-all' }}>

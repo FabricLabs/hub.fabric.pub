@@ -1729,13 +1729,7 @@ class HubInterface extends React.Component {
                 }}
               />
             ) : (
-              <BrowserRouter
-                style={{ marginTop: 0 }}
-                future={{
-                  v7_startTransition: true,
-                  v7_relativeSplatPath: true
-                }}
-              >
+              <BrowserRouter useTransitions>
                 <ToastContainer
                   position="bottom-center"
                   newestOnTop

@@ -43,8 +43,9 @@ const OUTER_WIRE_TYPES = [
   { name: 'P2P_CHAT_MESSAGE', opcodeDec: 104, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'First-class peer chat frame (0x68). Relayed with per-hop re-sign for key-pinning continuity; author carried in body.' },
   { name: 'Ping', opcodeDec: 18, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PING keepalive.' },
   { name: 'Pong', opcodeDec: 19, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PONG response.' },
-  { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Peer mesh: body = raw inner Message bytes. Hub↔browser WS may still use JSON { original, originalType, hops }.' },
+  { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Peer mesh flood: body = raw inner Message bytes. Hub↔browser WS may still use JSON { original, originalType, hops }. Not IP-hiding — use P2P_FORWARD.' },
   { name: 'P2P_MESSAGE_RECEIPT', opcodeDec: 68, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Server ack after handling inbound frame.' },
+  { name: 'P2P_FORWARD', opcodeDec: 69, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Directed onion hop (0x45): fields nextPeer (bytes32 x-only), ttl (u8), inner (nested Message). TCP Peer / Hub SendOnion only — do not WS-flood.' },
   { name: 'JSONBlob', opcodeDec: 15104, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'GENERIC+1; JSON payload, prefer named type when available.' },
   { name: 'GenericMessage', opcodeDec: 15103, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'Registered in @fabric/core as GENERIC_MESSAGE (15103); prefer dedicated opcodes when stable.' },
   { name: 'PeerMessage', opcodeDec: 49, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'P2P_BASE_MESSAGE; generic peer payload carrier.' },
@@ -61,19 +62,38 @@ const OUTER_WIRE_TYPES = [
 
 /**
  * Shared CONTRACT_MESSAGE body `type` strings (application namespaces).
- * Prefer `@fabric/core/functions/applicationNamespaces` when the linked core
- * exports it; this list is kept in sync for Hub-only installs.
+ * Prefer `@fabric/core/functions/applicationNamespaces`; Hub metadata rows
+ * annotate which apps use each type.
  */
-const APPLICATION_CONTRACT_BODY_TYPES = [
-  { type: 'FederationContractInvite', apps: ['hub', 'gooncitizen'], notes: 'Hub-shaped join / co-signer invite (v2 + proposedPolicy).' },
-  { type: 'FederationContractInviteResponse', apps: ['hub', 'gooncitizen'], notes: 'Accept / reject invite.' },
-  { type: 'MissionCreated', apps: ['gooncitizen'], notes: 'Network mission register upsert (GoonCitizen genesis).' },
-  { type: 'MissionBroadcast', apps: ['gooncitizen'], notes: 'Network mission offer.' },
-  { type: 'SCEventBatch', apps: ['gooncitizen'], notes: 'Log / event batch.' },
-  { type: 'GroupChat', apps: ['gooncitizen'], notes: 'Group Federation channel chat.' },
-  { type: 'GroupChange', apps: ['gooncitizen'], notes: 'Group membership / meta change.' },
-  { type: 'GroupShare', apps: ['gooncitizen'], notes: 'Group-scoped share (e.g. mission offer).' }
-];
+const APPLICATION_CONTRACT_BODY_META = Object.freeze({
+  FederationContractInvite: { apps: ['hub', 'gooncitizen'], notes: 'Hub-shaped join / co-signer invite (v2 + proposedPolicy).' },
+  FederationContractInviteResponse: { apps: ['hub', 'gooncitizen'], notes: 'Accept / reject invite.' },
+  MissionCreated: { apps: ['gooncitizen'], notes: 'Network mission register upsert (GoonCitizen genesis).' },
+  MissionBroadcast: { apps: ['gooncitizen'], notes: 'Network mission offer.' },
+  SCEventBatch: { apps: ['gooncitizen'], notes: 'Log / event batch.' },
+  GameStateSnapshot: { apps: ['gooncitizen', 'hub'], notes: 'Cumulative analytics snapshot for Hub / Beacon seal.' },
+  GroupChat: { apps: ['gooncitizen'], notes: 'Group Federation channel chat.' },
+  GroupChange: { apps: ['gooncitizen'], notes: 'Group membership / meta change.' },
+  GroupShare: { apps: ['gooncitizen'], notes: 'Group-scoped share (e.g. mission offer).' }
+});
+
+function buildApplicationContractBodyTypes () {
+  let bodyTypes = null;
+  try {
+    bodyTypes = require('@fabric/core/functions/applicationNamespaces').CONTRACT_BODY_TYPES;
+  } catch (_) {
+    bodyTypes = null;
+  }
+  const keys = bodyTypes
+    ? Object.keys(bodyTypes)
+    : Object.keys(APPLICATION_CONTRACT_BODY_META);
+  return keys.map((type) => {
+    const meta = APPLICATION_CONTRACT_BODY_META[type] || { apps: [], notes: '' };
+    return { type, apps: meta.apps || [], notes: meta.notes || '' };
+  });
+}
+
+const APPLICATION_CONTRACT_BODY_TYPES = buildApplicationContractBodyTypes();
 
 /**
  * **Inner** domain payloads often carried today inside `GenericMessage` UTF-8 JSON (ActivityStreams-style `type` field).

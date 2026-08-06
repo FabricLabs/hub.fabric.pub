@@ -8402,6 +8402,22 @@ class Hub extends Service {
         console.debug('[HUB:AGENT:DEBUG]', err && err.stack ? err.stack : err);
       });
 
+      // Directed onion (P2P_FORWARD) — TCP Peer only; never WS-flood outer frames.
+      this.agent.on('onion:sent', (ev) => {
+        console.log('[HUB] onion:sent', ev && ev.firstHop, 'hops=', ev && ev.pathLength);
+      });
+      this.agent.on('onion:peel', (ev) => {
+        if (this.settings.debug) {
+          console.debug('[HUB] onion:peel', 'ttl=', ev && ev.ttl, 'from=', ev && ev.origin);
+        }
+      });
+      this.agent.on('onion:forward', (ev) => {
+        console.log('[HUB] onion:forward', '→', ev && ev.nextHop, 'ttl=', ev && ev.ttl);
+      });
+      this.agent.on('onion:undeliverable', (ev) => {
+        console.warn('[HUB] onion:undeliverable', ev && ev.reason, ev && (ev.nextPeer || ev.path));
+      });
+
       // Listen for HTTP server errors
       this.http.on('error', (err) => {
         console.error('[HUB:HTTP:ERROR]', err && err.stack ? err.stack : err);
@@ -9111,6 +9127,22 @@ class Hub extends Service {
         } catch (err) {
           console.error('[HUB] SendFlushChainToTrustedPeers error:', err);
           return { status: 'error', message: err && err.message ? err.message : String(err) };
+        }
+      });
+
+      /**
+       * Source-route a payload via nested {@code P2P_FORWARD} (TCP Peer onion).
+       * Params: ({ path: string[], text? } | pathArray, textOrOpts)
+       * {@code path} = x-only (64 hex) or compressed (66 hex) pubkeys; first hop must be connected.
+       * Does not WebSocket-flood outer onion frames.
+       */
+      this.http._registerMethod('SendOnion', (...params) => {
+        try {
+          const { invokeSendOnion } = require('../functions/sendOnionRpc');
+          return invokeSendOnion(this.agent, params);
+        } catch (err) {
+          console.error('[HUB] SendOnion error:', err);
+          return { status: 'error', message: err && err.message ? err.message : 'sendOnion failed' };
         }
       });
 

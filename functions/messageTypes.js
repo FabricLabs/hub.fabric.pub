@@ -27,13 +27,20 @@ const {
   FEDERATION_CONTRACT_INVITE_RESPONSE
 } = require('./federationContractInvite');
 
+let appNs = null;
+try {
+  appNs = require('@fabric/core/functions/applicationNamespaces');
+} catch (_) {
+  appNs = null;
+}
+
 /** Fabric log types for application-namespace events (see APPLICATION_NAMESPACES). */
-const CONTRACT_PUBLISH_LOG = 'ContractPublish';
-const CONTRACT_MESSAGE_LOG = 'ContractMessage';
+const CONTRACT_PUBLISH_LOG = (appNs && appNs.LOG_TYPES && appNs.LOG_TYPES.ContractPublish) || 'ContractPublish';
+const CONTRACT_MESSAGE_LOG = (appNs && appNs.LOG_TYPES && appNs.LOG_TYPES.ContractMessage) || 'ContractMessage';
 
 /** Beacon Federation epoch signature collection (ADR-001; GenericMessage body `type`). */
-const FEDERATION_SIGN_REQUEST = 'FederationSignRequest';
-const FEDERATION_SIGN_RESPONSE = 'FederationSignResponse';
+const FEDERATION_SIGN_REQUEST = (appNs && appNs.ACTIVITY_TYPES && appNs.ACTIVITY_TYPES.FederationSignRequest) || 'FederationSignRequest';
+const FEDERATION_SIGN_RESPONSE = (appNs && appNs.ACTIVITY_TYPES && appNs.ACTIVITY_TYPES.FederationSignResponse) || 'FederationSignResponse';
 
 /**
  * Whether `m` is a delegation-signing activity row (pending UI / notifications).

@@ -2,7 +2,7 @@
 
 // Dependencies
 const React = require('react');
-const { Link, Navigate, Route, Routes, Switch, useLocation, useParams, useNavigate } = require('react-router-dom');
+const { Link, Navigate, Route, Routes, useLocation, useParams, useNavigate } = require('react-router-dom');
 const { ToastContainer, toast, Slide } = require('react-toastify');
 
 // const LoadingBar = require('react-top-loading-bar');

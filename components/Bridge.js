@@ -17,7 +17,7 @@ const {
 // Fabric Types
 const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
-const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, MAGIC_BYTES } = require('@fabric/core/constants');
+const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, P2P_CHAT_MESSAGE, P2P_PEER_ALIAS, P2P_FILE_SEND, MAGIC_BYTES } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
 const { pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
@@ -2917,7 +2917,8 @@ class Bridge extends React.Component {
             }
             break;
           }
-          case 'P2P_PEER_ALIAS': {
+          case 'P2P_PEER_ALIAS':
+          case P2P_PEER_ALIAS: {
             const name = (payload.object && payload.object.name != null)
               ? String(payload.object.name).trim()
               : (payload.name != null ? String(payload.name).trim() : '');
@@ -2933,7 +2934,7 @@ class Bridge extends React.Component {
                     fromPeerId: peerId,
                     envelope: {
                       original: aliasText.slice(0, 64),
-                      originalType: 'P2P_PEER_ALIAS',
+                      originalType: Message.canonicalTypeName(P2P_PEER_ALIAS),
                       hops: [{ from: peerId, at: Date.now() }]
                     }
                   }]
@@ -2943,7 +2944,8 @@ class Bridge extends React.Component {
             }
             break;
           }
-          case 'P2P_CHAT_MESSAGE': {
+          case 'P2P_CHAT_MESSAGE':
+          case P2P_CHAT_MESSAGE: {
             const normalized = normalizeP2pChatMessage(payload, { defaultActorId: peerId });
             const text = chatTextOf(normalized || payload);
             const trimmed = typeof text === 'string' ? text.trim() : '';
@@ -2963,7 +2965,7 @@ class Bridge extends React.Component {
               const clientId = incomingClientId || (() => {
                 const clientActor = new Actor({
                   content: {
-                    type: 'P2P_CHAT_MESSAGE',
+                    type: Message.canonicalTypeName(P2P_CHAT_MESSAGE),
                     address: peerId,
                     text: trimmed,
                     created
@@ -3003,7 +3005,7 @@ class Bridge extends React.Component {
               if (this._isConnected && this.ws && this.ws.readyState === 1) {
                 const envelope = {
                   original: trimmed,
-                  originalType: 'P2P_CHAT_MESSAGE',
+                  originalType: Message.canonicalTypeName(P2P_CHAT_MESSAGE),
                   hops: [{ from: peerId, at: Date.now() }]
                 };
                 this._sendJSONRPC({
@@ -4321,7 +4323,7 @@ class Bridge extends React.Component {
               window.dispatchEvent(new CustomEvent('fabric:documentOffer', { detail: parsed }));
               break;
             }
-            if (parsed && parsed.type === 'P2P_FILE_SEND' && parsed.object) {
+            if (parsed && Message.typeEquals(parsed.type, P2P_FILE_SEND) && parsed.object) {
               const doc = parsed.object;
               if (doc.id && doc.contentBase64) {
                 if (doc.part && doc.part.transferId != null && doc.part.total != null) {
@@ -4342,7 +4344,7 @@ class Bridge extends React.Component {
             }
 
             // P2P_PEER_ALIAS from Fabric P2P (Hub GenericMessage fan-out)
-            if (parsed && parsed.type === 'P2P_PEER_ALIAS') {
+            if (parsed && Message.typeEquals(parsed.type, P2P_PEER_ALIAS)) {
               const name = (parsed.object && parsed.object.name != null)
                 ? String(parsed.object.name).trim()
                 : '';
@@ -4420,6 +4422,12 @@ class Bridge extends React.Component {
             type: 'GenericMessage',
             content: message.body
           });
+          break;
+        case 'P2P_FORWARD':
+          // Directed onion is TCP Peer–terminated (@fabric/core Peer#sendOnion).
+          // Do not peel into the browser mesh or wrap in P2P_RELAY flood — that
+          // would expose hop metadata and defeat IP-hiding routes.
+          console.warn('[BRIDGE] Ignoring P2P_FORWARD on WebSocket (use Hub SendOnion / desktop Peer)');
           break;
         case 'P2P_RELAY':
           try {
@@ -4512,11 +4520,23 @@ class Bridge extends React.Component {
               break;
             }
             let chat = null;
-            if (originalType === 'P2P_CHAT_MESSAGE') {
-              chat = typeof original === 'string' ? JSON.parse(original) : original;
+            if (Message.typeEquals(originalType, P2P_CHAT_MESSAGE)) {
+              if (typeof original === 'string') {
+                try {
+                  const parsed = JSON.parse(original);
+                  chat = (parsed && typeof parsed === 'object')
+                    ? parsed
+                    : { type: Message.canonicalTypeName(P2P_CHAT_MESSAGE), text: String(original) };
+                } catch (_) {
+                  // Mesh body is UTF-8 text only (WebRTC → Hub RelayFromWebRTC).
+                  chat = { type: Message.canonicalTypeName(P2P_CHAT_MESSAGE), text: original };
+                }
+              } else {
+                chat = original;
+              }
             }
-            if (!chat || chat.type !== 'P2P_CHAT_MESSAGE') break;
-            const normalizedChat = normalizeP2pChatMessage(chat) || chat;
+            const normalizedChat = normalizeP2pChatMessage(chat);
+            if (!normalizedChat) break;
             const content = chatTextOf(normalizedChat);
             if (this._handleHtlcKeyReveal(content)) break;
             const proposal = this._parseDistributeProposal(content, normalizedChat);

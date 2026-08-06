@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * Canonical implementation: `@fabric/core/functions/documentContentKey`.
+ * Content-key sealing — `@fabric/core` `documentSealedExchange`
+ * (content-key primitives folded into that module).
  */
 
-module.exports = require('@fabric/core/functions/documentContentKey');
+module.exports = require('@fabric/core/functions/documentSealedExchange');

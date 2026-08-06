@@ -1,38 +1,21 @@
 'use strict';
 
 /**
- * Canonical document-offer types and normalization live in `@fabric/core/functions/fabricDocumentOfferEnvelope`.
- * Hub adds inventory predicate helpers (`isDocumentInventory*`) for `services/hub.js` / `Bridge.js`.
+ * Document-offer envelope types — `@fabric/core` publishedDocumentEnvelope
+ * (offer aliases live on that module; no separate core file).
  */
 
-const core = require('@fabric/core/functions/fabricDocumentOfferEnvelope');
-
-const {
-  FABRIC_DOCUMENT_OFFER,
-  FABRIC_DOCUMENT_OFFER_REQUEST,
-  FABRIC_DOCUMENT_OFFER_RESPONSE,
-  FABRIC_DOCUMENT_OFFER_REPLY
-} = core;
-
-function isDocumentInventoryRequestType (type) {
-  const t = typeof type === 'string' ? type.trim() : '';
-  return t === 'INVENTORY_REQUEST' || t === FABRIC_DOCUMENT_OFFER || t === FABRIC_DOCUMENT_OFFER_REQUEST;
-}
-
-function isDocumentInventoryResponseType (type) {
-  const t = typeof type === 'string' ? type.trim() : '';
-  return t === 'INVENTORY_RESPONSE' || t === FABRIC_DOCUMENT_OFFER_RESPONSE || t === FABRIC_DOCUMENT_OFFER_REPLY;
-}
-
-/** Bridge / hub: merge `documents` inventory when inner JSON matches this shape. */
-function isDocumentInventoryDocumentsOfferResponse (parsed) {
-  return !!(parsed && parsed.object && String(parsed.object.kind || '').trim().toLowerCase() === 'documents' &&
-    isDocumentInventoryResponseType(parsed.type));
-}
+const core = require('@fabric/core/functions/publishedDocumentEnvelope');
 
 module.exports = {
-  ...core,
-  isDocumentInventoryRequestType,
-  isDocumentInventoryResponseType,
-  isDocumentInventoryDocumentsOfferResponse
+  FABRIC_DOCUMENT_OFFER: core.FABRIC_DOCUMENT_OFFER,
+  FABRIC_DOCUMENT_OFFER_REQUEST: core.FABRIC_DOCUMENT_OFFER_REQUEST,
+  FABRIC_DOCUMENT_OFFER_RESPONSE: core.FABRIC_DOCUMENT_OFFER_RESPONSE,
+  FABRIC_DOCUMENT_OFFER_REPLY: core.FABRIC_DOCUMENT_OFFER_REPLY,
+  TO_LEGACY_INVENTORY: core.TO_LEGACY_INVENTORY,
+  fabricDocumentOfferEnvelopeToLegacy: core.fabricDocumentOfferEnvelopeToLegacy,
+  normalizeFabricDocumentOfferEnvelopeForHandlers: core.normalizeFabricDocumentOfferEnvelopeForHandlers,
+  isDocumentInventoryRequestType: core.isDocumentInventoryRequestType,
+  isDocumentInventoryResponseType: core.isDocumentInventoryResponseType,
+  isDocumentInventoryDocumentsOfferResponse: core.isDocumentInventoryDocumentsOfferResponse
 };

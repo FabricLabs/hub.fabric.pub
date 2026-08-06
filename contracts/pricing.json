@@ -1,0 +1,12 @@
+{
+  "products": {
+    "Dedicated Agent": {
+      "description": "Avoid the way by having your own dedicated agent, running 24/7 and managed by us.",
+      "terms": null,
+      "pricing": {
+        "type": "monthly",
+        "amount": 0.0003
+      }
+    }
+  }
+}

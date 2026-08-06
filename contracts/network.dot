@@ -1,0 +1,156 @@
+// hub.fabric.pub — topology + homestead scans (live header)
+//
+// LAST_SCAN_UTC=2026-04-03T20:56:00Z
+// Method: nmap -sn -T4; WG = four chunks 10.8.0.1-19, 20-70, 71-120, 121-254 (full /24 -sn on wg0 under-reports).
+//
+// Snapshot (this run):
+//   mainstay — LAN: 192.168.50.2(mainstay.homestead), 192.168.50.192; WG: 10.8.0.1(rDNS martindale) only; utun4 10.8.0.2/32
+//   martindale — LAN: .1 .5 .50 .75 .128 .133 .168 .192 .233 (+PTR router.home jelly.home hoot); WG: .1(pi.hole) .5 .21 .50 .59; docker 172.17.0.1–2
+//   hoot — LAN: .1 .5 .50 .75 .128 .133 .153 .168 .192 .233; WG: .1 .5 only; ip: lo, eth0 192.168.1.1/24, wlan0 .50, wg0 10.8.0.1/24
+//
+// Union LAN Up (this run): 192.168.50.{1,2,5,50,75,128,133,153,168,192,233}  (11 hosts; .237/.153 not all vantages every pass — Wi‑Fi/sleep/firewall)
+// Union WG Up (martindale chunks): 10.8.0.{1,5,21,50,59}; mainstay WG IP .2 not in nmap slice replies; Munin still lists .58 mail.eric…
+//
+// Re-scan:  nmap -sn 192.168.50.0/24 -T4 -oG - | awk '/Status: Up/'
+//           for r in 1-19 20-70 71-120 121-254; do nmap -sn 10.8.0.$r -T4 -oG - | awk '/Status: Up/'; done
+// Render:   dot -Tsvg contracts/network.dot -o contracts/network.svg
+
+digraph network {
+  rankdir=LR;
+  splines=polyline;
+  nodesep=0.45;
+  ranksep=0.55;
+  fontname="Helvetica";
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled"];
+  edge [fontname="Helvetica", fontsize=9, color="#555"];
+
+  // ========== Loopback (default dev / Electron) ==========
+  subgraph cluster_loopback {
+    label="Loopback — local hub + managed Core/CLN";
+    style=filled;
+    fillcolor="#e8f5e9";
+
+    localhost [label="localhost / 127.0.0.1\n(loopback)", fillcolor="#c8e6c9"];
+    http_local [label="HTTP :8080 (default)\nSPA, REST, WebSocket bridge", fillcolor="#a5d6a7"];
+    fabric_local [label="Fabric P2P :7777\n(FABRIC_PORT)", fillcolor="#a5d6a7"];
+    btc_rpc_managed [label="Bitcoin RPC :20444\nmanaged regtest (hub wallet)", fillcolor="#81c784"];
+    btc_p2p_local [label="Bitcoin P2P :18444\nregtest (local bitcoind)", fillcolor="#81c784"];
+    zmq_local [label="ZMQ hashblock\n(127.0.0.1, hub-managed port)", fillcolor="#66bb6a"];
+    cln_local [label="CLN RPC\n(stores/lightning/hub, loopback)", fillcolor="#4caf50"];
+  }
+
+  // ========== Public hub & playnet seed ==========
+  subgraph cluster_public {
+    label="Public — hub.fabric.pub";
+    style=filled;
+    fillcolor="#e3f2fd";
+
+    hub_https [label="hub.fabric.pub :443\nHTTPS / WSS (check upstream)", fillcolor="#90caf9"];
+    hub_http_alt [label="hub.fabric.pub :80\n→ redirect HTTPS", fillcolor="#90caf9"];
+    hub_fabric [label="hub.fabric.pub :7777\nFabric TCP (WAN probe often closed)", fillcolor="#64b5f6"];
+    hub_btc_p2p [label="hub.fabric.pub :18444\nBitcoin P2P playnet seed\nFABRIC_BITCOIN_PLAYNET_PEER", fillcolor="#42a5f5"];
+    hub_faucet [label="…/services/bitcoin/faucet\n(regtest, when up)", fillcolor="#2196f3"];
+    hub_payjoin [label="…/services/payjoin\nPayjoin v2", fillcolor="#1e88e5"];
+  }
+
+  // ========== Homestead — LAST_SCAN_UTC in file header ==========
+  subgraph cluster_scanned {
+    label="Homestead — tri-vantage nmap (see header LAST_SCAN)";
+    style=filled;
+    fillcolor="#fff3e0";
+
+    scan_stale [
+      label="Point-in-time:\nICMP/LAN answers differ\nby host & sleep state.\nRe-run header commands\nbefore trusting counts.",
+      fillcolor="#ffe0b2",
+      shape=note
+    ];
+    v_main [
+      label="mainstay .2\nLAN nmap: 2 Up\n(.2 .192 only\nthis pass)\nWG: .1 only",
+      fillcolor="#ffccbc"
+    ];
+    v_md [
+      label="martindale .5\nLAN: 9 Up\n(no .2/.153/.237\nthis pass)\nWG: .1 .5 .21\n.50 .59",
+      fillcolor="#c8e6c9"
+    ];
+    v_hoot [
+      label="hoot .50\nLAN: 10 Up\n(incl. .153)\nWG nmap: .1 .5\neth0 192.168.1.1/24",
+      fillcolor="#b3e5fc"
+    ];
+    lan_union [
+      label="192.168.50.0/24\nunion (this run)\n.1 .2 .5 .50 .75\n.128 .133 .153\n.168 .192 .233",
+      fillcolor="#ffcc80"
+    ];
+    wg_martindale [
+      label="10.8.0.0/24\n(martindale WG chunks)\nUp: .1 .5 .21\n.50 .59\n+ .2 mainstay\non utun (Mac)",
+      fillcolor="#ffab91"
+    ];
+    fabric_lan [
+      label="Fabric HTTP (prior probe)\n192.168.50.2:8080\n192.168.50.192:8080\n@fabric/http",
+      fillcolor="#d1c4e9"
+    ];
+    md_docker [label="martindale\ndocker0 172.17.0.1\ncontainer .2", fillcolor="#ffe082"];
+    lan_martindale [label="192.168.50.5\nMunin master · Gitea\nFabric :7777 · btc", fillcolor="#ffb74d"];
+  }
+
+  // ========== LAN services example (martindale .5) ==========
+  subgraph cluster_lan {
+    label="LAN services (example — martindale)";
+    style=filled;
+    fillcolor="#fff8e1";
+
+    lan_core [label="192.168.50.5\nBitcoin Core RPC :8332\n(mainnet smoke)", fillcolor="#ffe082"];
+    lan_cln [label="192.168.50.5 :9735\nCLN example", fillcolor="#ffd54f"];
+    lan_hub [label="192.168.50.5\nHTTP / Gitea / deploy", fillcolor="#ffca28"];
+    lan_btc_p2p [label="192.168.50.5 :18444\nBitcoin P2P playnet", fillcolor="#ffc107"];
+  }
+
+  subgraph cluster_placeholders {
+    label="Placeholders — BitcoinHome settings";
+    style=filled;
+    fillcolor="#fce4ec";
+
+    ph_explorer [label="explorer.fabric.pub", fillcolor="#f48fb1"];
+    ph_payments [label="payments.fabric.pub", fillcolor="#f06292"];
+    ph_lightning [label="lightning.fabric.pub", fillcolor="#ec407a"];
+  }
+
+  subgraph cluster_meta {
+    label="Coordination";
+    style=filled;
+    fillcolor="#f5f5f5";
+
+    github_repo [label="github.com/FabricLabs/hub.fabric.pub", fillcolor="#eeeeee"];
+  }
+
+  localhost -> http_local [label="bind"];
+  localhost -> fabric_local [label="bind"];
+  localhost -> btc_rpc_managed [label="RPC"];
+  localhost -> btc_p2p_local [label="P2P"];
+  localhost -> zmq_local [label="ZMQ"];
+  localhost -> cln_local [label="RPC"];
+
+  btc_p2p_local -> hub_btc_p2p [style=dashed, label="addnode / playnet"];
+  fabric_local -> hub_fabric [style=dashed, label="Add primary hub"];
+
+  http_local -> hub_https [style=dashed, color="#1976d2", label="same app,\ndifferent origin"];
+  lan_hub -> lan_core [style=dotted, label="same host"];
+  lan_martindale -> lan_hub [style=dotted];
+
+  v_main -> lan_union [style=dotted, label=".2"];
+  v_md -> lan_union [style=dotted];
+  v_hoot -> lan_union [style=dotted];
+  v_md -> wg_martindale [style=dotted];
+  v_hoot -> wg_martindale [style=dashed, label="hub WG"];
+  lan_union -> v_hoot [style=dashed, label=".50"];
+  lan_union -> lan_martindale [style=dashed, label=".5"];
+  wg_martindale -> v_hoot [style=dashed, label=".1"];
+  lan_union -> fabric_lan [style=dotted, label=".2/.192"];
+  lan_martindale -> md_docker [style=dotted];
+
+  hub_https -> hub_faucet [style=dotted];
+  hub_https -> hub_payjoin [style=dotted];
+
+  lan_btc_p2p -> hub_btc_p2p [style=dashed, label="playnet mesh"];
+
+  github_repo -> hub_https [style=dotted, label="deploy"];
+}

@@ -1,18 +1,9 @@
 'use strict';
 
 /**
- * Hub sidechain document helpers (distributed execution — not a Fabric type).
- * Prefer `@fabric/core/functions/sidechainState` when linked; fall back to vendored copy.
- *
+ * Hub sidechain document helpers — `@fabric/core/functions/sidechainState` only.
  * @see docs/BEACON_SIDECHAIN_DESIGN_AND_ROADMAP.md
  * @see @fabric/core docs/DISTRIBUTED_EXECUTION.md
  */
 
-let sidechainState;
-try {
-  sidechainState = require('@fabric/core/functions/sidechainState');
-} catch (_) {
-  sidechainState = require('./fabricStatechain');
-}
-
-module.exports = sidechainState;
+module.exports = require('@fabric/core/functions/sidechainState');

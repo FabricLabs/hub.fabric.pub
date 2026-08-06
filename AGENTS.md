@@ -124,6 +124,7 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 | `GetPeer` | Get detailed info for a peer |
 | `SetPeerNickname` | Set local nickname for a peer |
 | `SendPeerMessage` | Send chat message to a specific peer |
+| `SendOnion` | Source-route via nested `P2P_FORWARD` — params `{ path: [pubkeyHex…], text? }` or `{ path, messageBase64 }`; first hop must be connected; TCP only |
 | `SendPeerFile` | Send a document to a specific peer |
 | `ConfirmInventoryHtlcPayment` | After funding a P2TR inventory HTLC: `{ settlementId, txid }` → verifies L1, then phase 2 `P2P_FILE_SEND` to buyer |
 | `GetInventoryHtlcSellerReveal` | **Admin only** — `{ settlementId, adminToken }` → preimage + script hex fields; `claimTxid` after successful on-chain claim; may include `relayReturnHop`, `requesterFabricId` when settlement used a relay |
@@ -162,7 +163,8 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 - `P2P_FILE_SEND` — File transfer over P2P
 - `ChatMessage` — WebSocket broadcast of chat
 - `P2P_CHAT_MESSAGE` — Chat over WebRTC mesh (matches Fabric P2P pattern); when received, Bridge wraps in `P2P_RELAY` envelope and relays via `RelayFromWebRTC` to hub
-- `P2P_RELAY` — Relay envelope for onion routing; preserves original message + signature; hub broadcasts to WebSocket clients and Fabric P2P
+- `P2P_RELAY` — Mesh **flood** envelope (raw inner Message bytes on Peer mesh; JSON hops layout on Hub↔browser WS). Not for IP-hiding routes.
+- `P2P_FORWARD` — Directed onion hop (`nextPeer` + `ttl` + nested inner). TCP Peer peels/forwards via `@fabric/core`; Hub exposes **`SendOnion`**. Do not WS-flood outer frames (Bridge drops). See core `docs/P2P_FORWARD.md`.
 - `FileMessage` — WebSocket broadcast of received files
 - `JSONCall` / `JSONCallResult` — RPC request/response
 
@@ -263,7 +265,7 @@ Publish remains free. The distribute amount is user-specified.
 ## RPC Surface (WebSocket / JSONCall)
 Common methods include:
 - peers: `ListPeers`, `AddPeer`, `RemovePeer`, `GetPeer`
-- chat/files: `SendPeerMessage`, `SubmitChatMessage`, `EmitTombstone` (admin), `SendPeerFile`, `RelayFromWebRTC`
+- chat/files: `SendPeerMessage`, `SendOnion`, `SubmitChatMessage`, `EmitTombstone` (admin), `SendPeerFile`, `RelayFromWebRTC`
 - documents: `CreateDocument`, `ListDocuments`, `GetDocument`, `PublishDocument`
 - distribute: `CreateDistributeInvoice`, `CreateStorageContract`
 - bitcoin: `GetBitcoinStatus`, `ListBlocks`, `ListTransactions`, `SendPayment`, `VerifyBitcoinL1Payment`, `GenerateBlock`

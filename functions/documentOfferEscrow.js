@@ -1,7 +1,12 @@
 'use strict';
 
 /**
- * Canonical implementation: `@fabric/core/functions/documentOfferEscrow`.
+ * Document-offer escrow — `@fabric/core` `inventoryHtlc.buildDocumentOfferEscrow`.
  */
 
-module.exports = require('@fabric/core/functions/documentOfferEscrow');
+const inventoryHtlc = require('@fabric/core/functions/inventoryHtlc');
+
+module.exports = {
+  buildDocumentOfferEscrow: inventoryHtlc.buildDocumentOfferEscrow,
+  inventoryHtlc
+};

@@ -113,11 +113,13 @@ module.exports = (env, argv) => {
   },
   resolve: {
     extensions: ['.js', '.jsx'],
-    // Prefer CJS over ESM when resolving package exports (avoids secp256k1 "exports is not defined")
+    // Prefer CJS over ESM when resolving package exports (avoids secp256k1 "exports is not defined"
+    // and react-router@7 `.mjs` interop failures under webpack).
     // 'browser' before 'node' so @noble/hashes uses crypto.js not cryptoNode.js (avoids node:crypto error)
     // Include 'browser' so react-dom/server resolves to server.browser.js (avoids TextEncoder error)
     // Omit 'node' so @noble/hashes/crypto resolves to browser crypto.js not cryptoNode.js
-    conditionNames: ['require', 'browser', 'import'],
+    // Omit 'import' so package `exports` do not prefer ESM `.mjs` over CJS `.js`.
+    conditionNames: ['require', 'browser', 'default'],
     // Allow imports without extensions (fixes process/browser in @msgpack/msgpack ESM)
     fullySpecified: false,
     // Prefer hub's node_modules so linked @fabric/core uses the same copies of
@@ -134,7 +136,13 @@ module.exports = (env, argv) => {
       '@noble/hashes/ripemd160': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
       '@noble/hashes/sha1': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
       'node:crypto': require.resolve('crypto-browserify'),
-      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js')
+      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js'),
+      // react-router@7 package exports prefer `.mjs` when `import` is in conditionNames;
+      // webpack then hits `__webpack_modules__[id].call is not a function` on ESM interop.
+      // Pin CJS builds (`$` = exact package root only, so `react-router/dom` still resolves).
+      'react-router-dom$': path.resolve(__dirname, 'node_modules/react-router-dom/dist/index.js'),
+      'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/development/index.js'),
+      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/development/dom-export.js')
     },
     fallback: {
       // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle
