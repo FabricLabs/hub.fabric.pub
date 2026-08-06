@@ -7,6 +7,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 |------|---------|
 | `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` |
 | `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (post security pass) |
+| npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
 | Electron | **`39.8.10`** (clears Electron ≤39.8.9 advisory set on prior 36.x pin) |
