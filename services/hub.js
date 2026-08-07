@@ -715,6 +715,7 @@ class Hub extends Service {
         ? { payments: this.settings.http.payments }
         : {})
     });
+    this._wireHttpOptionsContract();
 
     // State
     this._state = {
@@ -1958,6 +1959,68 @@ class Hub extends Service {
     if (!this.peering) return null;
     if (this.settings && this.settings.peering && this.settings.peering.enable === false) return null;
     return this.peering;
+  }
+
+  /**
+   * Enrich HTTP `OPTIONS /` with Application Resource Contract identity,
+   * peering service pointers, and (when available) a live OracleAttestation
+   * so clients like GoonCitizen can discover hubs without a hard-coded path.
+   */
+  _wireHttpOptionsContract () {
+    if (!this.http || typeof this.http.setOptionsEnricher !== 'function') return;
+    this.http.setOptionsEnricher(() => {
+      const services = {};
+      let status;
+      const peering = this._getPeeringService();
+      if (peering) {
+        const base = (peering.settings && peering.settings.endpointBasePath) || '/services/peering';
+        services.peering = {
+          endpointBasePath: base,
+          kind: 'PeeringCapability',
+          attestationType: 'OracleAttestation',
+          attestationUrl: `${String(base).replace(/\/$/, '')}/attestation`
+        };
+        try {
+          if (typeof peering.buildOracleAttestation === 'function' && peering.key) {
+            status = { oracleAttestation: peering.buildOracleAttestation() };
+          }
+        } catch (_) { /* key/hub not ready yet */ }
+      }
+
+      let contract;
+      try {
+        if (this.contract) {
+          const definition = {
+            name: 'hub.fabric.pub',
+            description: (this.http.settings && this.http.settings.description) ||
+              'Fabric Hub — rendezvous, documents, and peer mesh coordination',
+            state: (this.contract.state && typeof this.contract.state === 'object')
+              ? this.contract.state
+              : (this.settings && this.settings.state) || {}
+          };
+          contract = {
+            id: this.contract.id != null ? String(this.contract.id) : undefined,
+            definition,
+            messageType: 'CONTRACT_PUBLISH'
+          };
+        }
+      } catch (_) { /* ignore */ }
+
+      return {
+        contract,
+        services,
+        status,
+        fabricCapabilities: {
+          p2p: true,
+          webrtcSignaling: true,
+          contractPublish: true
+        }
+      };
+    });
+    if (this.http.settings) {
+      this.http.settings.description = this.http.settings.description ||
+        'Fabric Hub — rendezvous, documents, and peer mesh coordination';
+    }
   }
 
   _getChallengeService () {
@@ -8473,6 +8536,7 @@ class Hub extends Service {
           key: this._rootKey,
           hub: this
         });
+        this._wireHttpOptionsContract();
       }
 
       // Load prior state

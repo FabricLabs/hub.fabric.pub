@@ -34,6 +34,12 @@ function resourcesHaveServicesRoutes (resources) {
 function isFabricHubOptionsPayload (j) {
   if (!j || typeof j !== 'object') return false;
   if (isSampleHubHttpServerOptions(j)) return false;
+  if (j['@type'] === 'ApplicationResourceContract' &&
+    (String(j.name || '') === 'hub.fabric.pub' ||
+      (j.services && j.services.peering) ||
+      resourcesHaveServicesRoutes(j.resources))) {
+    return true;
+  }
   const name = String(j.name || '');
   if (name === 'hub.fabric.pub') return true;
   if (/fabric\s*hub/i.test(name) && j.resources && typeof j.resources === 'object') return true;
@@ -155,6 +161,7 @@ function looksLikeFabricResourceDefinition (definition) {
  */
 function isFabricHttpApplicationPayload (j) {
   if (!j || typeof j !== 'object') return false;
+  if (j['@type'] === 'ApplicationResourceContract' && typeof j.name === 'string') return true;
   if (!j.resources || typeof j.resources !== 'object' || Array.isArray(j.resources)) return false;
   const keys = Object.keys(j.resources);
   if (keys.length === 0) return typeof j.name === 'string';

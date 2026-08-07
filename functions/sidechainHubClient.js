@@ -97,6 +97,12 @@ async function getSidechainSnapshots (opts = {}) {
 }
 
 /**
+ * Submit an RFC6902 patch sequence to Hub sidechain STATE.
+ * Multi-op arrays are first-class on the Hub RPC path. When encoding the same
+ * proposal as a typed `SIDECHAIN_STATE_PATCH` Message (P2P / activity), use
+ * `@fabric/http/functions/messageBodyJsonBridge` so `patchesCanonical` preserves
+ * the full sequence (not only a collapsed `/registry` catalog write).
+ *
  * @param {{ patches: object[], basisClock: number, adminToken?: string|null, federationWitness?: object|null }} p
  */
 async function submitSidechainStatePatch (p) {

@@ -14,6 +14,23 @@ describe('scripts/desktopHubProbe', () => {
     assert.strictEqual(isFabricHubOptionsPayload({ name: 'hub.fabric.pub' }), true);
   });
 
+  it('isFabricHubOptionsPayload accepts Application Resource Contract with peering', () => {
+    const j = {
+      '@type': 'ApplicationResourceContract',
+      name: 'hub.fabric.pub',
+      contract: { id: 'abc', messageType: 'CONTRACT_PUBLISH' },
+      resources: { Service: { route: '/services' } },
+      services: { peering: { endpointBasePath: '/services/peering' } },
+      capabilities: { http: { cors: true }, fabric: { p2p: true } }
+    };
+    assert.strictEqual(isFabricHubOptionsPayload(j), true);
+    assert.strictEqual(isFabricHttpApplicationPayload(j), true);
+    const app = extractFabricHttpApplicationFromOptions(j);
+    assert.ok(app);
+    assert.strictEqual(app.name, 'hub.fabric.pub');
+    assert.ok(app.services && app.services.peering);
+  });
+
   it('isFabricHubOptionsPayload accepts resources with /services routes', () => {
     const j = {
       name: 'other',
