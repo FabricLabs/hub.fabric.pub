@@ -3,12 +3,18 @@
 const assert = require('assert');
 const {
   isLikelyFabricBech32Id,
+  isLikelyCompressedPubkeyHex,
   fabricPeerBech32Id,
+  fabricPeerPubkeyHex,
+  peerNativePeeringString,
   peerConnectionPubkeyAtHostPort,
+  peerPeeringEndpointIsSignaling,
   consolidateUnifiedPeersByFabricId,
   fabricP2PIdentityConfirmed,
   WEBRTC_TRANSPORT
 } = require('../functions/peerIdentity');
+
+const SAMPLE_HEX = `02${'ab'.repeat(32)}`;
 
 describe('peerIdentity Fabric id consolidation', function () {
   it('isLikelyFabricBech32Id recognizes id1… shape', function () {
@@ -24,15 +30,49 @@ describe('peerIdentity Fabric id consolidation', function () {
     assert.strictEqual(fabricPeerBech32Id(p), 'id1pqgsf32w234jk9pyp');
   });
 
-  it('peerConnectionPubkeyAtHostPort builds id@host:port', function () {
-    const tcp = { id: 'id1abc', address: 'hub.example:7777' };
-    assert.strictEqual(peerConnectionPubkeyAtHostPort(tcp, ''), 'id1abc@hub.example:7777');
-    const mesh = {
+  it('fabricPeerPubkeyHex prefers compressed hex fields', function () {
+    assert.ok(isLikelyCompressedPubkeyHex(SAMPLE_HEX));
+    assert.strictEqual(fabricPeerPubkeyHex({
+      id: 'id1pqgsf32w234jk9pyp',
+      publicKey: SAMPLE_HEX.toUpperCase()
+    }), SAMPLE_HEX);
+    assert.strictEqual(fabricPeerPubkeyHex({
+      id: SAMPLE_HEX,
+      metadata: { fabricPeerId: 'id1pqgsf32w234jk9pyp' }
+    }), SAMPLE_HEX);
+    assert.strictEqual(fabricPeerPubkeyHex({ id: 'id1pqgsf32w234jk9pyp' }), '');
+  });
+
+  it('peerNativePeeringString prefers hex@host:port for TCP peers', function () {
+    const tcp = {
       id: 'id1abc',
-      address: 'webrtc:bridge-1',
-      metadata: { transport: WEBRTC_TRANSPORT, fabricPeerId: 'id1abc' }
+      publicKey: SAMPLE_HEX,
+      address: 'hub.example:7777'
     };
-    assert.strictEqual(peerConnectionPubkeyAtHostPort(mesh, 'localhost:8080'), 'id1abc@localhost:8080');
+    assert.strictEqual(
+      peerNativePeeringString(tcp, ''),
+      `${SAMPLE_HEX}@hub.example:7777`
+    );
+    assert.strictEqual(peerPeeringEndpointIsSignaling(tcp), false);
+  });
+
+  it('peerNativePeeringString falls back to bech32/id when hex unknown', function () {
+    const tcp = { id: 'id1abc', address: 'hub.example:7777' };
+    assert.strictEqual(peerNativePeeringString(tcp, ''), 'id1abc@hub.example:7777');
+    assert.strictEqual(peerConnectionPubkeyAtHostPort(tcp, ''), 'id1abc@hub.example:7777');
+  });
+
+  it('peerNativePeeringString uses signaling host for WebRTC rows', function () {
+    const mesh = {
+      id: SAMPLE_HEX,
+      address: 'webrtc:bridge-1',
+      metadata: { transport: WEBRTC_TRANSPORT, fabricPeerId: SAMPLE_HEX }
+    };
+    assert.strictEqual(
+      peerNativePeeringString(mesh, 'localhost:8080'),
+      `${SAMPLE_HEX}@localhost:8080`
+    );
+    assert.strictEqual(peerPeeringEndpointIsSignaling(mesh), true);
   });
 
   it('consolidateUnifiedPeersByFabricId merges score and prefers TCP address', function () {

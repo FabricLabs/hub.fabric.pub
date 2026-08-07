@@ -35,7 +35,12 @@ const { peerNeighborhoodToDot } = require('../functions/peerTopologyDot');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
-const { shortenPublicId, fabricPeerBech32Id, peerConnectionPubkeyAtHostPort } = require('../functions/peerIdentity');
+const {
+  shortenPublicId,
+  fabricPeerBech32Id,
+  peerNativePeeringString,
+  peerPeeringEndpointIsSignaling
+} = require('../functions/peerIdentity');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   loadHubUiFeatureFlags,
@@ -133,6 +138,7 @@ function PeerDetail (props) {
   const [contactAddBusy, setContactAddBusy] = React.useState(false);
   const [contactAddErr, setContactAddErr] = React.useState(null);
   const [contactAddOk, setContactAddOk] = React.useState(null);
+  const [peeringCopied, setPeeringCopied] = React.useState(false);
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -823,15 +829,52 @@ function PeerDetail (props) {
                 <Table compact definition striped size="small" style={{ marginBottom: '0.65rem' }}>
                   <Table.Body>
                     {(() => {
-                      const connStr = typeof window !== 'undefined'
-                        ? peerConnectionPubkeyAtHostPort(peer, window.location.host)
-                        : peerConnectionPubkeyAtHostPort(peer, '');
+                      const sigHost = typeof window !== 'undefined' ? window.location.host : '';
+                      const connStr = peerNativePeeringString(peer, sigHost);
                       if (!connStr) return null;
+                      const signaling = peerPeeringEndpointIsSignaling(peer);
+                      const copyPeering = () => {
+                        try {
+                          if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(connStr);
+                          } else if (typeof document !== 'undefined') {
+                            const ta = document.createElement('textarea');
+                            ta.value = connStr;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                          }
+                          setPeeringCopied(true);
+                          window.setTimeout(() => setPeeringCopied(false), 1500);
+                        } catch (e) { /* ignore */ }
+                      };
                       return (
                         <Table.Row>
-                          <Table.Cell collapsing>Id @ endpoint</Table.Cell>
+                          <Table.Cell collapsing>Peering</Table.Cell>
                           <Table.Cell>
                             <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{connStr}</code>
+                            {' '}
+                            <Button
+                              size="mini"
+                              basic
+                              icon
+                              type="button"
+                              onClick={copyPeering}
+                              title="Copy pubkey@host:port peering string for native Fabric dial"
+                              aria-label="Copy peering string"
+                              style={{ marginLeft: '0.35em', verticalAlign: 'middle' }}
+                            >
+                              <Icon name="copy" />
+                              {peeringCopied ? 'Copied' : 'Copy'}
+                            </Button>
+                            <div style={{ color: '#767676', fontSize: '0.82em', marginTop: '0.35em' }}>
+                              {signaling
+                                ? 'WebRTC signaling host (this site) — browsers will peer here; native nodes use Fabric TCP when advertised.'
+                                : 'Native Fabric dial pin (pubkey@host:port).'}
+                            </div>
                           </Table.Cell>
                         </Table.Row>
                       );

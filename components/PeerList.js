@@ -30,7 +30,7 @@ const {
   dedupeFabricPeers,
   fabricPeerPrimaryLabel,
   fabricPeerBech32Id,
-  peerConnectionPubkeyAtHostPort,
+  peerNativePeeringString,
   fabricP2PIdentityConfirmed,
   consolidateUnifiedPeersByFabricId,
   buildWebrtcCombinedRows,
@@ -153,7 +153,7 @@ function UnifiedPeersPaginatedList ({
             const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
             const addrNorm = normalizeFabricPeerAddress(address);
             const isPrimaryRow = !meshRow && primaryPeerNorm && (addrNorm === primaryPeerNorm || String(address) === primaryPeerNorm);
-            const connectionStr = peerConnectionPubkeyAtHostPort(peer, sigHp) || '—';
+            const connectionStr = peerNativePeeringString(peer, sigHp) || '—';
             const p2pConfirmed = fabricP2PIdentityConfirmed(peer);
             const invN = gp ? inventoryDocCountForFabricPeer(gp, bech32Id || routeTarget) : null;
             const tcpForResync = address && !String(address).startsWith('webrtc:')
@@ -458,7 +458,10 @@ class PeersPage extends React.Component {
       : null;
     const shareNodeId = fabricPeerId || legacyUnstableId;
     const hostPort = network && network.address ? String(network.address) : null;
-    const shareableString = [shareNodeId, hostPort].filter(Boolean).join('\n');
+    // Single dial pin for operators / peers: pubkey@host:port (matches Peer#_connect).
+    const shareableString = (shareNodeId && hostPort)
+      ? `${shareNodeId}@${hostPort}`
+      : (shareNodeId || hostPort || '');
 
     // WebRTC peers currently registered with the hub signaling RPC
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
@@ -683,10 +686,10 @@ class PeersPage extends React.Component {
                             }
                           } catch (e) {}
                         }}
-                        title="Copy Fabric Peer ID and listen address"
+                        title="Copy pubkey@host:port peering string for native Fabric dial"
                       >
                         <Icon name="copy" />
-                        Copy Fabric Peer ID + listen
+                        Copy peering string
                       </Button>
                     ) : null}
                   </Grid.Column>

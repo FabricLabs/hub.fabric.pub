@@ -172,6 +172,50 @@ function fabricPeerBech32Id (peer) {
 }
 
 /**
+ * True when <code>s</code> looks like a compressed secp256k1 pubkey hex (33 bytes).
+ * @param {string} s
+ * @returns {boolean}
+ */
+function isLikelyCompressedPubkeyHex (s) {
+  const t = String(s || '').trim().toLowerCase();
+  return /^(02|03)[0-9a-f]{64}$/.test(t);
+}
+
+/**
+ * Dial-pin identity: compressed pubkey hex when present on the peer row.
+ * Checked fields: <code>publicKey</code>, <code>pubkey</code>, hex-shaped <code>id</code>,
+ * <code>metadata.fabricPeerId</code> / <code>metadata.publicKey</code>.
+ * @param {object|null|undefined} peer
+ * @returns {string} lowercase hex or ''
+ */
+function fabricPeerPubkeyHex (peer) {
+  if (!peer || typeof peer !== 'object') return '';
+  const m = peer.metadata && typeof peer.metadata === 'object' ? peer.metadata : {};
+  const cands = [
+    peer.publicKey,
+    peer.pubkey,
+    m.publicKey,
+    m.pubkey,
+    m.fabricPeerId,
+    peer.id
+  ];
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i] != null ? String(cands[i]).trim() : '';
+    if (isLikelyCompressedPubkeyHex(c)) return c.toLowerCase();
+  }
+  return '';
+}
+
+/**
+ * Left-hand side for a native peering string: hex pubkey preferred, else bech32/id.
+ * @param {object|null|undefined} peer
+ * @returns {string}
+ */
+function fabricPeerDialIdentity (peer) {
+  return fabricPeerPubkeyHex(peer) || fabricPeerBech32Id(peer) || '';
+}
+
+/**
  * @param {object} peer - Fabric P2P row from GetNetworkStatus
  * @returns {string}
  */
@@ -332,6 +376,8 @@ function isWebrtcTransportPeerRow (peer) {
 
 /**
  * Prefer a real Fabric TCP <code>host:port</code>; otherwise WebRTC signaling origin (<code>window.location.host</code> shape).
+ * Browser clients will later dial the web origin over WebRTC using the same identity left-hand side;
+ * hubs remain signaling until mesh gossip can survive hub loss.
  * @param {object|null|undefined} peer
  * @param {string} [signalingHostPort]
  * @returns {string}
@@ -347,18 +393,42 @@ function peerPublicConnectionTargetHostPort (peer, signalingHostPort) {
 }
 
 /**
- * Operator “connection string”: Fabric identity (bech32m when known) @ transport endpoint (TCP host:port or signaling host:port).
+ * True when the peering endpoint is WebRTC signaling (no Fabric TCP address on the row).
+ * @param {object|null|undefined} peer
+ * @returns {boolean}
+ */
+function peerPeeringEndpointIsSignaling (peer) {
+  if (!peer || typeof peer !== 'object') return false;
+  if (isWebrtcTransportPeerRow(peer)) return true;
+  const addr = peer.address != null ? String(peer.address).trim() : '';
+  return !addr || addr.toLowerCase().startsWith('webrtc:');
+}
+
+/**
+ * Native Fabric peering string for clipboard / CLI dial pins:
+ * <code>pubkey@host:port</code> (compressed hex when known; bech32/id fallback).
+ * Endpoint is TCP <code>host:port</code>, or the web signaling host for WebRTC-only rows.
  * @param {object|null|undefined} peer
  * @param {string} [signalingHostPort]
  * @returns {string}
  */
-function peerConnectionPubkeyAtHostPort (peer, signalingHostPort) {
-  const pk = fabricPeerBech32Id(peer);
+function peerNativePeeringString (peer, signalingHostPort) {
+  const pk = fabricPeerDialIdentity(peer);
   const target = peerPublicConnectionTargetHostPort(peer, signalingHostPort);
   if (!pk && !target) return '';
   if (!target) return pk;
   if (!pk) return `@${target}`;
   return `${pk}@${target}`;
+}
+
+/**
+ * @deprecated Prefer {@link peerNativePeeringString} (hex-first dial pin).
+ * @param {object|null|undefined} peer
+ * @param {string} [signalingHostPort]
+ * @returns {string}
+ */
+function peerConnectionPubkeyAtHostPort (peer, signalingHostPort) {
+  return peerNativePeeringString(peer, signalingHostPort);
 }
 
 /**
@@ -424,8 +494,13 @@ module.exports = {
   extractPeerXpub,
   shortenPublicId,
   isLikelyFabricBech32Id,
+  isLikelyCompressedPubkeyHex,
   fabricPeerBech32Id,
+  fabricPeerPubkeyHex,
+  fabricPeerDialIdentity,
   peerPublicConnectionTargetHostPort,
+  peerPeeringEndpointIsSignaling,
+  peerNativePeeringString,
   peerConnectionPubkeyAtHostPort,
   fabricP2PIdentityConfirmed,
   consolidateUnifiedPeersByFabricId,
