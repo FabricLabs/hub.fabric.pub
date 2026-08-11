@@ -2,9 +2,9 @@
 
 /**
  * Preflight for `npm run desktop` / hub startup: deep imports must resolve.
- * Distributed execution helpers are vendored under `functions/fabricDistributedExecution*.js`
- * so plain `npm install` works when git tarballs omit `@fabric/core` / `@fabric/http` files.
- * Optional: `npm run link:fabric` for full local monorepo development.
+ * Distributed execution HTTP binds via `@fabric/http/types/distributedExecutionHttp`
+ * (hub `functions/fabricDistributedExecutionHttp.js` re-exports). Optional:
+ * `npm run link:fabric` for full local monorepo development.
  *
  * Beacon requires `@fabric/core` Chain federation helpers (`Chain.create`, etc.). A published
  * / npm-install tree without those APIs will crash at `new Beacon` — fail here instead.
@@ -15,7 +15,9 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const paths = [
   path.join(root, 'functions', 'fabricDistributedExecution.js'),
-  path.join(root, 'functions', 'fabricDistributedExecutionHttp.js'),
+  '@fabric/http/types/distributedExecutionHttp',
+  '@fabric/http/functions/httpSharedMode',
+  '@fabric/http/functions/fabricHubAllowlist',
   '@fabric/core/types/key',
   '@fabric/core/types/chain',
   '@fabric/core/functions/sidechainState'

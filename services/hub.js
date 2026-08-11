@@ -48,6 +48,11 @@ function timingSafeSha256Utf8Match (provided, expected) {
 }
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
 const { SATS_PER_BTC, FEATURE_FLAGS, publicFeatureFlags } = require('../constants');
+const {
+  HUB_START_PHASES,
+  resolveStartPhases,
+  runHubStartPhase
+} = require('../functions/hubLifecycle');
 const documentContentKey = require('../functions/documentContentKey');
 
 // Fabric Types
@@ -8442,8 +8447,8 @@ class Hub extends Service {
    * Start the instance.
    * @returns {Hub} Instance of the {@link Hub}.
    */
-  async start () {
-    try {
+
+  async _startPhase_diagnostics () {
       // Listen for agent errors
       this.agent.on('error', (err) => {
         const msg = err && err.message ? err.message : String(err || '');
@@ -8485,12 +8490,17 @@ class Hub extends Service {
       this.http.on('error', (err) => {
         console.error('[HUB:HTTP:ERROR]', err && err.stack ? err.stack : err);
       });
+  }
+
+  async _startPhase_filesystem () {
       await this.fs.start();
       await this._bootstrapFederationFilesystem();
       if (this.chain && typeof this.chain.start === 'function') {
         await this.chain.start();
       }
+  }
 
+  async _startPhase_bitcoin () {
       if (this.bitcoin) {
         this.bitcoin.on('debug', (...args) => console.log('[BITCOIN]', '[DEBUG]', ...args));
         this.bitcoin.on('error', (...error) => console.error('[BITCOIN]', '[ERROR]', ...error));
@@ -8517,7 +8527,9 @@ class Hub extends Service {
           throw new Error(`[HUB] Bitcoin startup required but failed: ${msg}`);
         }
       }
+  }
 
+  async _startPhase_services () {
       if (this.payjoin && this.settings.payjoin && this.settings.payjoin.enable !== false) {
         this.payjoin.attach({
           fs: this.fs,
@@ -8538,7 +8550,9 @@ class Hub extends Service {
         });
         this._wireHttpOptionsContract();
       }
+  }
 
+  async _startPhase_state () {
       // Load prior state
       const file = this.fs.readFile('STATE');
       const state = (file) ? JSON.parse(file) : this.state;
@@ -8692,7 +8706,9 @@ class Hub extends Service {
           console.warn('[HUB:BITCOIN] startup prune inventory sync:', e && e.message ? e.message : e);
         }
       }
+  }
 
+  async _startPhase_shell () {
       // Load HTML document from disk to serve from memory
       try {
         this.applicationString = fs.readFileSync(path.join(hubAssetsDir(), 'index.html')).toString('utf8');
@@ -8747,6 +8763,9 @@ class Hub extends Service {
       }
 
       // Add API route for /api/developers
+  }
+
+  async _startPhase_routes () {
       this.http._addRoute('GET', '/api/developers', (req, res) => {
         const accept = req.headers['accept'] || '';
         if (accept.includes('text/html')) {
@@ -8867,7 +8886,9 @@ class Hub extends Service {
 
       // Configure routes
       this._addAllRoutes();
+  }
 
+  async _startPhase_rpc () {
       // Bind event listeners
       // this.trust(this.spa, 'FABRIC:SPA');
       this.trust(this.http, 'FABRIC:HTTP');
@@ -12033,10 +12054,14 @@ class Hub extends Service {
           console.error('[HUB] inventoryResponse fan-out failed:', e);
         }
       });
+  }
 
+  async _startPhase_listen () {
       await this.agent.start();
       await this.http.start();
+  }
 
+  async _startPhase_runtime () {
       // @fabric/http `start()` registers default RegisterWebRTCPeer / ListWebRTCPeers (JSON-RPC).
       // Re-bind Hub's mesh registry + candidate logic so POST /services/rpc does not use the stock handlers.
       this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
@@ -12150,6 +12175,19 @@ class Hub extends Service {
       // Alert message
       await this.alert(`Hub HTTP service started.  Agent ID: ${this.id}`);
 
+      return this;
+  }
+
+  async start () {
+    try {
+      const phases = resolveStartPhases(this);
+      for (const phase of phases) {
+        const fn = this[`_startPhase_${phase}`];
+        if (typeof fn !== 'function') {
+          throw new Error(`[HUB] missing start phase implementation: ${phase}`);
+        }
+        await runHubStartPhase(this, phase, fn);
+      }
       return this;
     } catch (err) {
       console.error('[HUB:STARTUP:ERROR]', err && err.stack ? err.stack : err);
@@ -12281,5 +12319,7 @@ class Hub extends Service {
   }
 
 }
+
+Hub.START_PHASES = HUB_START_PHASES;
 
 module.exports = Hub;

@@ -1,22 +1,33 @@
 'use strict';
 
 /**
- * Peering HTTP surface for the Hub: discovery metadata and {@link Oracle}-style signed
- * attestations over the operator’s Fabric identity key. Same envelope shape can be reused
- * by other services (e.g. a price feed signs `kind: 'PriceQuote'` with an `OracleAttestation`).
- *
- * @see {@link https://github.com/FabricLabs/fabric/blob/master/types/oracle.js @fabric/core/types/oracle}
+ * Peering HTTP surface for the Hub: discovery metadata and Oracle-style signed
+ * attestations over the operator’s Fabric identity key.
  */
-const crypto = require('crypto');
 const Service = require('@fabric/core/types/service');
-const Key = require('@fabric/core/types/key');
-const DistributedExecution = require('../functions/fabricDistributedExecution');
 const { MAX_PEERS } = require('@fabric/core/constants');
 
-const stableStringify = DistributedExecution.stableStringify;
+let oracleAttestation;
+try {
+  oracleAttestation = require('@fabric/http/functions/oracleAttestation');
+} catch (_) {
+  oracleAttestation = require('../functions/oracleAttestation');
+}
 
-const ATTESTATION_TYPE = 'OracleAttestation';
-const KIND_PEERING = 'PeeringCapability';
+let peeringHttp;
+try {
+  peeringHttp = require('@fabric/http/functions/fabricPeeringHttp');
+} catch (_) {
+  peeringHttp = null;
+}
+
+const {
+  ATTESTATION_TYPE,
+  KIND_PEERING,
+  buildOracleAttestation: signOracleAttestation,
+  verifyOracleAttestation,
+  stableStringify
+} = oracleAttestation;
 
 class PeeringService extends Service {
   constructor (settings = {}) {
@@ -38,18 +49,27 @@ class PeeringService extends Service {
     return this;
   }
 
-  /**
-   * Public snapshot for GET /services/peering: includes a full inline {@link OracleAttestation}
-   * when the identity key can sign (same envelope as a price-feed `PriceQuote` attestation).
-   */
   getCapabilities () {
-    let oracleAttestation = null;
+    let att = null;
     try {
       if (this.hub && this.key && this.key.private) {
-        oracleAttestation = this.buildOracleAttestation();
+        att = this.buildOracleAttestation();
       }
     } catch (_) {
-      oracleAttestation = null;
+      att = null;
+    }
+    const claim = (() => {
+      try { return JSON.parse(JSON.stringify(this.buildClaim(this.hub))); } catch (_) { return null; }
+    })();
+    if (peeringHttp && typeof peeringHttp.buildPeeringCapabilitiesBody === 'function') {
+      return peeringHttp.buildPeeringCapabilitiesBody({
+        available: this.settings.enable !== false,
+        endpointBasePath: this.settings.endpointBasePath,
+        claim,
+        oracleAttestation: att,
+        oracleDescription:
+          'Signed claims anchored to the Hub secp256k1 identity (see @fabric/core/types/oracle)'
+      });
     }
     return {
       service: 'peering',
@@ -61,14 +81,12 @@ class PeeringService extends Service {
         name: 'Oracle',
         description: 'Signed claims anchored to the Hub secp256k1 identity (see @fabric/core/types/oracle)'
       },
-      attestationUrl: oracleAttestation ? `${this.settings.endpointBasePath}/attestation` : null,
-      oracleAttestation
+      attestationUrl: att ? `${this.settings.endpointBasePath}/attestation` : null,
+      claim,
+      oracleAttestation: att
     };
   }
 
-  /**
-   * Build the live claim object (what the Hub asserts about its peering stack).
-   */
   buildClaim (hub) {
     const h = hub || this.hub;
     if (!h || !h.http) {
@@ -115,74 +133,31 @@ class PeeringService extends Service {
     };
   }
 
-  /**
-   * Full {@link Oracle}-style attestation: canonical claim + BIP340 Schnorr signature.
-   */
   buildOracleAttestation () {
     if (!this.key || !this.key.private) {
       throw new Error('PeeringService: identity key required for attestation');
     }
     const hub = this.hub;
-    // JSON-safe claim only: omit undefined (e.g. p2p.listenAddress) so the signed bytes match
-    // what clients get from HTTP/JSON and what verifyOracleAttestation recomputes.
     const claim = JSON.parse(JSON.stringify(this.buildClaim(hub)));
-    const body = {
-      version: 1,
-      kind: KIND_PEERING,
-      claim
-    };
-    const signingPayload = stableStringify(body);
-    const signature = this.key.signSchnorr(signingPayload);
-    const issuer = {
-      publicKeyHex: this.key.pubkey,
-      fabricIdentityId: hub && hub.agent && hub.agent.identity && hub.agent.identity.id
-        ? String(hub.agent.identity.id)
-        : null
-    };
-
-    return {
-      '@type': ATTESTATION_TYPE,
-      version: 1,
-      kind: KIND_PEERING,
-      oracle: {
-        name: 'Oracle',
-        resource: KIND_PEERING,
-        note: 'Attestation follows the Oracle pattern: a signed claim verifiable against issuer.publicKeyHex'
-      },
-      issuer,
+    return signOracleAttestation({
       claim,
-      signature: signature.toString('hex'),
-      algorithm: 'BIP340-SCHNORR',
-      signedAt: new Date().toISOString(),
-      claimDigest: crypto.createHash('sha256').update(Buffer.from(signingPayload, 'utf8')).digest('hex')
-    };
+      key: this.key,
+      kind: KIND_PEERING,
+      issuer: {
+        publicKeyHex: this.key.pubkey,
+        fabricIdentityId: hub && hub.agent && hub.agent.identity && hub.agent.identity.id
+          ? String(hub.agent.identity.id)
+          : null
+      }
+    });
   }
 
-  /**
-   * Verify an {@link OracleAttestation} produced by this or another Hub (or a price-feed oracle).
-   * @param {object} attestation
-   * @returns {boolean}
-   */
   static verifyOracleAttestation (attestation) {
-    try {
-      if (!attestation || attestation['@type'] !== ATTESTATION_TYPE) return false;
-      if (!attestation.issuer || typeof attestation.issuer.publicKeyHex !== 'string') return false;
-      const key = new Key({ pubkey: attestation.issuer.publicKeyHex });
-      const body = {
-        version: attestation.version,
-        kind: attestation.kind,
-        claim: attestation.claim
-      };
-      const signingPayload = stableStringify(body);
-      const sig = Buffer.from(String(attestation.signature || ''), 'hex');
-      return key.verifySchnorr(signingPayload, sig);
-    } catch (_) {
-      return false;
-    }
+    return verifyOracleAttestation(attestation);
   }
 }
 
 module.exports = PeeringService;
-module.exports.stableStringify = DistributedExecution.stableStringify;
+module.exports.stableStringify = stableStringify;
 module.exports.ATTESTATION_TYPE = ATTESTATION_TYPE;
 module.exports.KIND_PEERING = KIND_PEERING;

@@ -14,6 +14,7 @@ const { app, BrowserWindow, shell, ipcMain, dialog } = electron;
 
 const settings = require('../settings/local');
 const { fabricMessageSummaryFromHex, parseOpaqueFabricMessageHex } = require('../functions/fabricProtocolUrl');
+const { assertAllowedFabricHub } = require('../functions/fabricHubAllowlist');
 const { hubPaymentsPathFromBitcoinUri } = require('../functions/bitcoinProtocolUrl');
 const { runDesktopHubStartupProbe, isFabricHubSettingsListPayload } = require('./desktopHubProbe');
 const HUB_PORT = Number(
@@ -354,6 +355,12 @@ async function handleFabricProtocolUrl (urlStr) {
   if (url.protocol !== `${FABRIC_PROTOCOL}:`) return;
 
   const hubBase = (url.searchParams.get('hub') || hubBaseFromSettings()).replace(/\/$/, '');
+  const hubGate = assertAllowedFabricHub(hubBase);
+  if (!hubGate.ok) {
+    console.warn('[DESKTOP] fabric URL hub rejected:', hubGate.error);
+    return;
+  }
+  const allowedHubBase = hubGate.hubBase;
   const hexParam = url.searchParams.get('hex') || url.searchParams.get('messageHex');
   let fabricMessageHex = null;
   let fabricMessageSummary = null;
@@ -377,12 +384,17 @@ async function handleFabricProtocolUrl (urlStr) {
     deliverLoginPromptPayload({
       kind: 'fabricMessage',
       sessionId: null,
-      hubBase,
+      hubBase: allowedHubBase,
       fabricMessageHex,
       fabricMessageSummary,
       fabricMessageOnly: true
     });
     console.log('[DESKTOP] fabric message-only prompt delivered (no login session)');
+    return;
+  }
+
+  if (host === 'link') {
+    console.warn('[DESKTOP] fabric://link is handled by the renderer / device-link UI; open Hub Identity to complete.');
     return;
   }
 
@@ -405,7 +417,7 @@ async function handleFabricProtocolUrl (urlStr) {
   }
 
   try {
-    const hubOrigin = String(hubBase || '').replace(/\/$/, '');
+    const hubOrigin = String(allowedHubBase || '').replace(/\/$/, '');
     const infoRes = await fetch(`${hubOrigin}/sessions/${encodeURIComponent(sessionId)}`, {
       headers: {
         Accept: 'application/json',
@@ -424,7 +436,7 @@ async function handleFabricProtocolUrl (urlStr) {
     deliverLoginPromptPayload({
       kind: 'login',
       sessionId,
-      hubBase,
+      hubBase: allowedHubBase,
       origin,
       message,
       nonce,

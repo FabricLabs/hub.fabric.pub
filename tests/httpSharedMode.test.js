@@ -1,7 +1,10 @@
 'use strict';
 
 const assert = require('assert');
-const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+const {
+  isHttpSharedModeEnabled,
+  resolveHttpListenHost
+} = require('../functions/httpSharedMode');
 
 describe('httpSharedMode', () => {
   it('treats common truthy persisted shapes as shared', () => {
@@ -18,5 +21,11 @@ describe('httpSharedMode', () => {
     assert.strictEqual(isHttpSharedModeEnabled('false'), false);
     assert.strictEqual(isHttpSharedModeEnabled(undefined), false);
     assert.strictEqual(isHttpSharedModeEnabled(null), false);
+  });
+
+  it('re-exports resolveHttpListenHost from @fabric/http', () => {
+    assert.strictEqual(typeof resolveHttpListenHost, 'function');
+    assert.strictEqual(resolveHttpListenHost({ mode: 'relay', env: {} }), '127.0.0.1');
+    assert.strictEqual(resolveHttpListenHost({ mode: 'server', env: {} }), '0.0.0.0');
   });
 });

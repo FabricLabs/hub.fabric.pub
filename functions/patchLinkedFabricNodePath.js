@@ -14,20 +14,16 @@ const hubRoot = path.resolve(__dirname, '..');
 const nm = path.join(hubRoot, 'node_modules');
 
 /**
- * Some `@fabric/http` npm tarballs omit `functions/fabricDocumentPayment402.js` while
- * `functions/sendPaymentRequired402Response.js` still requires it. Overlay from hub when missing.
+ * Prefer `@fabric/http/functions/fabricDocumentPayment402` (exported). Older npm
+ * tarballs sometimes omitted the file while `sendPaymentRequired402Response`
+ * still required it — with current `@fabric/http` this overlay is unused.
  */
 function ensureHttpFabricDocumentPayment402Symlink () {
   try {
-    const httpFnDir = path.join(nm, '@fabric', 'http', 'functions');
-    const hubPay = path.join(hubRoot, 'functions', 'fabricDocumentPayment402.js');
-    const httpPay = path.join(httpFnDir, 'fabricDocumentPayment402.js');
-    if (!fs.existsSync(hubPay) || !fs.existsSync(httpFnDir)) return;
-    if (fs.existsSync(httpPay)) return;
-
-    const rel = path.relative(httpFnDir, hubPay);
-    fs.symlinkSync(rel, httpPay, 'file');
-  } catch (_) {}
+    require.resolve('@fabric/http/functions/fabricDocumentPayment402');
+  } catch (_) {
+    // Linked / published http must export fabricDocumentPayment402.
+  }
 }
 ensureHttpFabricDocumentPayment402Symlink();
 
