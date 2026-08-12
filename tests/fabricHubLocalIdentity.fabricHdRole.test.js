@@ -105,14 +105,11 @@ describe('fabricHubLocalIdentity fabricHdRole', () => {
     const ident = new Identity({ seed: TEST_PHRASE });
     const master = String(ident.key.xprv).trim();
     const dk = deriveFabricAccountIdentityKeys(master, 2, 0);
-    const bl = buildLocalFabricIdentityPayload(
-      {
-        fabricIdentityMode: 'account',
-        fabricAccountIndex: 2,
-        xpub: dk.xpub
-      },
-      { unlockPlaintextMaster: true }
-    );
+    const bl = buildLocalFabricIdentityPayload({
+      fabricIdentityMode: 'account',
+      fabricAccountIndex: 2,
+      xpub: dk.xpub
+    });
     assert.strictEqual(bl.resolved, true);
     assert.strictEqual(bl.record.fabricHdRole, 'watchAccount');
     assert.strictEqual(bl.record.fabricIdentityMode, 'account');

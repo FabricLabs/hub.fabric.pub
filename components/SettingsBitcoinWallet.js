@@ -20,7 +20,9 @@ function trimMiddle (s, left = 14, right = 10) {
 }
 
 function SettingsBitcoinWallet ({ identity }) {
-  const xpub = identity && identity.xpub ? String(identity.xpub) : '';
+  const masterXpub = identity && (identity.masterXpub || identity.xpub)
+    ? String(identity.masterXpub || identity.xpub)
+    : '';
   const acct = getBitcoinBip44AccountForIdentity(identity || {});
   const spend = React.useMemo(() => getSpendWalletContext(identity || {}), [identity]);
 
@@ -52,10 +54,10 @@ function SettingsBitcoinWallet ({ identity }) {
         </Message>
       </section>
 
-      {xpub ? (
+      {masterXpub ? (
         <Message size="small" info style={{ marginBottom: '1em' }}>
           <p style={{ margin: 0, fontSize: '0.9em', wordBreak: 'break-all' }}>
-            <strong>Master xpub:</strong> <code>{xpub}</code>
+            <strong>Master xpub:</strong> <code>{masterXpub}</code>
           </p>
           {spend && spend.walletId && spend.xpub ? (
             <p style={{ margin: '0.65em 0 0', fontSize: '0.88em', color: '#333' }}>

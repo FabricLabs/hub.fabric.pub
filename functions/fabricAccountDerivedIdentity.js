@@ -1,14 +1,22 @@
 'use strict';
 
 /**
- * Fabric-protocol identity derivation: m/44'/7778'/account'/0/0 (see IDENTITY.md / Identity derivation).
+ * Fabric-protocol identity derivation: m/44'/{7777|7778}'/account'/0/0
+ * (see `@fabric/core` IDENTITY.md / `fabricIdentityDerivationPath`).
  * Bitcoin payments still derive under the Fabric *master* key via deriveFabricBitcoinAccountKeys.
+ *
+ * Default coin type remains **7778** (non-mainnet / development) for back-compat with existing
+ * Hub local identities. Pass `networkOrCoinType` (`mainnet` / `7777` / …) for mainnet paths.
  */
 
 const BIP32 = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
 const Hash256 = require('@fabric/core/types/hash256');
 const Bech32 = require('@fabric/core/types/bech32');
+const {
+  fabricIdentityDerivationPath,
+  FABRIC_COIN_TYPE_TESTNET
+} = require('@fabric/core/constants');
 
 /** Same bip32 network buckets as bitcoinClient#getNetworkFromXpub (extended keys only). */
 function bip32DecodeNetworkFromXKey (referenceXkey) {
@@ -33,17 +41,25 @@ function bip32DecodeNetworkFromXKey (referenceXkey) {
     };
 }
 
-function fabricPurposePath7778 (accountIndex, addressIndex) {
-  const a = Math.floor(Number(accountIndex));
-  const i = Math.floor(Number(addressIndex));
-  if (!Number.isFinite(a) || a < 0) throw new Error('Invalid Fabric account index.');
-  if (!Number.isFinite(i) || i < 0) throw new Error('Invalid Fabric address index.');
-  return `m/44'/7778'/${a}'/0/${i}`;
+/**
+ * Default Fabric purpose path (coin type 7778). Kept name for call-site compatibility.
+ * @param {number} accountIndex
+ * @param {number} addressIndex
+ * @param {string|number} [networkOrCoinType=FABRIC_COIN_TYPE_TESTNET]
+ * @returns {string}
+ */
+function fabricPurposePath7778 (accountIndex, addressIndex, networkOrCoinType = FABRIC_COIN_TYPE_TESTNET) {
+  return fabricIdentityDerivationPath(accountIndex, addressIndex, networkOrCoinType);
 }
 
 function fabricBech32IdFromCompressedPubHex (compressedPubHex) {
-  const input = Buffer.from(String(compressedPubHex || '').trim(), 'hex');
-  if (!input.length) throw new Error('Missing pubkey bytes.');
+  const hex = String(compressedPubHex || '').trim().toLowerCase();
+  // Strict compressed secp256k1 pubkey: 33 bytes, prefix 02/03 — reject malformed hex early.
+  if (!/^(02|03)[0-9a-f]{64}$/.test(hex)) {
+    throw new Error('Expected compressed secp256k1 pubkey hex (66 chars, 02/03 prefix).');
+  }
+  const input = Buffer.from(hex, 'hex');
+  if (input.length !== 33) throw new Error('Missing pubkey bytes.');
   const pubkeyhash = Hash256.digest(input);
   return new Bech32({ hrp: 'id', content: pubkeyhash }).toString();
 }
@@ -57,9 +73,14 @@ function fabricRootXpubFromMasterXprv (masterXprv) {
 }
 
 /**
- * Primary Fabric identity signing material at account slot (protocol path m/44'/7778'/n'/0/0).
+ * Primary Fabric identity signing material at account slot
+ * (protocol path m/44'/{7777|7778}'/n'/0/0; default 7778).
+ * @param {string} masterXprv
+ * @param {number} [fabricAccountIndex=0]
+ * @param {number} [addressIndex=0]
+ * @param {string|number} [networkOrCoinType] Network name or explicit coin type; omit for 7778.
  */
-function deriveFabricAccountIdentityKeys (masterXprv, fabricAccountIndex, addressIndex) {
+function deriveFabricAccountIdentityKeys (masterXprv, fabricAccountIndex, addressIndex, networkOrCoinType) {
   if (!masterXprv || typeof masterXprv !== 'string') throw new Error('Master xpriv required.');
   const ai = fabricAccountIndex == null ? 0 : Math.floor(Number(fabricAccountIndex));
   if (!Number.isFinite(ai) || ai < 0) throw new Error('Invalid Fabric account index.');
@@ -69,7 +90,11 @@ function deriveFabricAccountIdentityKeys (masterXprv, fabricAccountIndex, addres
   const net = bip32DecodeNetworkFromXKey(trimmed);
   const bip32 = new BIP32(ecc);
   const masterNode = bip32.fromBase58(trimmed, net);
-  const path = fabricPurposePath7778(ai, adr);
+  const path = fabricIdentityDerivationPath(
+    ai,
+    adr,
+    networkOrCoinType != null ? networkOrCoinType : FABRIC_COIN_TYPE_TESTNET
+  );
   const node = masterNode.derivePath(path);
   const pubHex = Buffer.from(node.publicKey).toString('hex');
   return {
@@ -83,8 +108,9 @@ function deriveFabricAccountIdentityKeys (masterXprv, fabricAccountIndex, addres
 }
 
 /**
- * Interpret an extended private key as the Fabric protocol signing node (m/44'/7778'/n'/0/0),
- * e.g. from an account-only backup. Does not accept a raw HD master for this path.
+ * Interpret an extended private key as the Fabric protocol signing node
+ * (m/44'/{7777|7778}'/n'/0/0), e.g. from an account-only backup.
+ * Does not accept a raw HD master for this path.
  */
 function identityFromFabricProtocolSigningXprv (accountNodeXprv) {
   const trimmed = String(accountNodeXprv || '').trim();

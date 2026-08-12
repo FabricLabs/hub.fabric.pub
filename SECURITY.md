@@ -22,9 +22,13 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 ## Outstanding (PR #15 / RSI follow-ups)
 - **Identity import** — xprv imports should persist through the encrypted identity path (not watch-only `id`/`xpub`) and restore locked/unlocked per password flow (heavy lift; extension sync no longer writes unlocked `xprv`/`masterXprv`).
 - ~~**Encrypted backup export**~~ — primary “Download encrypted backup” requires an unlocked signing `xprv` (watch-only disabled + labeled).
-- **Large WIP split** — PR #15 still spans far more than review-tool limits; land remaining RSI work as stacked PRs (identity, Bitcoin/HTLC, WebRTC, docs) once the staged hardening lands.
+- **Large WIP split** — PR #15 still spans far more than review-tool limits; land remaining RSI work as stacked PRs (identity, Bitcoin/HTLC, WebRTC, docs).
 - **`GenericMessage` / WS** — see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md); prefer named AMP types on public hubs.
-- **`@fabric/core` / `@fabric/http` pin hygiene** — `package.json` pins immutable commit SHAs matching the lockfile; bump deliberately with sibling RSI PRs rather than tracking moving branch tips.
+- ~~**`@fabric/core` / `@fabric/http` pin hygiene**~~ — `package.json` / lockfile pin `0e1fa192…` (core) + `e8f70a32…` (http); refresh via `feature/rsi` then re-pin resolved SHAs. `report:install` keeps `package-lock.json`.
+- ~~**Fabric coin types**~~ — `functions/fabricAccountDerivedIdentity.js` uses core `fabricIdentityDerivationPath` (default **7778**; optional `mainnet` / **7777**). Wire Hub UI / bitcoin network into that optional arg where product wants mainnet identity paths.
+- **Payment test route** — Hub defaults `exposePaymentTestRoute` **off**; set `FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE=1` (or legacy `FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE=0`) when needed for local 402 checks.
+- ~~**Wallet summary cache**~~ — `fetchWalletSummaryWithCache` honors `bypassCache` / `maxCacheAgeMs` on the failure-fallback read path.
+- **Local identity at-rest** — fresh identity save still uses `encryptLocalIdentityAtRest`; migrate to the stronger PBKDF2+AES-GCM backup scheme (heavy lift).
 
 ## Process
 1. `npm run test:unit` (or `npm test`) before release.

@@ -9,7 +9,12 @@ const { getBitcoinBip44AccountForIdentity } = require('../functions/bitcoinClien
  * Fabric identity is the master; Bitcoin receive/change follow the active BIP44 account (matches Fabric account index when enabled).
  */
 function BitcoinWalletBranchBar ({ identity }) {
-  const xpub = identity && identity.xpub ? String(identity.xpub) : '';
+  const masterXpub = identity && (identity.masterXpub || identity.xpub)
+    ? String(identity.masterXpub || identity.xpub)
+    : '';
+  const accountXpub = identity && identity.masterXpub && identity.xpub && identity.xpub !== identity.masterXpub
+    ? String(identity.xpub)
+    : '';
   const acct = getBitcoinBip44AccountForIdentity(identity || {});
 
   return (
@@ -33,11 +38,11 @@ function BitcoinWalletBranchBar ({ identity }) {
             Issued receive addresses stay in local storage. Details:{' '}
             <Link to="/settings/bitcoin-wallet">Settings → Bitcoin wallet</Link>.
           </p>
-          {xpub ? (
+          {masterXpub ? (
             <p style={{ margin: 0, color: '#666', fontSize: '0.85em', wordBreak: 'break-all' }}>
               <strong>Master xpub:</strong>{' '}
               <code>
-                {xpub.slice(0, 18)}…{xpub.slice(-10)}
+                {masterXpub.slice(0, 18)}…{masterXpub.slice(-10)}
               </code>
             </p>
           ) : (
@@ -45,6 +50,14 @@ function BitcoinWalletBranchBar ({ identity }) {
               Open <strong>Identity</strong> (top bar) or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> to unlock and derive receive addresses. Switch Fabric account in the identity dialog when using multi-account mode.
             </p>
           )}
+          {accountXpub ? (
+            <p style={{ margin: '0.35em 0 0', color: '#666', fontSize: '0.85em', wordBreak: 'break-all' }}>
+              <strong>Account xpub:</strong>{' '}
+              <code>
+                {accountXpub.slice(0, 18)}…{accountXpub.slice(-10)}
+              </code>
+            </p>
+          ) : null}
         </div>
       </div>
     </Message>

@@ -39,12 +39,13 @@ class BitcoinBlockList extends React.Component {
       const adminTok = (this.props.adminToken != null && String(this.props.adminToken).trim())
         ? String(this.props.adminToken).trim()
         : '';
+      const effectiveAdminTok = adminTok || readHubAdminTokenFromBrowser(null) || '';
       const upstreamAdmin = {
         ...this.state.upstream,
-        hubAdminToken: adminTok || readHubAdminTokenFromBrowser(null) || ''
+        hubAdminToken: effectiveAdminTok
       };
       const [data, status] = await Promise.all([
-        fetchExplorerData(upstreamAdmin, spend, { network: net, adminToken: adminTok }).catch(() => ({})),
+        fetchExplorerData(upstreamAdmin, spend, { network: net, adminToken: effectiveAdminTok }).catch(() => ({})),
         fetchBitcoinStatus(upstreamAdmin).catch(() => ({}))
       ]);
       const explorerBlocks = Array.isArray(data && data.blocks) ? data.blocks : [];

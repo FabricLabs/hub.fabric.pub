@@ -1,13 +1,12 @@
 'use strict';
 
-const path = require('path');
-
 /**
- * Loads `{ sendPaymentRequired402Response }` from `node_modules/@fabric/http` when the file exists.
+ * Loads `{ sendPaymentRequired402Response }` from `@fabric/http` when the export exists.
+ * Prefer the package `exports` entry (not `package.json` resolve — blocked by http `exports`).
  */
 try {
-  const root = path.dirname(require.resolve('@fabric/http/package.json'));
-  module.exports = require(path.join(root, 'functions/sendPaymentRequired402Response.js'));
+  // Package-controlled path via `@fabric/http` exports map.
+  module.exports = require('@fabric/http/functions/sendPaymentRequired402Response');
 } catch (_) {
   module.exports = {
     /** @deprecated Upgrade @fabric/http to a build that ships functions/sendPaymentRequired402Response.js */

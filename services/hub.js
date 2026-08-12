@@ -231,10 +231,13 @@ class Hub extends Service {
           lightningL402:
             process.env.FABRIC_HTTP_PAYMENTS_LIGHTNING_L402 === '1' ||
             process.env.FABRIC_HTTP_PAYMENTS_LIGHTNING_L402 === 'true',
+          // Opt-in only — keep /services/test off unless explicitly enabled (or legacy hide=false).
           exposePaymentTestRoute:
-            !(
-              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === '1' ||
-              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === 'true'
+            process.env.FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE === '1' ||
+            process.env.FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE === 'true' ||
+            (
+              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === '0' ||
+              process.env.FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE === 'false'
             ),
           detail: process.env.FABRIC_HTTP_PAYMENTS_DETAIL || 'Complete payment to continue.',
           description: process.env.FABRIC_HTTP_PAYMENTS_DESCRIPTION || 'Fabric access'
@@ -6985,10 +6988,10 @@ class Hub extends Service {
     const headerStr = typeof headerTok === 'string' ? headerTok.trim() : '';
 
     const ok =
-      bearer === required ||
-      qTok === required ||
-      qXpub === required ||
-      headerStr === required;
+      timingSafeSha256Utf8Match(bearer, required) ||
+      timingSafeSha256Utf8Match(qTok, required) ||
+      timingSafeSha256Utf8Match(qXpub, required) ||
+      timingSafeSha256Utf8Match(headerStr, required);
     if (ok) return true;
 
     res.status(403).json({

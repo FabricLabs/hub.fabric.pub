@@ -11,7 +11,7 @@
  * Set `FABRIC_HUB_NO_KILL_SAMPLE=1` to only warn (used if you run the sample on 8080 on purpose).
  */
 const http = require('http');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { SAMPLE_HUB_HTTP_SERVER_NAME } = require('@fabric/http/constants');
 const { isSampleHubHttpServerOptions } = require('../functions/sampleHubOptions');
 
@@ -61,8 +61,10 @@ function optionsJson () {
 }
 
 function pidsListeningOnPort (p) {
+  const portNum = Number(p);
+  if (!Number.isFinite(portNum) || portNum < 1) return [];
   try {
-    const out = execSync(`lsof -nP -iTCP:${p} -sTCP:LISTEN -t`, { encoding: 'utf8' });
+    const out = execFileSync('lsof', ['-nP', `-iTCP:${portNum}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
     return out.trim().split(/\n/).map((s) => s.trim()).filter(Boolean).map((s) => Number(s));
   } catch (_) {
     return [];
@@ -70,8 +72,10 @@ function pidsListeningOnPort (p) {
 }
 
 function commandLineForPid (pid) {
+  const id = Number(pid);
+  if (!Number.isFinite(id) || id < 1) return '';
   try {
-    return execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8' }).trim();
+    return execFileSync('ps', ['-p', String(id), '-o', 'args='], { encoding: 'utf8' }).trim();
   } catch (_) {
     return '';
   }
@@ -109,8 +113,10 @@ async function main () {
   try {
     j = await optionsJson();
   } catch (e) {
-    if (e && (e.code === 'ECONNREFUSED' || e.code === 'EHOSTUNREACH')) {
-      return;
+    // Best-effort probe: nothing listening / probe failure → leave port alone.
+    if (e && e.code !== 'ECONNREFUSED' && e.code !== 'EHOSTUNREACH') {
+      // eslint-disable-next-line no-console
+      console.error('[hub] prepare-hub-dev-port OPTIONS probe failed:', e && e.message ? e.message : e);
     }
     return;
   }
