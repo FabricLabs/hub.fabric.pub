@@ -50,6 +50,7 @@ Shared helpers: `scripts/lib/playnetOps.js`. Env: `FABRIC_MNEMONIC`, `FABRIC_HUB
 
 - ~~`functions/computeBestOffer.js`~~ — removed (dead stub; was never wired). Reintroduce only with a real `runExecutionProgram` policy + tests.
 - Sidechain scanner does **not** persist a withdrawal state machine yet; federation maturation policy is still **documentation + future state**.
+- **PR #15 RSI:** remaining heavy lifts (encrypted xprv import persistence, PR split) live in [SECURITY.md](../SECURITY.md) Outstanding. Staged hardening includes: document-action auth bugs, crowdfund BIP44 account alignment, Hub admin-token scoping for non-Hub bitcoin bases, inventory HTLC `preimage`/reveal fan-out, desktop `waitForHub` request timeout, WebRTC chat relay envelope, forget/destroy session key wipe, inventory offer-reply merge aliases, identity capability `masterXprv` detection, and encrypted-backup gating.
 
 ---
 

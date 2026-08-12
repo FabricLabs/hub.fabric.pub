@@ -19,7 +19,11 @@ function describeFabricIdentityCapabilities (parsed) {
   }
   const role = parsed.fabricHdRole != null ? String(parsed.fabricHdRole) : '';
   const mode = parsed.fabricIdentityMode != null ? String(parsed.fabricIdentityMode) : 'legacy';
-  const hasMaster = !!plaintextMasterFromStored(parsed);
+  // Strict storage clears on-disk masters; unlocked session / in-memory snapshots carry masterXprv.
+  const hasMaster = !!(
+    String(parsed.masterXprv || '').trim() ||
+    plaintextMasterFromStored(parsed)
+  );
   const isWatch = role === 'watchAccount';
   const isAccountNode = role === 'accountNode';
   const isAccountMode = mode === 'account';

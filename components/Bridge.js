@@ -22,8 +22,8 @@ const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
 const { pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const {
-  FABRIC_DOCUMENT_OFFER_RESPONSE,
-  isDocumentInventoryDocumentsOfferResponse
+  isDocumentInventoryDocumentsOfferResponse,
+  isDocumentInventoryResponseType
 } = require('../functions/fabricDocumentOfferEnvelope');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { toast } = require('../functions/toast');
@@ -3001,10 +3001,18 @@ class Bridge extends React.Component {
               }));
               this._persistMessages();
 
-              // Relay UTF-8 text body (not a JSON chat envelope) into Hub → Fabric TCP.
+              // Relay chat in the envelope shape Hub / P2P_RELAY receivers expect.
               if (this._isConnected && this.ws && this.ws.readyState === 1) {
                 const envelope = {
-                  original: trimmed,
+                  original: JSON.stringify({
+                    type: Message.canonicalTypeName(P2P_CHAT_MESSAGE),
+                    actor: { id: actorId },
+                    object: {
+                      content: trimmed,
+                      created,
+                      clientId
+                    }
+                  }),
                   originalType: Message.canonicalTypeName(P2P_CHAT_MESSAGE),
                   hops: [{ from: peerId, at: Date.now() }]
                 };
@@ -4569,7 +4577,7 @@ class Bridge extends React.Component {
               }
               break;
             }
-            if (originalType === 'INVENTORY_RESPONSE' || originalType === FABRIC_DOCUMENT_OFFER_RESPONSE) {
+            if (isDocumentInventoryResponseType(originalType)) {
               const parsed = typeof original === 'string' ? JSON.parse(original) : original;
               if (isDocumentInventoryDocumentsOfferResponse(parsed)) {
                 const peerId = parsed.actor && parsed.actor.id;

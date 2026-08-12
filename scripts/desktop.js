@@ -164,7 +164,8 @@ function waitForHub (timeoutMs = 120000) {
         {
           headers: {
             Accept: 'application/json'
-          }
+          },
+          timeout: 5000
         },
         (res) => {
           const chunks = [];
@@ -202,6 +203,9 @@ function waitForHub (timeoutMs = 120000) {
           });
         }
       );
+      req.on('timeout', () => {
+        req.destroy(new Error('Hub /settings request timed out'));
+      });
       req.on('error', () => {
         if (Date.now() - start > timeoutMs) {
           reject(new Error('Hub HTTP did not become ready in time'));

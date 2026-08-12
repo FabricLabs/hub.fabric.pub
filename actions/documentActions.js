@@ -84,7 +84,7 @@ const fetchDocuments = () => {
 const fetchDocument = (fabricID) => {
   return async (dispatch, getState) => {
     dispatch(fetchDocumentRequest());
-    const { token } = getState().auth.token;
+    const { token } = getState().auth;
     try {
       const instance = await fetchFromAPI(`/documents/${encodeURIComponent(fabricID)}`, token);
       dispatch(fetchDocumentSuccess(instance));
@@ -106,7 +106,7 @@ const uploadDocument = (file) => {
       data.append('name', file.name);
       data.append('file', file);
 
-      const fetchPromise = await fetch(assertClientFetchPath('/files'), {
+      const fetchPromise = fetch(assertClientFetchPath('/files'), {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -198,6 +198,11 @@ const editDocument = (fabricID, title) => {
         method: 'PATCH',
         body: JSON.stringify({ title })
       });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `Server error (${response.status})`);
+      }
 
       const document = await response.json();
 

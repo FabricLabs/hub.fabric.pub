@@ -27,12 +27,21 @@ done
 echo "[link-fabric] Global link from: $CORE"
 (cd "$CORE" && npm install && npm link)
 
-echo "[link-fabric] Global link from: $HTTP"
-(cd "$HTTP" && npm install && npm link)
+echo "[link-fabric] Global link from: $HTTP (wire @fabric/core first)"
+(cd "$HTTP" && npm install && npm link @fabric/core && npm link)
 
 echo "[link-fabric] Wiring into: $ROOT"
 cd "$ROOT"
 npm link @fabric/core @fabric/http
+
+# Ensure http's nested @fabric/core is a symlink to the same tree (npm link can
+# materialize a copy that drifts / breaks deep requires during mocha).
+if [[ -e "$HTTP/node_modules/@fabric/core" && ! -L "$HTTP/node_modules/@fabric/core" ]]; then
+  echo "[link-fabric] Replacing $HTTP/node_modules/@fabric/core copy with symlink → $CORE"
+  rm -rf "$HTTP/node_modules/@fabric/core"
+  mkdir -p "$HTTP/node_modules/@fabric"
+  ln -s "$CORE" "$HTTP/node_modules/@fabric/core"
+fi
 
 # Linking replaces node_modules/@fabric/http (and its hoisted deps). Install direct hub imports explicitly.
 if ! node -e "require('isomorphic-ws'); require('ws');" 2>/dev/null; then

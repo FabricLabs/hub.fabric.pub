@@ -998,6 +998,7 @@ class HubInterface extends React.Component {
   }
 
   _handleIdentityManagerForget () {
+    try { this._clearUnlockedSessionOnClose(); } catch (_) {}
     try { removeStorageKey(DELEGATION_STORAGE_KEY); } catch (_) {}
     try { removeStorageKey('fabric.linkedDevices'); } catch (_) {}
     try { notifyDelegationStorageChanged(); } catch (_) {}
@@ -2177,6 +2178,7 @@ class HubInterface extends React.Component {
                           try { this.bridgeRef.current.clearAllDocuments(); } catch (e) {}
                         }
                         try { clearSpendXpubWatch(); } catch (_) {}
+                        try { this._clearUnlockedSessionOnClose(); } catch (_) {}
                         try {
                           if (typeof window !== 'undefined') {
                             clearFabricBrowserIdentityLocal();

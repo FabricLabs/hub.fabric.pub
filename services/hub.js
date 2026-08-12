@@ -4532,8 +4532,9 @@ class Hub extends Service {
 
       // Prefer content-key K (sealed priced docs); else DocumentPublish envelope hash (legacy).
       let paymentHash;
+      let contentKey = null;
       try {
-        const contentKey = documentContentKey.readContentKey(this.fs, docIdNorm);
+        contentKey = documentContentKey.readContentKey(this.fs, docIdNorm);
         const resolved = documentPaymentHash.resolveDocumentContentHashHex({
           documentId: docIdNorm,
           parsed,
@@ -4546,6 +4547,10 @@ class Hub extends Service {
         meta.binding = resolved.binding;
       } catch (e) {
         console.warn('[HUB] inventory HTLC: payment hash resolve failed:', e && e.message ? e.message : e);
+        return meta;
+      }
+      if (!contentKey) {
+        console.warn('[HUB] inventory HTLC skipped: no content key to reveal for', docIdNorm);
         return meta;
       }
       let built;
@@ -4572,7 +4577,7 @@ class Hub extends Service {
       this._inventoryHtlcById.set(settlementId, {
         settlementId,
         documentId: meta.id,
-        preimageHex: preimage.toString('hex'),
+        preimageHex: contentKey.toString('hex'),
         paymentHashHex: paymentHash.toString('hex'),
         paymentAddress: built.address,
         amountSats: Math.round(amt),
@@ -12612,13 +12617,16 @@ class Hub extends Service {
           if (!normalized) return;
 
           // Relay HTLC_KEY_REVEAL toward deliveryFabricId (same hop shape as inventory file relay).
+          // Reveals carry key material: relay only — never cache or fan out to WS clients.
+          let isKeyReveal = false;
           try {
             const text = (normalized.object && typeof normalized.object.content === 'string')
               ? normalized.object.content.trim()
               : '';
             if (text.startsWith('{')) {
               const reveal = JSON.parse(text);
-              if (reveal && reveal.type === 'HTLC_KEY_REVEAL' && reveal.deliveryFabricId && reveal.preimageHex) {
+              if (reveal && reveal.type === 'HTLC_KEY_REVEAL') isKeyReveal = true;
+              if (isKeyReveal && reveal.deliveryFabricId && reveal.preimageHex) {
                 const destId = String(reveal.deliveryFabricId).trim();
                 const selfId = this.agent && this.agent.identity && this.agent.identity.id
                   ? String(this.agent.identity.id)
@@ -12642,6 +12650,7 @@ class Hub extends Service {
               }
             }
           } catch (_) { /* ignore relay parse errors */ }
+          if (isKeyReveal) return;
 
           this._ingestOfferFromChatMessage(normalized, originPeer);
           this._cacheChatMessage(normalized);

@@ -19,11 +19,10 @@ const MAX_INVITATIONS = 200;
 const MAX_GROUPS = 100;
 const DEFAULT_INVITE_TTL_MS = 14 * 24 * 3600 * 1000;
 const COLLAB_INVITE_PREFIX = '[COLLAB_INVITATION] ';
-/** 16 bytes hex from {@link newId} (prefix + 32 hex chars) */
-const COLLAB_ID_SUFFIX_HEX_LEN = 32;
-const CONTACT_ID_RE = new RegExp(`^cnt_[0-9a-f]{${COLLAB_ID_SUFFIX_HEX_LEN}}$`, 'i');
-const INVITATION_ID_RE = new RegExp(`^inv_[0-9a-f]{${COLLAB_ID_SUFFIX_HEX_LEN}}$`, 'i');
-const GROUP_ID_RE = new RegExp(`^grp_[0-9a-f]{${COLLAB_ID_SUFFIX_HEX_LEN}}$`, 'i');
+/** 16 bytes hex from {@link newId} (prefix + 32 hex chars). */
+const CONTACT_ID_RE = /^cnt_[0-9a-f]{32}$/i;
+const INVITATION_ID_RE = /^inv_[0-9a-f]{32}$/i;
+const GROUP_ID_RE = /^grp_[0-9a-f]{32}$/i;
 const TAPROOT_INTERNAL_NUMS = Buffer.from(
   '50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0',
   'hex'

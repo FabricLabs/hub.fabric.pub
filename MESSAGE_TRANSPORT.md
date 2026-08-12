@@ -34,6 +34,8 @@ This document defines how we **move away from `GenericMessage` as a catch-all** 
 
 Long term, **every** standard message SHOULD have a dedicated outer type and a **versioned binary body** (or a tight binary prefix + optional extensions), not an unstructured JSON string.
 
+**Still open (Hub / `@fabric/http`):** broader WebSocket `GenericMessage` fan-out auth — optional `settings.websocket.requireClientToken` is not enough for production shared hosts; promote sensitive carriers off `GenericMessage`, keep WS token required where the hub is public, and do not treat unsigned JSON carriers as equivalent to author-signed AMP (`CONTRACT_MESSAGE`, `BitcoinBlock`, …). WebRTC already requires author-signed AMP for contract / tip frames (`functions/fabricWebRtcP2pRelay.js`).
+
 ## Envelope: `FabricBridgeEnvelope` (reversible JSON inside `GenericMessage`)
 
 Until an inner domain type becomes an outer type, carry it as:

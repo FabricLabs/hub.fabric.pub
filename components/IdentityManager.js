@@ -411,12 +411,10 @@ function IdentityManager (props) {
         const payload = {
           id: localIdentity.id,
           xpub: localIdentity.xpub,
-          xprv: localIdentity.xprv || undefined,
           passwordProtected: !!localIdentity.passwordProtected,
           fabricIdentityMode: localIdentity.fabricIdentityMode || undefined,
           fabricAccountIndex: localIdentity.fabricAccountIndex,
           fabricHdRole: localIdentity.fabricHdRole || undefined,
-          masterXprv: localIdentity.masterXprv || undefined,
           masterXpub: localIdentity.masterXpub || undefined
         };
         chrome.storage.local.set({ 'fabric.identity.ext': payload });
@@ -985,10 +983,18 @@ function IdentityManager (props) {
               labelPosition="left"
               style={{ marginLeft: '0.5em', marginTop: '0.5em' }}
               loading={backupExportBusy}
-              disabled={backupExportBusy || !localIdentity || !localIdentity.xpub}
+              disabled={backupExportBusy || !localIdentity || !localIdentity.xprv}
+              title={
+                localIdentity && localIdentity.xprv
+                  ? 'Download an encrypted backup of this identity (includes private key when unlocked).'
+                  : 'Unlock or import a signing key before exporting an encrypted backup (watch-only xpub alone is not enough).'
+              }
               onClick={() => {
                 (async () => {
-                  if (!localIdentity || !localIdentity.xpub) return;
+                  if (!localIdentity || !localIdentity.xprv || !localIdentity.xpub) {
+                    setError('Unlock or import a private key before exporting an encrypted backup.');
+                    return;
+                  }
                   const pwd = resolveBackupEncryptionPassword();
                   if (!pwd || pwd.length < LOCAL_IDENTITY_PASSWORD_MIN) {
                     setError(
@@ -1005,10 +1011,9 @@ function IdentityManager (props) {
                       type: 'fabric-identity-backup-inner',
                       version: 1,
                       id: localIdentity.id || undefined,
-                      xpub: localIdentity.xpub || undefined
+                      xpub: localIdentity.xpub || undefined,
+                      xprv: String(localIdentity.xprv)
                     };
-                    const hasXprv = !!localIdentity.xprv;
-                    if (hasXprv) inner.xprv = String(localIdentity.xprv);
                     const envelope = await encryptFabricIdentityBackupPayload(inner, pwd);
                     const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
                     const url = URL.createObjectURL(blob);

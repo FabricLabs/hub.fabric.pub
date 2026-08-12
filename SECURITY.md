@@ -17,6 +17,14 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - Admin token is client-held after first-time setup; treat XSS on the Hub UI as critical.
 - Document market / inventory HTLC must rebuild buyer-bound addresses before funding (see `@fabric/core` SECURITY.md).
 - Shared HTTP bind and public peering advertisement expand the attack surface — default carefully on production hosts.
+- `bitcoinClient` attaches `hubAdminToken` only for Hub `/services/bitcoin` bases; explorer/payments URLs use `apiToken` only.
+
+## Outstanding (PR #15 / RSI follow-ups)
+- **Identity import** — xprv imports should persist through the encrypted identity path (not watch-only `id`/`xpub`) and restore locked/unlocked per password flow (heavy lift; extension sync no longer writes unlocked `xprv`/`masterXprv`).
+- ~~**Encrypted backup export**~~ — primary “Download encrypted backup” requires an unlocked signing `xprv` (watch-only disabled + labeled).
+- **Large WIP split** — PR #15 still spans far more than review-tool limits; land remaining RSI work as stacked PRs (identity, Bitcoin/HTLC, WebRTC, docs) once the staged hardening lands.
+- **`GenericMessage` / WS** — see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md); prefer named AMP types on public hubs.
+- **`@fabric/core` / `@fabric/http` pin hygiene** — `package.json` pins immutable commit SHAs matching the lockfile; bump deliberately with sibling RSI PRs rather than tracking moving branch tips.
 
 ## Process
 1. `npm run test:unit` (or `npm test`) before release.

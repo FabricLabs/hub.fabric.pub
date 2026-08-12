@@ -1048,6 +1048,26 @@ function isBitcoinServiceEndpoint (baseUrl = '') {
   return /\/services\/bitcoin$/i.test(normalized);
 }
 
+/**
+ * Auth for bitcoinClient HTTP: hub admin token only when the base targets Hub
+ * `/services/bitcoin` (relative or absolute). External explorers/payments URLs
+ * get `apiToken` only so admin credentials are not leaked off-host.
+ * @param {object} [settings]
+ * @param {string} [baseUrl]
+ * @returns {string}
+ */
+function resolveBitcoinClientAuthToken (settings = {}, baseUrl = '') {
+  const apiToken = String(settings.apiToken || '').trim();
+  const hubAdminToken = String(settings.hubAdminToken || '').trim();
+  if (!hubAdminToken) return apiToken;
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) return apiToken;
+  if (/^https?:\/\//i.test(normalized) && !/\/services\/bitcoin(\/|$)/i.test(normalized)) {
+    return apiToken;
+  }
+  return hubAdminToken || apiToken;
+}
+
 async function callBitcoinServiceMethod (baseUrl, method, params = {}, apiToken = '') {
   const normalized = normalizeBaseUrl(baseUrl);
   if (!normalized) throw new Error('Bitcoin service endpoint is not configured.');
@@ -1073,7 +1093,7 @@ async function fetchExplorerDataAtBase (settings = {}, wallet = {}, options = {}
       const addrs = deriveWatchAddresses(wallet, net, 25, 25);
       if (addrs.length > 0) listTxParams.addresses = addrs.join(',');
     }
-    const rpcTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+    const rpcTok = resolveBitcoinClientAuthToken(settings, baseUrl);
     const [blocksData, txData] = await Promise.all([
       callBitcoinServiceMethod(baseUrl, 'ListBlocks', { limit: 10 }, rpcTok).catch(() => []),
       callBitcoinServiceMethod(baseUrl, 'ListTransactions', listTxParams, rpcTok).catch(() => [])
@@ -1109,7 +1129,7 @@ async function fetchExplorerData (settings = {}, wallet = {}, options = {}) {
 async function fetchBitcoinStatusAtBase (settings = {}) {
   const baseUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
   if (!baseUrl) return { available: false, status: 'UNAVAILABLE' };
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+  const authTok = resolveBitcoinClientAuthToken(settings, baseUrl);
   const result = await tryRequests(baseUrl, [
     { path: '' }
   ], authTok);
@@ -1169,8 +1189,6 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
   const walletId = String(wallet.walletId || '').trim();
   if (!xpub && !walletId) return {};
 
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
-
   if (xpub) {
     const baseUrl = normalizeXpubWatchBaseUrl(settings.paymentsBaseUrl);
     if (!baseUrl) return {};
@@ -1182,7 +1200,7 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
       if (addrs.length > 0) params.set('addresses', addrs.join(','));
     }
     const q = params.toString();
-    const summary = await tryRequests(baseUrl, [{ path: q ? `?${q}` : '' }], authTok);
+    const summary = await tryRequests(baseUrl, [{ path: q ? `?${q}` : '' }], resolveBitcoinClientAuthToken(settings, baseUrl));
     const raw = pickObject(summary ? summary.data : {}, ['wallet', 'data']);
     if (raw && typeof raw === 'object') {
       const balanceSats = raw.balanceSats ?? raw.balance_sats;
@@ -1215,7 +1233,7 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
   const path = params.toString() ? `/${encodedId}?${params.toString()}` : `/${encodedId}`;
   const summary = await tryRequests(baseUrl, [
     { path }
-  ], authTok);
+  ], resolveBitcoinClientAuthToken(settings, baseUrl));
 
   const raw = pickObject(summary ? summary.data : {}, ['wallet', 'data']);
   if (raw && typeof raw === 'object') {
@@ -1259,7 +1277,7 @@ async function fetchWalletSummaryWithCache (settings = {}, wallet = {}, options 
     // Fall through to cache
   }
 
-  const cached = cacheKey ? getCachedBalance(cacheKey, Infinity) : null;
+  const cached = cacheKey ? getCachedBalance(cacheKey, maxCacheAgeMs) : null;
   if (cached) {
     return {
       balanceSats: cached.balanceSats,
@@ -1314,7 +1332,6 @@ async function fetchReceiveAddress (settings = {}, wallet = {}, options = {}) {
 async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
   const xpub = wallet.xpub ? String(wallet.xpub).trim() : '';
   const walletIdEnc = encodeURIComponent(wallet.walletId || '');
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
 
   if (xpub) {
     const baseUrl = normalizeXpubWatchBaseUrl(settings.paymentsBaseUrl);
@@ -1328,7 +1345,7 @@ async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
     }
     const qs = params.toString();
     const path = qs ? `/utxos?${qs}` : '/utxos';
-    const result = await tryRequests(baseUrl, [{ path }], authTok);
+    const result = await tryRequests(baseUrl, [{ path }], resolveBitcoinClientAuthToken(settings, baseUrl));
     return pickArray(result ? result.data : {}, ['utxos', 'items', 'results', 'data']);
   }
 
@@ -1347,7 +1364,7 @@ async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
 
   const result = await tryRequests(baseUrl, [
     { path }
-  ], authTok);
+  ], resolveBitcoinClientAuthToken(settings, baseUrl));
 
   return pickArray(result ? result.data : {}, ['utxos', 'items', 'results', 'data']);
 }
@@ -1622,7 +1639,8 @@ function getCrowdfundingBeneficiaryPubkeyHex (identity = {}) {
 
   if (masterXprv) {
     try {
-      const d = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX);
+      const accountN = getBitcoinBip44AccountForIdentity(identity);
+      const d = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, accountN);
       accountXprv = String(d.xprv || '').trim();
       accountXpub = String(d.xpub || '').trim();
     } catch (e) {
@@ -1665,7 +1683,8 @@ function getCrowdfundingBeneficiaryPrivateKey32 (identity = {}) {
   let accountXprv = '';
   let accountXpub = '';
   try {
-    const d = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX);
+    const accountN = getBitcoinBip44AccountForIdentity(identity);
+    const d = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, accountN);
     accountXprv = String(d.xprv || '').trim();
     accountXpub = String(d.xpub || '').trim();
   } catch (e) {
@@ -2045,6 +2064,7 @@ module.exports = {
   BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX,
   BITCOIN_WALLET_BRANCH_CHANGED,
   deriveFabricBitcoinAccountKeys,
+  resolveBitcoinClientAuthToken,
   loadSpendXpubWatchForIdentity,
   saveSpendXpubWatchForIdentity,
   clearSpendXpubWatch,
