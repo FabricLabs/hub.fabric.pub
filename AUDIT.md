@@ -1,12 +1,12 @@
 # Fabric Hub Security Audit
 Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-run **`npm audit`** after dependency changes; keep this file aligned with the current lockfile.
 
-## Status (2026-08-06)
+## Status (2026-08-12)
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (post security pass) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#2e2aec81bd6503e40c2d7cae88f9ab4dc6a8fe41` (immutable SHA from `feature/rsi`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#365f0b4962dc75074b64393cf02d17b338a5196b` (immutable SHA from `feature/rsi`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -39,7 +39,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 ## Recommendations
 
 1. After dependency edits: **`npm ci`** (or `npm i`) then **`npm audit`** and **`npm run ci`** (`build` + `test:unit`).
-2. Keep core/http git pins on the same RC branch; use **`npm run link:fabric`** for local monorepo work.
+2. Keep core/http on immutable commit SHAs (refresh from `feature/rsi` then re-pin); use **`npm run link:fabric`** for local monorepo work.
 3. Do not run **`npm audit fix --force`** casually — it has proposed Electron 43 and React Router downgrades that fight the chosen pins.
 4. Revisit React Router when a release fixes GHSA-qwww without regressing open-redirect advisories.
 5. Webpack must keep **`conditionNames`** without bare **`import`**, plus CJS aliases for **`react-router$` / `react-router-dom$` / `react-router/dom$`** — otherwise RR7’s `.mjs` exports break the SPA bundle at runtime.

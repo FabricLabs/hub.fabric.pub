@@ -218,10 +218,10 @@ async function fetchPersistedHubUiFeatureFlags () {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !hasStoredUiFlagShape(raw)) {
       return loadHubUiFeatureFlags();
     }
-    const localBefore = loadHubUiFeatureFlags();
-    // Server wins for keys it sets; local keeps keys only present client-side (e.g. test toggles
-    // applied after a prior boot). Explicit server `false` still disables a feature.
-    const next = normalizeFlags({ ...localBefore, ...raw });
+    // Normalize the persisted server payload directly. Omitted keys fall back to
+    // bundled defaults inside normalizeFlags — do not re-merge stale localStorage
+    // toggles that can pin disabled features on.
+    const next = normalizeFlags(raw);
     saveHubUiFeatureFlags(next);
     return next;
   } catch (_) {

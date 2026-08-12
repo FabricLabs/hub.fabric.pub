@@ -233,8 +233,8 @@ function clearFabricBrowserIdentityLocal () {
     scrubFabricStateIdentitySubtree(w);
     resetFabricBrowserStateStore();
     try {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        window.sessionStorage.removeItem('fabric.identity.unlocked');
+      if (w.sessionStorage) {
+        w.sessionStorage.removeItem('fabric.identity.unlocked');
       }
     } catch (e) {}
     try {

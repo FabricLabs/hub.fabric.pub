@@ -75,7 +75,11 @@ async function fetchDistributedManifest () {
 async function getSidechainState () {
   const out = await hubJsonRpc('GetSidechainState', []);
   if (!out.ok) return { ok: false, error: out.error };
-  return { ok: true, state: out.result };
+  const r = out.result;
+  if (r && r.status === 'error') {
+    return { ok: false, error: r.message || 'GetSidechainState failed' };
+  }
+  return { ok: true, state: r };
 }
 
 /**
@@ -84,7 +88,11 @@ async function getSidechainState () {
 async function getSidechainJournal (opts = {}) {
   const out = await hubJsonRpc('GetSidechainJournal', [opts]);
   if (!out.ok) return { ok: false, error: out.error };
-  return { ok: true, journal: out.result };
+  const r = out.result;
+  if (r && r.status === 'error') {
+    return { ok: false, error: r.message || 'GetSidechainJournal failed' };
+  }
+  return { ok: true, journal: r };
 }
 
 /**
@@ -93,7 +101,11 @@ async function getSidechainJournal (opts = {}) {
 async function getSidechainSnapshots (opts = {}) {
   const out = await hubJsonRpc('GetSidechainSnapshots', [opts]);
   if (!out.ok) return { ok: false, error: out.error };
-  return { ok: true, snapshots: out.result };
+  const r = out.result;
+  if (r && r.status === 'error') {
+    return { ok: false, error: r.message || 'GetSidechainSnapshots failed' };
+  }
+  return { ok: true, snapshots: r };
 }
 
 /**
