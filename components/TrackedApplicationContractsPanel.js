@@ -82,7 +82,7 @@ function TrackedApplicationContractsPanel () {
         <Header.Content>Tracked application contracts</Header.Content>
       </Header>
       <p style={{ color: '#555', lineHeight: 1.5, marginBottom: '0.75em' }}>
-        Inbound <code>CONTRACT_PUBLISH</code> frames (e.g. GoonCitizen) land here as pending offers.
+        Inbound <code>CONTRACT_PUBLISH</code> frames (application namespaces) land here as pending offers.
         Accepting one adds it to the local Beacon-tracked set; the next epoch seals{' '}
         <code>payload.contracts.stateDigest</code> (the state root of accepted published contracts).
       </p>

@@ -45,7 +45,9 @@ function buildLocalFabricIdentityPayload (parsed = {}) {
       if (parsed.fabricIdentityMode === 'account' && !parsed.xprv) {
         try {
           const key = new Key({ xpub: parsed.xpub });
-          const ident = new Identity(key);
+          const {
+            fabricBech32IdFromCompressedPubHex
+          } = require('./fabricAccountDerivedIdentity');
           const ai =
             parsed.fabricAccountIndex != null && String(parsed.fabricAccountIndex).trim() !== ''
               ? Math.floor(Number(parsed.fabricAccountIndex))
@@ -53,7 +55,7 @@ function buildLocalFabricIdentityPayload (parsed = {}) {
           return {
             resolved: true,
             record: {
-              id: ident.id,
+              id: fabricBech32IdFromCompressedPubHex(key.pubkey),
               xpub: key.xpub,
               xprv: null,
               masterXprv: null,

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Global toast emitter (pattern from sensemaker) — Dashboard listens via toast.addListener.
+ * Global toast emitter — Dashboard listens via toast.addListener.
  * Use with react-toastify in HubInterface.
  */
 class ToastEmitter {

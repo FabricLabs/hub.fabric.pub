@@ -2,7 +2,7 @@
 
 /**
  * Hub list pagination — Semantic UI Pagination with pinned first/last jump buttons.
- * Adapted from sensemaker `components/CustomPagination.js`.
+ * Adapted from shared CustomPagination patterns.
  */
 
 const React = require('react');

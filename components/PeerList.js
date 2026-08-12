@@ -831,7 +831,7 @@ class PeersPage extends React.Component {
                     <p style={{ margin: '0.35em 0 0', color: '#444', lineHeight: 1.5, maxWidth: '52rem' }}>
                       Use a long-lived hub (e.g. <code>hub.fabric.pub</code>) as <strong>primary authority</strong>: Fabric TCP carries <code>BitcoinBlock</code> gossip and trust scores. Payjoin v2 (directory + HPKE + OHTTP):{' '}
                       <a href="https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77" target="_blank" rel="noreferrer">payjoin.org — BIP 77</a>.
-                      {' '}This build uses BIP77 deposit sessions and BIP78 <code>pj=</code> where enabled; full v2 directory flows are a future integration.
+                      {' '}This build uses BIP78 deposit sessions with absolute <code>pj=</code> where enabled; BIP77 Hub-local experimental mailboxes are available under capabilities <code>fabricProtocol</code>. Full v2 directory + OHTTP flows remain a future integration.
                     </p>
                     <Message info size="small" style={{ marginTop: '0.65em', maxWidth: '52rem' }}>
                       <Message.Header>Regtest coins from another hub</Message.Header>

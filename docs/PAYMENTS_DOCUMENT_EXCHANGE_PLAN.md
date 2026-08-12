@@ -22,7 +22,7 @@ This document extends [PAYMENTS_PROTOCOL.md](../PAYMENTS_PROTOCOL.md) with a con
 **Repo / process outstanding**
 - Many valuable files are still **untracked** (`docs/`, `AGENTS.md`, `PAYMENTS_PROTOCOL.md`, `functions/*.js`, tests, etc.) — **commit or `.gitignore`** intentionally so CI and teammates see one story.
 - **`assets/bundles/browser.min.js`** and **`stores/**`** churn — avoid committing unless intentional; prefer rebuild in CI.
-- **`feature/sensemaker`** branch mixes several concerns — consider splitting PRs: Bitcoin/mempool, documents copy, invoices, peer/inventory.
+- Long-lived feature branches that mix several concerns — consider splitting PRs: Bitcoin/mempool, documents copy, invoices, peer/inventory.
 
 ## Current surfaces
 - **L1 invoices** — `Invoice` component, verify via `verifyL1Payment` / `VerifyBitcoinL1Payment` (confirmations, mempool hint).

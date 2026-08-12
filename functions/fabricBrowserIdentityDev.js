@@ -155,6 +155,65 @@ function storeUnlockedIdentityFromMnemonic (opts = {}) {
   }
 }
 
+/**
+ * Apply `window.FABRIC_DEV_BROWSER_SEED` (from `assets/config.local.js` or
+ * `FABRIC_DEV_PUSH_BROWSER_IDENTITY` HTML injection) into local browser identity.
+ * No-op when the seed is missing or suppressed.
+ *
+ * @returns {{ ok: boolean, skipped?: boolean, reason?: string, suppressed?: boolean, error?: string, identity?: object }}
+ */
+function applyFabricDevBrowserSeedBootstrap () {
+  if (typeof window === 'undefined') {
+    return { ok: false, skipped: true, reason: 'no-window' };
+  }
+  const seed = String(window.FABRIC_DEV_BROWSER_SEED || '').trim();
+  if (!seed) return { ok: false, skipped: true, reason: 'no-seed' };
+  const passRaw = window.FABRIC_DEV_BROWSER_PASSPHRASE;
+  const passphrase = passRaw != null && String(passRaw).trim() !== ''
+    ? String(passRaw)
+    : undefined;
+  const force = String(window.FABRIC_DEV_BROWSER_IDENTITY || '').toLowerCase() === 'force';
+  return storeUnlockedIdentityFromMnemonic({
+    seed,
+    passphrase,
+    force
+  });
+}
+
+/**
+ * Merge session unlock material onto a watch-only identity record (constructor / hydrate).
+ * @param {object|null} identity
+ * @returns {object|null}
+ */
+function mergeUnlockedSessionIntoIdentity (identity) {
+  if (!identity || typeof identity !== 'object') return identity;
+  if (typeof window === 'undefined' || !window.sessionStorage) return identity;
+  let unlocked = null;
+  try {
+    unlocked = JSON.parse(window.sessionStorage.getItem('fabric.identity.unlocked') || 'null');
+  } catch (_) {
+    return identity;
+  }
+  if (!unlocked || typeof unlocked !== 'object') return identity;
+  const idMatch = identity.id != null && unlocked.id != null &&
+    String(identity.id) === String(unlocked.id);
+  const xpubMatch = identity.xpub && unlocked.xpub &&
+    String(identity.xpub) === String(unlocked.xpub);
+  if (!idMatch && !xpubMatch) return identity;
+  if (!unlocked.xprv) return identity;
+  return Object.assign({}, identity, {
+    xprv: unlocked.xprv,
+    masterXprv: unlocked.masterXprv || identity.masterXprv || undefined,
+    masterXpub: unlocked.masterXpub || identity.masterXpub || undefined,
+    fabricIdentityMode: unlocked.fabricIdentityMode || identity.fabricIdentityMode,
+    fabricAccountIndex: unlocked.fabricAccountIndex != null
+      ? unlocked.fabricAccountIndex
+      : identity.fabricAccountIndex,
+    plaintextUnlockAvailable: false,
+    passwordProtected: false
+  });
+}
+
 module.exports = {
   DEV_SEED_SUPPRESSION_KEY,
   devSeedDigest,
@@ -162,5 +221,7 @@ module.exports = {
   isDevSeedSuppressed,
   suppressDevSeed,
   clearDevSeedSuppression,
-  storeUnlockedIdentityFromMnemonic
+  storeUnlockedIdentityFromMnemonic,
+  applyFabricDevBrowserSeedBootstrap,
+  mergeUnlockedSessionIntoIdentity
 };

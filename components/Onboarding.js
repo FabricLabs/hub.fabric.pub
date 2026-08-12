@@ -3,7 +3,7 @@
 /**
  * First-time setup flow for Hub.
  * Creates and signs an admin token, sets initial configuration.
- * Adapted from sensemaker's Onboarding component.
+ * Onboarding component for first-time Hub setup.
  */
 
 const React = require('react');

@@ -47,6 +47,7 @@ function timingSafeSha256Utf8Match (provided, expected) {
   }
 }
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
+const bitcoinFaucetCapability = require('../functions/bitcoinFaucetCapability');
 const { SATS_PER_BTC, FEATURE_FLAGS, publicFeatureFlags } = require('../constants');
 const {
   HUB_START_PHASES,
@@ -124,8 +125,9 @@ const inventoryHtlc = require('../functions/inventoryHtlc');
 const txContractLabels = require('../functions/txContractLabels');
 const psbtFabric = require('../functions/psbtFabric');
 const contractProposalExchange = require('../functions/contractProposalExchange');
-const { runExecutionProgram } = require('../functions/fabricExecutionMachine');
-const { computeExecutionRunCommitmentHex } = require('../functions/executionRunCommitment');
+const { runExecutionProgram, executionProgramDigest } = require('../functions/fabricExecutionMachine');
+const { computeExecutionRunCommitmentHex, buildExecutionRunOutput } = require('../functions/executionRunCommitment');
+const { gateExecutionRegistryCreate } = require('../functions/executionRegistryGate');
 const { anchorExecutionCommitmentRegtest } = require('../functions/bitcoinExecutionAnchor');
 const { validateEnvelopeV1, buildGenericMessageFromEnvelope } = require('../functions/fabricMessageEnvelope');
 const inventoryRelay = require('../functions/inventoryRelay');
@@ -139,6 +141,14 @@ const documentPaymentHash = require('../functions/documentPaymentHash');
 const sidechainState = require('../functions/sidechainState');
 const trackedApplicationContracts = require('../functions/trackedApplicationContracts');
 const contractStatechains = require('../functions/contractStatechains');
+const contractMessageQueue = require('../functions/contractMessageQueue');
+const beaconNetworkGuard = require('@fabric/core/functions/beaconNetworkGuard');
+let beaconContractDefinition = null;
+try {
+  beaconContractDefinition = require('@fabric/core/functions/beaconContractDefinition');
+} catch (_) {
+  beaconContractDefinition = null;
+}
 const { normalizeP2pChatMessage, chatActorIdOf } = require('../functions/fabricChatNormalize');
 const {
   buildInnerWireBuffer,
@@ -272,7 +282,13 @@ class Hub extends Service {
         endpointBasePath: process.env.FABRIC_PAYJOIN_BASE_PATH || '/services/payjoin',
         defaultSessionTTLSeconds: Number(process.env.FABRIC_PAYJOIN_SESSION_TTL_SECONDS || 1800),
         maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256),
-        beaconFederationXOnlyHex: String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '')
+        beaconFederationXOnlyHex: String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || ''),
+        publicOrigin: process.env.FABRIC_HUB_PUBLIC_ORIGIN || process.env.FABRIC_PUBLIC_ORIGIN || '',
+        autoAcpBoost: process.env.FABRIC_PAYJOIN_AUTO_ACP != null
+          ? (process.env.FABRIC_PAYJOIN_AUTO_ACP === '1' || process.env.FABRIC_PAYJOIN_AUTO_ACP === 'true')
+          : null,
+        bip77MailboxExperimental: process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== '0' &&
+          process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== 'false'
       },
       email: {
         enable: process.env.FABRIC_EMAIL_ENABLE === 'true' || process.env.FABRIC_EMAIL_ENABLE === '1',
@@ -506,7 +522,10 @@ class Hub extends Service {
 
     this.payjoin = new PayjoinService({
       ...this.settings.payjoin,
-      network: (this.settings.bitcoin && this.settings.bitcoin.network) || 'mainnet'
+      network: (this.settings.bitcoin && this.settings.bitcoin.network) || 'mainnet',
+      hostname: (this.settings.http && this.settings.http.hostname) || 'localhost',
+      httpPort: (this.settings.http && this.settings.http.port) || 8080,
+      publicOrigin: (this.settings.payjoin && this.settings.payjoin.publicOrigin) || ''
     });
 
     this.email = null;
@@ -653,7 +672,9 @@ class Hub extends Service {
           res.setHeader('X-Frame-Options', 'SAMEORIGIN');
           res.setHeader('X-Content-Type-Options', 'nosniff');
           next();
-        }
+        },
+        // BIP78 payjoin clients POST PSBT as text/plain (body-parser json ignores them).
+        textPlain: require('body-parser').text({ type: 'text/plain', limit: '2mb' })
       },
       // TODO: use Fabric Resources; routes and components will be defined there
       resources: {
@@ -1464,7 +1485,7 @@ class Hub extends Service {
 
   /**
    * Cache chat messages in Hub state so browser reloads can rehydrate from GetNetworkStatus.
-   * Accepts Hub classic (`object.content`) and GoonCitizen (`object.body` / channel / handle).
+   * Accepts Hub classic (`object.content`) and application peers (`object.body` / channel / handle).
    * @param {object} chat Chat payload
    * @returns {{ id: string, message: object }|null}
    */
@@ -1968,8 +1989,9 @@ class Hub extends Service {
 
   /**
    * Enrich HTTP `OPTIONS /` with Application Resource Contract identity,
-   * peering service pointers, and (when available) a live OracleAttestation
-   * so clients like GoonCitizen can discover hubs without a hard-coded path.
+   * peering service pointers, optional regtest Beacon faucet discovery, and
+   * (when available) a live OracleAttestation so application peers can
+   * discover hubs without a hard-coded path.
    */
   _wireHttpOptionsContract () {
     if (!this.http || typeof this.http.setOptionsEnricher !== 'function') return;
@@ -1991,6 +2013,13 @@ class Hub extends Service {
           }
         } catch (_) { /* key/hub not ready yet */ }
       }
+
+      // Beacon faucet: advertise only on regtest when Bitcoin is up. Never on
+      // signet/mainnet — peers must treat absence as "no faucet".
+      try {
+        const faucet = this._buildOptionsFaucetService();
+        if (faucet) services.faucet = faucet;
+      } catch (_) { /* ignore */ }
 
       let contract;
       try {
@@ -2026,6 +2055,53 @@ class Hub extends Service {
       this.http.settings.description = this.http.settings.description ||
         'Fabric Hub — rendezvous, documents, and peer mesh coordination';
     }
+  }
+
+  /**
+   * OPTIONS `services.faucet` from live Bitcoin / Beacon state (regtest only).
+   * @returns {object|null}
+   */
+  _buildOptionsFaucetService () {
+    const bitcoin = this._getBitcoinService();
+    const network = (bitcoin && bitcoin.network) ||
+      (this.settings && this.settings.bitcoin && this.settings.bitcoin.network) ||
+      null;
+    if (!bitcoinFaucetCapability.isFaucetNetwork(network)) return null;
+
+    const cached = this._state &&
+      this._state.content &&
+      this._state.content.services &&
+      this._state.content.services.bitcoin &&
+      this._state.content.services.bitcoin.status;
+    const beaconCached = cached && cached.beacon && typeof cached.beacon === 'object'
+      ? cached.beacon
+      : null;
+    const beaconLive = this.beacon && this.beacon.state && typeof this.beacon.state === 'object'
+      ? this.beacon.state
+      : null;
+
+    let balanceSats = null;
+    if (beaconCached && beaconCached.balanceSats != null) {
+      balanceSats = Number(beaconCached.balanceSats);
+    } else if (beaconLive && beaconLive.balanceSats != null) {
+      balanceSats = Number(beaconLive.balanceSats);
+    } else if (cached && cached.balance != null && Number.isFinite(Number(cached.balance))) {
+      balanceSats = Math.round(Number(cached.balance) * 1e8);
+    }
+
+    let beaconClock = null;
+    if (beaconCached && beaconCached.clock != null) beaconClock = Number(beaconCached.clock);
+    else if (beaconLive && beaconLive.clock != null) beaconClock = Number(beaconLive.clock);
+
+    const bitcoinAvailable = !!(bitcoin && (!cached || cached.available !== false));
+
+    return bitcoinFaucetCapability.buildFaucetServiceDescriptor({
+      network,
+      bitcoinAvailable,
+      balanceSats,
+      beaconClock,
+      endpointBasePath: bitcoinFaucetCapability.FAUCET_ENDPOINT
+    });
   }
 
   _getChallengeService () {
@@ -2246,7 +2322,22 @@ class Hub extends Service {
     };
     const fp = this._getEffectiveFederationPolicyForDistributedHttp();
     if (fp.validators.length) {
-      manifest.federation = { validators: fp.validators, threshold: fp.threshold };
+      const softPolicy = this._federationAuthoritySoftPolicy();
+      const publisher = this._federationAuthorityPublisher(fp.validators);
+      manifest.federation = {
+        validators: fp.validators,
+        threshold: fp.threshold,
+        publisher: publisher || fp.validators[0] || null,
+        csvBlocks: softPolicy.csvBlocks,
+        softMode: softPolicy.softMode,
+        spendPolicy: {
+          publisher: publisher || fp.validators[0] || null,
+          validators: fp.validators,
+          threshold: fp.threshold,
+          csvBlocks: softPolicy.csvBlocks,
+          softMode: softPolicy.softMode
+        }
+      };
     }
     const parsed = DistributedExecution.parseDistributedManifestV1(manifest);
     const out = parsed.ok ? { ...parsed.manifest } : { ...manifest };
@@ -2269,9 +2360,18 @@ class Hub extends Service {
       if (vs && vs.status === 'ok' && vs.address) {
         out.federationVault = {
           address: vs.address,
-          depositMaturityBlocks: vs.policy && vs.policy.depositMaturityBlocks,
+          spendAddress: vs.spendAddress || vs.address,
+          csvBlocks: vs.spendPolicy && vs.spendPolicy.csvBlocks,
+          depositMaturityBlocks: (vs.policy && vs.policy.depositMaturityBlocks)
+            || (vs.spendPolicy && vs.spendPolicy.csvBlocks),
+          softMode: vs.spendPolicy && vs.spendPolicy.softMode,
+          publisher: vs.spendPolicy && vs.spendPolicy.publisher,
           scheme: vs.policy && vs.policy.scheme,
-          endpoints: vs.endpoints || null
+          spendPolicy: vs.spendPolicy || null,
+          leaves: Array.isArray(vs.leaves) ? vs.leaves : [],
+          endpoints: vs.endpoints || null,
+          beaconContractId: this._beaconContractId || null,
+          authorityUnity: this._beaconAuthorityUnity || vs.authorityUnity || null
         };
       } else if (vs && vs.status === 'no_validators') {
         out.federationVault = { status: 'no_validators', message: vs.message || null };
@@ -2281,6 +2381,14 @@ class Hub extends Service {
     } catch (_) {
       out.federationVault = null;
     }
+    if (this._beaconContractId) {
+      out.beaconContractId = this._beaconContractId;
+    }
+    try {
+      if (beaconContractDefinition && typeof beaconContractDefinition.beaconRedeploySteps === 'function') {
+        out.beaconRedeploy = beaconContractDefinition.beaconRedeploySteps();
+      }
+    } catch (_) { /* optional */ }
     return out;
   }
 
@@ -2296,7 +2404,8 @@ class Hub extends Service {
         : null;
       if (!allowed) return policy;
       if (!allowed.includes('/namespaces')) allowed.push('/namespaces');
-      if (!allowed.includes('/gooncitizen')) allowed.push('/gooncitizen');
+      // RSI service snapshots live under `/services/rsi` (prefix `/services`).
+      if (!allowed.includes('/services')) allowed.push('/services');
       return Object.assign({}, policy, { allowedPathPrefixes: allowed });
     };
 
@@ -2411,6 +2520,27 @@ class Hub extends Service {
   }
 
   /**
+   * Best-effort Bitcoin tip for ARC bitcoinAnchor on tracked contracts.
+   * @returns {Promise<{ blockHash: string|null, height: number|null }>}
+   */
+  async _bitcoinTipForArc () {
+    const out = { blockHash: null, height: null };
+    const bitcoin = this.bitcoin;
+    if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') return out;
+    try {
+      const [hash, height] = await Promise.all([
+        bitcoin._makeRPCRequest('getbestblockhash', []),
+        bitcoin._makeRPCRequest('getblockcount', [])
+      ]);
+      if (hash) out.blockHash = String(hash).toLowerCase();
+      if (height != null && Number.isFinite(Number(height))) out.height = Number(height);
+    } catch (_) {
+      /* tip optional when bitcoind down */
+    }
+    return out;
+  }
+
+  /**
    * Ingest CONTRACT_PUBLISH into the pending tracked-application-contract queue.
    * @param {{ contract?: string, object?: object, signer?: string|null, origin?: object }} ev
    */
@@ -2419,17 +2549,295 @@ class Hub extends Service {
     if (!contractId) return null;
     const state = this._ensureTrackedContracts();
     const originName = ev.origin && (ev.origin.name || ev.origin.id) ? String(ev.origin.name || ev.origin.id) : null;
+    const tip = await this._bitcoinTipForArc();
+    const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
+      || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
+      || null;
     const result = trackedApplicationContracts.recordPublish(state, {
       contractId,
       definition: ev.object || {},
       signer: ev.signer || null,
-      origin: originName
+      origin: originName,
+      bitcoinBlockHash: tip.blockHash,
+      bitcoinHeight: tip.height,
+      network
     });
     await this._persistTrackedContracts();
     if (result.status === 'pending') {
       this._broadcastTrackedContractsEvent('TrackedApplicationContractPublish', result.entry);
     }
     return result;
+  }
+
+  /**
+   * Opaque CONTRACT_MESSAGE queue store (Filesystem-backed).
+   * Does not open sealed content — hex only.
+   * @returns {{ get: Function, put: Function, listContractIds: Function }|null}
+   */
+  _ensureContractMessageQueueStore () {
+    if (this._contractMessageQueueStore) return this._contractMessageQueueStore;
+    if (!this.fs || typeof this.fs.readFile !== 'function' || typeof this.fs.publish !== 'function') {
+      return null;
+    }
+    try {
+      this._contractMessageQueueStore = contractMessageQueue.createFilesystemStore(this.fs);
+    } catch (err) {
+      if (this.settings && this.settings.debug) {
+        console.error('[HUB] contract message queue store unavailable:', err && err.message ? err.message : err);
+      }
+      return null;
+    }
+    return this._contractMessageQueueStore;
+  }
+
+  /**
+   * Persist opaque AMP bytes from a Peer `contract:message` event.
+   * @param {object} ev
+   * @returns {object|null}
+   */
+  _enqueueOpaqueContractMessage (ev = {}) {
+    const contract = ev && ev.contract ? String(ev.contract) : null;
+    if (!contract) return null;
+    const store = this._ensureContractMessageQueueStore();
+    if (!store) return null;
+    let buffer = null;
+    if (ev.messageHex && typeof ev.messageHex === 'string') {
+      buffer = ev.messageHex;
+    } else if (ev.wireMessage && typeof ev.wireMessage.toBuffer === 'function') {
+      buffer = ev.wireMessage.toBuffer();
+    }
+    if (!buffer) return null;
+    const body = (ev && ev.object) || {};
+    const result = contractMessageQueue.enqueue(store, contract, buffer, {
+      origin: (ev.origin && (ev.origin.name || ev.origin.id)) ? 'mesh' : 'mesh',
+      type: body.type || body['@type'] || null,
+      author: ev.signer || null
+    });
+    if (result && result.accepted) {
+      this._contractNamespaces = this._contractNamespaces || new Set();
+      this._contractNamespaces.add(contract);
+    }
+    return result;
+  }
+
+  /**
+   * Later-relay: write pending opaque frames to a newly opened peer connection.
+   * @param {string} addressInput
+   * @param {{ limitPerContract?: number }} [opts]
+   * @returns {{ delivered: number, contracts: number }}
+   */
+  _drainContractMessageQueueToPeer (addressInput, opts = {}) {
+    const address = this._resolvePeerAddress(addressInput) || String(addressInput || '').trim();
+    if (!address || !this.agent || !this.agent.connections || !this.agent.connections[address]) {
+      return { delivered: 0, contracts: 0 };
+    }
+    const sock = this.agent.connections[address];
+    if (!sock || typeof sock._writeFabric !== 'function') {
+      return { delivered: 0, contracts: 0 };
+    }
+    const store = this._ensureContractMessageQueueStore();
+    if (!store) return { delivered: 0, contracts: 0 };
+    const peerKey = String(address).toLowerCase();
+    const limitPer = Number(opts.limitPerContract) > 0 ? Number(opts.limitPerContract) : 64;
+    const contractIds = typeof store.listContractIds === 'function'
+      ? store.listContractIds()
+      : Array.from(this._contractNamespaces || []);
+    let delivered = 0;
+    let contracts = 0;
+    for (const contractId of contractIds) {
+      const pending = contractMessageQueue.pendingForDelivery(store, contractId, peerKey);
+      if (!pending.length) continue;
+      contracts += 1;
+      const slice = pending.slice(0, limitPer);
+      for (const entry of slice) {
+        try {
+          const buf = Buffer.from(String(entry.hex), 'hex');
+          if (!buf.length) continue;
+          sock._writeFabric(buf);
+          contractMessageQueue.markDelivered(store, contractId, entry.hash, peerKey);
+          delivered += 1;
+        } catch (err) {
+          if (this.settings && this.settings.debug) {
+            console.error('[HUB] queue drain write failed:', err && err.message ? err.message : err);
+          }
+        }
+      }
+    }
+    return { delivered, contracts };
+  }
+
+  /**
+   * Recompute spendAddress / tip anchors for accepted ARCs after network bind.
+   * @returns {Promise<{ changed: number, contractIds: string[] }|null>}
+   */
+  async _reEnrichAcceptedTrackedContracts () {
+    try {
+      const state = this._ensureTrackedContracts();
+      const tip = await this._bitcoinTipForArc();
+      const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
+        || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
+        || null;
+      const result = trackedApplicationContracts.reEnrichAccepted(state, {
+        bitcoinBlockHash: tip.blockHash,
+        bitcoinHeight: tip.height,
+        network
+      });
+      if (result.changed > 0) {
+        await this._persistTrackedContracts();
+      }
+      return result;
+    } catch (err) {
+      console.warn(
+        '[HUB] reEnrichAcceptedTrackedContracts failed:',
+        err && err.message ? err.message : err
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Publish + accept the native Beacon ARC (fabric-beacon) so Federation authority
+   * shares the same CONTRACT_PUBLISH / spend surface as application contracts.
+   * Idempotent for a stable validator set; network overlays apply at Accept/re-enrich.
+   *
+   * @returns {Promise<object|null>}
+   */
+  async _ensureBeaconNativeContract () {
+    const beaconCfg = (this.settings && this.settings.beacon) || {};
+    if (beaconCfg.publishNativeContract === false) return null;
+    if (!beaconContractDefinition
+      || typeof beaconContractDefinition.beaconContractDefinition !== 'function') {
+      return null;
+    }
+
+    const fp = this._getEffectiveFederationPolicyForDistributedHttp();
+    let validators = (fp.validators || []).slice();
+    const publisher = this._federationAuthorityPublisher(validators);
+    if (!validators.length && publisher) {
+      validators = [publisher];
+    }
+    if (!validators.length) {
+      console.warn('[HUB:BEACON] Skipping native Beacon CONTRACT_PUBLISH: no validators or hub key');
+      return null;
+    }
+
+    const threshold = validators.length
+      ? Math.max(1, Math.min(Number(fp.threshold) || 1, validators.length))
+      : 1;
+    const softPolicy = this._federationAuthoritySoftPolicy();
+
+    let definition;
+    let contractId;
+    try {
+      definition = beaconContractDefinition.beaconContractDefinition({
+        validators,
+        threshold,
+        publisher: publisher || validators[0],
+        csvBlocks: softPolicy.csvBlocks,
+        softMode: softPolicy.softMode
+      });
+      contractId = beaconContractDefinition.beaconContractId(definition);
+    } catch (err) {
+      console.warn(
+        '[HUB:BEACON] native contract definition failed:',
+        err && err.message ? err.message : err
+      );
+      return null;
+    }
+
+    this._beaconContractId = contractId;
+    const tip = await this._bitcoinTipForArc();
+    const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
+      || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
+      || null;
+    const state = this._ensureTrackedContracts();
+    const defDigest = trackedApplicationContracts.definitionDigestOf(definition);
+    const existing = state.accepted[contractId] || state.pending[contractId];
+
+    if (existing && existing.definitionDigest === defDigest && state.accepted[contractId]) {
+      trackedApplicationContracts.reEnrichAccepted(state, {
+        bitcoinBlockHash: tip.blockHash,
+        bitcoinHeight: tip.height,
+        network
+      });
+      await this._persistTrackedContracts();
+      return {
+        status: 'unchanged',
+        contractId,
+        entry: state.accepted[contractId],
+        redeploy: typeof beaconContractDefinition.beaconRedeploySteps === 'function'
+          ? beaconContractDefinition.beaconRedeploySteps()
+          : null
+      };
+    }
+
+    const recorded = trackedApplicationContracts.recordPublish(state, {
+      contractId,
+      definition,
+      signer: publisher,
+      origin: 'hub-beacon',
+      bitcoinBlockHash: tip.blockHash,
+      bitcoinHeight: tip.height,
+      network
+    });
+    if (recorded.status === 'pending') {
+      this._broadcastTrackedContractsEvent('TrackedApplicationContractPublish', recorded.entry);
+    }
+
+    const entry = trackedApplicationContracts.acceptContract(state, contractId, {
+      acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || publisher || 'hub',
+      bitcoinBlockHash: tip.blockHash,
+      bitcoinHeight: tip.height,
+      network
+    });
+
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    try {
+      const provisioned = await contractStatechains.provisionAcceptedContract(
+        this.fs,
+        this._sidechainState,
+        {
+          contractId,
+          name: entry.name || beaconContractDefinition.BEACON_CONTRACT_NAME || 'fabric-beacon',
+          parentContractId: null
+        },
+        this._getSidechainPathPolicy()
+      );
+      if (provisioned.ok && provisioned.parentState) {
+        this._sidechainState = provisioned.parentState;
+        if (provisioned.head && provisioned.head.stateDigest) {
+          trackedApplicationContracts.updateContractStateDigest(
+            state,
+            contractId,
+            provisioned.head.stateDigest
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        '[HUB:BEACON] native contract statechain provision failed:',
+        err && err.message ? err.message : err
+      );
+    }
+
+    this._syncTrackedContractDigestsFromSidechainUnlocked();
+    await this._persistTrackedContracts();
+    this._broadcastTrackedContractsEvent('TrackedApplicationContractAccepted', entry);
+    console.log(
+      '[HUB:BEACON] Native Beacon ARC accepted:',
+      String(contractId).slice(0, 16) + '…',
+      network ? `(network=${network})` : ''
+    );
+    return {
+      status: 'accepted',
+      contractId,
+      entry,
+      redeploy: typeof beaconContractDefinition.beaconRedeploySteps === 'function'
+        ? beaconContractDefinition.beaconRedeploySteps()
+        : null
+    };
   }
 
   async _acceptTrackedApplicationContract (params = {}) {
@@ -2442,8 +2850,15 @@ class Hub extends Service {
     if (!contractId) return { status: 'error', message: 'contractId required' };
     try {
       const state = this._ensureTrackedContracts();
+      const tip = await this._bitcoinTipForArc();
+      const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
+        || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
+        || null;
       const entry = trackedApplicationContracts.acceptContract(state, contractId, {
-        acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || null
+        acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || null,
+        bitcoinBlockHash: tip.blockHash,
+        bitcoinHeight: tip.height,
+        network
       });
 
       // ADR-001: provision contract Statechain + seal head into Hub `/namespaces/<id>`.
@@ -2531,7 +2946,7 @@ class Hub extends Service {
   }
 
   /**
-   * When sidechain app payloads change (e.g. `/gooncitizen` or `/namespaces/<id>`),
+   * When sidechain app payloads change (e.g. `/services/rsi` or `/namespaces/<id>`),
    * refresh matching accepted contract state digests so the next Beacon epoch seals
    * the new contracts root (ADR-001).
    */
@@ -2558,14 +2973,16 @@ class Hub extends Service {
       }
     }
 
-    const gc = content.gooncitizen;
-    if (gc && typeof gc === 'object') {
-      const digest = gc.digest != null ? String(gc.digest) : null;
-      const gcContractId = gc.contractId != null ? String(gc.contractId) : null;
+    // RSI service snapshot under `/services/rsi` (RFC6902 → content.services.rsi).
+    const services = content.services && typeof content.services === 'object'
+      ? content.services
+      : {};
+    const rsi = services.rsi;
+    if (rsi && typeof rsi === 'object') {
+      const digest = rsi.digest != null ? String(rsi.digest) : null;
+      const rsiContractId = rsi.contractId != null ? String(rsi.contractId) : null;
       for (const id of Object.keys(state.accepted || {})) {
-        const entry = state.accepted[id];
-        const match = (gcContractId && id === gcContractId) ||
-          (entry && String(entry.name || '').toLowerCase() === 'gooncitizen');
+        const match = rsiContractId && id === rsiContractId;
         if (!match || !digest) continue;
         const updated = trackedApplicationContracts.updateContractStateDigest(state, id, digest);
         if (updated) changed = true;
@@ -2729,7 +3146,7 @@ class Hub extends Service {
 
   /**
    * Apply sidechain patches from a trusted Hub-internal caller (no admin /
-   * federation check). Used by application aggregators (e.g. GoonCitizen on
+   * federation check). Used by application aggregators (e.g. RSI service on
    * goon.vc) before Beacon epochs seal `payload.sidechain` + SNAPSHOTS.
    * @param {object[]} patches RFC6902 ops on `content`
    * @returns {Promise<object>}
@@ -3177,6 +3594,108 @@ class Hub extends Service {
   }
 
   /**
+   * Soft-tier publisher for federation vault + Beacon ARC (hub root key, else first validator).
+   * @param {string[]} [validators]
+   * @returns {string|null}
+   */
+  _federationAuthorityPublisher (validators = []) {
+    try {
+      if (this._rootKey && this._rootKey.pubkey) {
+        return String(this._rootKey.pubkey).trim().toLowerCase();
+      }
+    } catch (_) { /* fall through */ }
+    if (validators && validators.length) {
+      return String(validators[0]).trim().toLowerCase();
+    }
+    return null;
+  }
+
+  /**
+   * Shared CSV / soft-mode knobs for vault + Beacon ARC.
+   * @returns {{ csvBlocks: number, softMode: string }}
+   */
+  _federationAuthoritySoftPolicy () {
+    const csvBlocks = Number(
+      (this.settings.beacon && this.settings.beacon.csvBlocks)
+      || (this.settings.federation && this.settings.federation.csvBlocks)
+      || federationVault.DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS
+      || 144
+    );
+    const softMode = (this.settings.federation && this.settings.federation.softMode) || 'publisher';
+    return {
+      csvBlocks: Number.isFinite(csvBlocks) && csvBlocks > 0 ? csvBlocks : 144,
+      softMode: String(softMode).toLowerCase() === 'reduced' ? 'reduced' : 'publisher'
+    };
+  }
+
+  /**
+   * Assert Hub federation vault address matches accepted fabric-beacon ARC spendAddress.
+   * @returns {{ ok: boolean, vault?: string|null, beacon?: string|null, contractId?: string|null, code?: string, message?: string }}
+   */
+  _assertBeaconVaultSpendUnity () {
+    const vs = this._buildFederationVaultSummary();
+    if (!vs || vs.status === 'no_validators') {
+      return { ok: true, code: 'NO_VALIDATORS', vault: null, beacon: null };
+    }
+    if (!vs || vs.status !== 'ok' || !vs.address) {
+      return {
+        ok: false,
+        code: 'VAULT_UNAVAILABLE',
+        vault: null,
+        beacon: null,
+        message: (vs && vs.message) || 'federation vault unavailable'
+      };
+    }
+    const contractId = this._beaconContractId || null;
+    if (!contractId) {
+      return {
+        ok: false,
+        code: 'BEACON_ARC_MISSING',
+        vault: vs.address,
+        beacon: null,
+        contractId: null,
+        message: 'fabric-beacon ARC not registered'
+      };
+    }
+    let entry = null;
+    try {
+      const state = this._ensureTrackedContracts();
+      entry = state.accepted[contractId] || null;
+    } catch (_) {
+      entry = null;
+    }
+    const beacon = entry && entry.spendAddress ? String(entry.spendAddress) : null;
+    if (!beacon) {
+      return {
+        ok: false,
+        code: 'BEACON_SPEND_MISSING',
+        vault: vs.address,
+        beacon: null,
+        contractId,
+        message: 'accepted Beacon ARC has no spendAddress overlay'
+      };
+    }
+    if (beacon !== vs.address) {
+      return {
+        ok: false,
+        code: 'SPEND_MISMATCH',
+        vault: vs.address,
+        beacon,
+        contractId,
+        message: `vault ${vs.address} !== Beacon ARC ${beacon}`
+      };
+    }
+    return {
+      ok: true,
+      code: 'OK',
+      vault: vs.address,
+      beacon,
+      contractId,
+      spendAddress: vs.address
+    };
+  }
+
+  /**
    * L1 Taproot vault derived from federation validator list + threshold (deterministic).
    * @returns {object}
    */
@@ -3192,29 +3711,68 @@ class Hub extends Service {
         message: 'Configure federation validator pubkeys (Settings → Distributed federation or env) to derive a vault address.',
         network: networkName,
         address: null,
-        policy: null
+        spendAddress: null,
+        policy: null,
+        spendPolicy: null
       };
     }
     const threshold = Math.max(1, Math.min(Number(fp.threshold) || 1, validators.length));
     try {
+      const softPolicy = this._federationAuthoritySoftPolicy();
+      const publisher = this._federationAuthorityPublisher(validators) || validators[0];
       const built = federationVault.buildFederationVaultFromPolicy({
-        validatorPubkeysHex: validators,
+        validators,
         threshold,
-        networkName
+        networkName,
+        publisher,
+        csvBlocks: softPolicy.csvBlocks,
+        softMode: softPolicy.softMode
       });
+      const soft = built.softTier || null;
+      const spendPolicy = built.spendPolicy || {
+        publisher,
+        validators: built.validators || built.validatorsSortedHex || validators,
+        threshold: built.threshold,
+        csvBlocks: built.csvBlocks != null ? built.csvBlocks : softPolicy.csvBlocks,
+        softMode: softPolicy.softMode,
+        network: networkName
+      };
       return {
         type: 'FederationVaultSummary',
         status: 'ok',
         network: networkName,
         address: built.address,
+        spendAddress: built.address,
         scriptPubKeyHex: built.output.toString('hex'),
         tapscriptHex: built.multisigScript.toString('hex'),
+        beaconContractId: this._beaconContractId || null,
+        leaves: Array.isArray(built.leaves) ? built.leaves : [],
+        spendPolicy,
         policy: {
-          threshold: built.threshold,
-          validatorsSortedHex: built.validatorsSortedHex,
-          depositMaturityBlocks: built.depositMaturityBlocks,
+          publisher: spendPolicy.publisher,
+          validators: spendPolicy.validators,
+          validatorsSortedHex: built.validatorsSortedHex || spendPolicy.validators,
+          threshold: spendPolicy.threshold,
+          depositMaturityBlocks: built.depositMaturityBlocks != null
+            ? built.depositMaturityBlocks
+            : spendPolicy.csvBlocks,
+          csvBlocks: spendPolicy.csvBlocks,
+          softMode: spendPolicy.softMode,
+          softTier: soft
+            ? {
+              id: soft.id,
+              threshold: soft.threshold,
+              after: soft.after,
+              keys: soft.keys
+            }
+            : null,
           internalKeyHex: built.internalPubkeyHex,
-          scheme: 'taproot-tapscript-k-of-n-v1'
+          scheme: built.scheme || 'taproot-authority-ladder-v1',
+          leaves: Array.isArray(built.leaves) ? built.leaves : [],
+          notes: 't0-authority: k-of-n validators sign main-chain withdrawals; '
+            + `t1-soft unlocks after ~${spendPolicy.csvBlocks} blocks CSV (softer rule). `
+            + 'Same address as the accepted fabric-beacon ARC spendAddress when overlays match. '
+            + 'Optional hashlock / script leaves change the address when present on policy.'
         },
         endpoints: {
           vault: '/services/distributed/vault',
@@ -3222,7 +3780,8 @@ class Hub extends Service {
         },
         rpc: {
           prepareWithdrawalPsbt: 'PrepareFederationVaultWithdrawalPsbt'
-        }
+        },
+        authorityUnity: this._beaconAuthorityUnity || null
       };
     } catch (e) {
       return {
@@ -3231,7 +3790,9 @@ class Hub extends Service {
         message: e && e.message ? e.message : String(e),
         network: networkName,
         address: null,
-        policy: null
+        spendAddress: null,
+        policy: null,
+        spendPolicy: null
       };
     }
   }
@@ -3317,12 +3878,17 @@ class Hub extends Service {
       return { status: 'error', message: 'No federation validators configured' };
     }
     const threshold = this._distributedFederationThresholdEffective();
+    const softPolicy = this._federationAuthoritySoftPolicy();
+    const publisher = this._federationAuthorityPublisher(validators) || validators[0];
     let built;
     try {
       built = federationVault.buildFederationVaultFromPolicy({
-        validatorPubkeysHex: validators,
+        validators,
         threshold,
-        networkName: bitcoin.network || 'mainnet'
+        networkName: bitcoin.network || 'mainnet',
+        publisher,
+        csvBlocks: softPolicy.csvBlocks,
+        softMode: softPolicy.softMode
       });
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : String(e) };
@@ -3340,11 +3906,19 @@ class Hub extends Service {
         networkName: bitcoin.network || 'mainnet',
         fundedTxHex,
         vaultAddress,
-        multisigScript: built.multisigScript,
+        policy: built.policy,
+        leafId: body.leafId || body.tierId || undefined,
+        action: body.action || undefined,
+        preimage32: body.preimage32 || body.preimageHex || undefined,
         destinationAddress: body.destinationAddress || body.toAddress,
-        feeSats: body.feeSats
+        feeSats: body.feeSats,
+        ctx: body.ctx && typeof body.ctx === 'object' ? body.ctx : undefined
       });
-      return { type: 'PrepareFederationVaultWithdrawalPsbtResult', ...r };
+      return {
+        type: 'PrepareFederationVaultWithdrawalPsbtResult',
+        leaves: built.leaves || [],
+        ...r
+      };
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : String(e) };
     }
@@ -7030,16 +7604,26 @@ class Hub extends Service {
   _handleBitcoinFaucetRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       try {
+        const body = req.body || {};
+        const token = SetupService.extractBearerToken(req) ||
+          String(body.adminToken || body.token || '').trim();
+        if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' ||
+            !this.setup.verifyAdminToken(token)) {
+          return res.status(401).json({
+            status: 'error',
+            message: 'Admin token required for faucet (regtest Hub wallet spend).'
+          });
+        }
+
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
         if (bitcoin.network !== 'regtest') {
           return res.status(400).json({ status: 'error', message: 'Faucet is only available on regtest.' });
         }
 
-        const FAUCET_MAX_SATS = 1000000; // 0.01 BTC cap per request
-        const body = req.body || {};
+        const FAUCET_MAX_SATS = bitcoinFaucetCapability.FAUCET_MAX_SATS;
         const to = String(body.address || body.to || '').trim();
-        let amountSats = Number(body.amountSats || 10000);
+        let amountSats = Number(body.amountSats || bitcoinFaucetCapability.FAUCET_DEFAULT_SATS);
         if (!Number.isFinite(amountSats) || amountSats <= 0) amountSats = 10000;
         amountSats = Math.min(Math.round(amountSats), FAUCET_MAX_SATS);
         const amountBTC = Number((amountSats / 100000000).toFixed(8));
@@ -7306,16 +7890,58 @@ class Hub extends Service {
   }
 
   _handlePayjoinProposalSubmitRequest (req, res) {
-    return this.http.jsonOrShell(req, res, async () => {
+    const contentType = String((req && req.headers && req.headers['content-type']) || '').toLowerCase();
+    const accept = String((req && req.headers && req.headers.accept) || '').toLowerCase();
+    const bip78Wire = contentType.includes('text/plain') ||
+      (accept.includes('text/plain') && !accept.includes('application/json'));
+
+    const run = async () => {
       const payjoin = this._getPayjoinService();
-      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!payjoin) {
+        if (bip78Wire) {
+          res.status(503);
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          return res.send('Payjoin service unavailable');
+        }
+        return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      }
       const sessionId = req && req.params ? req.params.sessionId : null;
-      if (!sessionId) return res.status(400).json({ status: 'error', message: 'sessionId is required.' });
-      const body = req.body || {};
-      const result = await payjoin.submitProposal(sessionId, {
-        psbt: body.psbt,
-        txhex: body.txhex
-      });
+      if (!sessionId) {
+        if (bip78Wire) {
+          res.status(400);
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          return res.send('sessionId is required');
+        }
+        return res.status(400).json({ status: 'error', message: 'sessionId is required.' });
+      }
+
+      let psbt = '';
+      let txhex = '';
+      if (typeof req.body === 'string') {
+        psbt = String(req.body || '').trim();
+      } else {
+        const body = req.body || {};
+        psbt = String(body.psbt || body.psbtBase64 || '').trim();
+        txhex = String(body.txhex || '').trim();
+      }
+
+      let result;
+      try {
+        result = await payjoin.submitProposal(sessionId, {
+          psbt,
+          txhex,
+          autoAcpBoost: bip78Wire ? undefined : (req.body && req.body.autoAcpBoost)
+        });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (bip78Wire) {
+          res.status(400);
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          return res.send(msg);
+        }
+        return res.status(400).json({ status: 'error', message: msg });
+      }
+
       try {
         const prop = result && result.proposal;
         const tid = prop && payjoin.extractProposalTxid(prop);
@@ -7326,8 +7952,27 @@ class Hub extends Service {
           });
         }
       } catch (_) {}
+
+      if (bip78Wire) {
+        const out = String((result && result.bip78Psbt) || (result && result.proposal && result.proposal.psbt) || '').trim();
+        res.status(200);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.send(out);
+      }
       return res.json(result);
-    });
+    };
+
+    if (bip78Wire) {
+      return Promise.resolve().then(run).catch((err) => {
+        const msg = err && err.message ? err.message : String(err);
+        try {
+          res.status(500);
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.send(msg);
+        } catch (_) {}
+      });
+    }
+    return this.http.jsonOrShell(req, res, run);
   }
 
   /**
@@ -7390,6 +8035,195 @@ class Hub extends Service {
         walletProcessPsbtComplete: out.complete,
         note: 'Outputs were not modified; payer ANYONECANPAY signatures remain valid. Finalize + broadcast when all inputs are signed.'
       });
+    });
+  }
+
+  _getPayjoinMailbox () {
+    const payjoin = this._getPayjoinService();
+    if (!payjoin || !payjoin.mailbox) return null;
+    return payjoin.mailbox;
+  }
+
+  _handlePayjoinMailboxesListRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const mailbox = this._getPayjoinMailbox();
+      if (!mailbox) {
+        return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
+      }
+      const includeExpired = String((req.query && req.query.includeExpired) || '') === '1' ||
+        String((req.query && req.query.includeExpired) || '').toLowerCase() === 'true';
+      const limit = Number((req.query && req.query.limit) || 25);
+      return res.json({
+        status: 'success',
+        service: 'payjoin',
+        mode: 'bip77_async_mailbox_experimental',
+        mailboxes: mailbox.listMailboxes({ includeExpired, limit })
+      });
+    });
+  }
+
+  _handlePayjoinMailboxCreateRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const mailbox = this._getPayjoinMailbox();
+      if (!mailbox) {
+        return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
+      }
+      const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+      try {
+        const created = mailbox.createMailbox({
+          sessionId: body.sessionId,
+          ttlMs: body.ttlMs != null ? body.ttlMs : (body.expiresInSeconds != null ? Number(body.expiresInSeconds) * 1000 : undefined)
+        });
+        return res.status(201).json({
+          status: 'success',
+          service: 'payjoin',
+          mode: 'bip77_async_mailbox_experimental',
+          mailbox: created,
+          note: 'Opaque enqueue/poll only. markDelivered ≠ Payjoin settled.'
+        });
+      } catch (e) {
+        return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handlePayjoinMailboxEnqueueRequest (req, res) {
+    const contentType = String((req && req.headers && req.headers['content-type']) || '').toLowerCase();
+    const run = async () => {
+      const mailbox = this._getPayjoinMailbox();
+      if (!mailbox) {
+        return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
+      }
+      const mailboxId = req && req.params ? req.params.mailboxId : null;
+      let blob = null;
+      let role = 'payer_reply';
+      if (typeof req.body === 'string') {
+        blob = req.body;
+        role = String((req.query && req.query.role) || 'payer_reply');
+      } else {
+        const body = req.body || {};
+        blob = body.blobBase64 || body.blob || body.psbt || body.psbtBase64 || '';
+        role = body.role || (req.query && req.query.role) || 'payer_reply';
+        if (body.blobBase64) {
+          try {
+            blob = Buffer.from(String(body.blobBase64), 'base64');
+          } catch (_) {
+            blob = body.blobBase64;
+          }
+        }
+      }
+      try {
+        const result = mailbox.enqueue(mailboxId, blob, { role });
+        return res.json({
+          status: 'success',
+          service: 'payjoin',
+          mode: 'bip77_async_mailbox_experimental',
+          ...result
+        });
+      } catch (e) {
+        const code = e && e.code;
+        const status = code === 'MAILBOX_NOT_FOUND' ? 404 : code === 'MAILBOX_EXPIRED' ? 410 : 400;
+        return res.status(status).json({ status: 'error', message: e && e.message ? e.message : String(e), code });
+      }
+    };
+    if (contentType.includes('text/plain')) {
+      return Promise.resolve().then(run).catch((err) => {
+        res.status(500).json({ status: 'error', message: err && err.message ? err.message : String(err) });
+      });
+    }
+    return this.http.jsonOrShell(req, res, run);
+  }
+
+  _handlePayjoinMailboxPollRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const mailbox = this._getPayjoinMailbox();
+      if (!mailbox) {
+        return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
+      }
+      const mailboxId = req && req.params ? req.params.mailboxId : null;
+      const q = (req && req.query) || {};
+      try {
+        if (q.meta === '1' || q.meta === 'true') {
+          return res.json({
+            status: 'success',
+            mailbox: mailbox.getMailbox(mailboxId)
+          });
+        }
+        const pending = mailbox.pendingFor(mailboxId, {
+          after: q.after,
+          role: q.role,
+          includeDelivered: q.includeDelivered === '1' || q.includeDelivered === 'true'
+        });
+        if (!pending.entries.length) {
+          return res.status(404).json({
+            status: 'error',
+            message: 'No pending mailbox entries.',
+            code: 'MAILBOX_EMPTY',
+            mailbox: pending.mailbox
+          });
+        }
+        return res.json({
+          status: 'success',
+          service: 'payjoin',
+          mode: 'bip77_async_mailbox_experimental',
+          ...pending
+        });
+      } catch (e) {
+        const code = e && e.code;
+        const status = code === 'MAILBOX_NOT_FOUND' ? 404 : code === 'MAILBOX_EXPIRED' ? 410 : 400;
+        return res.status(status).json({ status: 'error', message: e && e.message ? e.message : String(e), code });
+      }
+    });
+  }
+
+  _handlePayjoinMailboxDeliveredRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const mailbox = this._getPayjoinMailbox();
+      if (!mailbox) {
+        return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
+      }
+      const mailboxId = req && req.params ? req.params.mailboxId : null;
+      const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+      try {
+        const result = mailbox.markDelivered(
+          mailboxId,
+          body.contentHash || body.hash,
+          body.peerKey || body.peer || 'http-poller'
+        );
+        return res.json({ status: 'success', ...result });
+      } catch (e) {
+        const code = e && e.code;
+        const status = code === 'MAILBOX_NOT_FOUND' ? 404 : 400;
+        return res.status(status).json({ status: 'error', message: e && e.message ? e.message : String(e), code });
+      }
+    });
+  }
+
+  _handlePayjoinMailboxClaimRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const mailbox = this._getPayjoinMailbox();
+      if (!mailbox) {
+        return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
+      }
+      const mailboxId = req && req.params ? req.params.mailboxId : null;
+      const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
+      try {
+        const result = mailbox.claim(
+          mailboxId,
+          body.contentHash || body.hash,
+          body.claimant || body.peerKey || body.pubkey
+        );
+        return res.json({ status: 'success', ...result });
+      } catch (e) {
+        const code = e && e.code;
+        const status = code === 'CLAIM_HELD' ? 409 : code === 'MAILBOX_NOT_FOUND' ? 404 : code === 'MAILBOX_EXPIRED' ? 410 : 400;
+        return res.status(status).json({
+          status: 'error',
+          message: e && e.message ? e.message : String(e),
+          code,
+          claim: e && e.claim
+        });
+      }
     });
   }
 
@@ -8181,6 +9015,39 @@ class Hub extends Service {
       }
     }
 
+    // Fail closed when beacon/sidechain stores were written for another Bitcoin network.
+    try {
+      const guard = await beaconNetworkGuard.ensureBeaconNetworkBinding(
+        this.fs,
+        bitcoin.network,
+        {
+          allowReset: beaconConfig.resetNetworkStores === true,
+          includeSidechainState: beaconConfig.resetIncludeSidechainState !== false
+        }
+      );
+      if (!guard.ok) {
+        console.error('[HUB:BEACON] Network guard blocked start:', guard.error || guard.check);
+        this._beaconNetworkGuard = guard;
+        this.emit('warning', {
+          type: 'BeaconNetworkMismatch',
+          check: guard.check,
+          message: guard.error
+        });
+        return this;
+      }
+      if (guard.reset) {
+        console.warn(
+          '[HUB:BEACON] Cleared L1-tied stores for network rebind:',
+          (guard.reset.cleared || []).join(', ')
+        );
+        this._sidechainState = null;
+      }
+      this._beaconNetworkGuard = guard;
+    } catch (err) {
+      console.error('[HUB:BEACON] Network guard failed:', err && err.message ? err.message : err);
+      return this;
+    }
+
     const isRegtest = bitcoin.network === 'regtest';
     const interval = isRegtest ? Number(beaconConfig.interval || 600000) : 0;
 
@@ -8291,6 +9158,40 @@ class Hub extends Service {
 
     await this.beacon.start();
     await this._reconcileSidechainToBeaconTip();
+
+    // Refresh ARC spend overlays for the bound Bitcoin network, then ensure the
+    // native Beacon CONTRACT_PUBLISH / ADR-001 namespace is registered.
+    try {
+      await this._reEnrichAcceptedTrackedContracts();
+    } catch (err) {
+      console.warn(
+        '[HUB:BEACON] Accepted ARC re-enrich failed:',
+        err && err.message ? err.message : err
+      );
+    }
+    try {
+      await this._ensureBeaconNativeContract();
+    } catch (err) {
+      console.warn(
+        '[HUB:BEACON] Native Beacon contract ensure failed:',
+        err && err.message ? err.message : err
+      );
+    }
+    try {
+      this._beaconAuthorityUnity = this._assertBeaconVaultSpendUnity();
+      if (this._beaconAuthorityUnity && this._beaconAuthorityUnity.ok === false) {
+        console.warn(
+          '[HUB:BEACON] Authority spendAddress mismatch:',
+          this._beaconAuthorityUnity.message || this._beaconAuthorityUnity
+        );
+      }
+    } catch (err) {
+      console.warn(
+        '[HUB:BEACON] Authority unity check failed:',
+        err && err.message ? err.message : err
+      );
+    }
+
     const modeDesc = isRegtest ? `${this.beacon.settings.interval}ms interval` : '1 event per block';
     console.log(`[HUB:BEACON] Started (${modeDesc}) on ${bitcoin.network}.`);
     return this;
@@ -8830,7 +9731,13 @@ class Hub extends Service {
         ['POST', '/services/payjoin/sessions', this._handlePayjoinDepositRequest.bind(this)],
         ['GET', '/services/payjoin/sessions/:sessionId', this._handlePayjoinSessionViewRequest.bind(this)],
         ['POST', '/services/payjoin/sessions/:sessionId/proposals', this._handlePayjoinProposalSubmitRequest.bind(this)],
-        ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinAcpHubBoostRequest.bind(this)]
+        ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinAcpHubBoostRequest.bind(this)],
+        ['GET', '/services/payjoin/mailboxes', this._handlePayjoinMailboxesListRequest.bind(this)],
+        ['POST', '/services/payjoin/mailboxes', this._handlePayjoinMailboxCreateRequest.bind(this)],
+        ['GET', '/services/payjoin/mailboxes/:mailboxId', this._handlePayjoinMailboxPollRequest.bind(this)],
+        ['PUT', '/services/payjoin/mailboxes/:mailboxId', this._handlePayjoinMailboxEnqueueRequest.bind(this)],
+        ['POST', '/services/payjoin/mailboxes/:mailboxId/delivered', this._handlePayjoinMailboxDeliveredRequest.bind(this)],
+        ['POST', '/services/payjoin/mailboxes/:mailboxId/claim', this._handlePayjoinMailboxClaimRequest.bind(this)]
       ];
       for (const [method, route, handler] of payjoinRoutes) {
         this.http._addRoute(method, route, handler);
@@ -9374,7 +10281,7 @@ class Hub extends Service {
 
       // Submit a chat message for broadcast to all connected clients AND all Fabric nodes.
       // Params: (body: { text|content|body, clientId?, channel?, handle?, actor?: { id } })
-      // Compatible with Hub classic and GoonCitizen ChatManager wire shapes.
+      // Compatible with Hub classic and application ChatManager wire shapes.
       this.http._registerMethod('SubmitChatMessage', (...params) => {
         const body = params[0] || params;
         const text = typeof body === 'string'
@@ -10419,9 +11326,15 @@ class Hub extends Service {
           return { status: 'error', message: 'positive amountSats required' };
         }
         const safeProg = DistributedExecution.jsonSafe(program);
-        const digest = crypto.createHash('sha256')
-          .update(Buffer.from(DistributedExecution.stableStringify(safeProg), 'utf8'))
-          .digest('hex');
+        let digest;
+        try {
+          digest = executionProgramDigest(safeProg);
+        } catch (e) {
+          return {
+            status: 'error',
+            message: e && e.message ? e.message : 'program digest failed'
+          };
+        }
         const name = config.name ? String(config.name).trim() : '';
         try {
           const address = await bitcoin.getUnusedAddress();
@@ -10470,40 +11383,46 @@ class Hub extends Service {
         const clientDigest = config.programDigest ? String(config.programDigest).trim().toLowerCase() : '';
 
         const safeProg = DistributedExecution.jsonSafe(program);
-        const computedDigest = crypto.createHash('sha256')
-          .update(Buffer.from(DistributedExecution.stableStringify(safeProg), 'utf8'))
-          .digest('hex');
+        let computedDigest;
+        try {
+          computedDigest = executionProgramDigest(safeProg);
+        } catch (e) {
+          return {
+            status: 'error',
+            message: e && e.message ? e.message : 'program digest failed'
+          };
+        }
 
         let verifiedInvoiceMeta = null;
 
         if (bitcoin) {
-          if (!clientDigest || clientDigest !== computedDigest) {
-            return {
-              status: 'error',
-              message: clientDigest && clientDigest !== computedDigest
-                ? 'programDigest does not match canonical hash of program'
-                : 'Bitcoin is enabled: call CreateExecutionRegistryInvoice, pay the invoice on-chain, then pass programDigest and txid with the same program.'
-            };
+          const pending = clientDigest
+            ? this._executionRegistryRequests[clientDigest]
+            : null;
+          let paymentVerified = null;
+          if (pending && txid) {
+            paymentVerified = await this._verifyL1Payment(
+              bitcoin,
+              txid,
+              pending.address,
+              pending.amountSats
+            );
           }
-          const pending = this._executionRegistryRequests[clientDigest];
-          if (!pending) {
-            return { status: 'error', message: 'No pending registry invoice for this program digest. Call CreateExecutionRegistryInvoice first.' };
+          const gate = gateExecutionRegistryCreate({
+            bitcoinEnabled: true,
+            clientDigest,
+            computedDigest,
+            pending: pending || null,
+            txid,
+            paymentVerified,
+            program: safeProg,
+            stableStringify: DistributedExecution.stableStringify
+          });
+          if (!gate.ok) {
+            return { status: 'error', message: gate.message, code: gate.code };
           }
-          if (DistributedExecution.stableStringify(safeProg) !== DistributedExecution.stableStringify(pending.program)) {
-            return { status: 'error', message: 'Program does not match pending registry invoice.' };
-          }
-          if (!txid) {
-            return { status: 'error', message: 'txid required after paying the registry invoice.' };
-          }
-          const verified = await this._verifyL1Payment(bitcoin, txid, pending.address, pending.amountSats);
-          if (!verified) {
-            return { status: 'error', message: 'L1 payment verification failed for registry invoice.' };
-          }
-          verifiedInvoiceMeta = {
-            invoiceAddress: pending.address,
-            invoiceAmountSats: pending.amountSats
-          };
-          delete this._executionRegistryRequests[clientDigest];
+          verifiedInvoiceMeta = gate.verifiedInvoiceMeta || null;
+          // Do not burn the L1 invoice until create/persist succeeds (see delete below).
         }
 
         const ownerId = config.actorId || (this.agent && this.agent.identity && this.agent.identity.id) || null;
@@ -10555,8 +11474,17 @@ class Hub extends Service {
             this._refreshChainState('create-execution-contract');
             this.commit();
             if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+            if (bitcoin && clientDigest) {
+              delete this._executionRegistryRequests[clientDigest];
+            }
           } catch (e) {
             console.error('[HUB] Failed to persist execution contract:', e);
+            // Leave pending invoice so the client can retry with the same L1 payment.
+            delete this._state.content.collections.contracts[contractId];
+            return {
+              status: 'error',
+              message: e && e.message ? e.message : 'failed to persist execution contract'
+            };
           }
 
           this.recordActivity({
@@ -10604,17 +11532,47 @@ class Hub extends Service {
         }
 
         const result = runExecutionProgram(contract.program);
-        let runCommitmentHex = null;
+        const programHash = (result.programHash
+          || contract.programDigest
+          || null);
+        let digests = {
+          programHash,
+          runCommitmentHex: null,
+          executionRunCommitmentHex: null,
+          fabricProgramRunCommitmentHex: null,
+          fabricProgramRun: null
+        };
         try {
-          runCommitmentHex = computeExecutionRunCommitmentHex(id, result);
+          digests = buildExecutionRunOutput({
+            contractId: id,
+            programHash,
+            result,
+            program: result.program || null
+          });
         } catch (e) {
-          runCommitmentHex = null;
+          try {
+            digests.executionRunCommitmentHex = computeExecutionRunCommitmentHex(id, result);
+            digests.runCommitmentHex = result.runCommitmentHex
+              || digests.executionRunCommitmentHex;
+          } catch (_) {
+            digests.runCommitmentHex = result.runCommitmentHex || null;
+          }
         }
         const out = {
           type: 'RunExecutionContractResult',
           contractId: id,
-          runCommitmentHex,
-          ...result
+          programHash: digests.programHash,
+          runCommitmentHex: digests.runCommitmentHex,
+          executionRunCommitmentHex: digests.executionRunCommitmentHex,
+          fabricProgramRunCommitmentHex: digests.fabricProgramRunCommitmentHex,
+          fabricProgramRun: digests.fabricProgramRun,
+          runner: 'Machine/fabric-execution',
+          ok: result.ok,
+          stepsExecuted: result.stepsExecuted,
+          stack: result.stack,
+          trace: result.trace,
+          tip: result.tip,
+          error: result.error
         };
         const top = result.ok && result.stack && result.stack.length
           ? result.stack[result.stack.length - 1]
@@ -10906,7 +11864,8 @@ class Hub extends Service {
         };
       });
 
-      // Params: { peerId|address|id, contractId?, note?, adminToken|token }
+      // Params: { peerId|address|id, contractId?, note?, proposedPolicy?, spendingTerms?,
+      //           termsSummary?, groupName?, adminToken|token }
       this.http._registerMethod('InvitePeerToFederationContract', async (...params) => {
         const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
         const token = String(req.adminToken || req.token || '').trim();
@@ -10927,12 +11886,34 @@ class Hub extends Service {
           return { status: 'error', message: 'hub identity unavailable' };
         }
         const inviterHubId = String(this.agent.identity.id);
+        const proposedPolicy = req.proposedPolicy != null
+          ? federationContractInvite.normalizeProposedPolicy(req.proposedPolicy)
+          : null;
+        if (req.proposedPolicy != null && !proposedPolicy) {
+          return { status: 'error', message: 'invalid proposedPolicy' };
+        }
+        const spendingTerms = req.spendingTerms != null
+          ? federationContractInvite.normalizeSpendingTerms(req.spendingTerms)
+          : null;
+        if (req.spendingTerms != null && !spendingTerms) {
+          return { status: 'error', message: 'invalid spendingTerms' };
+        }
+        const termsSummary = req.termsSummary != null && String(req.termsSummary).trim()
+          ? String(req.termsSummary).trim().slice(0, 2000)
+          : null;
+        const groupName = req.groupName != null && String(req.groupName).trim()
+          ? String(req.groupName).trim().slice(0, 80)
+          : null;
         const content = federationContractInvite.buildFederationContractInviteJson({
           inviteId,
           inviterHubId,
           contractId: contractId || null,
           note: note || null,
-          invitedAt: Date.now()
+          invitedAt: Date.now(),
+          proposedPolicy: proposedPolicy || undefined,
+          spendingTerms: spendingTerms || undefined,
+          termsSummary: termsSummary || undefined,
+          groupName: groupName || undefined
         });
         const actorId = this.agent.identity.id;
         try {
@@ -10947,7 +11928,9 @@ class Hub extends Service {
               inviteId,
               targetPeer: targetValue,
               contractId: contractId || null,
-              note: note || null
+              note: note || null,
+              groupName: groupName || null,
+              threshold: proposedPolicy ? proposedPolicy.threshold : null
             });
           } catch (logErr) {
             console.warn('[HUB:FEDERATION] log append failed:', logErr && logErr.message ? logErr.message : logErr);
@@ -11034,6 +12017,59 @@ class Hub extends Service {
           type: 'ListFabricMessagesResult',
           messages: this._getFabricMessages()
         };
+      });
+
+      this.http._registerMethod('ListContractMessageQueue', (...params) => {
+        const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const store = this._ensureContractMessageQueueStore();
+        if (!store) {
+          return { type: 'ListContractMessageQueueResult', status: 'error', message: 'queue unavailable' };
+        }
+        const contractId = p.contractId != null ? String(p.contractId).trim() : '';
+        if (contractId) {
+          const rows = contractMessageQueue.listQueuedMessages(store, contractId, {
+            limit: p.limit,
+            includeDelivered: p.includeDelivered === true,
+            peerKey: p.peerKey || null
+          });
+          return {
+            type: 'ListContractMessageQueueResult',
+            status: 'ok',
+            contractId,
+            count: rows.length,
+            // Opaque metadata only — hex available when includeHex is set.
+            messages: rows.map((e) => ({
+              hash: e.hash,
+              type: e.type,
+              author: e.author,
+              origin: e.origin,
+              enqueuedAt: e.enqueuedAt,
+              deliveredTo: e.deliveredTo || {},
+              hex: p.includeHex === true ? e.hex : undefined
+            }))
+          };
+        }
+        const contracts = typeof store.listContractIds === 'function' ? store.listContractIds() : [];
+        return {
+          type: 'ListContractMessageQueueResult',
+          status: 'ok',
+          contracts: contracts.map((id) => ({
+            contractId: id,
+            count: contractMessageQueue.listQueuedMessages(store, id, { includeDelivered: true }).length
+          }))
+        };
+      });
+
+      this.http._registerMethod('DrainContractMessageQueue', (...params) => {
+        const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
+        const address = p.address || p.peer || params[0];
+        if (!address || typeof address === 'object') {
+          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'address required' };
+        }
+        const result = this._drainContractMessageQueueToPeer(String(address), {
+          limitPerContract: p.limitPerContract
+        });
+        return Object.assign({ type: 'DrainContractMessageQueueResult', status: 'ok' }, result);
       });
 
       // Delegation signing: Fabric message log (`DELEGATION_SIGNATURE_*`) + JSON-RPC (no HTTP “sign-request” resources).
@@ -11251,6 +12287,17 @@ class Hub extends Service {
         this._maybeRequestFabricSeedResync(ev);
         const addr = ev && (ev.address || ev.id);
         this._requestMainchainInventoryFromPeer(addr, 'connection-open').catch(() => {});
+        // Opaque CONTRACT_MESSAGE later-relay (hub-blind; does not open seals).
+        try {
+          const drain = this._drainContractMessageQueueToPeer(addr);
+          if (drain && drain.delivered && this.settings && this.settings.debug) {
+            console.debug('[HUB:QUEUE] drained', drain.delivered, 'frames across', drain.contracts, 'contracts →', addr);
+          }
+        } catch (err) {
+          if (this.settings && this.settings.debug) {
+            console.error('[HUB:QUEUE] drain on connect failed:', err && err.message ? err.message : err);
+          }
+        }
       });
       this.agent.on('connections:close', pushNetworkStatus);
 
@@ -11424,6 +12471,8 @@ class Hub extends Service {
       //   • Hub↔browser WS — JSON { original, originalType, hops } (Bridge + hop UI)
       //   • Fabric TCP Peer — raw inner Message bytes (@fabric/core Peer._handleFabricMessage)
       // Include BitcoinBlock so browser mesh can forward chain-head summaries to Fabric P2P via the hub (same shape as ZMQ-driven gossip).
+      // CONTRACT_MESSAGE / fabric-message: author-signed AMP bytes (MessageReceipt,
+      // GroupChat, …) fan out to Fabric TCP without hub re-signing.
       const RELAYABLE_ORIGINAL_TYPES = [
         'P2P_CHAT_MESSAGE',
         'P2P_PEER_GOSSIP',
@@ -11433,6 +12482,8 @@ class Hub extends Service {
         'P2P_PEER_ALIAS',
         P2P_PEER_ALIAS,
         'fabric-message',
+        'CONTRACT_MESSAGE',
+        'P2P_CONTRACT_MESSAGE',
         'BitcoinBlock'
       ];
       this.http._registerMethod('RelayFromWebRTC', (...params) => {
@@ -11638,8 +12689,8 @@ class Hub extends Service {
 
       // Contract namespace events (CONTRACT_PUBLISH / CONTRACT_MESSAGE).
       // CONTRACT_PUBLISH → pending tracked application contract (operator Accept
-      // seals into Beacon `payload.contracts` state root). CONTRACT_MESSAGE stays
-      // in-memory only (high volume from app namespaces like GoonCitizen).
+      // seals into Beacon `payload.contracts` state root). CONTRACT_MESSAGE is
+      // queued as opaque AMP hex (hub-blind; no seal open) for later relay.
       this._contractNamespaces = this._contractNamespaces || new Set();
       this._contractMessageCounts = this._contractMessageCounts || Object.create(null);
       this.agent.on('contract:publish', (ev) => {
@@ -11666,6 +12717,13 @@ class Hub extends Service {
         const contract = ev && ev.contract ? String(ev.contract) : null;
         if (!contract) return;
         this._contractMessageCounts[contract] = (this._contractMessageCounts[contract] || 0) + 1;
+        try {
+          this._enqueueOpaqueContractMessage(ev || {});
+        } catch (err) {
+          if (this.settings && this.settings.debug) {
+            console.error('[HUB:QUEUE] enqueue failed:', err && err.message ? err.message : err);
+          }
+        }
         if (this.settings && this.settings.debug) {
           const body = (ev && ev.object) || {};
           console.log('[HUB:CONTRACT]', contract, body.type || null, 'count=', this._contractMessageCounts[contract]);
@@ -12097,7 +13155,9 @@ class Hub extends Service {
           this.http.webrtcPeers.set(peerId, cur);
         }
 
-        pushNetworkStatus();
+        if (typeof this._pushNetworkStatus === 'function') {
+          this._pushNetworkStatus();
+        }
         return { status: 'success', peerId };
       });
 

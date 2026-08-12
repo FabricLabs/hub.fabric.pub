@@ -40,7 +40,7 @@ class SPA extends FabricSPA {
     <!-- <link rel="stylesheet" type="text/css" href="/styles/ReactToastify.css"> -->
     <script src="/scripts/jquery-3.4.1.js"></script>
     <script src="/semantic.min.js"></script>
-    <!-- <link rel="icon" href="/images/sensemaker-icon.png" /> -->
+    <!-- <link rel="icon" href="/images/hub-icon.png" /> -->
     <style>
       html {
         scroll-padding-top: 6.5rem;

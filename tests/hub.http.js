@@ -458,6 +458,13 @@ describe('@fabric/hub', function () {
         assert.ok(Array.isArray(run.trace));
         assert.ok(typeof run.runCommitmentHex === 'string');
         assert.strictEqual(run.runCommitmentHex.length, 64);
+        assert.ok(typeof run.programHash === 'string');
+        assert.strictEqual(run.programHash.length, 64);
+        assert.ok(typeof run.executionRunCommitmentHex === 'string');
+        assert.ok(run.fabricProgramRun && run.fabricProgramRun.kind === 'FabricProgramRun');
+        assert.strictEqual(run.fabricProgramRun.runCommitmentHex, run.runCommitmentHex);
+        assert.strictEqual(run.programHash, created.contract.programDigest);
+        assert.strictEqual(run.runner, 'Machine/fabric-execution');
       });
 
       it('CreateExecutionRegistryInvoice returns error when Bitcoin is disabled', async function () {
@@ -835,11 +842,12 @@ describe('@fabric/hub', function () {
 
         const key = new Key();
         const ident = new Identity(key);
-        const signature = key.signSchnorr(Buffer.from(message, 'utf8')).toString('hex');
+        const fabric = ident.fabricKey;
+        const signature = fabric.signSchnorr(Buffer.from(message, 'utf8')).toString('hex');
         const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
           signature,
-          pubkeyHex: key.pubkey,
-          identity: { id: ident.id, xpub: key.xpub }
+          pubkeyHex: fabric.pubkey,
+          identity: { id: ident.id, xpub: fabric.xpub }
         });
         assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
         assert.strictEqual(sign.body.ok, true);
@@ -861,11 +869,12 @@ describe('@fabric/hub', function () {
         const sid = create.body.sessionId;
         const key = new Key();
         const ident = new Identity(key);
+        const fabric = ident.fabricKey;
         const badSig = 'ab'.repeat(64);
         const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
           signature: badSig,
-          pubkeyHex: key.pubkey,
-          identity: { id: ident.id, xpub: key.xpub }
+          pubkeyHex: fabric.pubkey,
+          identity: { id: ident.id, xpub: fabric.xpub }
         });
         assert.strictEqual(sign.status, 400, JSON.stringify(sign.body));
         assert.strictEqual(sign.body.ok, false);

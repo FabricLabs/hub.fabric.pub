@@ -304,6 +304,34 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(relayP2pCalls.length, 1);
   });
 
+  it('RelayFromWebRTC accepts author-signed CONTRACT_MESSAGE wire', function () {
+    const { methods, broadcasts, relayP2pCalls } = harness;
+    const Key = require('@fabric/core/types/key');
+    const Message = require('@fabric/core/types/message');
+    const author = new Key();
+    const signed = Message.fromVector([
+      'CONTRACT_MESSAGE',
+      JSON.stringify({
+        contract: '11'.repeat(32),
+        type: 'MessageReceipt',
+        messageId: '22'.repeat(32)
+      })
+    ]).signWithKey(author);
+    const wireB64 = signed.toBuffer().toString('base64');
+    const r = methods.RelayFromWebRTC({
+      fromPeerId: 'webrtc-contract',
+      envelope: {
+        original: wireB64,
+        originalType: 'CONTRACT_MESSAGE',
+        hops: []
+      }
+    });
+    assert.strictEqual(r.status, 'success', JSON.stringify(r));
+    assert.strictEqual(broadcasts.length, 1);
+    assert.strictEqual(relayP2pCalls.length, 1);
+    assert.strictEqual(relayP2pCalls[0].tag, '_webrtc');
+  });
+
   it('requires document id for GetDocument', async function () {
     const { methods, hub, fsStore } = harness;
 

@@ -37,40 +37,42 @@ describe('fabricDesktopLoginVerify', function () {
   });
 
   it('verifies Schnorr + binding for a synthetic hub payload', function () {
-    const key = new Key();
+    const master = new Key();
+    const ident = new Identity(master);
+    const fabric = ident.fabricKey;
     const sessionId = crypto.randomBytes(24).toString('hex');
     const nonce = crypto.randomBytes(32).toString('hex');
     const origin = 'http://127.0.0.1:8080';
     const message = buildLoginMessage(sessionId, origin, nonce);
-    const sig = key.signSchnorr(Buffer.from(message, 'utf8'));
-    const ident = new Identity(key);
+    const sig = fabric.signSchnorr(Buffer.from(message, 'utf8'));
     const payload = {
       ok: true,
       status: 'signed',
       signature: sig.toString('hex'),
-      pubkeyHex: key.pubkey,
+      pubkeyHex: fabric.pubkey,
       message,
-      identity: { id: ident.id, xpub: key.xpub }
+      identity: { id: ident.id, xpub: fabric.xpub }
     };
     const v = verifyFabricDesktopLoginSignedPayload(payload, { sessionId, origin });
     assert.strictEqual(v.ok, true);
   });
 
   it('rejects tampered message bytes', function () {
-    const key = new Key();
+    const master = new Key();
+    const ident = new Identity(master);
+    const fabric = ident.fabricKey;
     const sessionId = crypto.randomBytes(24).toString('hex');
     const nonce = crypto.randomBytes(32).toString('hex');
     const origin = 'http://127.0.0.1:8080';
     const message = buildLoginMessage(sessionId, origin, nonce);
-    const sig = key.signSchnorr(Buffer.from(message, 'utf8'));
-    const ident = new Identity(key);
+    const sig = fabric.signSchnorr(Buffer.from(message, 'utf8'));
     const payload = {
       ok: true,
       status: 'signed',
       signature: sig.toString('hex'),
-      pubkeyHex: key.pubkey,
+      pubkeyHex: fabric.pubkey,
       message: message + 'x',
-      identity: { id: ident.id, xpub: key.xpub }
+      identity: { id: ident.id, xpub: fabric.xpub }
     };
     const v = verifyFabricDesktopLoginSignedPayload(payload, { sessionId, origin });
     assert.strictEqual(v.ok, false);

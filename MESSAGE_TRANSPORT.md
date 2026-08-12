@@ -6,7 +6,7 @@ Hub and browser exchange **signed Fabric `Message`** frames over the **binary We
 (`docs/MESSAGE_BODY.md`). **JSON is an HTTP/browser bridge** (`@fabric/http`),
 not the wire body design. Former JSON keys map to named fields in per-opcode schemas.
 
-**GoonCitizen Groups:** out-of-band shares and federation invites may arrive as
+**Application Groups:** out-of-band shares and federation invites may arrive as
 opaque `fabric:<hex>` signed `CONTRACT_MESSAGE` frames (`GroupShare` /
 `GroupOffer`, or `FederationContractInvite`) — not only Hub chat JSON.
 
@@ -63,7 +63,7 @@ Full table with opcodes and stability: **`fabricMessageRegistry.OUTER_WIRE_TYPES
 | `GenericMessage` | **Transitional** fanout / carrier; migrate to specific types. |
 | `JSONBlob` | **Transitional** JSON payload (`GENERIC_MESSAGE_TYPE + 1`). |
 | `P2P_RELAY` | Mesh **flood** envelope. **Peer mesh:** body = raw inner `Message` bytes. **Hub↔browser WS:** JSON `{ original, originalType, hops }` (Bridge). Not IP-hiding. |
-| `P2P_FORWARD` | Directed onion hop (`0x45`): field body `{ nextPeer, ttl, inner }`. Terminated by `@fabric/core` Peer (peel / single-peer forward). Hub RPC **`SendOnion`**. **Do not** `http.broadcast` outer frames to browsers — Bridge ignores. See core [`docs/P2P_FORWARD.md`](https://github.com/FabricLabs/fabric/blob/master/docs/P2P_FORWARD.md). |
+| `P2P_FORWARD` | Directed onion hop (`0x45`): field body `{ nextPeer, ttl, inner }`. Terminated by `@fabric/core` Peer (peel / single-peer forward). Hub RPC **`SendOnion`** (text sealed to path tip by default via `onionChatSeal`; `encrypt: false` for cleartext). **Do not** `http.broadcast` outer frames to browsers — Bridge ignores. See core [`docs/P2P_FORWARD.md`](https://github.com/FabricLabs/fabric/blob/master/docs/P2P_FORWARD.md). |
 | `Ping` / `Pong` | Keepalive. |
 | `P2P_MESSAGE_RECEIPT` | Server ack. |
 | `ChatMessage` | Chat broadcast (legacy re-signed relay path). |
@@ -101,12 +101,20 @@ Environment wiring:
 
 For **targeted** delivery, use **JSON-RPC** responses to the calling client, or future outer types with routing metadata once defined.
 
-## Payjoin v2 (BIP 77) and transport
-[Async Payjoin (BIP 77)](https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77) keeps the same PSBT exchange shape as v1 but moves delivery through a **Payjoin Directory** (mailbox + HPKE) and uses **Oblivious HTTP (OHTTP)** so the directory does not learn client IP metadata alongside payloads. Hub deposit sessions today are **BIP77** at the product/API layer; **synchronous** `pj=` payjoin remains BIP78-style HTTP. A full v2 client would add directory/OHTTP integration (e.g. via [Payjoin Dev Kit](https://payjoin.org/)) — track as a transport upgrade, not a replacement for Fabric `Message` framing above.
+## Payjoin (BIP 78 sync + BIP 77 experimental mailbox)
+[Async Payjoin (BIP 77)](https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77) keeps the same PSBT exchange shape as v1 but moves delivery through a **Payjoin Directory** (mailbox + HPKE) and uses **Oblivious HTTP (OHTTP)** so the directory does not learn client IP metadata alongside payloads.
 
-**WebRTC relay:** `RelayFromWebRTC` may forward selected inner types (including `BitcoinBlock` summaries) inside `P2P_RELAY` so mesh participants can reach the hub’s Fabric P2P fan-out path.
+**Today on Hub:**
+- **BIP78 (active):** deposit sessions emit absolute BIP21 `pj=` URLs; clients `POST` PSBT as `text/plain` to `…/sessions/:id/proposals` and receive a `text/plain` payjoined PSBT (optional Hub ACP co-input). JSON `{ psbt }` remains for Hub UI/RPC.
+- **BIP77 (experimental, Hub-local):** opaque mailboxes under `…/mailboxes` (`enqueue` / `poll` / `markDelivered`), mirroring CONTRACT_MESSAGE queue semantics. **`markDelivered` is a delivery sidecar only** — not Payjoin settlement and not ARC `MessageReceipt`. Not a public directory + HPKE + OHTTP stack yet (see capabilities `fabricProtocol.receiver.roadmapModes`).
 
-## Application namespaces (Hub ↔ GoonCitizen ↔ Sensemaker)
+Prefer push drain (Peer / WebRTC) as a later upgrade; HTTP poll is the current fallback (same order as application DeliverySync).
+
+**WebRTC relay:** `RelayFromWebRTC` may forward selected inner types inside `P2P_RELAY` so mesh participants can reach the hub’s Fabric P2P fan-out path. Allow-list includes `P2P_CHAT_MESSAGE`, peer gossip/offer/alias, `fabric-message`, **`CONTRACT_MESSAGE`** (author-signed AMP — GroupChat / MessageReceived / MessageReceipt), and `BitcoinBlock`. Prefer **binary** `Message.toBuffer()` on `RTCDataChannel`; Hub preserves author signatures when `original` is base64 AMP (`functions/fabricWebRtcP2pRelay.js`).
+
+**MessageReceipt / 2PC receipts:** Hub may **queue and relay** author-signed `CONTRACT_MESSAGE` bytes (including `MessageReceipt` bodies) without opening seals. BIP340 `receiptSig` verification and `markReceipt` live in `@fabric/core` `contractMessageCommit` and are applied by **participants** (downstream apps) when folding tips — not by Hub enqueue/drain. Hub `markDelivered` on the opaque queue is a per-peer delivery sidecar only; it is not a MessageReceipt.
+
+## Application namespaces (Hub ↔ applications)
 
 Canonical model in **`@fabric/core`** — [docs/APPLICATION_NAMESPACES.md](https://github.com/FabricLabs/fabric/blob/master/docs/APPLICATION_NAMESPACES.md) and `functions/applicationNamespaces.js`.
 
@@ -115,7 +123,7 @@ Canonical model in **`@fabric/core`** — [docs/APPLICATION_NAMESPACES.md](https
 | Global shoutbox | `P2P_CHAT_MESSAGE` | `SubmitChatMessage` / peer `chat` → mesh; WS UI may still fan out as `ChatMessage` (legacy 0x67) |
 | Namespace declare | `CONTRACT_PUBLISH` (`P2P_CONTRACT_PUBLISH`) | Peer relays; Hub records `ContractPublish` once per contract id |
 | Namespace events | `CONTRACT_MESSAGE` (`P2P_CONTRACT_MESSAGE`) | Peer relays; Hub counts in memory (does **not** append each to the Fabric log) |
-| Shared body types | see `APPLICATION_CONTRACT_BODY_TYPES` in [`fabricMessageRegistry.js`](functions/fabricMessageRegistry.js) | Federation invites, GoonCitizen GroupChat / GroupShare, etc. |
+| Shared body types | see `APPLICATION_CONTRACT_BODY_TYPES` in [`fabricMessageRegistry.js`](functions/fabricMessageRegistry.js) | Federation invites, GroupChat / GroupShare, etc. |
 
 **Policy:** New mesh features use these outer types — not new per-app opcodes. App semantics live in `CONTRACT_MESSAGE` body `type` under a published contract id. Apps ignore unknown namespaces.
 

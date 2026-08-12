@@ -402,10 +402,25 @@ function handleDelegationAudit (hub, req, res) {
   }
 }
 
-function mountFabricDelegationHttp (hub) {
-  hub.http._addRoute('GET', '/sessions/:sessionId/delegation/audit', (req, res) => handleDelegationAudit(hub, req, res));
-  hub.http._addRoute('GET', '/sessions', (req, res) => handleSessionsList(hub, req, res));
-  hub.http._addRoute('DELETE', '/sessions/:sessionId', (req, res) => handleSessionByIdDestroy(hub, req, res));
+function mountFabricDelegationHttp (hub, opts = {}) {
+  const options = Object.assign({
+    /** Hub Security UI loopback list of delegation tokens */
+    mountSessionsList: true,
+    /** DELETE /sessions/:sessionId for revocation */
+    mountSessionDestroy: true,
+    /** GET /sessions/:sessionId/delegation/audit */
+    mountAudit: true
+  }, opts || {});
+
+  if (options.mountAudit !== false) {
+    hub.http._addRoute('GET', '/sessions/:sessionId/delegation/audit', (req, res) => handleDelegationAudit(hub, req, res));
+  }
+  if (options.mountSessionsList !== false) {
+    hub.http._addRoute('GET', '/sessions', (req, res) => handleSessionsList(hub, req, res));
+  }
+  if (options.mountSessionDestroy !== false) {
+    hub.http._addRoute('DELETE', '/sessions/:sessionId', (req, res) => handleSessionByIdDestroy(hub, req, res));
+  }
 }
 
 module.exports = {

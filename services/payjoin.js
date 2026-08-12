@@ -6,6 +6,8 @@ const Tree = require('@fabric/core/types/tree');
 const psbtFabric = require('../functions/psbtFabric');
 const payjoinJoinmarketTaproot = require('../functions/payjoinJoinmarketTaproot');
 const { buildFabricPayjoinProtocolProfile } = require('../functions/payjoinFabricProtocol');
+const { resolvePayjoinPublicOrigin, joinOriginPath } = require('../functions/payjoinPublicOrigin');
+const { PayjoinAsyncMailbox } = require('../functions/payjoinAsyncMailbox');
 const { SATS_PER_BTC } = require('../constants');
 
 class PayjoinService extends Service {
@@ -19,6 +21,17 @@ class PayjoinService extends Service {
       endpointBasePath: '/services/payjoin',
       defaultSessionTTLSeconds: 1800,
       maxOpenSessions: 256,
+      /** Optional absolute origin for BIP21 pj= (overrides env when set). */
+      publicOrigin: '',
+      hostname: '',
+      httpPort: 0,
+      /**
+       * When true, BIP78 text/plain proposal POST attempts Hub wallet ACP co-input.
+       * Default: on for regtest, off otherwise (overridable via settings / FABRIC_PAYJOIN_AUTO_ACP).
+       */
+      autoAcpBoost: null,
+      /** Hub-local BIP77 async mailbox (experimental). */
+      bip77MailboxExperimental: true,
       /** Optional 64-hex x-only federation pubkey for joinmarket taproot reserve leaf (mainnet recommended). */
       beaconFederationXOnlyHex: ''
     }, settings);
@@ -26,6 +39,7 @@ class PayjoinService extends Service {
     this.fs = null;
     this.bitcoin = null;
     this.key = null;
+    this.mailbox = null;
 
     this._payjoinState = {
       sessions: {},
@@ -44,6 +58,13 @@ class PayjoinService extends Service {
     if (deps.fs) this.fs = deps.fs;
     if (deps.bitcoin) this.bitcoin = deps.bitcoin;
     if (deps.key) this.key = deps.key;
+    if (this.settings.bip77MailboxExperimental !== false) {
+      this.mailbox = new PayjoinAsyncMailbox({
+        fs: this.fs,
+        defaultTtlMs: Number(this.settings.defaultSessionTTLSeconds || 1800) * 1000
+      });
+      if (this.fs) this.mailbox.attach({ fs: this.fs });
+    }
     return this;
   }
 
@@ -51,6 +72,9 @@ class PayjoinService extends Service {
     await this._loadFromFilesystem();
     this._ensureStateShape();
     this._refreshStateMerkle();
+    if (this.mailbox && typeof this.mailbox.start === 'function') {
+      await this.mailbox.start();
+    }
     return this;
   }
 
@@ -79,7 +103,10 @@ class PayjoinService extends Service {
       beaconFederationLeafConfigured: !!(
         String(this.settings.beaconFederationXOnlyHex || '').trim() ||
         String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '').trim()
-      )
+      ),
+      autoAcpBoost: this._autoAcpBoostEnabled(),
+      publicOrigin: this._publicOrigin(),
+      bip77MailboxExperimental: !!this.settings.bip77MailboxExperimental
     });
     return {
       available: this.settings.enable !== false,
@@ -88,20 +115,56 @@ class PayjoinService extends Service {
       asyncPayjoinRoadmap: 'BIP77',
       network: this.settings.network,
       endpointBasePath: this.settings.endpointBasePath,
+      publicOrigin: this._publicOrigin() || undefined,
       fabricProtocol,
       joinmarketTaprootTemplate,
       acpHubBoost: {
-        description: 'SIGHASH_ALL|ANYONECANPAY payer PSBT + POST .../sessions/:id/acp-hub-boost (admin) appends Hub wallet input; outputs unchanged.',
-        pathTemplate: `${this.settings.endpointBasePath}/sessions/:sessionId/acp-hub-boost`
+        description: 'SIGHASH_ALL|ANYONECANPAY payer PSBT + POST .../sessions/:id/acp-hub-boost (admin) appends Hub wallet input; outputs unchanged. BIP78 text/plain POST may auto-apply when autoAcpBoost is enabled.',
+        pathTemplate: `${this.settings.endpointBasePath}/sessions/:sessionId/acp-hub-boost`,
+        autoOnBip78Proposal: this._autoAcpBoostEnabled()
       },
       defaults: {
-        sessionTTLSeconds: Number(this.settings.defaultSessionTTLSeconds || 1800)
+        sessionTTLSeconds: Number(this.settings.defaultSessionTTLSeconds || 1800),
+        autoAcpBoost: this._autoAcpBoostEnabled()
       },
       counts: Object.assign({}, this._payjoinState.counts),
       merkle: Object.assign({}, this._payjoinState.merkle),
       clock: now,
       recentSessions: sessions.map((session) => this._publicSessionView(session, { includeProposals: false }))
     };
+  }
+
+  _publicOrigin () {
+    return resolvePayjoinPublicOrigin({
+      publicOrigin: this.settings.publicOrigin,
+      hostname: this.settings.hostname,
+      port: this.settings.httpPort,
+      env: process.env
+    });
+  }
+
+  _autoAcpBoostEnabled () {
+    if (this.settings.autoAcpBoost === true || this.settings.autoAcpBoost === false) {
+      return !!this.settings.autoAcpBoost;
+    }
+    const env = String(process.env.FABRIC_PAYJOIN_AUTO_ACP || '').trim().toLowerCase();
+    if (env === '1' || env === 'true') return true;
+    if (env === '0' || env === 'false') return false;
+    const net = String(this.settings.network || '').toLowerCase();
+    return net === 'regtest' || net === 'test';
+  }
+
+  /**
+   * Relative proposals path + absolute URL for BIP21 pj=.
+   * @param {string} sessionId
+   * @returns {{ proposalPath: string, proposalURL: string }}
+   */
+  _proposalUrlsForSession (sessionId) {
+    const base = String(this.settings.endpointBasePath || '/services/payjoin').replace(/\/+$/, '') || '/services/payjoin';
+    const proposalPath = `${base}/sessions/${sessionId}/proposals`;
+    const origin = this._publicOrigin();
+    const proposalURL = origin ? joinOriginPath(origin, proposalPath) : proposalPath;
+    return { proposalPath, proposalURL };
   }
 
   listSessions (options = {}) {
@@ -191,8 +254,11 @@ class PayjoinService extends Service {
     };
     const actor = new Actor({ content: payload });
     const sessionId = actor.id;
-    const proposalURL = `${this.settings.endpointBasePath}/sessions/${sessionId}/proposals`;
+    const { proposalPath, proposalURL } = this._proposalUrlsForSession(sessionId);
     const bip21Uri = this._buildBIP21Uri(address, payload.amountSats, label, proposalURL);
+    const autoAcpBoost = input.autoAcpBoost != null
+      ? !!input.autoAcpBoost
+      : this._autoAcpBoostEnabled();
 
     const createdEvent = this._createEvent('PAYJOIN_SESSION_CREATED', {
       sessionId,
@@ -213,7 +279,9 @@ class PayjoinService extends Service {
       label,
       memo,
       bip21Uri,
+      proposalPath,
       proposalURL,
+      autoAcpBoost,
       receiveTemplate: receiveTemplate || undefined,
       receiveContract: receiveContract || undefined,
       proposals: {},
@@ -271,7 +339,9 @@ class PayjoinService extends Service {
       status: 'accepted-for-review',
       psbt,
       txhex,
-      analysis
+      analysis,
+      payjoinPsbt: null,
+      acpBoost: null
     };
     const proposalTxid = this.extractProposalTxid(proposal);
     if (proposalTxid) proposal.proposalTxid = proposalTxid;
@@ -284,6 +354,40 @@ class PayjoinService extends Service {
       proposalId
     }));
 
+    const wantAutoAcp = proposalInput.autoAcpBoost != null
+      ? !!proposalInput.autoAcpBoost
+      : (session.autoAcpBoost !== false && this._autoAcpBoostEnabled());
+
+    if (wantAutoAcp && psbt) {
+      try {
+        const boosted = await this._tryAutoAcpBoost(psbt);
+        proposal.payjoinPsbt = boosted.psbtBase64;
+        proposal.acpBoost = {
+          ok: true,
+          addedOutpoint: boosted.addedOutpoint,
+          addedValueSats: boosted.addedValueSats,
+          walletProcessPsbtComplete: boosted.complete
+        };
+        proposal.status = 'payjoin-proposed';
+        session.events.push(this._createEvent('PAYJOIN_ACP_AUTO_BOOST', {
+          sessionId: id,
+          proposalId,
+          addedOutpoint: boosted.addedOutpoint,
+          addedValueSats: boosted.addedValueSats
+        }));
+      } catch (err) {
+        proposal.acpBoost = {
+          ok: false,
+          error: err && err.message ? err.message : String(err)
+        };
+        session.events.push(this._createEvent('PAYJOIN_ACP_AUTO_BOOST_FAILED', {
+          sessionId: id,
+          proposalId,
+          error: proposal.acpBoost.error
+        }));
+      }
+    }
+
     this._payjoinState.counts.proposals = this._countAllProposals();
     this._refreshSessionMerkle(session);
     this._refreshStateMerkle();
@@ -294,8 +398,27 @@ class PayjoinService extends Service {
       status: 'success',
       sessionId: id,
       proposal: Object.assign({}, proposal),
+      /** BIP78 response body: payjoined PSBT when ACP succeeded, else original. */
+      bip78Psbt: proposal.payjoinPsbt || proposal.psbt || '',
       session: this._publicSessionView(session, { includeProposals: true })
     };
+  }
+
+  /**
+   * Attempt Hub wallet ACP co-input (same as admin acp-hub-boost).
+   * @param {string} psbtBase64
+   * @returns {Promise<{ psbtBase64: string, addedOutpoint: string, addedValueSats: number, complete: boolean }>}
+   */
+  async _tryAutoAcpBoost (psbtBase64) {
+    if (!this.bitcoin || typeof this.bitcoin._makeRPCRequest !== 'function') {
+      throw new Error('Bitcoin service unavailable for ACP boost.');
+    }
+    const payjoinAcpBoost = require('../functions/payjoinAcpBoost');
+    return payjoinAcpBoost.addHubWalletInputAndSign({
+      psbtBase64,
+      bitcoin: this.bitcoin,
+      networkName: this.bitcoin.network || this.settings.network || 'regtest'
+    });
   }
 
   _buildBIP21Uri (address, amountSats, label, proposalURL) {
@@ -382,7 +505,9 @@ class PayjoinService extends Service {
       label: session.label,
       memo: session.memo,
       bip21Uri: session.bip21Uri,
+      proposalPath: session.proposalPath || undefined,
       proposalURL: session.proposalURL,
+      autoAcpBoost: session.autoAcpBoost,
       receiveTemplate: session.receiveTemplate,
       receiveContract: session.receiveContract,
       proposalCount: Object.keys(session.proposals || {}).length,

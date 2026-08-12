@@ -27,24 +27,26 @@ describe('fabricDeviceLink', function () {
   });
 
   it('verifies Schnorr offer signatures', function () {
-    const key = new Key();
-    const ident = new Identity(key);
+    const master = new Key();
+    const ident = new Identity(master);
+    const fabric = ident.fabricKey;
     const nonce = 'cd'.repeat(32);
-    const offer = buildDeviceLinkOfferMessage(nonce, ident.id, 'GoonCitizen', 'http://127.0.0.1:8080');
-    const sig = key.signSchnorr(Buffer.from(offer, 'utf8')).toString('hex');
-    const v = verifyIdentitySchnorr(offer, sig, key.pubkey, { id: ident.id, xpub: key.xpub });
+    const offer = buildDeviceLinkOfferMessage(nonce, ident.id, 'DemoApplication', 'http://127.0.0.1:8080');
+    const sig = fabric.signSchnorr(Buffer.from(offer, 'utf8')).toString('hex');
+    const v = verifyIdentitySchnorr(offer, sig, fabric.pubkey, { id: ident.id, xpub: fabric.xpub });
     assert.strictEqual(v.ok, true);
   });
 
   it('rejects mismatched responder for link message binding', function () {
-    const key = new Key();
-    const ident = new Identity(key);
+    const master = new Key();
+    const ident = new Identity(master);
+    const fabric = ident.fabricKey;
     const nonce = 'ef'.repeat(32);
     const msg = buildDeviceLinkMessage(nonce, ident.id, 'id1other', 'Hub');
-    const sig = key.signSchnorr(Buffer.from(msg, 'utf8')).toString('hex');
+    const sig = fabric.signSchnorr(Buffer.from(msg, 'utf8')).toString('hex');
     // Signing as initiator over a message that names a different responder is still
     // cryptographically valid for the initiator key — binding is checked by callers.
-    const v = verifyIdentitySchnorr(msg, sig, key.pubkey, { id: ident.id, xpub: key.xpub });
+    const v = verifyIdentitySchnorr(msg, sig, fabric.pubkey, { id: ident.id, xpub: fabric.xpub });
     assert.strictEqual(v.ok, true);
     const parsed = parseDeviceLinkMessage(msg);
     assert.strictEqual(parsed.responderId, 'id1other');

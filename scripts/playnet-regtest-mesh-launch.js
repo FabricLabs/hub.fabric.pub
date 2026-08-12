@@ -27,12 +27,22 @@ const sleep = promisify(setTimeout);
 
 const REPO = path.join(__dirname, '..');
 const RUNTIME = path.join(REPO, 'stores', 'playnet-mesh-runtime');
-const MNEMONIC_A =
-  'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const MNEMONIC_B =
   'legal winner thank year wave sausage worth useful legal winner thank yellow';
 const MNEMONIC_C =
   'letter advice cage absurd amount doctor acoustic avoid letter advice cage above';
+
+function resolveMeshSeedKey () {
+  try {
+    const { loadPeerKeySettings } = require('./lib/playnetOps');
+    const key = loadPeerKeySettings();
+    if (key && (key.xprv || key.mnemonic)) return key;
+  } catch (_) {}
+  // Deterministic fixture only when no operator identity is available.
+  return {
+    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+  };
+}
 
 function httpJson (hostname, port, method, pathname, body = null) {
   return new Promise((resolve, reject) => {
@@ -110,11 +120,12 @@ function meshPortsFromBase (base) {
 
 function buildFragments (ports, roots) {
   const extra = ['-maxtxfee=10', '-incrementalrelayfee=0'];
+  const keyA = resolveMeshSeedKey();
   const a = {
     port: ports.fabricA,
     peers: [],
     fs: { path: roots.a },
-    key: { mnemonic: MNEMONIC_A },
+    key: keyA,
     bitcoin: {
       enable: true,
       network: 'regtest',
@@ -198,6 +209,7 @@ async function main () {
   }
 
   const fr = buildFragments(ports, roots);
+  console.log('[playnet-mesh] Hub A Fabric key: FABRIC_XPRV / FABRIC_SEED (local operator-identity file is fallback only)');
   const fa = path.join(RUNTIME, 'fragment-a.json');
   const fb = path.join(RUNTIME, 'fragment-b.json');
   const fc = path.join(RUNTIME, 'fragment-c.json');
@@ -257,13 +269,21 @@ async function main () {
   await waitHttp(ports.httpC);
   await waitBitcoinOnline(ports.httpC);
 
-  const boot = async (port, name, bitcoinManaged) => {
+  const boot = async (port, name, bitcoinManaged, label) => {
     const r = await httpJson('127.0.0.1', port, 'POST', '/settings', {
       NODE_NAME: name,
       LIGHTNING_MANAGED: false,
       bitcoinManaged: !!bitcoinManaged
     });
-    if (r.status === 200) return r.body;
+    if (r.status === 200) {
+      const token = r.body && (r.body.token || (r.body.result && r.body.result.token));
+      if (token) {
+        const tokenPath = path.join(RUNTIME, `admin-token-${label}.txt`);
+        fs.writeFileSync(tokenPath, String(token).trim() + '\n', { mode: 0o600 });
+        console.log(`[playnet-mesh] Wrote one-time admin token → ${tokenPath}`);
+      }
+      return r.body;
+    }
     if (r.status === 403) {
       console.log(`[playnet-mesh] Hub on :${port} already configured; skip POST /settings.`);
       return null;
@@ -271,19 +291,27 @@ async function main () {
     throw new Error(`POST /settings on ${port} failed: ${r.status} ${r.raw}`);
   };
 
-  await boot(ports.httpA, 'PlaynetMeshA', true);
-  await boot(ports.httpB, 'PlaynetMeshB', true);
-  await boot(ports.httpC, 'PlaynetMeshC', true);
+  await boot(ports.httpA, 'PlaynetMeshA', true, 'a');
+  await boot(ports.httpB, 'PlaynetMeshB', true, 'b');
+  await boot(ports.httpC, 'PlaynetMeshC', true, 'c');
 
   const urlA = `http://127.0.0.1:${ports.httpA}/`;
   const urlB = `http://127.0.0.1:${ports.httpB}/`;
   const urlC = `http://127.0.0.1:${ports.httpC}/`;
+  const tokenAPath = path.join(RUNTIME, 'admin-token-a.txt');
 
   console.log('');
   console.log('======== PLAYNET REGTEST MESH (local) ========');
   console.log('Hub A (seed):', urlA, '| Fabric P2P', ports.fabricA, '| Bitcoin P2P', ports.btcP2pA);
   console.log('Hub B:       ', urlB, '| addnode → 127.0.0.1:' + ports.btcP2pA);
   console.log('Hub C:       ', urlC, '| addnode → 127.0.0.1:' + ports.btcP2pA);
+  console.log('Hub A key:   FABRIC_XPRV or FABRIC_SEED/MNEMONIC (same env across Hub / deploy scripts)');
+  if (fs.existsSync(tokenAPath)) {
+    console.log('Accept deploy: export FABRIC_HUB_ADMIN_TOKEN="$(cat ' + tokenAPath + ')"');
+    console.log('  Publish CONTRACT_PUBLISH from the application repo, then:');
+    console.log('  FABRIC_HUB_RPC_URL=' + urlA.replace(/\/$/, '') +
+      ' FABRIC_PLAYNET_CONTRACT_ID=<64-hex> npm run playnet:status');
+  }
   console.log('In the UI open Bitcoin / Peers on each hub to verify chain height and P2P peers.');
   console.log('Add Fabric peers: B connects to 127.0.0.1:' + ports.fabricA + ' etc. (see integration test).');
   console.log('Stop: Ctrl+C in this terminal (sends SIGINT to children).');

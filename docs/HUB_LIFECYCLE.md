@@ -1,6 +1,6 @@
 # Hub.start lifecycle phases
 
-Hub subclasses (Sensemaker, GoonVC) and operators should treat `Hub.start()` as a **named phase pipeline**, not a monolithic override target. Light peers (GoonCitizen LiveRelay / `FabricNetwork`) stay **compose-only** and do not use these phases.
+Hub subclasses (downstream Hub apps, GoonVC) and operators should treat `Hub.start()` as a **named phase pipeline**, not a monolithic override target. Light peers (LiveRelay / `FabricNetwork`) stay **compose-only** and do not use these phases.
 
 ## Phases
 
@@ -64,15 +64,15 @@ new Hub({
 - `settings.skipStartPhases: ['bitcoin']` — omit listed phases
 - `settings.startPhases: ['filesystem', 'state', 'routes', 'listen']` — replace the full list (advanced / tests)
 
-## Sensemaker migration note
+## Downstream Hub subclass migration note
 
-Sensemaker currently **replaces** `start()` and does not call `super.start()`. Prefer gradually:
+Some downstream Hub subclasses currently **replace** `start()` and do not call `super.start()`. Prefer gradually:
 
 1. Move app-only setup into `afterFilesystem` / `afterState` / `afterRoutes`
 2. Call `await super.start()` for Hub identity HTTP, peering, RPC, listen, Beacon
-3. Keep domain services (trainer, Discord, MySQL) in Sensemaker hooks rather than a full Hub fork
+3. Keep domain services (trainer, Discord, MySQL) in subclass hooks rather than a full Hub fork
 
-Until that lands, Sensemaker remains a parallel start path; do not assume Hub phase hooks run inside it.
+Until that lands, those apps remain a parallel start path; do not assume Hub phase hooks run inside them.
 
 ## Tests
 

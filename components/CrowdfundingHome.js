@@ -621,7 +621,7 @@ class CrowdfundingHome extends React.Component {
           <p style={{ color: '#666', marginBottom: '0.75em' }}>
             <strong>Step A — ACP:</strong> outputs-only PSBT paying the campaign vault; donors add UTXOs and sign with{' '}
             <code>SIGHASH_ALL|ANYONECANPAY</code> (0x81), merge until fees clear, broadcast.
-            {' '}<strong>Step B — Payjoin:</strong> a BIP77 deposit session uses the <em>same</em> vault address so payers can use{' '}
+            {' '}<strong>Step B — Payjoin:</strong> a BIP78 deposit session uses the <em>same</em> vault address so payers can use{' '}
             {hubUi.bitcoinPayments ? (
               <Link to="/payments#fabric-btc-make-payment-h4">Payments</Link>
             ) : (

@@ -45,6 +45,39 @@ describe('fabricWebRtcP2pRelay', function () {
     assert.ok(wire.equals(inner), 'fabric-message path must not re-encode/re-sign');
   });
 
+  it('preserves CONTRACT_MESSAGE author signature bytes', function () {
+    const author = new Key();
+    const signed = Message.fromVector([
+      'CONTRACT_MESSAGE',
+      JSON.stringify({
+        contract: 'ab'.repeat(32),
+        type: 'MessageReceipt',
+        messageId: 'cd'.repeat(32),
+        receiptAt: new Date().toISOString()
+      })
+    ]).signWithKey(author);
+    const wire = signed.toBuffer();
+    const inner = buildInnerWireBuffer(wire.toString('base64'), 'CONTRACT_MESSAGE', key);
+    assert.ok(wire.equals(inner), 'CONTRACT_MESSAGE path must not re-encode/re-sign');
+    assert.strictEqual(Message.fromBuffer(inner).type, 'CONTRACT_MESSAGE');
+  });
+
+  it('refuses Hub-signing CONTRACT_MESSAGE JSON (forgery surface)', function () {
+    assert.throws(() => buildInnerWireBuffer(
+      JSON.stringify({ contract: 'ab'.repeat(32), type: 'MessageReceipt' }),
+      'CONTRACT_MESSAGE',
+      key
+    ), /author-signed Message wire/i);
+  });
+
+  it('refuses Hub-signing BitcoinBlock JSON (forgery surface)', function () {
+    assert.throws(() => buildInnerWireBuffer(
+      JSON.stringify({ hash: '00'.repeat(32), height: 1 }),
+      'BitcoinBlock',
+      key
+    ), /author-signed Message wire/i);
+  });
+
   it('carries P2P_PEER_GOSSIP as GenericMessage / GENERIC_MESSAGE', function () {
     const gossip = JSON.stringify({
       type: 'P2P_PEER_GOSSIP',

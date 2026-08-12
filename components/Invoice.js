@@ -665,7 +665,7 @@ function Invoice (props) {
           <p style={{ color: '#555', fontSize: '0.9em', lineHeight: 1.45, marginBottom: '0.75em' }}>
             Three local <strong>pool</strong> targets (BTC) for operator reference when staging hub-wallet liquidity for{' '}
             <strong>ACP / Payjoin</strong>-style flows. They do not move coins by themselves. Optional: mint a{' '}
-            <strong>BIP77</strong> deposit session for <em>this invoice address</em> so payers can use a <code>bitcoin:</code> URI with{' '}
+            <strong>BIP78</strong> deposit session for <em>this invoice address</em> so payers can use a <code>bitcoin:</code> URI with{' '}
             <code>pj=</code> (Payjoin v2-compatible receiver); then open Payments to sign or boost.
           </p>
           <Header as="h4" style={{ marginTop: 0 }}>Pool sizes (BTC)</Header>

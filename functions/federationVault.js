@@ -1,19 +1,20 @@
 'use strict';
 
 /**
- * Thin re-export of `@fabric/core` contract Taproot vault / failover ladder.
+ * Thin re-export of `@fabric/core` authority Taproot vault / spend ladder.
  *
- * Legacy single-leaf Hub vault APIs remain address-stable via
- * `buildFederationVaultFromPolicy` (no failover flag).
- * Full ladders: `buildContractTaproot` / `synthesizeDefaultLadder`.
+ * Default: k-of-n validators now + softer tier after ~144 CSV
+ * (`taproot-authority-ladder-v1`). Opt into pre-ladder single leaf with
+ * `{ legacySingleLeaf: true }`. Optional hashlock / arbitrary script leaves
+ * via `composeTaprootTree` / `hashlock` on policy.
  *
  * @see @fabric/core/functions/contractTaproot
- * @see docs/UPSTREAM_MONOREPO.md
+ * @see @fabric/core/functions/contractSpend
  */
 
 const tap = require('@fabric/core/functions/contractTaproot');
 
-/** Regtest-oriented deposit maturity default (Hub UX). */
+/** Default CSV degradation window / deposit maturity (blocks). */
 const DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS = tap.DEFAULT_CSV_BLOCKS;
 
 function buildFederationVaultFromPolicy (opts) {
@@ -31,8 +32,16 @@ module.exports = {
   buildFederationVaultFromPolicy,
   prepareVaultWithdrawalPsbt: tap.prepareVaultWithdrawalPsbt,
   buildVaultControlBlock: tap.buildVaultControlBlock,
-  // Ladder surface for Beacon / Groups
   buildContractTaproot: tap.buildContractTaproot,
+  composeTaprootTree: tap.composeTaprootTree,
+  compileLeaves: tap.compileLeaves,
+  scriptTreeFromLeaves: tap.scriptTreeFromLeaves,
+  buildHashlockLeaf: tap.buildHashlockLeaf,
+  buildSpendLeaf: tap.buildSpendLeaf,
+  buildScriptLeaf: tap.buildScriptLeaf,
+  prepareHashlockWithdrawalPsbt: tap.prepareHashlockWithdrawalPsbt,
+  finalizeHashlockPsbt: tap.finalizeHashlockPsbt,
+  prepareLeafPsbt: tap.prepareLeafPsbt,
   toAddress: tap.toAddress,
   synthesizeDefaultLadder: tap.synthesizeDefaultLadder,
   normalizeContractSpendPolicy: tap.normalizeContractSpendPolicy,

@@ -37,6 +37,12 @@ module.exports = Object.assign({}, defaults, {
       // '192.168.50.5:18444'
     ],
     /**
+     * Faucet / local tip dominance: do not accept inbound Core P2P (playnet can
+     * dial our public :18444 and reorg a subsidized tip). Outbound addnode is
+     * already gated by FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1.
+     */
+    listen: false,
+    /**
      * Scan each new block (ZMQ tip) for sidechain-related signals — off by default; enable for playnet federation wiring.
      */
     sidechainScan: {
@@ -94,8 +100,16 @@ module.exports = Object.assign({}, defaults, {
     port: Number(process.env.FABRIC_LIGHTNING_PORT || 19735)
   },
   http: {
+    /**
+     * Public hostname for links / Origin (not the Peer dial address).
+     * relay.goon.vc production: FABRIC_HUB_HOSTNAME=relay.goon.vc
+     */
     hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',
-    interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || '0.0.0.0',
+    /**
+     * HTTP/WebSocket bind. Behind Caddy use 127.0.0.1; bare public NIC use
+     * FABRIC_HUB_INTERFACE=65.21.231.149 (same host as hub.fabric.pub, dedicated IP).
+     */
+    interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || process.env.FABRIC_HTTP_INTERFACE || '0.0.0.0',
     port: process.env.FABRIC_HUB_PORT || process.env.PORT || 8080
   },
   /** Passed to @fabric/http HTTPServer: optional WebSocket client token (see MESSAGE_TRANSPORT.md). */
@@ -115,8 +129,18 @@ module.exports = Object.assign({}, defaults, {
   path: './stores/hub',
   peering: true,
   title: 'hub.fabric.pub',
+  /**
+   * Fabric Peer (TCP/NOISE) bind address — independent of HTTP `http.interface`.
+   * Pin the public NIC for relay.goon.vc:
+   *   FABRIC_INTERFACE=65.21.231.149
+   * Alias: FABRIC_PEER_INTERFACE. Also resolved at boot via
+   * `@fabric/core/functions/fabricListenInterface` in `scripts/hub.js`.
+   * Default remains all interfaces (`0.0.0.0`).
+   */
+  interface: process.env.FABRIC_INTERFACE || process.env.FABRIC_PEER_INTERFACE || '0.0.0.0',
   peers: [
     'hub.fabric.pub:7777',
+    'relay.goon.vc:7777',
     'sensemaker.io:7777'
   ],
   port: (() => {

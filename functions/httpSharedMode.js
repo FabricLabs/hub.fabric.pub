@@ -1,12 +1,18 @@
 'use strict';
 
 /**
- * HTTP shared-mode helpers. Prefer `@fabric/http/functions/httpSharedMode`.
- * Falls back to a local copy when the published http package lags.
+ * HTTP shared-mode helpers — canonical in `@fabric/http`.
+ * Local fallback keeps Fabric env names only (no app-specific `SC_*` prefixes).
  */
 try {
   module.exports = require('@fabric/http/functions/httpSharedMode');
 } catch (_) {
+  const DEFAULT_HTTP_LISTEN_ENV_KEYS = Object.freeze([
+    'FABRIC_HUB_INTERFACE',
+    'INTERFACE',
+    'FABRIC_HTTP_INTERFACE'
+  ]);
+
   function isHttpSharedModeEnabled (raw) {
     if (raw === undefined || raw === null) return false;
     if (raw === true || raw === 1) return true;
@@ -25,7 +31,7 @@ try {
     } else {
       const keys = Array.isArray(opts.envHostKeys) && opts.envHostKeys.length
         ? opts.envHostKeys
-        : ['SC_HTTP_HOST', 'SC_HTTP_INTERFACE'];
+        : DEFAULT_HTTP_LISTEN_ENV_KEYS;
       for (const key of keys) {
         const v = String(env[key] || '').trim();
         if (v) return v;
@@ -38,5 +44,9 @@ try {
     return '127.0.0.1';
   }
 
-  module.exports = { isHttpSharedModeEnabled, resolveHttpListenHost };
+  module.exports = {
+    DEFAULT_HTTP_LISTEN_ENV_KEYS,
+    isHttpSharedModeEnabled,
+    resolveHttpListenHost
+  };
 }

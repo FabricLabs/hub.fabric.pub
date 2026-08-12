@@ -4,22 +4,22 @@ const assert = require('assert');
 const sidechainState = require('../functions/sidechainState');
 
 describe('sidechainState', function () {
-  it('gooncitizen path is valid under typical policy', function () {
+  it('/services/rsi path is valid under typical policy', function () {
     const policy = sidechainState.parseStatechainPathPolicy({
-      allowedPathPrefixes: ['/gooncitizen', '/app'],
+      allowedPathPrefixes: ['/services', '/app'],
       maxOps: 32
     });
     const r = sidechainState.applyPatchesToState(
       sidechainState.createInitialState(),
       [{
         op: 'add',
-        path: '/gooncitizen',
-        value: { '@type': 'GoonCitizenGameState', digest: 'abc', counts: { missions: 1 } }
+        path: '/services',
+        value: { rsi: { '@type': 'RsiServiceState', digest: 'abc', counts: { missions: 1 } } }
       }],
       policy
     );
     assert.strictEqual(r.ok, true);
-    assert.strictEqual(r.state.content.gooncitizen.digest, 'abc');
+    assert.strictEqual(r.state.content.services.rsi.digest, 'abc');
   });
 
   it('stateDigest is stable for same content', function () {

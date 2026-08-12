@@ -3717,6 +3717,53 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Publish a signed Fabric wire Message over the browser mesh and Hub fan-out.
+   * Prefer binary RTCDataChannel; RelayFromWebRTC carries author-signed bytes to Fabric TCP.
+   * Does not use HTTP.
+   * @param {Buffer|object} message Message instance or AMP buffer
+   * @param {{ originalType?: string }} [opts]
+   * @returns {{ meshRecipients: string[], relayedToHub: boolean }}
+   */
+  relaySignedFabricWire (message, opts = {}) {
+    let buf = null;
+    if (message && typeof message.toBuffer === 'function') {
+      buf = message.toBuffer();
+    } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(message)) {
+      buf = message;
+    } else if (typeof message === 'string' && /^[0-9a-fA-F]+$/.test(message) && message.length % 2 === 0) {
+      buf = Buffer.from(message, 'hex');
+    } else if (typeof message === 'string') {
+      buf = Buffer.from(message, 'base64');
+    }
+    if (!buf || !buf.length) {
+      return { meshRecipients: [], relayedToHub: false };
+    }
+
+    const originalType = opts.originalType || 'fabric-message';
+    const meshRecipients = this.broadcastToWebRTCPeersWithRecipients(buf);
+    let relayedToHub = false;
+    if (this._isConnected && this.ws && this.ws.readyState === 1 && this.peerId) {
+      try {
+        this._sendJSONRPC({
+          method: 'RelayFromWebRTC',
+          params: [{
+            fromPeerId: this.peerId,
+            envelope: {
+              original: buf.toString('base64'),
+              originalType,
+              hops: [{ from: this.peerId, at: Date.now() }]
+            }
+          }]
+        });
+        relayedToHub = true;
+      } catch (e) {
+        console.warn('[BRIDGE]', 'relaySignedFabricWire Hub relay failed:', safeIdentityErr(e));
+      }
+    }
+    return { meshRecipients, relayedToHub };
+  }
+
+  /**
    * Sends a Fabric wire message over WebSocket (or WebRTC). Signs via `signMessage` when
    * `_canSignOutgoing()`; otherwise sends the same buffer unsigned (watch-only / delegated clients).
    * @param {Buffer} message - The message to send
@@ -3730,18 +3777,16 @@ class Bridge extends React.Component {
   }
 
   sendMessage (message, preferWebRTC = false) {
-    // Try WebRTC first if preferred and available
-    if (preferWebRTC && this._webrtcConnected && this.webrtcConnection) {
+    // Prefer browser mesh + Hub RelayFromWebRTC (no HTTP) when requested.
+    if (preferWebRTC && this._webrtcConnected) {
       try {
-        // Convert Buffer to appropriate format for WebRTC
-        const data = Buffer.isBuffer(message) ? message.toString('base64') : message;
-        this.webrtcConnection.send({
-          type: 'fabric-message',
-          data: data,
-          timestamp: Date.now()
-        });
-        console.debug('[BRIDGE]', 'Message sent via WebRTC');
-        return;
+        let buf = message;
+        if (message && typeof message.toBuffer === 'function') buf = message.toBuffer();
+        const result = this.relaySignedFabricWire(buf, { originalType: 'fabric-message' });
+        if (result.meshRecipients.length || result.relayedToHub) {
+          console.debug('[BRIDGE]', 'Message sent via WebRTC mesh', result);
+          return;
+        }
       } catch (error) {
         console.warn('[BRIDGE]', 'WebRTC send failed, falling back to WebSocket:', safeIdentityErr(error));
       }
@@ -3933,6 +3978,41 @@ class Bridge extends React.Component {
               object: { content: text, created: Date.now() }
             });
           }
+          break;
+        }
+        case 'CONTRACT_MESSAGE':
+        case 'P2P_CONTRACT_MESSAGE': {
+          // Author-signed contract frames (GroupChat, MessageReceipt, …).
+          // Fan into Hub → Fabric TCP via RelayFromWebRTC without hub re-signing.
+          if (tKind === SESSION_KIND_WEBRTC && tSessionId && this._isConnected && this.ws && this.ws.readyState === 1) {
+            try {
+              const wireB64 = Buffer.from(buffer).toString('base64');
+              this._sendJSONRPC({
+                method: 'RelayFromWebRTC',
+                params: [{
+                  fromPeerId: tSessionId,
+                  envelope: {
+                    original: wireB64,
+                    originalType: 'CONTRACT_MESSAGE',
+                    hops: [{ from: tSessionId, at: Date.now() }]
+                  }
+                }]
+              });
+              this._webrtcRewardPeer(tSessionId, 2, 'contract-message');
+            } catch (e) {
+              console.warn('[BRIDGE]', 'CONTRACT_MESSAGE WebRTC relay failed:', safeIdentityErr(e));
+            }
+          }
+          try {
+            window.dispatchEvent(new CustomEvent('fabric:contractMessage', {
+              detail: {
+                message,
+                wireBase64: Buffer.from(buffer).toString('base64'),
+                fromPeerId: tKind === SESSION_KIND_WEBRTC ? tSessionId : null,
+                transport: tKind
+              }
+            }));
+          } catch (_) { /* ignore */ }
           break;
         }
         case 'P2P_PEER_ALIAS': {

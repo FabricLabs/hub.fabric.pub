@@ -57,7 +57,7 @@ describe('contract Statechains + Beacon Federation signing (ADR-001)', function 
     const result = await contractStatechains.provisionAcceptedContract(
       fakeFs,
       parent,
-      { contractId, name: 'GoonCitizen', parentContractId: null },
+      { contractId, name: 'DemoApplication', parentContractId: null },
       null
     );
     assert.strictEqual(result.ok, true);

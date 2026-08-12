@@ -22,6 +22,12 @@ const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+let resolveFabricPeerInterface;
+try {
+  ({ resolveFabricPeerInterface } = require('@fabric/core/functions/fabricListenInterface'));
+} catch (_) {
+  resolveFabricPeerInterface = null;
+}
 const _hubDebugLog = installHubDebugFileLog({ userDataRoot });
 if (_hubDebugLog.active && _hubDebugLog.filePath) {
   console.log(
@@ -171,6 +177,17 @@ if (process.env.FABRIC_HUB_USER_DATA) {
       ...(settings.lightning || {}),
       datadir: path.join(u, 'stores', 'lightning', 'hub')
     }
+  };
+}
+
+// Fabric Peer bind: FABRIC_INTERFACE / FABRIC_PEER_INTERFACE (canonical helper).
+if (typeof resolveFabricPeerInterface === 'function') {
+  settings = {
+    ...settings,
+    interface: resolveFabricPeerInterface({
+      interface: settings.interface,
+      env: process.env
+    })
   };
 }
 

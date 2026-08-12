@@ -13,7 +13,7 @@ try {
 /**
  * Heuristic: treat document body as Graphviz DOT when MIME/name suggest it or
  * the trimmed source opens with a graph/digraph statement (aligned with
- * Sensemaker `fabric_type === 'Graph'` content shape).
+ * application `fabric_type === 'Graph'` content shape).
  */
 function looksLikeDotSource (text, mime, name) {
   if (text == null || typeof text !== 'string') return false;

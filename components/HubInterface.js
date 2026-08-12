@@ -54,6 +54,16 @@ const {
   deriveFabricAccountIdentityKeys,
   fabricRootXpubFromMasterXprv
 } = require('../functions/fabricAccountDerivedIdentity');
+const {
+  applyFabricDevBrowserSeedBootstrap,
+  mergeUnlockedSessionIntoIdentity
+} = require('../functions/fabricBrowserIdentityDev');
+const {
+  fundLocalKeyFromHubFaucet,
+  shouldAutoFundDesktopLocalKey,
+  discoverLocalHubFaucet,
+  markAutoFaucetDone
+} = require('../functions/fundLocalKeyFromHubFaucet');
 
 // Components
 const Bridge = require('./Bridge');
@@ -520,6 +530,9 @@ class HubInterface extends React.Component {
 
     try {
       if (typeof window !== 'undefined') {
+        try {
+          applyFabricDevBrowserSeedBootstrap();
+        } catch (_) {}
         const parsed = readStorageJSON('fabric.identity.local', null);
         if (parsed && (parsed.id || parsed.xpub)) {
           try {
@@ -539,8 +552,10 @@ class HubInterface extends React.Component {
                 masterXpub: r.masterXpub || undefined,
                 linkedFromDesktop: !!parsed.linkedFromDesktop
               };
+              initialLocalIdentity = mergeUnlockedSessionIntoIdentity(initialLocalIdentity);
               initialHasLockedIdentity = !!(
-                initialLocalIdentity.passwordProtected || initialLocalIdentity.plaintextUnlockAvailable
+                !initialLocalIdentity.xprv &&
+                (initialLocalIdentity.passwordProtected || initialLocalIdentity.plaintextUnlockAvailable)
               );
             }
           } catch (e) {}
@@ -1193,7 +1208,11 @@ class HubInterface extends React.Component {
       }
     });
     this._refreshAdminTokenIfNeeded();
-    this._refreshClientBalance();
+    this._refreshClientBalance().then(() => {
+      void this._maybeAutoFundDesktopLocalKey();
+    }).catch(() => {
+      void this._maybeAutoFundDesktopLocalKey();
+    });
     this._onGlobalStateUpdate = (e) => {
       const d = e && e.detail;
       if (d && d.operation && d.operation.path === '/bitcoin') {
@@ -1287,6 +1306,52 @@ class HubInterface extends React.Component {
     const prevFab = prevId.fabricAccountIndex;
     const nextFab = nextId.fabricAccountIndex;
     if (prevXpub !== nextXpub || prevFab !== nextFab) this._refreshClientBalance();
+  }
+
+  async _maybeAutoFundDesktopLocalKey () {
+    if (this._desktopAutoFaucetBusy) return;
+    const identity = this.state.uiLocalIdentity || null;
+    const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
+    const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus);
+    const bitcoin = resolveBitcoinFromNetworkStatus(networkStatus);
+    const network = (bitcoin && bitcoin.network) ? String(bitcoin.network).toLowerCase() : 'regtest';
+    if (!shouldAutoFundDesktopLocalKey({
+      identity,
+      clientBalance: this.state.clientBalance,
+      network
+    })) {
+      return;
+    }
+    this._desktopAutoFaucetBusy = true;
+    try {
+      const disc = await discoverLocalHubFaucet({
+        hubAdminToken: readHubAdminTokenFromBrowser(this.state.adminToken) || ''
+      });
+      if (!disc.available || disc.funded === false) {
+        this._desktopAutoFaucetBusy = false;
+        return;
+      }
+      const funded = await fundLocalKeyFromHubFaucet({
+        identity,
+        adminToken: this.state.adminToken,
+        network,
+        amountSats: (disc.faucet && disc.faucet.defaultAmountSats) || 10000,
+        mineConfirm: true
+      });
+      if (funded && funded.ok) {
+        markAutoFaucetDone();
+        try {
+          toast.success(
+            `Funded local key with ${funded.amountSats.toLocaleString()} sats from the Hub faucet.`
+          );
+        } catch (_) {}
+        await this._refreshClientBalance(true);
+      }
+    } catch (e) {
+      console.warn('[HUB] Desktop auto-faucet skipped:', e && e.message ? e.message : e);
+    } finally {
+      this._desktopAutoFaucetBusy = false;
+    }
   }
 
   async _refreshClientBalance (forceRefresh = false) {

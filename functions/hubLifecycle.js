@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Hub.start lifecycle phases for subclasses (GoonVC, Sensemaker) and compose-only apps.
+ * Hub.start lifecycle phases for subclasses (GoonVC, downstream Hub apps) and compose-only apps.
  *
  * Light peers (LiveRelay / FabricNetwork) do not use this — they compose Peer directly.
  *

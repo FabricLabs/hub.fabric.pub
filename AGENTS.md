@@ -21,7 +21,7 @@ Recent architecture work concentrated on Bitcoin and Payjoin:
   - `Tree` for merkle roots over sessions/proposals/events
   - `Filesystem` persistence under `payjoin/`
 - Wired Payjoin throughout Hub:
-  - HTTP under **`/services/payjoin`** (mirrors: **`/payments/payjoin`**, legacy **`/services/bitcoin/payjoin`**): **GET** `/` (capabilities), **GET|POST** `/sessions` (list | create deposit session), **GET** `/sessions/:id`, **POST** `/sessions/:id/proposals` (submit proposal); BIP77 `proposalURL` uses the plural proposals path and the hub **`payjoin.endpointBasePath`** default **`/services/payjoin`**.
+  - HTTP under **`/services/payjoin`** (mirrors: **`/payments/payjoin`**, legacy **`/services/bitcoin/payjoin`**): **GET** `/` (capabilities), **GET|POST** `/sessions` (list | create deposit session), **GET** `/sessions/:id`, **POST** `/sessions/:id/proposals` (BIP78 `text/plain` or JSON), experimental **`/mailboxes`** (BIP77 Hub-local async); absolute BIP21 `pj=` via **`payjoin.publicOrigin`** / `FABRIC_HUB_PUBLIC_ORIGIN`.
   - JSON-RPC methods (`GetPayjoinStatus`, `CreatePayjoinDeposit`, etc.)
   - session/proposal lifecycle persisted to disk
 - Added browser E2E coverage for Payjoin:
@@ -41,7 +41,7 @@ Recent architecture work concentrated on Bitcoin and Payjoin:
 - **Beacon epoch chain (Fabric store):**
  - The Beacon uses the Hub's **Filesystem** to manage a Fabric store for epochs at `beacon/CHAIN`.
  - The chain is a list of **Fabric messages** of type `BEACON_EPOCH`; each message payload is the epoch object (clock, blockHash, height, balance, balanceSats, timestamp, **`contracts`** `{ clock, stateDigest }` = state root of operator-accepted tracked application contracts from `CONTRACT_PUBLISH`, optional **sidechain** `{ clock, stateDigest }`). On start the Beacon loads this chain and restores clock/state from the last message; on each epoch it appends a new message and persists via `fs.publish('beacon/CHAIN', { messages })`.
-- **Tracked application contracts:** inbound `CONTRACT_PUBLISH` → pending queue (`application-contracts/STATE`); operator **Accept** via `AcceptTrackedApplicationContract` (admin token) includes the namespace in the Beacon contracts root **and** provisions a contract sidechain document at `sidechains/<contractId>/` with parent seal at `/namespaces/<contractId>` ([ADR-001](docs/ADR-001-CONTRACT_NAMESPACE_SIDECHAINS.md)). UI: Beacon Federation page. Chat ingest normalizes Hub classic (`object.content`) and GoonCitizen (`object.body` / channel / handle) via `functions/fabricChatNormalize.js`.
+- **Tracked application contracts:** inbound `CONTRACT_PUBLISH` → pending queue (`application-contracts/STATE`); operator **Accept** via `AcceptTrackedApplicationContract` (admin token) includes the namespace in the Beacon contracts root **and** provisions a contract sidechain document at `sidechains/<contractId>/` with parent seal at `/namespaces/<contractId>` ([ADR-001](docs/ADR-001-CONTRACT_NAMESPACE_SIDECHAINS.md)). UI: Beacon Federation page. Chat ingest normalizes Hub classic (`object.content`) and application (`object.body` / channel / handle) via `functions/fabricChatNormalize.js`.
 - **Sidechain global state:** logical document at `sidechain/STATE`, updated via JSON Patch (`SubmitSidechainStatePatch` / HTTP `/services/distributed/sidechain`); per-epoch full snapshots at `sidechain/SNAPSHOTS` plus append-only `sidechain/JOURNAL`; L1 reorg and startup share `resolveStateForBeaconTip` (core `@fabric/core/functions/sidechainState`). Manifest may include `sidechainPolicy` path rules. Application namespaces reuse the same sidechain document helpers. Beacon Federation threshold rounds: `FederationSignRequest` + `SubmitBeaconEpochSignature`.
 - **BitcoinBlock (Fabric P2P + message log):**
   - On each new local chain tip (ZMQ `hashblock`), the Hub appends a `BitcoinBlock` entry to the hub message log, calls `beacon.recordEpochFromBlock` when the Beacon is running (regtest: dedupes against the same tip already recorded by the interval `createEpoch`), and gossips a signed wire `Message` of type `BitcoinBlock` to Fabric peers via `agent.relayFrom('_hub', …)`. `@fabric/core` `Peer` relays `BitcoinBlock` to other TCP peers.
@@ -79,11 +79,14 @@ Fabric-native invoices and settlement are the default product shape. Future **L4
 
 ## Configuration (`settings/`)
 - **`local.js`** — Runtime settings (merges `default.js`). Environment variables:
-  - `FABRIC_SEED` / `FABRIC_MNEMONIC` — 24-word seed for persistent identity.
+  - `FABRIC_XPRV` — preferred operator extended private key (same identity across the Fabric suite).
+  - `FABRIC_SEED` / `FABRIC_MNEMONIC` — BIP39 alternative (or an `xprv…` string in `FABRIC_SEED`).
   - `FABRIC_PORT` — P2P listen port (default 7777).
+  - `FABRIC_INTERFACE` / `FABRIC_PEER_INTERFACE` — **Peer** bind address (default `0.0.0.0`). For the dedicated `relay.goon.vc` NIC use `65.21.231.149` (see `deploy/env.relay.goon.vc.example`).
+  - `FABRIC_PUBLIC_HOST` / `FABRIC_ADVERTISE_HOST` — hostname for peering offers / self-dial filter (use `relay.goon.vc`).
   - `FABRIC_HUB_PORT` / `PORT` — HTTP listen port (default 8080).
   - `FABRIC_HUB_HOSTNAME` / `HOSTNAME` — HTTP hostname.
-  - `FABRIC_HUB_INTERFACE` / `INTERFACE` — Bind interface (default 0.0.0.0).
+  - `FABRIC_HUB_INTERFACE` / `INTERFACE` / `FABRIC_HTTP_INTERFACE` — **HTTP** bind interface (default `0.0.0.0`). Behind Caddy use `127.0.0.1`; bare public HTTP may use `65.21.231.149`.
   - `FABRIC_HUB_DEBUG` — Set to `true` or `1` for verbose hub logging (`settings.debug`).
   - `FABRIC_EXPLORER_URL` — Optional HTTP **origin** for `@fabric/core` Bitcoin explorer fallback (e.g. `http://127.0.0.1:8080` when this Hub serves `/services/bitcoin`). Omit for RPC-only block/tx in core; address-index helpers require an explorer.
 - **Regtest LAN / playnet chain sync:** automatic **`addnode`** targets merge `settings.bitcoin.p2pAddNodes`, **`FABRIC_BITCOIN_P2P_ADDNODES`**, and (for **regtest** only) default **`hub.fabric.pub:18444`** unless **`FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1`** (override with **`FABRIC_BITCOIN_PLAYNET_PEER`**). Implemented in `@fabric/core` `Bitcoin` after RPC ready; signet/testnet use the same list shape; **mainnet** skips public peers unless `p2pAddNodesAllowMainnet`. Manual: `npm run bitcoin:addnode` (see [BITCOIN_NETWORKS.md](BITCOIN_NETWORKS.md)). Browser `bitcoinClient` uses the local Hub `/services/bitcoin` only.
@@ -124,12 +127,12 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 | `GetPeer` | Get detailed info for a peer |
 | `SetPeerNickname` | Set local nickname for a peer |
 | `SendPeerMessage` | Send chat message to a specific peer |
-| `SendOnion` | Source-route via nested `P2P_FORWARD` — params `{ path: [pubkeyHex…], text? }` or `{ path, messageBase64 }`; first hop must be connected; TCP only |
+| `SendOnion` | Source-route via nested `P2P_FORWARD` — params `{ path: [pubkeyHex…], text?, encrypt? }` or `{ path, messageBase64 }`; text defaults to tip-sealed (`onionChatSeal`); `encrypt: false` for plaintext; first hop must be connected; TCP only |
 | `SendPeerFile` | Send a document to a specific peer |
 | `ConfirmInventoryHtlcPayment` | After funding a P2TR inventory HTLC: `{ settlementId, txid }` → verifies L1, then phase 2 `P2P_FILE_SEND` to buyer |
 | `GetInventoryHtlcSellerReveal` | **Admin only** — `{ settlementId, adminToken }` → preimage + script hex fields; `claimTxid` after successful on-chain claim; may include `relayReturnHop`, `requesterFabricId` when settlement used a relay |
 | `ClaimInventoryHtlcOnChain` | **Admin only** — `{ settlementId, adminToken, toAddress?, feeSats? }` → builds tapscript seller claim, signs with hub identity key, `sendrawtransaction`; requires `fundedTxid` on settlement |
-| `SubmitChatMessage` | Broadcast chat to all peers and WebSocket clients (Hub `content` or GoonCitizen `body` / channel / handle) |
+| `SubmitChatMessage` | Broadcast chat to all peers and WebSocket clients (Hub `content` or application `body` / channel / handle) |
 | `ListTrackedApplicationContracts` | Pending + accepted CONTRACT_PUBLISH namespaces and contracts `stateRoot` |
 | `AcceptTrackedApplicationContract` | **Admin** — `{ contractId, adminToken }` → accept into Beacon-tracked set |
 | `RejectTrackedApplicationContract` | **Admin** — `{ contractId, adminToken }` → drop pending or untrack accepted |
@@ -172,7 +175,7 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 - **SPA refresh:** `spaFallback` (default on) + **`res.format`** on **`GET /settings`** / **`GET /settings/:name`** (HTML vs JSON). In-app: **`/settings`**, **`/settings/security`**; **`/sessions`** and **`/security`** redirect to **`/settings/security`**; **`/sessions/:id`** is session detail (same path as REST `GET /sessions/:id` when not HTML). **`/services/bitcoin/…`** etc. rely on the same pattern so refresh returns the shell. Hub UI routes prefer **plural** resource paths (**`/activities`**, **`/peers`**, **`/documents`**, **`/contracts`**, **`/sidechains`**); **`/activity`** → **`/activities`**, **`/home`** → **`/`**, and legacy singular **`/document/…`** / **`/peer/…`** redirect to **`/documents/…`** / **`/peers/…`**. Short bookmarks (**`/payments`**, **`/invoices`**, **`/resources`**, **`/bitcoin`**, **`/wallet`**, **`/tx/:txid`**, **`/block/:hash`**) **redirect** to the canonical **`/services/bitcoin/…`** paths. Unknown paths show an in-app **not found** segment instead of a blank shell.
 - WebSocket carries **binary** `Message` buffers (see `@fabric/http` `HTTPServer`). Bridge parses with `Message.fromBuffer`; JSON-RPC uses outer type `JSONCall`. The same RPC surface is available over **HTTP** as JSON-RPC 2.0 **`POST /services/rpc`** only (enabled on the Hub via `jsonRpc` in the `HTTPServer` constructor; implemented in `@fabric/http`).
 - **L1 invoice verify (HTTP):** `GET /services/bitcoin/transactions/:txid?address=&amountSats=` — same resource as the raw transaction; with both query params the response is the payment proof (`verified`, `confirmations`, `inMempool`, `matchedSats`). Alternate: JSON-RPC `verifyl1payment` on `POST /services/bitcoin`. Client: [`functions/bitcoinClient.js`](functions/bitcoinClient.js) `verifyL1Payment`. UI: `/services/bitcoin/resources`.
-- **Standard types** — Cohesive outer-type list, opcodes, and inner types pending promotion: [`functions/fabricMessageRegistry.js`](functions/fabricMessageRegistry.js); **`GenericMessage` is transitional** (see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md)). Core AMP bodies are typed fields (`@fabric/core` `docs/MESSAGE_BODY.md`); HTTP maps JSON. GoonCitizen GroupOffer / federation invites may also arrive as opaque `fabric:<hex>` `CONTRACT_MESSAGE`s.
+- **Standard types** — Cohesive outer-type list, opcodes, and inner types pending promotion: [`functions/fabricMessageRegistry.js`](functions/fabricMessageRegistry.js); **`GenericMessage` is transitional** (see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md)). Core AMP bodies are typed fields (`@fabric/core` `docs/MESSAGE_BODY.md`); HTTP maps JSON. Application GroupOffer / federation invites may also arrive as opaque `fabric:<hex>` `CONTRACT_MESSAGE`s.
 - **FabricBridgeEnvelope** — Optional `GenericMessage` JSON body with `@fabric/BridgeEnvelope`, `v`, `fabricType`, `payload` ([MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md), [`functions/fabricBridgeEnvelope.js`](functions/fabricBridgeEnvelope.js)). Bridge dispatches `fabricBridgeEnvelope` window event when present.
 - **Activity tombstone** — Hub appends a `Tombstone` entry via `_appendFabricMessage` (sequential `messages/*.json` + chain hooks) and broadcasts `GenericMessage` JSON `{ type: 'Tombstone', object: { activityMessageId, documentId } }`. Bridge dispatches `fabric:tombstone` on `window` with that detail (and may also apply JSON Patch `remove` for `/messages/<id>` when an activity row is removed). Unpublishing uses optional `documentId` on `EmitTombstone` to drop the doc from the hub published catalog (file remains under `documents/<id>.json`).
 - **WebRTC** — Data channel `binaryType` is `arraybuffer`; binary frames are parsed like the WebSocket path. `sendToWebRTCPeer` accepts `Message` / `Buffer` / `ArrayBuffer` or legacy JSON objects.
@@ -199,8 +202,12 @@ Fast iteration without rebuilding the browser bundle: `npm run start:fast`. Loca
 ### Bug reports (fatal errors)
 On fatal Hub exits (failed startup, `uncaughtException`, `unhandledRejection`, main rejection), the console logs where to report: default **[hub.fabric.pub issues](https://github.com/FabricLabs/hub.fabric.pub/issues)**. Override with **`FABRIC_ISSUES_URL`**. The browser bundle also prints the hint on unhandled rejections and synchronous `Error` instances from `window.onerror` (see [`functions/fabricReportHint.js`](functions/fabricReportHint.js)).
 
-### Cursor agent Fabric identity (local only; never commit)
-Optional persistent BIP39 identity for automation lives in **`local/cursor-agent-fabric-identity.json`** (gitignored). **`npm run cursor-agent:init`** creates it; **`npm run cursor-agent:emit-hub-config`** writes **`assets/config.local.js`** with **`FABRIC_DEV_BROWSER_*`** so the Hub SPA bootstraps the same key (file gitignored). Fresh clones get **`assets/config.local.js`** copied from **`assets/config.local.example.js`** on **`npm run build`** when the file is missing. **`npm run cursor-agent:sync-sensemaker`** copies the JSON to sibling **`sensemaker/local/`**. **`npm run cursor-agent:print-env`** prints a **`FABRIC_MNEMONIC`** export line for shell / `.env` (redirect yourself; do not commit).
+### Operator Fabric identity (suite-wide)
+Prefer **`FABRIC_XPRV`** in the process environment so Hub, downstream applications, and playnet scripts share one key. **`FABRIC_SEED`** / **`FABRIC_MNEMONIC`** derive the same Key. Optional local automation: **`local/fabric-operator-identity.json`** (gitignored) is a **fallback only** when env is unset — `npm run operator-identity:init`, `operator-identity:emit-hub-config`, `operator-identity:sync`, `operator-identity:print-env` (prints **`FABRIC_XPRV`**). Never commit identity files or `assets/config.local.js` when they contain secrets.
+
+**Application deploy** (genesis `CONTRACT_PUBLISH` / accept) lives in **application repos**. Hub playnet helpers may thin-forward to a sibling; see [docs/SIDECHAIN_AND_EXECUTION_INDEX.md](docs/SIDECHAIN_AND_EXECUTION_INDEX.md).
+
+**Local faucet:** Beacon / Hub faucet funding of the browser local key is **regtest / desktop-local only** (`functions/fundLocalKeyFromHubFaucet.js`); do not enable on production shared hosts.
 
 ### Local monorepo (`@fabric/core`, `@fabric/http`, `@fabric/hub`)
 **`package.json`** pins **`@fabric/core`** and **`@fabric/http`** from Git for CI and fresh clones. **`.npmrc`** sets **`allow-git=all`** (npm 12+): `allow-git=root` still fails during nested git-dep preparation when Hub/http resolve each other to commit SHAs. For day-to-day work with local trees (e.g. **`~/fabric-clean`** and **`~/fabric-http`**), run **`npm run link:fabric`** once (or after `npm install` replaces symlinks). That script runs **`npm link`** in each repo and then **`npm link @fabric/core @fabric/http`** in the hub. Override paths with **`FABRIC_CORE`** and **`FABRIC_HTTP`**.
@@ -244,6 +251,7 @@ npm run make:api           # Generate API.md from JSDoc
 - Emit events for state changes; UI subscribes via Bridge.
 - Log with `[FABRIC:HUB]` or `[HUB]` prefix for server, `[BRIDGE]` for client.
 - Error handling: wrap async operations in try/catch, emit `error` events.
+- **JSDoc (`npm run make:api`):** Closure / jsdoc2md — no TypeScript `?:` inside `@param` object types; no trailing description on `@type {…}`. Same rules as `@fabric/core` ([fabric AGENTS.md](https://github.com/FabricLabs/fabric/blob/master/AGENTS.md) § JSDoc) when editing core via `link:fabric`.
 
 ### Startup Safety Notes
 - Only run one Hub instance per machine/port set.

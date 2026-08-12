@@ -59,7 +59,7 @@ const {
   fabricRootXpubFromMasterXprv,
   identityFromFabricProtocolSigningXprv
 } = require('../functions/fabricAccountDerivedIdentity');
-const { verifyFabricDesktopLoginSignedPayload } = require('../functions/fabricDesktopLoginVerify');
+const { verifyFabricDesktopLoginSignedPayload, buildFabricIdentitySignedPayload } = require('../functions/fabricDesktopLoginVerify');
 const {
   buildDeviceLinkOfferMessage,
   createDeviceLinkOffer,
@@ -638,7 +638,7 @@ function IdentityManager (props) {
 
   /**
    * Start a mutual device-link offer (this browser is initiator). Peer opens
-   * fabric://link (GoonCitizen / Passport / another Hub) as responder; we countersign.
+   * fabric://link (Passport / another Hub / peer app) as responder; we countersign.
    */
   const handleCreateDeviceLink = React.useCallback(async () => {
     if (typeof window === 'undefined') return;
@@ -653,20 +653,21 @@ function IdentityManager (props) {
     const label = 'Hub browser';
     try {
       const key = new Key({ xprv: localIdentity.xprv });
-      const identId = localIdentity.id || String(new Identity(key).id);
+      const signedProbe = buildFabricIdentitySignedPayload(key, 'fabric:device-link:id-probe');
+      const identId = localIdentity.id || signedProbe.identity.id;
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)))
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('');
       const offerMessage = buildDeviceLinkOfferMessage(nonce, identId, label, origin);
-      const signature = Buffer.from(key.signSchnorr(Buffer.from(offerMessage, 'utf8'))).toString('hex');
+      const offerSigned = buildFabricIdentitySignedPayload(key, offerMessage);
       const created = await createDeviceLinkOffer({
         hubBase: origin,
         origin,
         label,
         nonce,
-        identity: { id: identId, xpub: localIdentity.xpub },
-        pubkeyHex: key.pubkey,
-        signature
+        identity: offerSigned.identity,
+        pubkeyHex: offerSigned.pubkeyHex,
+        signature: offerSigned.signature
       });
       if (!created.ok) {
         setError(created.error || 'Could not create device link offer');
@@ -692,12 +693,12 @@ function IdentityManager (props) {
             const st = await fetchDeviceLinkSession(origin, created.sessionId, { origin });
             if (!st.ok) return;
             if (st.status === 'accepted' && st.linkMessage) {
-              const countersig = Buffer.from(key.signSchnorr(Buffer.from(st.linkMessage, 'utf8'))).toString('hex');
+              const countersigned = buildFabricIdentitySignedPayload(key, st.linkMessage);
               const done = await postDeviceLinkSignature(origin, created.sessionId, {
                 role: 'initiator',
-                signature: countersig,
-                pubkeyHex: key.pubkey,
-                identity: { id: identId, xpub: localIdentity.xpub }
+                signature: countersigned.signature,
+                pubkeyHex: countersigned.pubkeyHex,
+                identity: countersigned.identity
               }, { origin });
               if (!done.ok) {
                 clearDeviceLinkPoll();
@@ -836,7 +837,7 @@ function IdentityManager (props) {
                   Link another device
                 </Header>
                 <p style={{ color: '#666', fontSize: '0.95em' }}>
-                  Keep separate seeds per app (Passport, GoonCitizen, Hub). Create an offer, open the
+                  Keep separate seeds per app (Passport, Hub, peer applications). Create an offer, open the
                   {' '}<code>fabric://link</code> URL on the other device, approve, then this browser countersigns.
                 </p>
                 <Button
@@ -852,7 +853,7 @@ function IdentityManager (props) {
                 {deviceLinkOffer && deviceLinkOffer.protocolUrl ? (
                   <div style={{ marginTop: '0.75em' }}>
                     <p style={{ marginBottom: '0.35em', fontSize: '0.9em' }}>
-                      Open this on GoonCitizen / Passport (or copy):
+                      Open this on Passport / a peer app (or copy):
                     </p>
                     <code style={identityMonospaceBlockStyle}>{deviceLinkOffer.protocolUrl}</code>
                     <Button

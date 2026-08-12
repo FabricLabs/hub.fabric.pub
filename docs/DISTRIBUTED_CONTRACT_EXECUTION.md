@@ -50,6 +50,14 @@ The Hub **`Beacon`** (`contracts/beacon.js`) appends **`BEACON_EPOCH`** Fabric m
 
 **L1 reorg:** when the beacon epoch chain prunes (lower tip height or same-height different hash), the Hub drops **`sidechain/SNAPSHOTS`** entries for removed **`BEACON_EPOCH` `payload.clock`** values and reloads **`sidechain/STATE`** from the snapshot at the surviving tip (or genesis if missing). Deep reorg pruning uses **inclusive max height** (`height <= new tip`). Each new epoch persists a full sidechain state copy keyed by beacon clock (sync `writeFile`, same Fabric store as `beacon/CHAIN`).
 
+**Network promotion (regtest → signet/mainnet):** Beacon stores are bound in **`beacon/NETWORK`**. Hub `startBeacon` fails closed on mismatch or unbound legacy data. Set **`FABRIC_BEACON_RESET_NETWORK=1`** (or `settings.beacon.resetNetworkStores`) once to clear L1-tied Beacon/sidechain artifacts and rebind — see `@fabric/core/functions/beaconNetworkGuard`. Do not reuse a regtest `beacon/CHAIN` against another Bitcoin network.
+
+**Native Beacon ARC:** On a successful `startBeacon`, the Hub builds a network-agnostic **`fabric-beacon`** genesis via `@fabric/core/functions/beaconContractDefinition` (validators + threshold + CSV soft tier; **no** `spendPolicy.network` / tip `bitcoinAnchor` in the published body), then records and **Accept**s it into tracked application contracts (ADR-001 sidechain at `sidechains/<id>/`). Namespace id = `Actor(definition).id`. Disable with `settings.beacon.publishNativeContract = false`. After network bind, Hub re-enriches accepted ARC `spendAddress` overlays for the live Bitcoin network. Redeploy checklist is also exposed on **`GET /services/distributed/manifest`** as `beaconRedeploy`.
+
+**Shared authority shape:** Federation vault, Beacon ARC, and tracked Accept overlays use the same `spendPolicy` bag (`publisher`, `validators`, `threshold`, `csvBlocks`, `softMode`) and nested `bitcoinAnchor`. Hub soft-tier **publisher** is the hub root key (else first validator) for both vault and Beacon genesis so addresses stay unified. After `startBeacon`, Hub runs `_assertBeaconVaultSpendUnity` and surfaces `authorityUnity` on the vault summary / distributed manifest.
+
+**Authority vault (single P2TR):** Federation vault and ARC spend addresses use the same **`taproot-authority-ladder-v1`** tree when the validator/signer set, threshold, network, publisher, and `csvBlocks` (~144) match: **t0-authority** (k-of-n, immediate) then **t1-soft** (softer rule after CSV). Prefer funding that address; legacy single-leaf is opt-in only. The accepted Beacon ARC `spendAddress` MUST match `/services/distributed/vault` on the same network. Vault summaries expose **`leaves[]`**; withdrawal PSBTs use the full policy tree (optional `leafId`). Optional `spendPolicy.hashlock` / `extraLeaves` are composable via core `composeTaprootTree` and change the deposit address when present.
+
 **Demonstrative extension (example):**
 1. **Setup:** instantiate a **`Federation`** with the same validator pubkeys as production signers; publish the federation id + policy hash next to the program description.
 2. **Per epoch:** compute `epoch_commitment = SHA256(canonical(epoch_payload))` (or sign the same canonical string used today).
@@ -147,7 +155,7 @@ This keeps the **user-visible** story simple: **one program, one federation poli
 | `Contract` | `@fabric/core/types/contract` |
 | `Beacon` (Hub) | `contracts/beacon.js` |
 | Delegation / signing requests | `functions/fabricDelegation.js`, RPC in `services/hub.js` |
-| Execution contracts | `functions/fabricExecutionMachine.js`, `functions/executionRunCommitment.js`, `CreateExecutionContract` / `RunExecutionContract` / `AnchorExecutionRunCommitment` (regtest); UI: `components/ContractView.js` |
+| Execution contracts | Core `executionProgramRunner` (`fabric-execution` on Machine) + Hub `fabricExecutionMachine` wrapper, `executionRunCommitment` / `executionRegistryGate`, RPC `CreateExecutionContract` / `RunExecutionContract` / `AnchorExecutionRunCommitment` (regtest); UI: `components/ContractView.js` |
 
 ### Environment (Hub)
 | Variable | Purpose |

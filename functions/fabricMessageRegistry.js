@@ -66,15 +66,15 @@ const OUTER_WIRE_TYPES = [
  * annotate which apps use each type.
  */
 const APPLICATION_CONTRACT_BODY_META = Object.freeze({
-  FederationContractInvite: { apps: ['hub', 'gooncitizen'], notes: 'Hub-shaped join / co-signer invite (v2 + proposedPolicy).' },
-  FederationContractInviteResponse: { apps: ['hub', 'gooncitizen'], notes: 'Accept / reject invite.' },
-  MissionCreated: { apps: ['gooncitizen'], notes: 'Network mission register upsert (GoonCitizen genesis).' },
-  MissionBroadcast: { apps: ['gooncitizen'], notes: 'Network mission offer.' },
-  SCEventBatch: { apps: ['gooncitizen'], notes: 'Log / event batch.' },
-  GameStateSnapshot: { apps: ['gooncitizen', 'hub'], notes: 'Cumulative analytics snapshot for Hub / Beacon seal.' },
-  GroupChat: { apps: ['gooncitizen'], notes: 'Group Federation channel chat.' },
-  GroupChange: { apps: ['gooncitizen'], notes: 'Group membership / meta change.' },
-  GroupShare: { apps: ['gooncitizen'], notes: 'Group-scoped share (e.g. mission offer).' }
+  FederationContractInvite: { apps: ['hub', 'application'], notes: 'Hub-shaped join / co-signer invite (v2 + proposedPolicy).' },
+  FederationContractInviteResponse: { apps: ['hub', 'application'], notes: 'Accept / reject invite.' },
+  MissionCreated: { apps: ['application'], notes: 'Network mission register upsert (application genesis).' },
+  MissionBroadcast: { apps: ['application'], notes: 'Network mission offer.' },
+  SCEventBatch: { apps: ['application'], notes: 'Log / event batch.' },
+  GameStateSnapshot: { apps: ['hub', 'application'], notes: 'Cumulative analytics snapshot for Hub / Beacon seal.' },
+  GroupChat: { apps: ['application'], notes: 'Group Federation channel chat.' },
+  GroupChange: { apps: ['application'], notes: 'Group membership / meta change.' },
+  GroupShare: { apps: ['application'], notes: 'Group-scoped share (e.g. mission offer).' }
 });
 
 function buildApplicationContractBodyTypes () {
@@ -84,8 +84,9 @@ function buildApplicationContractBodyTypes () {
   } catch (_) {
     bodyTypes = null;
   }
+  // Merge core shared types with Hub/app meta (MissionBroadcast, etc.).
   const keys = bodyTypes
-    ? Object.keys(bodyTypes)
+    ? [...new Set([...Object.keys(bodyTypes), ...Object.keys(APPLICATION_CONTRACT_BODY_META)])]
     : Object.keys(APPLICATION_CONTRACT_BODY_META);
   return keys.map((type) => {
     const meta = APPLICATION_CONTRACT_BODY_META[type] || { apps: [], notes: '' };

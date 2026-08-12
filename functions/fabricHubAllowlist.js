@@ -36,7 +36,7 @@ try {
   }
 
   function allowlistFromEnv (env = process.env) {
-    const raw = env.FABRIC_HUB_ALLOWLIST || env.SC_FABRIC_HUB_ALLOWLIST || '';
+    const raw = env.FABRIC_HUB_ALLOWLIST || '';
     return String(raw).split(',')
       .map((s) => normalizeHubOrigin(s))
       .filter(Boolean);

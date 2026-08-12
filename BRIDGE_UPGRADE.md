@@ -1,6 +1,6 @@
 # Bridge Component Upgrade
 
-This document describes the upgrade of the Bridge component to include downstream enhancements from the `sensemaker-launch` repository.
+This document describes the upgrade of the Bridge component to include downstream enhancements from sibling application repositories.
 
 ## Overview
 

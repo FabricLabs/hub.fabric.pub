@@ -18,12 +18,42 @@ const GENERIC_CARRIER_TYPES = new Set([
 ]);
 
 /**
+ * Author-signed outer types that must never be re-encoded by the hub.
+ * Prefer base64 AMP bytes (same as `fabric-message`).
+ */
+const PRESERVE_WIRE_TYPES = new Set([
+  'fabric-message',
+  'CONTRACT_MESSAGE',
+  'P2P_CONTRACT_MESSAGE'
+]);
+
+/**
  * @param {Buffer} buf
  * @returns {boolean}
  */
 function looksLikeFabricMessageBuffer (buf) {
   if (!Buffer.isBuffer(buf) || buf.length < HEADER_SIZE) return false;
   return buf.readUInt32BE(0) === MAGIC_BYTES;
+}
+
+/**
+ * Decode envelope.original to raw AMP bytes when the caller sent base64 wire.
+ * @param {string|Buffer} original
+ * @returns {Buffer|null}
+ */
+function tryDecodeWireBuffer (original) {
+  if (Buffer.isBuffer(original)) {
+    return looksLikeFabricMessageBuffer(original) ? original : null;
+  }
+  const s = String(original || '').trim();
+  if (!s) return null;
+  // Reject obvious JSON before base64 decode attempts.
+  if (s.startsWith('{') || s.startsWith('[')) return null;
+  try {
+    const buf = Buffer.from(s, 'base64');
+    if (looksLikeFabricMessageBuffer(buf)) return buf;
+  } catch (_) { /* not base64 AMP */ }
+  return null;
 }
 
 /**
@@ -35,14 +65,22 @@ function looksLikeFabricMessageBuffer (buf) {
 function buildInnerWireBuffer (original, originalType, signingKey) {
   const type = String(originalType || 'P2P_CHAT_MESSAGE');
 
-  if (type === 'fabric-message') {
-    const buf = Buffer.isBuffer(original)
-      ? original
-      : Buffer.from(String(original || ''), 'base64');
-    if (!looksLikeFabricMessageBuffer(buf)) {
+  if (PRESERVE_WIRE_TYPES.has(type)) {
+    const preserved = tryDecodeWireBuffer(original);
+    if (preserved) return preserved;
+    if (type === 'fabric-message') {
       throw new Error('fabric-message original is not a Fabric Message buffer');
     }
-    return buf;
+    // CONTRACT_MESSAGE without author-signed AMP bytes must not be Hub-re-signed
+    // (would let any WebRTC client inject Hub-attested contract gossip).
+    throw new Error('CONTRACT_MESSAGE original must be author-signed Message wire (base64)');
+  }
+
+  // BitcoinBlock tips are Hub/L1-attested; never mint Hub signatures from client JSON.
+  if (type === 'BitcoinBlock' || type === 'P2P_BITCOIN_BLOCK') {
+    const preserved = tryDecodeWireBuffer(original);
+    if (preserved) return preserved;
+    throw new Error('BitcoinBlock original must be author-signed Message wire (base64)');
   }
 
   const body = Buffer.isBuffer(original)
@@ -64,8 +102,9 @@ function buildInnerWireBuffer (original, originalType, signingKey) {
     } catch (_) {
       outerBody = JSON.stringify({ type, object: { raw: body } });
     }
-  } else if (type === 'BitcoinBlock') {
-    outerType = 'BitcoinBlock';
+  } else if (type === 'P2P_CONTRACT_MESSAGE') {
+    // Prefer preserve-wire path above; JSON aliases are not Hub-signed.
+    throw new Error('P2P_CONTRACT_MESSAGE original must be author-signed Message wire (base64)');
   }
 
   const inner = Message.fromVector([outerType, outerBody]);
@@ -89,7 +128,9 @@ function wrapPeerP2pRelay (innerBuffer, signingKey) {
 
 module.exports = {
   GENERIC_CARRIER_TYPES,
+  PRESERVE_WIRE_TYPES,
   looksLikeFabricMessageBuffer,
+  tryDecodeWireBuffer,
   buildInnerWireBuffer,
   wrapPeerP2pRelay
 };

@@ -41,11 +41,13 @@ function FederationWalletMultisigPanel (props) {
 
   const [policy, setPolicy] = React.useState(null);
   const [manifest, setManifest] = React.useState(null);
+  const [vaultDetail, setVaultDetail] = React.useState(null);
   const [loadErr, setLoadErr] = React.useState(null);
   const [vaultFlowOpen, setVaultFlowOpen] = React.useState(false);
   const [fundedTxHex, setFundedTxHex] = React.useState('');
   const [destAddress, setDestAddress] = React.useState('');
   const [feeSats, setFeeSats] = React.useState('');
+  const [leafId, setLeafId] = React.useState('');
   const [psbtBusy, setPsbtBusy] = React.useState(false);
   const [psbtResult, setPsbtResult] = React.useState(null);
   const [prefs, setPrefs] = React.useState(() => loadFederationSpendingPrefs());
@@ -55,17 +57,22 @@ function FederationWalletMultisigPanel (props) {
     setLoadErr(null);
     const tok = readHubAdminTokenFromBrowser(props && props.adminToken);
     try {
-      const [pol, dist] = await Promise.all([
+      const [pol, dist, vaultJson] = await Promise.all([
         hubJsonRpc('GetDistributedFederationPolicy', []).catch((e) => {
           throw new Error(e && e.message ? e.message : String(e));
         }),
-        fetchDistributedHubPolicy()
+        fetchDistributedHubPolicy(),
+        fetch('/services/distributed/vault', {
+          headers: { Accept: 'application/json' }
+        }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
       ]);
       setPolicy(pol && typeof pol === 'object' ? pol : null);
       setManifest(dist && dist.manifest ? dist.manifest : null);
+      setVaultDetail(vaultJson && typeof vaultJson === 'object' ? vaultJson : null);
     } catch (e) {
       setPolicy(null);
       setManifest(null);
+      setVaultDetail(null);
       setLoadErr(e && e.message ? e.message : String(e));
     }
     if (!tok) {
@@ -97,8 +104,13 @@ function FederationWalletMultisigPanel (props) {
   const thr = policy && policy.threshold != null ? Math.max(1, Number(policy.threshold) || 1) : 1;
   const mOfN = validators.length ? `${Math.min(thr, validators.length)}-of-${validators.length}` : null;
   const fedFromManifest = federationSummaryFromManifest(manifest);
-  const vault = manifest && manifest.federationVault ? manifest.federationVault : null;
+  const vault = (vaultDetail && vaultDetail.status === 'ok' && vaultDetail.address)
+    ? vaultDetail
+    : (manifest && manifest.federationVault ? manifest.federationVault : null);
   const vaultAddr = vault && vault.address ? String(vault.address) : '';
+  const vaultLeaves = (vaultDetail && Array.isArray(vaultDetail.leaves) && vaultDetail.leaves.length)
+    ? vaultDetail.leaves
+    : ((vault && Array.isArray(vault.leaves)) ? vault.leaves : []);
   const criteriaPreview = mergePaymentMemoWithFederation('', prefs, true);
 
   const preparePsbt = async () => {
@@ -127,6 +139,8 @@ function FederationWalletMultisigPanel (props) {
       if (vaultAddr) params.vaultAddress = vaultAddr;
       const fs = feeSats != null && String(feeSats).trim() !== '' ? Math.round(Number(feeSats)) : NaN;
       if (Number.isFinite(fs) && fs > 0) params.feeSats = fs;
+      const lid = String(leafId || '').trim();
+      if (lid) params.leafId = lid;
       const r = await hubJsonRpc('PrepareFederationVaultWithdrawalPsbt', [params]);
       if (r && r.status === 'error') {
         setPsbtResult({ error: r.message || 'Prepare PSBT failed' });
@@ -218,6 +232,26 @@ function FederationWalletMultisigPanel (props) {
         </p>
       ) : null}
 
+      {vaultLeaves.length ? (
+        <div style={{ margin: '0.65em 0 0.85em' }}>
+          <p style={{ margin: '0 0 0.4em', fontSize: '0.9em', color: '#444' }}>
+            <strong>Taproot leaves</strong> (script tree — pick one when building a PSBT):
+          </p>
+          <ul style={{ margin: 0, paddingLeft: '1.2em', fontSize: '0.85em', lineHeight: 1.5, color: '#555' }}>
+            {vaultLeaves.map((l) => (
+              <li key={l.id || l.tapscriptHex}>
+                <code>{l.id || '?'}</code>
+                {' · '}
+                {l.kind || 'leaf'}
+                {l.threshold != null && l.keys ? ` · ${l.threshold}-of-${(l.keys || []).length}` : null}
+                {l.commitmentHex ? ` · hashlock ${String(l.commitmentHex).slice(0, 12)}…` : null}
+                {l.witnessShape ? ` · witness ${l.witnessShape}` : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <div style={{ margin: '0.85em 0' }}>
         <Link to="/federations">Open federation setup</Link>
         {' · '}
@@ -295,6 +329,22 @@ function FederationWalletMultisigPanel (props) {
                 value={destAddress}
                 onChange={(e) => setDestAddress(e.target.value)}
               />
+            </Form.Field>
+            <Form.Field>
+              <label>Leaf id (optional — default active spend tier)</label>
+              <Input
+                list="fabric-vault-leaf-ids"
+                placeholder={vaultLeaves[0] ? vaultLeaves[0].id : 't0-authority'}
+                value={leafId}
+                onChange={(e) => setLeafId(e.target.value)}
+              />
+              {vaultLeaves.length ? (
+                <datalist id="fabric-vault-leaf-ids">
+                  {vaultLeaves.map((l) => (
+                    <option key={l.id} value={l.id}>{l.kind}</option>
+                  ))}
+                </datalist>
+              ) : null}
             </Form.Field>
             <Form.Field>
               <label>Fee (sats, optional)</label>

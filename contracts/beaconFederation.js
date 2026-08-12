@@ -1,9 +1,13 @@
 'use strict';
 
 /**
- * Fabric Hub **Beacon Federation** — operator-defined k-of-n Schnorr witnesses on
- * `BEACON_EPOCH` payloads, plus a separate L1 Taproot federation vault (PSBT co-signing).
- * This is not an external sidechain; it is configured on **this** hub (see Distributed federation below).
+ * Fabric Hub **Beacon Federation** — operator catalog entry for the Hub Beacon
+ * epoch sealer + its native `fabric-beacon` CONTRACT_PUBLISH / ARC namespace.
+ *
+ * Wire genesis lives in `@fabric/core/functions/beaconContractDefinition`
+ * (network-agnostic). Hub `startBeacon` auto-registers and accepts it into the
+ * tracked set; L1 Taproot vault and ARC `spendAddress` share
+ * `taproot-authority-ladder-v1`.
  *
  * @see docs/DISTRIBUTED_CONTRACT_EXECUTION.md
  */
@@ -12,8 +16,10 @@ module.exports = {
   id: 'beacon-federation',
   name: 'Beacon Federation',
   kind: 'fabric-hub-beacon',
+  contractName: 'fabric-beacon',
+  interfaces: ['arc.core', 'fabric.beacon'],
   networkId: 'this hub',
-  description: 'Binds beacon epochs to Bitcoin L1 and optional sidechain digests: validator pubkeys and threshold (this page), canonical signing strings, `federationWitness` on sealed epochs, and a Taproot federation vault for L1 deposits (UTXO scan on the Hub; spends coordinated off-hub via PSBT).',
+  description: 'Binds beacon epochs to Bitcoin L1 and optional sidechain digests: validator pubkeys and threshold (this page), canonical signing strings, `federationWitness` on sealed epochs, and a Taproot federation vault for L1 deposits. The same authority set is published as a native ARC (`fabric-beacon`) under tracked application contracts — Actor id is content-addressed without Bitcoin network in genesis so the contract redeploys across regtest / signet / mainnet with Accept overlays.',
   links: [
     { label: 'Beacon Federation (operator UI)', to: '/settings/admin/beacon-federation' },
     { label: 'Distributed manifest (JSON)', href: '/services/distributed/manifest' },
@@ -27,6 +33,6 @@ module.exports = {
     }
   ],
   l1Bitcoin: {
-    notes: 'Vault uses a deterministic P2TR federation address from the configured validator set. Incoming deposits are tracked with a default 144-block maturity before spend policy (operator-facing; see Beacon Federation UI).'
+    notes: 'Vault and fabric-beacon ARC share spendPolicy { publisher, validators, threshold, csvBlocks, softMode } via taproot-authority-ladder-v1. Redeploy: bind beacon/NETWORK per environment; set FABRIC_BEACON_RESET_NETWORK=1 once when promoting chains.'
   }
 };

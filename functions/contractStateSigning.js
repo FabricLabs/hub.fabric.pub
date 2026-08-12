@@ -4,7 +4,7 @@
  * Thin re-export of `@fabric/core` contract-namespace tip signing.
  *
  * Hub Beacon epochs use `beaconFederationSigning`; per-contract Statechain tips
- * (GoonCitizen Groups, accepted CONTRACT_PUBLISH namespaces) use this module.
+ * (application Groups, accepted CONTRACT_PUBLISH namespaces) use this module.
  * If the tip kind or canonical string changes upstream, update Hub RPC/docs
  * (sidechain / distributed execution) in the same change.
  *

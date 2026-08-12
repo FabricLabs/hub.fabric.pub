@@ -1,9 +1,7 @@
 # Payment protocol direction
-
 This note sets expectations for **how Fabric handles value transfer** in the stack (`@fabric/core`, `@fabric/http`, `@fabric/hub`). It is guiding policy, not a finished spec.
 
 ## Primary goal: Fabric-native payments
-
 Ship a **small, auditable protocol** first:
 
 - **Fabric messages and types** — Invoices, settlement hints, and receipts expressed with `Message`, `Actor`, and related types; signed where security requires it.
@@ -15,7 +13,6 @@ Ship a **small, auditable protocol** first:
 External standards should **adapt into** this envelope, not replace it on day one.
 
 ## Future interoperability (adapters, not core couplings)
-
 These are **intentionally deferred**. When we integrate them, they should live behind clear boundaries (adapters, feature flags, or separate modules) so `@fabric/core` stays usable without a particular HTTP payment extension.
 
 | Direction | Role |
@@ -25,7 +22,6 @@ These are **intentionally deferred**. When we integrate them, they should live b
 | **MPP (multi-path payments)** | Split liquidity across routes (common in Lightning; **Tempo** and similar stacks may expose MPP-style behavior). Relevant when Lightning is a first-class path in the demo app, not a prerequisite for Fabric L1 flows. |
 
 ## Culture
-
 - Prefer **one Fabric-native happy path** documented and tested end-to-end.
 - Add L402 / x402 / MPP as **optional layers** that produce or consume the same Fabric-level invoice/settlement objects.
 - Avoid embedding third-party payment HTTP details into `@fabric/core` defaults; keep explorers and bridges **configured**, not hard-coded.
@@ -35,7 +31,6 @@ See also [BITCOIN_NETWORKS.md](BITCOIN_NETWORKS.md) for RPC and LAN mainnet setu
 **Stack docs (three core repos):** [fabric](https://github.com/FabricLabs/fabric), [fabric-http](https://github.com/FabricLabs/fabric-http), and **hub.fabric.pub** each ship `docs/PRODUCTION.md`, `docs/MARKETING_OVERVIEW.md`, `docs/RELEASE_CHECKLIST.md`, `CHANGELOG.md`, and **`npm run ci`**.
 
 ## Roadmap (Fabric-native happy path)
-
 | Phase | Scope | Status |
 |-------|--------|--------|
 | **A** | L1 invoice / `VerifyBitcoinL1Payment` + UI (`Invoice`, mainnet external pay) | Shipped |

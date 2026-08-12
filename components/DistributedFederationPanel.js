@@ -124,7 +124,7 @@ function DistributedFederationPanel (props) {
 
   const scopeLine = (
     <span>
-      <strong>Execution contracts:</strong> registry publish and <code>RunExecutionContract</code> use L1 invoice verification (when Bitcoin is on) and a deterministic <code>runCommitmentHex</code> only; they do <strong>not</strong> use federation witnesses.
+      <strong>Execution contracts:</strong> registry publish and <code>RunExecutionContract</code> use L1 invoice verification (when Bitcoin is on). Runs emit forward <code>FabricProgramRun</code> digests (<code>programHash</code> + <code>runCommitmentHex</code>) plus legacy <code>executionRunCommitmentHex</code>; they do <strong>not</strong> use federation witnesses.
     </span>
   );
 

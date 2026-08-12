@@ -165,7 +165,7 @@ Beacon epochs optionally attach **`federationWitness`** over **`signingStringFor
 | Fabric message storage / “client patterns” | **Partial** — HTTP + body helpers; P2P ingest not fully wired |
 | Full distributed replay across peers | **Not done** — documented as remaining work |
 | Contract-namespace Statechains via CONTRACT_PUBLISH | **Done (ADR-001)** — `sidechains/<id>/` + parent `/namespaces/<id>`; federation epoch sign rounds |
-| GoonCitizen / Group namespaces | **Done (client + Hub)** — see GoonCitizen D-016 |
+| Application / Group namespaces | **Done (client + Hub)** — application D-016-style namespace trees |
 
 ---
 
