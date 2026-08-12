@@ -5,8 +5,8 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#51ad619c9c6ed937f586db8ca69262e2f205e2d3` (immutable SHA from `feature/rsi`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#f81feb31f53db77bd172b262e72880718a547fe5` (immutable SHA from `feature/rsi`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#3c96383430f9f233a2f2be0850c0f2eb4c8366fb` (immutable SHA from `feature/rsi`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#68099636651351161456d6a292a9ff6d71ef528b` (immutable SHA from `feature/rsi`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -15,13 +15,14 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | nodemailer | **`9.0.4`** |
 | webpack / webpack-dev-server | **`5.109.2`** / **`5.2.6`**; `uuid@11.1.1` override (sockjs / jayson) |
 | React Router | **`react-router-dom@7.18.2`** — see residual below; webpack pins CJS entrypoints (see Recommendations) |
-| npm audit (clean tree) | **0 vulnerabilities** after 2026-08-12 tip refresh (core `51ad619c…` + http `f81feb31…`) |
+| npm audit (this tree) | **6 high** — `extract-zip` symlink traversal ([GHSA-jmr9-qjv8-65gv](https://github.com/advisories/GHSA-jmr9-qjv8-65gv) / CVE-2026-56876) via `puppeteer` / `@puppeteer/browsers` (`@fabric/http`) and `electron`. **No upstream patched release.** Build/dev extraction only; do not pass untrusted zips to those tools. |
 
 ## Residual (accepted)
 
 | Package | Severity | Notes |
 |---------|----------|-------|
-| `react-router` / `react-router-dom` **7.12–8.2** | high (advisory class) | [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) — **RSC mode** CSRF. Hub UI uses client **`BrowserRouter`** / SPA navigation, not React Server Components. Current `npm audit` reports **0** on this tree; keep watching for a non-RSC patch before changing the pin. Downgrading to **7.11.0** reintroduces earlier open-redirect advisories. Stay on **7.18.2**. |
+| `react-router` / `react-router-dom` **7.12–8.2** | high (advisory class) | [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) — **RSC mode** CSRF. Hub UI uses client **`BrowserRouter`** / SPA navigation, not React Server Components. Current `npm audit` does not flag this pin; keep watching for a non-RSC patch before changing it. Downgrading to **7.11.0** reintroduces earlier open-redirect advisories. Stay on **7.18.2**. |
+| `extract-zip` (via puppeteer + electron) | high | Abandoned package; no patched version. Electron uses it at **build time**; Puppeteer browser download is **dev/test**. Not on the Hub HTTP request path. |
 
 ## Overrides that keep the tree clean
 
@@ -40,7 +41,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 1. After dependency edits: **`npm ci`** (or `npm i`) then **`npm audit`** and **`npm run ci`** (`build` + `test:unit`).
 2. Keep core/http on immutable commit SHAs (refresh from `feature/rsi` then re-pin); use **`npm run link:fabric`** for local monorepo work. Plain **`npm run report:install` keeps `package-lock.json`** — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
-3. Do not run **`npm audit fix --force`** casually — it has proposed Electron 43 and React Router downgrades that fight the chosen pins.
+3. Do not run **`npm audit fix --force`** casually — it has proposed Electron 43 and React Router downgrades that fight the chosen pins. There is **no** `extract-zip` fix to force in.
 4. Revisit React Router when a release fixes GHSA-qwww without regressing open-redirect advisories.
 5. Webpack must keep **`conditionNames`** without bare **`import`**, plus CJS aliases for **`react-router$` / `react-router-dom$` / `react-router/dom$`** — otherwise RR7’s `.mjs` exports break the SPA bundle at runtime.
 
@@ -54,7 +55,15 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | Chat `created` Number(null) → epoch 0 | Fixed — Hub wrap in `functions/fabricChatNormalize.js` |
 | Beacon `addSignature` ready/sealed guard | Fixed upstream in core tip (`ready` \|\| `sealed`); Hub re-export |
 | Beacon `createRound` omitted `policy` | Fixed — Hub wrapper defaults `policy = {}` |
+| Beacon ready-round persist retry | Fixed — Hub `contracts/beacon.js` finalizes already-`ready` rounds instead of reopening |
+| `waitForHub` stalled-socket hang | Fixed — per-request `timeout` + `req.destroy` |
+| Wallet cache / crowdfund account / docs upload race / edit `response.ok` | Fixed |
+| Extension identity sync writing `xprv` | Fixed — `chrome.storage.local` payload is watch-only |
+| Payment test route default | Fixed — opt-in (`FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE`) |
+| Device-link linked GET starving the peer | Fixed upstream in `@fabric/http` (keep until TTL; Hub re-exports) |
 | Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof) |
+| Device-link client-supplied nonce | Open — inherited from `@fabric/http` (prefer always-fresh nonce) |
+| Device-link FIFO eviction under create flood | Open — nit; per-origin quota |
 | Identity import / stronger at-rest crypto | Deferred — heavy lift |
 | Large WIP split into stacked PRs | Open — process |
 | Fabric hallmarks (opt-in OP_RETURN) | Staged — Hub publish/scan + docs; regtest-only |

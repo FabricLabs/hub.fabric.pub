@@ -93,7 +93,7 @@ Beacon epochs optionally attach **`federationWitness`** over **`signingStringFor
 
 ## 5. Reorg behavior
 
-**Triggers (in `contracts/beacon.js`):**
+**Triggers (in `@fabric/core` `types/beacon`; Hub `contracts/beacon.js` is a thin subclass):**
 
 - **Depth reorg:** new tip **height** lower than previous → **`_pruneEpochChain(inclusiveMaxHeight)`** keeps epochs with **`height <= newTip`**, lists **`removedBeaconClocks`**.
 - **Same height, different hash:** pop one epoch → **`removedBeaconClocks`** for that entry.
@@ -121,7 +121,7 @@ Beacon epochs optionally attach **`federationWitness`** over **`signingStringFor
 5. ~~**Explicit patch journal**~~ — **Done:** `sidechain/JOURNAL`.
 6. **UI** — Surface sidechain JSON, patch submission, digest vs last epoch, reorg warnings.
 7. **L1 scanner linkage** — `functions/sidechainBlockScan.js` / deposit signals → **proposed** patches or epoch fields (inventory still documented as future in the index).
-8. **Multi-sign UX** — Collect threshold sigs for patches/epochs via delegation / desktop signing flows already used for execution contracts. **Epoch rounds:** `FederationSignRequest` broadcast + RPC `SubmitBeaconEpochSignature` / `ListPendingBeaconEpochSignatures` (ADR-001).
+8. **Multi-sign UX** — Collect threshold sigs for patches/epochs via delegation / desktop signing flows already used for execution contracts. **Epoch rounds:** `FederationSignRequest` broadcast + RPC `SubmitBeaconEpochSignature` / `ListPendingBeaconEpochSignatures` (ADR-001). Hub `contracts/beacon.js` **idempotently finalizes** already-`ready` rounds if persist failed (does not reopen for new sigs).
 
 **Longer-term**
 
@@ -142,7 +142,7 @@ Beacon epochs optionally attach **`federationWitness`** over **`signingStringFor
 
 | File | Responsibility |
 |------|------------------|
-| `contracts/beacon.js` | Epoch chain, reorg prune, federation witness on epochs (**fail-closed** truncate by default), `epoch` / `reorg` events |
+| `contracts/beacon.js` | Hub Beacon subclass of `@fabric/core` `types/beacon` (epoch chain, reorg prune, fail-closed witnesses) plus retry-finalize for already-`ready` federation rounds |
 | `functions/sidechainState.js` | Re-exports `@fabric/core/functions/sidechainState` (vendored `fabricStatechain.js` fallback) |
 | `@fabric/core/functions/sidechainState` | Digests, patch + path policy, journal, restore, serialize queue, wire body helpers |
 | `services/hub.js` | RPC + HTTP sidechain routes, epoch snapshot + journal seal, reorg/reconcile via `resolveStateForBeaconTip` |
