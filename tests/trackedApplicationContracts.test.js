@@ -157,4 +157,34 @@ describe('trackedApplicationContracts', function () {
     assert.notStrictEqual(state.accepted[contractId].spendAddress, spendRegtest);
     assert.match(state.accepted[contractId].spendAddress, /^tb1p/);
   });
+
+  it('rejects prototype-polluting contract ids', function () {
+    const state = tac.emptyState();
+    assert.throws(() => tac.recordPublish(state, { contractId: '__proto__', definition: { name: 'X' } }), /invalid contractId/);
+    assert.throws(() => tac.recordPublish(state, { contractId: 'constructor', definition: { name: 'X' } }), /invalid contractId/);
+  });
+
+  it('refuses pending overwrite from a different signer/definition', function () {
+    const state = tac.emptyState();
+    tac.recordPublish(state, {
+      contractId: 'c-conflict',
+      definition: { name: 'A' },
+      signer: 'aa',
+      origin: 'peer-1'
+    });
+    assert.throws(() => tac.recordPublish(state, {
+      contractId: 'c-conflict',
+      definition: { name: 'B' },
+      signer: 'bb',
+      origin: 'peer-2'
+    }), /already claimed/);
+    const again = tac.recordPublish(state, {
+      contractId: 'c-conflict',
+      definition: { name: 'A' },
+      signer: 'aa',
+      origin: 'peer-1'
+    });
+    assert.strictEqual(again.created, false);
+    assert.strictEqual(again.status, 'pending');
+  });
 });

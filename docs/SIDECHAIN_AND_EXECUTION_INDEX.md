@@ -11,6 +11,7 @@ For the architectural story, see [DISTRIBUTED_CONTRACT_EXECUTION.md](DISTRIBUTED
 | Area | Role | Primary locations |
 |------|------|-------------------|
 | **L1 block scan (playnet signals)** | Optional `getblock … 2` pass: OP_RETURN magic + `watchAddresses`, timelock hints | `functions/sidechainBlockScan.js`, `services/hub.js` (`_maybeScanSidechainBlock`), `settings/local.js` (`bitcoin.sidechainScan`) |
+| **L1 Fabric hallmarks** | Opt-in 40-byte OP_RETURN (`c0d3f33d` + tip suffix + state commitment); **on-chain only** (no P2P) | Core `functions/fabricHallmark.js`; Hub `functions/fabricHallmarkBitcoin.js`, RPC `PublishFabricHallmark`, `bitcoin.hallmarks` / `FABRIC_HALLMARKS` |
 | **L1 anchor of run digest** | Regtest OP_RETURN of `runCommitmentHex` (admin + wallet) | `functions/bitcoinExecutionAnchor.js`, RPC `AnchorExecutionRunCommitment`, `components/ContractView.js` |
 | **Run commitment** | `Program.programHash` + `Program.runCommitmentHex` (legacy ExecutionRun retained) | Core `executionProgramRunner` / `executionRunBridge`; Hub `RunExecutionContract` |
 | **Execution runner** | Full `Machine` + `fabric-execution` Program (structured stack ops) | `@fabric/core/functions/executionProgramRunner`; Hub wrapper `fabricExecutionMachine.js` (+ registry FabricOpcode resolve) |
@@ -27,6 +28,7 @@ For the architectural story, see [DISTRIBUTED_CONTRACT_EXECUTION.md](DISTRIBUTED
 ### Hub examples (tests & fixtures)
 
 - `tests/sidechainBlockScan.test.js` — mocked `getblock` for scanner.
+- `tests/fabricHallmark.test.js` — hallmark OP_RETURN encode/scan/publish mock.
 - `tests/sidechainState.test.js` — digest + JSON Patch application.
 - `tests/executionRunCommitment.test.js` — commitment stability vs `runExecutionProgram`.
 - `tests/hub.http.js` — `CreateExecutionContract` + `RunExecutionContract` + `runCommitmentHex`.

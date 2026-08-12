@@ -72,7 +72,7 @@ Severity is **release-blocking (P0)**, **should fix for RC (P1)**, or **post-RC 
 | UI-51 | P2 | **`/sidechains`**: many **textboxes without names** in the operator/demo form region. | Label every control; group under `fieldset` per workflow step. |
 | UI-52 | P2 | **`/services/bitcoin/resources`**: **quick-open** actions embed **long wallet-specific paths** in the visible/accessibility label. | Short label + `aria-describedby` for full path, or copy path on demand. |
 | UI-53 | P2 | **`/services/bitcoin/crowdfunds`**: **duplicate spinbutton names** (e.g. two “0”) in the a11y tree. | Distinct labels per field (goal, raised, min, etc.). |
-| UI-54 | P2 | **`/contracts`** and **`/contracts/:id`**: snapshots often show **only the H2** (“Contracts” / “Contract”) with **little or no body** — unclear if **loading**, **empty**, or **mount timing**. | Skeleton rows, empty-state copy, and ensure list/detail mount after contract RPCs complete. |
+| UI-54 | P2 | **`/contracts`** and **`/contracts/:id`**: snapshots often show **only the H2** (“Contracts” / “Contract”) with **little or no body** — unclear if **loading**, **empty**, or **mount timing**. | **Mitigated on list (2026-08-12):** `ContractsHome` keeps section chrome + summary counts while catalogs load; application ARC panel, storage, execution, crowdfunds stay mounted. Detail page still uses centered loader — follow up if needed. |
 | UI-55 | P2 | **Bitcoin sub-pages** (**Invoices**, **Payments**): **Faucet** / cross-links repeat across nav and in-page strips (overlaps **UI-12**). | One canonical strip per sub-area. |
 | UI-56 | P2 | **`/services/payjoin`** in the **SPA**: **“Page not found”** (“No hub UI for /services/payjoin”) while the **REST** service lives on the same path for JSON clients. | Redirect to **Payments** / Payjoin workflow, or render a small **capabilities** panel for HTML. |
 | UI-57 | P2 | **`/peers/:id`**: **H2** repeats the **same fabric id** multiple times plus **“Resolving…”** in one long accessible name. | Single id in title; move status to a **status line** or `aria-live` region. |
@@ -333,7 +333,7 @@ Every path registered under **`<Routes>`** in [`components/HubInterface.js`](../
 | `/peers/:id` | Page | **`PeersAdminRoute`** | **`PeerView`** |
 | `/documents` | Page | — | **`DocumentList`** |
 | `/documents/:id` | Page | — | **`DocumentView`** |
-| `/contracts` | Page | — | **`ContractList`** |
+| `/contracts` | Page | — | **`ContractsHome`** (legacy alias `ContractList`) |
 | `/contracts/:id` | Page | — | **`ContractView`** |
 | `/settings` | Page | — | **`SettingsHome`** |
 | `/settings/security` | Page | — | **`SecurityHome`** |

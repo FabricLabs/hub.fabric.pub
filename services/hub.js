@@ -129,6 +129,10 @@ const { runExecutionProgram, executionProgramDigest } = require('../functions/fa
 const { computeExecutionRunCommitmentHex, buildExecutionRunOutput } = require('../functions/executionRunCommitment');
 const { gateExecutionRegistryCreate } = require('../functions/executionRegistryGate');
 const { anchorExecutionCommitmentRegtest } = require('../functions/bitcoinExecutionAnchor');
+const {
+  publishFabricHallmarkFromState,
+  normalizeContractIdHex
+} = require('../functions/fabricHallmarkBitcoin');
 const { validateEnvelopeV1, buildGenericMessageFromEnvelope } = require('../functions/fabricMessageEnvelope');
 const inventoryRelay = require('../functions/inventoryRelay');
 const {
@@ -395,6 +399,18 @@ class Hub extends Service {
       const xpubTok = process.env.FABRIC_BITCOIN_XPUB_QUERY_TOKEN;
       if (xpubTok != null && String(xpubTok).trim()) {
         this.settings.bitcoin.xpubQueryToken = String(xpubTok).trim();
+      }
+      // Opt-in OP_RETURN hallmarks (short-format Fabric mark). Off by default.
+      if (!this.settings.bitcoin.hallmarks || typeof this.settings.bitcoin.hallmarks !== 'object') {
+        this.settings.bitcoin.hallmarks = {};
+      }
+      const hm = this.settings.bitcoin.hallmarks;
+      if (hm.enable == null) {
+        hm.enable = process.env.FABRIC_HALLMARKS === '1' || process.env.FABRIC_HALLMARKS === 'true';
+      }
+      if (hm.scan == null) {
+        hm.scan = process.env.FABRIC_HALLMARKS_SCAN === '1' || process.env.FABRIC_HALLMARKS_SCAN === 'true'
+          || !!hm.enable;
       }
     }
 
@@ -5608,6 +5624,7 @@ class Hub extends Service {
 
       await this._maybeScanSidechainBlock(tip, Number.isFinite(height) ? height : null);
       await this._maybeScanFederationRegistryBlock(tip, Number.isFinite(height) ? height : null);
+      await this._maybePublishFabricHallmark(tip, Number.isFinite(height) ? height : null);
     } catch (err) {
       console.error('[HUB] _handleBitcoinBlockUpdate error:', err && err.message ? err.message : err);
     }
@@ -5909,18 +5926,49 @@ class Hub extends Service {
   /**
    * Optional playnet / sidechain indexing: scan new block for OP_RETURN markers and watched addresses.
    * Enable with `settings.bitcoin.sidechainScan.enable` (off by default for production).
+   * When `settings.bitcoin.hallmarks.scan` is on, also decode Fabric hallmark OP_RETURNs.
    */
   async _maybeScanSidechainBlock (blockHash, height) {
     const cfg = this.settings.bitcoin && this.settings.bitcoin.sidechainScan;
-    if (!cfg || !cfg.enable || !blockHash) return;
+    const hm = this.settings.bitcoin && this.settings.bitcoin.hallmarks;
+    const hallmarksScan = !!(hm && hm.scan);
+    if ((!cfg || !cfg.enable) && !hallmarksScan) return;
+    if (!blockHash) return;
     const bitcoin = this._getBitcoinService();
     if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') return;
     try {
       const { scanBlockForSidechainSignals } = require('../functions/sidechainBlockScan');
-      const summary = await scanBlockForSidechainSignals(bitcoin, blockHash, height != null ? height : -1, cfg);
+      const scanCfg = Object.assign({}, cfg || {}, {
+        hallmarksScan,
+        tipBlockHashHex: blockHash
+      });
+      if (!cfg || !cfg.enable) {
+        // Hallmark-only scan: disable fab100 magic matching noise.
+        scanCfg.opReturnMagicHex = '';
+        scanCfg.watchAddresses = [];
+        scanCfg.recordTimelocks = false;
+      }
+      const summary = await scanBlockForSidechainSignals(bitcoin, blockHash, height != null ? height : -1, scanCfg);
       if (!summary || !Array.isArray(summary.signals) || summary.signals.length === 0) return;
       if (this.settings.debug) {
         console.log('[HUB:SIDECHAIN]', `block ${summary.height}`, summary.signals.length, 'signal(s)');
+      }
+      const hallmarks = summary.signals.filter((s) => s && s.kind === 'fabric_hallmark');
+      for (const h of hallmarks) {
+        try {
+          this.recordActivity({
+            type: 'FabricHallmark',
+            object: {
+              txid: h.txid,
+              vout: h.vout,
+              tipHashSuffixHex: h.tipHashSuffixHex,
+              commitmentHex: h.commitmentHex,
+              tipMatch: h.tipMatch,
+              blockHash: summary.blockHash,
+              height: summary.height
+            }
+          });
+        } catch (_) { /* optional */ }
       }
       try {
         this.recordActivity({
@@ -5928,12 +5976,150 @@ class Hub extends Service {
           object: {
             blockHash: summary.blockHash,
             height: summary.height,
-            count: summary.signals.length
+            count: summary.signals.length,
+            hallmarkCount: hallmarks.length
           }
         });
       } catch (_) { /* recordActivity optional */ }
     } catch (e) {
       console.warn('[HUB:SIDECHAIN] scan failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /**
+   * Opt-in OP_RETURN hallmark publish (regtest). On-chain only — no P2P relay.
+   * @param {string} tipBlockHash
+   * @param {number|null} height
+   */
+  async _maybePublishFabricHallmark (tipBlockHash, height) {
+    const hm = this.settings.bitcoin && this.settings.bitcoin.hallmarks;
+    if (!hm || !hm.enable || !tipBlockHash) return;
+    const tip = String(tipBlockHash).replace(/\s+/g, '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(tip)) return;
+    if (this._lastFabricHallmarkTip === tip) return;
+
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || bitcoin.network !== 'regtest') return;
+    const contractId = this.contract && this.contract.id != null ? String(this.contract.id) : '';
+    if (!contractId) {
+      console.warn('[HUB:HALLMARK] skip: Hub contract id unavailable');
+      return;
+    }
+
+    try {
+      const sidechain = this._getSidechainSnapshotForBeacon();
+      const contracts = this._getContractsSnapshotForBeacon();
+      const result = await publishFabricHallmarkFromState(bitcoin, {
+        tipBlockHashHex: tip,
+        contractId,
+        sidechain,
+        contracts
+      });
+      this._lastFabricHallmarkTip = tip;
+      console.log('[HUB:HALLMARK]', `published tip=${tip.slice(0, 12)}… txid=${result.txid}`);
+      try {
+        this.recordActivity({
+          type: 'FabricHallmark',
+          object: {
+            tipBlockHash: tip,
+            height: height != null ? height : undefined,
+            commitmentHex: result.commitmentHex,
+            tipHashSuffixHex: result.tipHashSuffixHex,
+            contractIdHex: result.contractIdHex,
+            sidechain,
+            contracts: contracts
+              ? {
+                clock: contracts.clock,
+                stateDigest: contracts.stateDigest
+              }
+              : null,
+            txid: result.txid,
+            published: true
+          }
+        });
+      } catch (_) { /* optional */ }
+      await this._collectBitcoinStatus({ force: true }).catch(() => {});
+    } catch (err) {
+      console.warn('[HUB:HALLMARK] publish failed:', err && err.message ? err.message : err);
+    }
+  }
+
+  /**
+   * Derive + publish a hallmark for the current tip (admin RPC helper).
+   * @param {object} req
+   * @returns {Promise<object>}
+   */
+  async _publishFabricHallmarkRpc (req = {}) {
+    const token = String(req.adminToken || req.token || '').trim();
+    if (!this.setup || !this.setup.verifyAdminToken(token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) {
+      return { status: 'error', message: 'Bitcoin service unavailable' };
+    }
+    if (bitcoin.network !== 'regtest') {
+      return { status: 'error', message: 'Fabric hallmark publish is only supported on regtest' };
+    }
+    let tip = String(req.tipBlockHash || req.tip || '').replace(/\s+/g, '').toLowerCase();
+    if (!tip) {
+      try {
+        tip = String(await bitcoin._makeRPCRequest('getbestblockhash', []) || '').toLowerCase();
+      } catch (e) {
+        return { status: 'error', message: e && e.message ? e.message : 'could not read tip' };
+      }
+    }
+    if (!/^[0-9a-f]{64}$/.test(tip)) {
+      return { status: 'error', message: 'tipBlockHash must be 64 hex characters' };
+    }
+    const contractId = this.contract && this.contract.id != null ? String(this.contract.id) : '';
+    if (!contractId) {
+      return { status: 'error', message: 'Hub contract id unavailable' };
+    }
+    try {
+      const sidechain = this._getSidechainSnapshotForBeacon();
+      const contracts = this._getContractsSnapshotForBeacon();
+      const result = await publishFabricHallmarkFromState(bitcoin, {
+        tipBlockHashHex: tip,
+        contractId,
+        sidechain,
+        contracts
+      });
+      this._lastFabricHallmarkTip = tip;
+      try {
+        this.recordActivity({
+          type: 'FabricHallmark',
+          object: {
+            tipBlockHash: tip,
+            commitmentHex: result.commitmentHex,
+            tipHashSuffixHex: result.tipHashSuffixHex,
+            contractIdHex: result.contractIdHex,
+            sidechain,
+            contracts: contracts
+              ? { clock: contracts.clock, stateDigest: contracts.stateDigest }
+              : null,
+            txid: result.txid,
+            published: true,
+            via: 'PublishFabricHallmark'
+          }
+        });
+      } catch (_) { /* optional */ }
+      await this._collectBitcoinStatus({ force: true }).catch(() => {});
+      return {
+        type: 'PublishFabricHallmarkResult',
+        tipBlockHash: tip,
+        commitmentHex: result.commitmentHex,
+        tipHashSuffixHex: result.tipHashSuffixHex,
+        contractIdHex: result.contractIdHex || normalizeContractIdHex(contractId),
+        payloadHex: result.payloadHex,
+        txid: result.txid,
+        txHex: result.hex
+      };
+    } catch (err) {
+      return {
+        status: 'error',
+        message: err && err.message ? err.message : String(err)
+      };
     }
   }
 
@@ -11636,6 +11822,13 @@ class Hub extends Service {
             message: err && err.message ? err.message : String(err)
           };
         }
+      });
+
+      // Regtest only: OP_RETURN Fabric hallmark (tip + contract + latest state digests). On-chain only.
+      // Params: { adminToken, tipBlockHash? }
+      this.http._registerMethod('PublishFabricHallmark', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._publishFabricHallmarkRpc(req);
       });
 
       // Sidechain / statechain global state (JSON Patch on `content`); epochs embed `payload.sidechain`.

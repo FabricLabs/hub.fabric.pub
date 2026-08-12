@@ -78,9 +78,17 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
 
     const hubChat = require('../functions/fabricChatNormalize');
     const httpChat = require('@fabric/http/functions/fabricChatNormalize');
-    assert.strictEqual(hubChat.normalizeP2pChatMessage, httpChat.normalizeP2pChatMessage);
+    // Hub wraps http normalize to sanitize Number(null)/'' created timestamps (epoch 0).
+    assert.strictEqual(hubChat.chatTextOf, httpChat.chatTextOf);
+    assert.strictEqual(hubChat.chatActorIdOf, httpChat.chatActorIdOf);
+    assert.notStrictEqual(hubChat.normalizeP2pChatMessage, httpChat.normalizeP2pChatMessage);
     const n = hubChat.normalizeP2pChatMessage({ text: 'hi' }, { signer: key.pubkey });
     assert.strictEqual(n.actor.id, hubPk.pubkeyXOnly(key.pubkey));
+    const coerced = hubChat.normalizeP2pChatMessage(
+      { text: 'hi', created: null },
+      { signer: key.pubkey }
+    );
+    assert.ok(Number(coerced.object.created) > 0);
   });
 
   it('fabricDelegation exports mount + session helpers', function () {

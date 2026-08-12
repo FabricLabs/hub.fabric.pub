@@ -177,6 +177,20 @@ async function persistState (fs, state) {
 }
 
 /**
+ * Reject object-prototype keys used as map indices.
+ * @param {*} id
+ * @returns {string}
+ */
+function assertSafeContractId (id) {
+  const s = String(id || '').trim();
+  if (!s) throw new Error('contractId required');
+  if (s === '__proto__' || s === 'constructor' || s === 'prototype') {
+    throw Object.assign(new Error('invalid contractId'), { code: 'INVALID_ID' });
+  }
+  return s;
+}
+
+/**
  * Record an inbound CONTRACT_PUBLISH (pending until operator accepts).
  * @returns {{ created: boolean, entry: object }}
  */
@@ -189,10 +203,27 @@ function recordPublish (state, {
   bitcoinHeight = null,
   network = null
 } = {}) {
-  const id = String(contractId || '').trim();
-  if (!id) throw new Error('contractId required');
-  if (state.accepted[id]) {
+  const id = assertSafeContractId(contractId);
+  if (Object.prototype.hasOwnProperty.call(state.accepted, id) && state.accepted[id]) {
     return { created: false, entry: state.accepted[id], status: 'accepted' };
+  }
+  const existingPending = Object.prototype.hasOwnProperty.call(state.pending, id)
+    ? state.pending[id]
+    : null;
+  if (existingPending) {
+    const nextSigner = signer ? String(signer) : null;
+    const nextOrigin = origin ? String(origin) : null;
+    const sameSigner = (existingPending.signer || null) === nextSigner;
+    const sameOrigin = (existingPending.origin || null) === nextOrigin;
+    const nextDef = definition && typeof definition === 'object' ? definition : {};
+    const nextDigest = definitionDigestOf(nextDef);
+    if (!sameSigner || !sameOrigin || existingPending.definitionDigest !== nextDigest) {
+      throw Object.assign(
+        new Error('pending contractId already claimed by a different publish'),
+        { code: 'CONFLICT' }
+      );
+    }
+    return { created: false, entry: existingPending, status: 'pending' };
   }
   const def = definition && typeof definition === 'object' ? definition : {};
   const enriched = enrichArcFields(def, {
@@ -216,10 +247,9 @@ function recordPublish (state, {
     spendAddress: enriched.spendAddress,
     bitcoinAnchor: enriched.bitcoinAnchor
   };
-  const existed = !!state.pending[id];
   state.pending[id] = entry;
   state.clock = (Number(state.clock) || 0) + 1;
-  return { created: !existed, entry, status: 'pending' };
+  return { created: true, entry, status: 'pending' };
 }
 
 /**
@@ -234,9 +264,9 @@ function acceptContract (state, contractId, {
   bitcoinHeight = null,
   network = null
 } = {}) {
-  const id = String(contractId || '').trim();
-  const pending = state.pending[id];
-  const existing = state.accepted[id];
+  const id = assertSafeContractId(contractId);
+  const pending = Object.prototype.hasOwnProperty.call(state.pending, id) ? state.pending[id] : null;
+  const existing = Object.prototype.hasOwnProperty.call(state.accepted, id) ? state.accepted[id] : null;
   const base = pending || existing;
   if (!base) throw Object.assign(new Error('unknown contract publish'), { code: 'NOT_FOUND' });
   delete state.pending[id];
@@ -269,8 +299,10 @@ function acceptContract (state, contractId, {
 }
 
 function rejectContract (state, contractId, { rejectedBy = null } = {}) {
-  const id = String(contractId || '').trim();
-  if (!state.pending[id] && !state.accepted[id]) {
+  const id = assertSafeContractId(contractId);
+  const hasPending = Object.prototype.hasOwnProperty.call(state.pending, id) && state.pending[id];
+  const hasAccepted = Object.prototype.hasOwnProperty.call(state.accepted, id) && state.accepted[id];
+  if (!hasPending && !hasAccepted) {
     throw Object.assign(new Error('unknown contract publish'), { code: 'NOT_FOUND' });
   }
   delete state.pending[id];
@@ -290,8 +322,8 @@ function rejectContract (state, contractId, { rejectedBy = null } = {}) {
  * (e.g. after an RSI service snapshot at `/services/rsi` changes).
  */
 function updateContractStateDigest (state, contractId, stateDigest) {
-  const id = String(contractId || '').trim();
-  const entry = state.accepted[id];
+  const id = assertSafeContractId(contractId);
+  const entry = Object.prototype.hasOwnProperty.call(state.accepted, id) ? state.accepted[id] : null;
   if (!entry) return null;
   const dig = stateDigest != null ? String(stateDigest) : null;
   if (entry.stateDigest === dig) return entry;

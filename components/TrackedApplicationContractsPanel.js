@@ -19,8 +19,11 @@ async function rpc (method, params = {}) {
 
 /**
  * Operator UI: pending CONTRACT_PUBLISH offers → Accept into Beacon-tracked set.
+ * @param {object} [props]
+ * @param {boolean} [props.embedded] When true, omit outer Segment (parent already wraps).
  */
-function TrackedApplicationContractsPanel () {
+function TrackedApplicationContractsPanel (props = {}) {
+  const embedded = !!(props && props.embedded);
   const [summary, setSummary] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [busyId, setBusyId] = React.useState(null);
@@ -75,17 +78,19 @@ function TrackedApplicationContractsPanel () {
   const accepted = (summary && Array.isArray(summary.accepted)) ? summary.accepted : [];
   const stateRoot = summary && summary.stateRoot ? String(summary.stateRoot) : null;
 
-  return (
-    <Segment>
-      <Header as="h3">
+  const body = (
+    <>
+      <Header as={embedded ? 'h4' : 'h3'}>
         <Icon name="file code outline" aria-hidden="true" />
-        <Header.Content>Tracked application contracts</Header.Content>
+        <Header.Content>{embedded ? 'Pending & accepted publishes' : 'Tracked application contracts'}</Header.Content>
       </Header>
+      {!embedded ? (
       <p style={{ color: '#555', lineHeight: 1.5, marginBottom: '0.75em' }}>
         Inbound <code>CONTRACT_PUBLISH</code> frames (application namespaces) land here as pending offers.
         Accepting one adds it to the local Beacon-tracked set; the next epoch seals{' '}
         <code>payload.contracts.stateDigest</code> (the state root of accepted published contracts).
       </p>
+      ) : null}
       {loading && <Message info size="small">Loading…</Message>}
       {error && <Message negative size="small" onDismiss={() => setError(null)}>{error}</Message>}
       {stateRoot && (
@@ -171,6 +176,13 @@ function TrackedApplicationContractsPanel () {
       <Button size="small" basic onClick={refresh} style={{ marginTop: '0.5em' }}>
         Refresh
       </Button>
+    </>
+  );
+
+  if (embedded) return <div className="fabric-tracked-application-contracts">{body}</div>;
+  return (
+    <Segment>
+      {body}
     </Segment>
   );
 }

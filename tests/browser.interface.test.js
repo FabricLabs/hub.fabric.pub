@@ -817,11 +817,14 @@ describe('Browser Interface', function () {
           !!document.getElementById('contracts-storage-h4') &&
           body.includes('CreateDistributeInvoice') &&
           body.includes('CreateStorageContract');
+        const hasApplication =
+          !!document.getElementById('contracts-application-h4') &&
+          /Tracked application|CONTRACT_PUBLISH|Application contracts/i.test(body);
         const hasPublish = body.includes('Publish to registry');
         const l1Registry = body.includes('Request registry invoice');
         const noBitcoinDev = body.includes('Publish to registry (no L1)') || body.includes('No Bitcoin service');
         const execOk = hasExecForm && hasPublish && (l1Registry || noBitcoinDev);
-        return hasStorageSection && execOk;
+        return hasStorageSection && hasApplication && execOk;
       });
       assert.ok(ok, 'Storage L1 intro + execution registry form should be visible on /contracts');
     });

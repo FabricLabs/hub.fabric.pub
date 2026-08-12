@@ -47,7 +47,6 @@ const {
 // Fabric Types
 const {
   buildLocalFabricIdentityPayload,
-  plaintextMasterFromStored,
   fabricPlaintextSigningUnlockable
 } = require('../functions/fabricHubLocalIdentity');
 const {
@@ -334,7 +333,7 @@ function InvoiceListHomeRoute (props) {
 }
 
 const BottomPanel = require('./BottomPanel');
-const ContractList = require('./ContractList');
+const ContractsHome = require('./ContractsHome');
 const ContractView = require('./ContractView');
 const DocumentList = require('./DocumentList');
 const DocumentView = require('./DocumentView');
@@ -617,6 +616,7 @@ class HubInterface extends React.Component {
       requiresSetupUiSecret: false,
       setupUiVerified: false,
       setupUiGatePassword: '',
+      setupStatusTimedOut: false,
       setupUiGateError: null,
       setupUiGateBusy: false,
       postSetupIdentityWizardOpen: initialPostSetupIdentityWizardOpen
@@ -677,7 +677,7 @@ class HubInterface extends React.Component {
       if (res.ok) {
         const text = await res.text();
         if (text.trim().startsWith('<')) {
-          this.setState({ setupChecked: true });
+          this.setState({ setupChecked: true, setupStatusTimedOut: false });
           return;
         }
         const data = JSON.parse(text);
@@ -690,11 +690,12 @@ class HubInterface extends React.Component {
         this.setState({
           needsSetup: !!data.needsSetup,
           setupChecked: true,
+          setupStatusTimedOut: false,
           requiresSetupUiSecret: !!data.requiresSetupUiSecret,
           setupUiVerified
         });
       } else {
-        this.setState({ setupChecked: true });
+        this.setState({ setupChecked: true, setupStatusTimedOut: false });
       }
     } catch (e) {
       this.setState({ setupChecked: true });
@@ -1033,14 +1034,21 @@ class HubInterface extends React.Component {
       if (!parsed || parsed.fabricIdentityMode !== 'account') return;
       if (parsed.passwordProtected) return;
       if (parsed.fabricHdRole === 'accountNode' || parsed.fabricHdRole === 'watchAccount') return;
-      const master = plaintextMasterFromStored(parsed);
+      // Strict at-rest storage clears masters; prefer the unlocked in-memory / session key.
+      const unlocked = this.state.uiLocalIdentity || {};
+      let master = String(unlocked.masterXprv || unlocked.xprv || '').trim();
+      if (!master) {
+        try {
+          const sess = JSON.parse(window.sessionStorage.getItem('fabric.identity.unlocked') || 'null');
+          master = String((sess && (sess.masterXprv || sess.xprv)) || '').trim();
+        } catch (_) {}
+      }
       if (!master) return;
 
       const dk = deriveFabricAccountIdentityKeys(master, ai, 0);
-      const masterXp =
-        parsed.masterXpub && String(parsed.masterXpub).trim()
-          ? String(parsed.masterXpub).trim()
-          : fabricRootXpubFromMasterXprv(master);
+      const fromUnlockedXp = unlocked.masterXpub && String(unlocked.masterXpub).trim();
+      const fromParsedXp = parsed.masterXpub && String(parsed.masterXpub).trim();
+      const masterXp = fromUnlockedXp || fromParsedXp || fabricRootXpubFromMasterXprv(master);
       const nextPayload = Object.assign({}, parsed, {
         fabricIdentityMode: 'account',
         fabricAccountIndex: ai,
@@ -1200,7 +1208,8 @@ class HubInterface extends React.Component {
   componentDidMount () {
     console.debug('[HUB]', 'Component mounted!');
     this._setupStatusSafetyTimer = setTimeout(() => {
-      this.setState((prev) => (prev.setupChecked ? null : { setupChecked: true }));
+      // Do not treat unknown setup status as configured (would skip onboarding).
+      this.setState((prev) => (prev.setupChecked ? null : { setupStatusTimedOut: true }));
     }, 20000);
     this._checkSetupStatus().finally(() => {
       if (this._setupStatusSafetyTimer) {
@@ -1682,13 +1691,37 @@ class HubInterface extends React.Component {
               </div>
             ) : !this.state.setupChecked ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '1em' }}>
-                <Loader active inline="centered" size='large' />
+                <Loader active={!this.state.setupStatusTimedOut} inline="centered" size='large' />
                 <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>
-                  Checking hub configuration…
+                  {this.state.setupStatusTimedOut
+                    ? 'Could not confirm hub setup status.'
+                    : 'Checking hub configuration…'}
                 </p>
                 <p style={{ color: '#888', margin: 0, fontSize: '0.9em', textAlign: 'center', maxWidth: '24rem', lineHeight: 1.45 }}>
-                  Fetching setup status from this hub (not the WebSocket path).
+                  {this.state.setupStatusTimedOut
+                    ? 'Still waiting on /settings — retry when the hub is reachable. Onboarding is not skipped on timeout.'
+                    : 'Fetching setup status from this hub (not the WebSocket path).'}
                 </p>
+                {this.state.setupStatusTimedOut ? (
+                  <Button
+                    primary
+                    type="button"
+                    onClick={() => {
+                      this.setState({ setupStatusTimedOut: false });
+                      this._checkSetupStatus().finally(() => {
+                        if (this._setupStatusSafetyTimer) {
+                          clearTimeout(this._setupStatusSafetyTimer);
+                          this._setupStatusSafetyTimer = null;
+                        }
+                        this._setupStatusSafetyTimer = setTimeout(() => {
+                          this.setState((prev) => (prev.setupChecked ? null : { setupStatusTimedOut: true }));
+                        }, 20000);
+                      });
+                    }}
+                  >
+                    Retry
+                  </Button>
+                ) : null}
               </div>
             ) : this.state.needsSetup ? (
               this.state.requiresSetupUiSecret && !this.state.setupUiVerified ? (
@@ -2953,7 +2986,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/contracts"
-                    element={pv(<ContractList {...this.props} />)}
+                    element={pv(<ContractsHome {...this.props} />)}
                   />
                   <Route
                     path="/contracts/:id"

@@ -17,7 +17,7 @@ Downstream **applications** publish a contract describing their namespace, creat
 5. **Application trees** — An accepted application namespace sits under the Hub. Group Federation contracts are further namespaces under that application (parent seal under the application chain’s `/namespaces/<groupContractId>`). Further levels follow the same rule.
 6. **Ignore-unknown** — Peers still gossip unknown contract ids; apps only materialize chains for namespaces they accept.
 
-```
+```text
 Bitcoin tip
   → BEACON_EPOCH (federation Schnorr)
       → Hub sidechain head (payload.sidechain)
