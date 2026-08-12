@@ -21,7 +21,7 @@ const bridgeNetworkStatusUpdate = (status) => ({
 const bridgeSync = () => {
   return async (dispatch, getState) => {
     dispatch(bridgeSyncRequest());
-    const { token } = getState().auth.token;
+    const { token } = getState().auth;
     try {
       // TODO: get bridge instance
       const instance = await fetchFromAPI(`/`, token);

@@ -83,6 +83,13 @@ function syncSemanticAssetsFromRoot (fabricHttpRoot, hubRoot) {
     throw new Error(`@fabric/http assets not found at ${sourceAssets}`);
   }
 
+  // Never rm/cp when FABRIC_HTTP points at this Hub — that deletes the only copy.
+  const resolvedSource = path.resolve(sourceAssets);
+  const resolvedHub = path.resolve(hubAssets);
+  if (resolvedSource === resolvedHub) {
+    return;
+  }
+
   for (const rel of SEMANTIC_FILES) {
     copyIfExists(path.join(sourceAssets, rel), path.join(hubAssets, rel));
   }

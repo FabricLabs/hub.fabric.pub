@@ -2925,7 +2925,8 @@ class Bridge extends React.Component {
             const aliasText = name || (typeof payload === 'string' ? payload.trim() : '');
             if (aliasText) {
               this._peerAliasById = this._peerAliasById || {};
-              const signerId = (payload.actor && payload.actor.id) || peerId;
+              // Trust the WebRTC session peer id, not forgeable JSON actor.id.
+              const signerId = peerId;
               this._peerAliasById[signerId] = aliasText.slice(0, 64);
               if (this._isConnected && this.ws && this.ws.readyState === 1) {
                 this._sendJSONRPC({
@@ -4030,7 +4031,14 @@ class Bridge extends React.Component {
           const name = String(alias || '').trim().slice(0, 64);
           if (name) {
             this._peerAliasById = this._peerAliasById || {};
-            const id = tKind === SESSION_KIND_WEBRTC && tSessionId ? tSessionId : (this._getIdentityId && this._getIdentityId());
+            // WebRTC: map to the transport peer. Hub wire: map to AMP author only —
+            // never fall back to the local identity (that rebinds remote aliases onto us).
+            let id = null;
+            if (tKind === SESSION_KIND_WEBRTC && tSessionId) {
+              id = tSessionId;
+            } else if (message.author) {
+              id = String(message.author).toLowerCase();
+            }
             if (id) this._peerAliasById[id] = name;
             if (tKind === SESSION_KIND_WEBRTC && tSessionId) {
               this.handleWebRTCPeerMessage(tSessionId, {

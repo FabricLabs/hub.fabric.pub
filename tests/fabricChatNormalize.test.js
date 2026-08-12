@@ -58,4 +58,14 @@ describe('fabricChatNormalize', function () {
   it('returns null for empty text', function () {
     assert.strictEqual(normalizeP2pChatMessage({ object: { content: '  ' } }), null);
   });
+
+  it('does not treat Number(null)/empty created as Unix epoch', function () {
+    const n = normalizeP2pChatMessage({
+      type: 'P2P_CHAT_MESSAGE',
+      actor: { id: 'aa' },
+      object: { content: 'hi', created: null }
+    });
+    assert.ok(n);
+    assert.ok(n.object.created > 1e12);
+  });
 });

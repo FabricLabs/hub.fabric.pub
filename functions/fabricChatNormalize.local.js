@@ -70,12 +70,17 @@ function normalizeP2pChatMessage (chat, opts = {}) {
     : {};
   const actorId = chatActorIdOf(chat, opts) || 'unknown';
   let created = Number(objIn.created);
+  // Number(null) and Number('') are 0 — treat as missing, not Unix epoch.
+  if (objIn.created == null || objIn.created === '' || !Number.isFinite(created) || created <= 0) {
+    created = NaN;
+  }
   if (!Number.isFinite(created) && objIn.ts) {
     const parsed = Date.parse(objIn.ts);
     created = Number.isFinite(parsed) ? parsed : Date.now();
   }
-  if (!Number.isFinite(created) && chat && typeof chat === 'object' && chat.created != null) {
+  if (!Number.isFinite(created) && chat && typeof chat === 'object' && chat.created != null && chat.created !== '') {
     created = Number(chat.created);
+    if (!Number.isFinite(created) || created <= 0) created = NaN;
   }
   if (!Number.isFinite(created)) created = Date.now();
 

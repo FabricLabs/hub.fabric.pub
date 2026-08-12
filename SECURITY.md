@@ -24,12 +24,14 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - ~~**Encrypted backup export**~~ — primary “Download encrypted backup” requires an unlocked signing `xprv` (watch-only disabled + labeled).
 - **Large WIP split** — PR #15 still spans far more than review-tool limits; land remaining RSI work as stacked PRs (identity, Bitcoin/HTLC, WebRTC, docs).
 - **`GenericMessage` / WS** — see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md); prefer named AMP types on public hubs.
-- ~~**`@fabric/core` / `@fabric/http` pin hygiene**~~ — `package.json` / lockfile pin `2e2aec81…` (core) + `365f0b49…` (http); refresh via `feature/rsi` then re-pin resolved SHAs. `report:install` keeps `package-lock.json`.
+- ~~**`@fabric/core` / `@fabric/http` pin hygiene**~~ — pins: core `aa516d31…`, http `54560cb9…` (refreshed via `feature/rsi`). `report:install` keeps `package-lock.json`.
 - ~~**Fabric coin types**~~ — `functions/fabricAccountDerivedIdentity.js` uses core `fabricIdentityDerivationPath` (default **7778**; optional `mainnet` / **7777**). Wire Hub UI / bitcoin network into that optional arg where product wants mainnet identity paths.
+- **Site-login / device-link Origin gates** — inherited from `@fabric/http` (forgeable Origin/Referer for Hub self-sign + session redeem on shared hosts). Prefer possession proofs before production shared bind; cleartext production hubs are no longer default-allowlisted.
 - **Payment test route** — Hub defaults `exposePaymentTestRoute` **off**; set `FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE=1` (or legacy `FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE=0`) when needed for local 402 checks.
 - ~~**Wallet summary cache**~~ — `fetchWalletSummaryWithCache` honors `bypassCache` / `maxCacheAgeMs` on the failure-fallback read path.
 - ~~**HTLC key reveal chat**~~ — inbound `HTLC_KEY_REVEAL` is relay-only (no `_cacheChatMessage` / WS broadcast); inventory settlements retain `documentContentKey.readContentKey` as `preimageHex`.
 - ~~**UI flag fetch**~~ — `fetchPersistedHubUiFeatureFlags` normalizes the server payload directly (no stale localStorage merge).
+- ~~**Peer alias attribution**~~ — WebRTC aliases bind to the session peer id; hub-wire AMP aliases bind to `message.author` (not local identity).
 - **Local identity at-rest** — fresh identity save still uses `encryptLocalIdentityAtRest`; migrate to the stronger PBKDF2+AES-GCM backup scheme (heavy lift).
 - **Docs index polish** — keep `docs/SIDECHAIN_AND_EXECUTION_INDEX.md` / ADR-001 path names aligned with current Hub/core modules when touching sidechain docs.
 

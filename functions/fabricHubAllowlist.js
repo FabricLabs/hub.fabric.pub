@@ -7,13 +7,12 @@
 try {
   module.exports = require('@fabric/http/functions/fabricHubAllowlist');
 } catch (_) {
+  // HTTPS-only network defaults (match @fabric/http). Cleartext production hubs
+  // require FABRIC_HUB_ALLOWLIST / opts.extra. Loopback http remains allowed.
   const DEFAULT_FABRIC_HUB_ORIGINS = [
     'https://hub.fabric.pub',
-    'http://hub.fabric.pub',
     'https://relay.goon.vc',
-    'http://relay.goon.vc',
-    'https://goon.vc',
-    'http://goon.vc'
+    'https://goon.vc'
   ];
 
   function normalizeHubOrigin (raw) {
@@ -46,9 +45,12 @@ try {
     const origin = normalizeHubOrigin(hubBase);
     if (!origin) return false;
     if (opts.allowLoopback !== false && isLoopbackHubOrigin(origin)) return true;
+    const env = Object.prototype.hasOwnProperty.call(opts, 'env')
+      ? (opts.env || {})
+      : process.env;
     const allowed = new Set([
       ...DEFAULT_FABRIC_HUB_ORIGINS.map(normalizeHubOrigin).filter(Boolean),
-      ...allowlistFromEnv(opts.env || process.env),
+      ...allowlistFromEnv(env),
       ...(Array.isArray(opts.extra) ? opts.extra.map(normalizeHubOrigin).filter(Boolean) : [])
     ]);
     return allowed.has(origin);

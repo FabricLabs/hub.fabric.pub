@@ -45,6 +45,9 @@ function computePublicHubVisitor ({ localIdentity, propsAuth }) {
   ) {
     return false;
   }
+  // Before HubInterface hydrates `localIdentity`, a locked/watch-only record on
+  // disk must not be treated as an anonymous public visitor.
+  if (hasPersistedFabricIdentity()) return false;
   if (hasExternalSigningDelegation()) return false;
   return true;
 }
