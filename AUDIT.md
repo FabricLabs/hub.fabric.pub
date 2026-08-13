@@ -5,8 +5,8 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#3c96383430f9f233a2f2be0850c0f2eb4c8366fb` (immutable SHA from `feature/rsi`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#68099636651351161456d6a292a9ff6d71ef528b` (immutable SHA from `feature/rsi`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#2e4d2ac75e8e37260791cfd5503480cdc0915317` (immutable SHA from `feature/rsi`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#9c9e8f823d11f221f8617ea8bd4019d0a55c9b31` (immutable SHA from `feature/rsi`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -53,20 +53,20 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | Setup-status timeout fail-closed | Fixed — timeout sets `setupStatusTimedOut` only (no `setupChecked`) |
 | Peer alias attribution (WebRTC / hub wire) | Fixed |
 | Chat `created` Number(null) → epoch 0 | Fixed — Hub wrap in `functions/fabricChatNormalize.js` |
-| Beacon `addSignature` ready/sealed guard | Fixed upstream in core tip (`ready` \|\| `sealed`); Hub re-export |
-| Beacon `createRound` omitted `policy` | Fixed — Hub wrapper defaults `policy = {}` |
-| Beacon ready-round persist retry | Fixed — Hub `contracts/beacon.js` finalizes already-`ready` rounds instead of reopening |
+| Beacon `addSignature` ready/sealed guard | Fixed upstream in core (`ready` \|\| `sealed`); Hub re-export |
+| Beacon `createRound` omitted `policy` | Fixed — Hub wrapper defaults `policy = {}` (core also defaults) |
+| Beacon ready-round persist retry | Fixed in core `Beacon#submitFederationEpochSignature`; Hub `contracts/beacon.js` is a thin subclass (duplicate override dropped) |
 | `waitForHub` stalled-socket hang | Fixed — per-request `timeout` + `req.destroy` |
 | Wallet cache / crowdfund account / docs upload race / edit `response.ok` | Fixed |
 | Extension identity sync writing `xprv` | Fixed — `chrome.storage.local` payload is watch-only |
 | Payment test route default | Fixed — opt-in (`FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE`) |
 | Device-link linked GET starving the peer | Fixed upstream in `@fabric/http` (keep until TTL; Hub re-exports) |
-| Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof) |
+| Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof). Http now shares one poll helper; still not a possession proof. |
 | Device-link client-supplied nonce | Open — inherited from `@fabric/http` (prefer always-fresh nonce) |
 | Device-link FIFO eviction under create flood | Open — nit; per-origin quota |
 | Identity import / stronger at-rest crypto | Deferred — heavy lift |
 | Large WIP split into stacked PRs | Open — process |
-| Fabric hallmarks (opt-in OP_RETURN) | Staged — Hub publish/scan + docs; regtest-only |
+| Fabric hallmarks (opt-in OP_RETURN) | In tree — Hub publish/scan + docs; regtest-only |
 
 ## Disclosure
 
