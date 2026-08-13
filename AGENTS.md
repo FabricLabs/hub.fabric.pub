@@ -1,5 +1,12 @@
 # hub.fabric.pub — Agent Guidelines
 
+### Release posture
+- **Target:** `0.1.0-RC1` (coordinated with `@fabric/core` / `@fabric/http`).
+- **Gate:** `npm run ci` (build + unit). Optional E2E only when asked.
+- **Do not expand RC scope** (new payment rails, broad UI redesign) without owner
+  go-ahead. Prefer `docs/PRODUCTION.md` + `docs/RELEASE_CHECKLIST.md` over
+  inventing ship work from the architecture dump below.
+
 ## Project Overview
 `hub.fabric.pub` is the Fabric rendezvous hub and browser gateway. It runs a Fabric peer node, exposes HTTP/WebSocket APIs, and serves a React UI for operators.
 
