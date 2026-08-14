@@ -2,14 +2,13 @@
 All notable changes to **hub.fabric.pub** (Fabric Hub) are documented here. RCs are coordinated with **`@fabric/core`** and **`@fabric/http`**.
 
 ## [Unreleased]
-- **CI:** Workflow **Test** now reads `hub/.nvmrc` after checkout `path: hub` (was looking at repo-root `.nvmrc` and failing Install Node.js). Sibling `@fabric/http` checkout follows `feature/rsi`.
-- **Bitcoin client:** `fetchWalletTransactions` / `fetchPayments` use `resolveBitcoinClientAuthToken` so `hubAdminToken` is not sent to explorer/payments URLs.
-- **Admin token:** `SetupService.verifyAdminToken` requires signed payload `cap=OP_IDENTITY` and `sub=admin` (not any token signed by `_rootKey`).
-- **Identity backup:** Decrypt rejects extreme PBKDF2 iteration counts and malformed salt/iv.
-- **Pins:** `@fabric/core` lockfile `39bfbcb7b…` (wallet lock / Environment / GroupChange vote-string); `@fabric/http` lockfile `17abf49…` (CLI `--password=` + core pin). `package.json` stays on `#feature/rsi`. `report:install` wipes the lockfile then `npm i --allow-git=all`.
+- **IdentityCrossSign:** `functions/identityCrossSign.js` / `identityCrossSignVerify.js` re-export `@fabric/core`.
+- **Device link:** per-origin create quota is in `@fabric/http` (`MAX_SESSIONS_PER_ORIGIN`); Hub re-exports it from `functions/fabricDeviceLink.js`. Browser device-link fetch omits client-set Origin/Referer.
+- **Site login:** expired `GET /sessions/:delegationToken` requires matching `Authorization: Bearer` (http pin).
+- **Pins:** `@fabric/core` lockfile `ab0acf77b…`; `@fabric/http` lockfile `270ebbb…` (IdentityCrossSign re-exports, peer `:7778` canonicalize, Bearer path-token). `package.json` stays on `#feature/rsi`. `report:install` wipes the lockfile then `npm i --allow-git=all`.
+- **Managed Bitcoin:** Hub RPC probe keeps cookie credentials (no longer a port-only stub that 401s an orphan `bitcoind`). Spawn early-exit / datadir lock **attaches** to the live node instead of `pm2` crash-looping. Shutdown kills only a Core this process spawned.
 - **Playnet:** `npm run playnet:status -- --production` reports native `fabric-beacon` plus an optional sibling GoonCitizen contract id. Deploy the application namespace from GoonCitizen: `npm run playnet:deploy-gooncitizen -- --production --accept`.
 - **SPA assets:** `assets/scripts/assets/manifest.json` loads the same-origin `/bundles/browser.min.js` (no remote `fabric.pub` script URI).
-- **Pins:** `@fabric/core` lockfile `39bfbcb7b…` (wallet lock / Environment / GroupChange vote-string); `@fabric/http` lockfile `17abf49…` (CLI `--password=` + core pin). `package.json` stays on `#feature/rsi`. `report:install` wipes the lockfile then `npm i --allow-git=all`.
 
 - **Document Market (opt-in):** Accumulate peer document inventories (`FABRIC_DOCUMENT_MARKET_ACCUMULATE=1`) and republish **held** files at a markup (`FABRIC_DOCUMENT_MARKET_REPUBLISH=1`, default +10%). Offer book on Documents; RPC `ListDocumentOffers` / `RefreshDocumentMarket`; reusable helper `@fabric/hub/functions/documentInventoryMarket`. Outbound inventory still lists only local blobs. See [PAYMENTS_PROTOCOL.md](PAYMENTS_PROTOCOL.md) phase **J**.
 - **Dependencies / security:** Align with `@fabric/http` / `@fabric/core` Node **24.15.0**. Bump `ws@8.21.2`, `webpack@5.109.2`, `webpack-dev-server@5.2.6`, `nodemailer@9.0.4`, `electron@39.8.10`, `electron-builder@26.15.7`, `react-router-dom@7.18.2` (drop unused `Switch` imports); add direct `terser-webpack-plugin` for the webpack config. Overrides: `ws`, `uuid@11.1.1`, `tar@7.5.22`, `builder-util-runtime@9.7.0`. See [AUDIT.md](AUDIT.md) (RSC CSRF residual accepted for SPA `BrowserRouter`).

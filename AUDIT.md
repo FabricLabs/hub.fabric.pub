@@ -1,12 +1,12 @@
 # Fabric Hub Security Audit
 Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-run **`npm audit`** after dependency changes; keep this file aligned with the current lockfile.
 
-## Status (2026-08-13)
+## Status (2026-08-14)
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `39bfbcb7b9657fb1f7a499f90863afeb65c82045`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `17abf49a5f49890f38ff17633e7a7e369ecf6395`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `ab0acf77bf193678103fc8cb5276465a16e41744`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `270ebbb6fe0f56462a14936f52f2bd9de19bfaa0`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -24,7 +24,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | `react-router` / `react-router-dom` **7.12–8.2** | high (advisory class) | [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) — **RSC mode** CSRF. Hub UI uses client **`BrowserRouter`** / SPA navigation, not React Server Components. Current `npm audit` does not flag this pin; keep watching for a non-RSC patch before changing it. Downgrading to **7.11.0** reintroduces earlier open-redirect advisories. Stay on **7.18.2**. |
 | `extract-zip` (via puppeteer + electron) | high | Abandoned package; no patched version. Electron uses it at **build time**; Puppeteer browser download is **dev/test**. Not on the Hub HTTP request path. |
 
-## Overrides that keep the tree clean
+## Overrides for mitigated runtime findings
 
 | Override | Why |
 |----------|-----|

@@ -56,6 +56,10 @@ const {
 } = require('../functions/hubLifecycle');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
+const {
+  isManagedBitcoinSpawnEarlyExit,
+  wrapBitcoinRpcProbeCandidatesForPort
+} = require('../functions/bitcoinManagedAttach');
 
 // Fabric Types
 const Chain = require('@fabric/core/types/chain'); // fabric chains
@@ -512,12 +516,12 @@ class Hub extends Service {
           // ZMQ for real-time block/tx notifications (bitcoind started with -zmqpubhashblock etc. on this port)
           ...(this.settings.bitcoin.managed ? { zmq: { host: '127.0.0.1', port: zmqPort } } : {})
         });
-        // Managed regtest: single RPC probe candidate and shorter wait-for-RPC polling so we fit within startTimeoutMs
+        // Managed regtest: probe only this Hub RPC port, but keep cookie-auth
+        // candidates from core (an unauthenticated stub 401s an orphan bitcoind
+        // and Hub then spawn-or-dies on the held datadir lock).
         if (this.settings.bitcoin.managed && this.settings.bitcoin.network === 'regtest') {
           const rpcport = Number(this.settings.bitcoin.rpcport || 18443);
-          this.bitcoin._buildRPCProbeCandidates = function () {
-            return [{ host: '127.0.0.1', rpcport, source: 'hub', network: 'regtest' }];
-          };
+          wrapBitcoinRpcProbeCandidatesForPort(this.bitcoin, rpcport);
           const timeoutMs = Math.max(5000, Number(this.settings.bitcoin.startTimeoutMs || 15000) - 2000);
           const intervalMs = 400;
           const maxDelayMs = 2000;
@@ -9688,24 +9692,53 @@ class Hub extends Service {
     return this;
   }
 
+  _recordManagedBitcoindPid () {
+    const child = this.bitcoin && this.bitcoin._nodeProcess;
+    this._bitcoindPid = (child && child.pid) ? child.pid : null;
+  }
+
   async _startBitcoinServiceWithTimeout () {
     if (!this.bitcoin) return { started: false, reason: 'disabled' };
 
     const timeoutMs = Math.max(3000, Math.min(60000, Number(this.settings.bitcoin.startTimeoutMs || 10000)));
     let settled = false;
 
+    const startOnce = async () => {
+      await this.bitcoin.start();
+      await this._collectBitcoinStatus({ force: true });
+      this._recordManagedBitcoindPid();
+      return { started: true };
+    };
+
     const startPromise = (async () => {
       try {
-        await this.bitcoin.start();
-        await this._collectBitcoinStatus({ force: true });
+        const ok = await startOnce();
         settled = true;
-        return { started: true };
+        return ok;
       } catch (bitcoinStartError) {
-        settled = true;
         const msg = bitcoinStartError && bitcoinStartError.message ? bitcoinStartError.message : String(bitcoinStartError);
+        const canAttach = this.bitcoin && this.bitcoin.settings &&
+          this.bitcoin.settings.managed !== false &&
+          isManagedBitcoinSpawnEarlyExit(bitcoinStartError);
+        if (canAttach && this.bitcoin && this.bitcoin.settings) {
+          console.warn('[HUB] Managed bitcoind spawn failed; attaching to existing RPC if the datadir is live:', msg);
+          this.bitcoin.settings.managed = false;
+          try {
+            const ok = await startOnce();
+            settled = true;
+            return ok;
+          } catch (attachError) {
+            const attachMsg = attachError && attachError.message ? attachError.message : String(attachError);
+            settled = true;
+            console.warn('[HUB] Bitcoin attach after spawn failure also failed:', attachMsg);
+            this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'ERROR', message: attachMsg });
+            return { started: false, reason: attachMsg };
+          }
+        }
+        settled = true;
         console.warn('[HUB] Bitcoin service failed to start:', msg);
-          this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'ERROR', message: msg });
-          return { started: false, reason: msg };
+        this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'ERROR', message: msg });
+        return { started: false, reason: msg };
       }
     })();
 

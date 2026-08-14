@@ -22,6 +22,7 @@ const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+const { spawnedBitcoindPid } = require('../functions/bitcoinManagedAttach');
 let resolveFabricPeerInterface;
 try {
   ({ resolveFabricPeerInterface } = require('@fabric/core/functions/fabricListenInterface'));
@@ -212,15 +213,16 @@ async function exitWithHubStop (reason = 'unknown', exitCode = 0) {
     console.error('[FABRIC:HUB]', 'Error during shutdown:', err && err.stack ? err.stack : err);
     exitCode = 1;
   } finally {
-    // Ensure managed bitcoind is killed so it does not dangle (e.g. if stop() timed out or threw)
-    if (activeHub && activeHub._bitcoindPid) {
+    // Kill only a bitcoind this Hub spawned (not an attached orphan we reused).
+    const bitcoindPid = spawnedBitcoindPid(activeHub);
+    if (bitcoindPid) {
       try {
-        process.kill(activeHub._bitcoindPid, 'SIGKILL');
-        console.log('[FABRIC:HUB]', 'Killed managed bitcoind PID:', activeHub._bitcoindPid);
+        process.kill(bitcoindPid, 'SIGKILL');
+        console.log('[FABRIC:HUB]', 'Killed managed bitcoind PID:', bitcoindPid);
       } catch (e) {
         if (e.code !== 'ESRCH') console.warn('[FABRIC:HUB]', 'Could not kill managed bitcoind:', e.message || e);
       }
-      activeHub._bitcoindPid = null;
+      if (activeHub) activeHub._bitcoindPid = null;
     }
     process.exit(exitCode);
   }

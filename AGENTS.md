@@ -268,10 +268,12 @@ npm run make:api           # Generate API.md from JSDoc
 ### Startup Safety Notes
 - Only run one Hub instance per machine/port set.
 - If startup fails with `EADDRINUSE`, stop old `node scripts/hub.js` processes.
-- If managed bitcoind fails after abrupt shutdown, clear stale regtest lock files:
+- Managed regtest: Hub **attaches** to a live Core on the configured RPC port (cookie auth) instead of spawn-or-die when the datadir lock is held (typical after a Node OOM / `pm2` crash loop). Do **not** kill a `bitcoind` whose datadir is another app (e.g. Sensemaker on `20444`).
+- If managed bitcoind fails after abrupt shutdown and attach also fails, clear stale regtest lock files **only when no live process holds them**:
   - `stores/bitcoin-regtest/regtest/.lock`
   - `stores/bitcoin-regtest/regtest/blocks/.lock`
-- If bitcoind reports the datadir lock is held, stop the orphaned process (e.g. `pgrep -fl bitcoind` for the Hub datadir) before restarting.
+- If bitcoind reports the datadir lock is held and Hub cannot attach, stop the **Hub** orphan (`pgrep -fl 'datadir=./stores/bitcoin-regtest'`) then restart.
+- Default Hub ZMQ `127.0.0.1:29500` must not collide with another Core on the same host; give each datadir its own `bitcoin.zmqPort`.
 - If managed Core Lightning fails with `lightningd already running? Error locking PID file`, stop the old `lightningd` for `stores/lightning/hub` (or reboot the Hub after a clean `SIGTERM` so it tears down CLN).
 
 ## Pay-to-Distribute (L1)

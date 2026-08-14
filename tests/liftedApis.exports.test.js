@@ -69,12 +69,40 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     const httpLink = require('@fabric/http/functions/fabricDeviceLinkHttp');
     assert.strictEqual(hubLink.clientMayAccessDeviceLink, httpLink.clientMayAccessDeviceLink);
     assert.strictEqual(hubLink.isThinClientOrigin, httpLink.isThinClientOrigin);
+    assert.strictEqual(hubLink.MAX_SESSIONS_PER_ORIGIN, httpLink.MAX_SESSIONS_PER_ORIGIN);
+    assert.strictEqual(hubLink.evictDeviceLinkOriginOverflow, httpLink.evictDeviceLinkOriginOverflow);
+    assert.strictEqual(hubLink.offerReplayKey, httpLink.offerReplayKey);
     const android = {
       socket: { remoteAddress: '203.0.113.9' },
       headers: { origin: 'https://localhost' }
     };
     assert.strictEqual(hubLink.clientMayAccessDeviceLink(android, 'https://relay.goon.vc'), true);
     assert.strictEqual(hubLink.clientMayAccessDeviceLink(android, 'https://phish.example'), false);
+  });
+
+  it('fabricDeviceLinkClient omits Origin/Referer when window is the global', function () {
+    const { deviceLinkHeaders } = require('../functions/fabricDeviceLinkClient');
+    const nodeHeaders = deviceLinkHeaders('https://hub.example');
+    assert.strictEqual(nodeHeaders.Origin, 'https://hub.example');
+    const prior = globalThis.window;
+    globalThis.window = globalThis;
+    try {
+      const browserHeaders = deviceLinkHeaders('https://hub.example');
+      assert.strictEqual(browserHeaders.Origin, undefined);
+      assert.strictEqual(browserHeaders.Referer, undefined);
+    } finally {
+      if (prior === undefined) delete globalThis.window;
+      else globalThis.window = prior;
+    }
+  });
+
+  it('identityCrossSign and identityCrossSignVerify re-export core', function () {
+    const hubSign = require('../functions/identityCrossSign');
+    const coreSign = require('@fabric/core/functions/identityCrossSign');
+    assert.strictEqual(hubSign.SIGN_TYPE, coreSign.SIGN_TYPE);
+    const hubVerify = require('../functions/identityCrossSignVerify');
+    const coreVerify = require('@fabric/core/functions/identityCrossSignVerify');
+    assert.strictEqual(hubVerify.signCrossSign, coreVerify.signCrossSign);
   });
 
   it('oracleAttestation + fabricPubkey + fabricChatNormalize re-export http', function () {

@@ -195,7 +195,7 @@ class BitcoinResourcesHome extends React.Component {
       { method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-broadcast', note: 'body psbtBase64 — finalize 2-of-2 payout + sendrawtransaction' },
       { method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/refund-prepare', note: 'Admin: after CLTV height — body destinationAddress, fundedTxid, vout?, feeSats?; returns signed arbiter refund hex' },
       { method: 'POST', path: '/sessions', note: 'Desktop login: create session (body: origin); off loopback, request must match that origin — Origin / Referer / Sec-Fetch-Site+Host' },
-      { method: 'GET', path: '/sessions/:sessionId', note: 'Poll desktop login (pending/signed once then 404); delegation metadata public or Bearer; Electron should send Origin=hub from fabric:// `hub` when not loopback; localhost vs 127.0.0.1 same port counts as same origin' },
+      { method: 'GET', path: '/sessions/:sessionId', note: 'Poll desktop login (pending/signed once then 404). After redeem, GET /sessions/:delegationToken needs Authorization: Bearer matching the token. Electron should send Origin=hub from fabric:// `hub` when not loopback; localhost vs 127.0.0.1 same port counts as same origin' },
       { method: 'GET', path: '/sessions/:sessionId/delegation/audit', note: 'Delegation audit (Bearer must equal session id): pending queue, DELEGATION_* Fabric log slice, Hub verify pubkey' },
       { method: 'DELETE', path: '/sessions/:sessionId', note: 'Revoke delegation (loopback or Bearer matching id); 404 if token unknown' },
       { method: 'POST', path: '/sessions/:sessionId/signatures', note: 'Desktop completes login: loopback TCP or Origin/Referer/Host matching session (LAN hub); localhost ≡ 127.0.0.1 same port' },

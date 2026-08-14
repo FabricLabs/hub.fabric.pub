@@ -57,6 +57,7 @@ See [README.md](../README.md) and [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md) 
 ## Process supervision
 - Run `node scripts/hub.js` (or `npm run start:fast` after `npm run build`) under **systemd**, **supervisor**, or a container restart policy.
 - Ensure a **single** Hub instance per port set; `EADDRINUSE` means another process holds the port.
+- **Managed regtest + `pm2`:** if Hub Node OOMs, Core can be reparented to PID 1 and hold `stores/bitcoin-regtest`. This tree **attaches** via cookie RPC instead of spawning another `bitcoind` onto the lock. Ops: `pm2 stop hub`, confirm the lock holder is Hub’s datadir (not Sensemaker’s), then `pm2 start hub`. Rotate oversized `~/.pm2/logs/hub-*.log`. Do not raise `--max-old-space-size` as the only OOM fix.
 
 ## Protocol surfaces (for integrators)
 - **WebSocket JSON-RPC** — peer, document, chat, Bitcoin, Payjoin, inventory HTLC (`ConfirmInventoryHtlcPayment`, etc.).

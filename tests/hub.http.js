@@ -829,6 +829,17 @@ describe('@fabric/hub', function () {
         const g2 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
         assert.strictEqual(g2.status, 404);
         assert.strictEqual(g2.body.ok, false);
+
+        const tok = g1.body.delegationToken;
+        const unauthToken = await makeRequest('GET', `/sessions/${encodeURIComponent(tok)}`, null, { Accept: 'application/json' });
+        assert.strictEqual(unauthToken.status, 404);
+        const authedToken = await makeRequest('GET', `/sessions/${encodeURIComponent(tok)}`, null, {
+          Accept: 'application/json',
+          Authorization: 'Bearer ' + tok
+        });
+        assert.strictEqual(authedToken.status, 200);
+        assert.strictEqual(authedToken.body.ok, true);
+        assert.strictEqual(authedToken.body.kind, 'delegation');
       });
 
       it('desktop login accepts client-signed player completion (Schnorr over challenge)', async function () {
