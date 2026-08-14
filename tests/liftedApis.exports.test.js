@@ -22,6 +22,12 @@ describe('Hub lifted API package exports', function () {
     './functions/fabricPubkey',
     './functions/fabricChatNormalize',
     './functions/hubLifecycle',
+    './functions/documentInventoryMarket',
+    './functions/identityCluster',
+    './functions/identityClusterHttp',
+    './functions/identityCrossSign',
+    './functions/identityCrossSignVerify',
+    './functions/fabricLinkedDevices',
     './services/email',
     './services/fabric'
   ];
@@ -56,6 +62,19 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     const httpShared = require('@fabric/http/functions/httpSharedMode');
     assert.strictEqual(hubShared.resolveHttpListenHost, httpShared.resolveHttpListenHost);
     assert.strictEqual(hubShared.resolveHttpListenHost({ mode: 'server', env: {} }), '0.0.0.0');
+  });
+
+  it('fabricDeviceLink re-exports http thin-client Origin helpers', function () {
+    const hubLink = require('../functions/fabricDeviceLink');
+    const httpLink = require('@fabric/http/functions/fabricDeviceLinkHttp');
+    assert.strictEqual(hubLink.clientMayAccessDeviceLink, httpLink.clientMayAccessDeviceLink);
+    assert.strictEqual(hubLink.isThinClientOrigin, httpLink.isThinClientOrigin);
+    const android = {
+      socket: { remoteAddress: '203.0.113.9' },
+      headers: { origin: 'https://localhost' }
+    };
+    assert.strictEqual(hubLink.clientMayAccessDeviceLink(android, 'https://relay.goon.vc'), true);
+    assert.strictEqual(hubLink.clientMayAccessDeviceLink(android, 'https://phish.example'), false);
   });
 
   it('oracleAttestation + fabricPubkey + fabricChatNormalize re-export http', function () {

@@ -14,6 +14,7 @@ const {
   planPlaynetOperatorSweep,
   hubRpc,
   playnetPeers,
+  productionPlaynetTarget,
   loadMnemonic,
   loadPeerKeySettings,
   loadLocalOperatorMnemonic
@@ -153,6 +154,31 @@ describe('playnet ops sweep (wipe → fund → deploy)', function () {
     } finally {
       if (prev === undefined) delete process.env.FABRIC_PLAYNET_PEERS;
       else process.env.FABRIC_PLAYNET_PEERS = prev;
+    }
+  });
+
+  it('productionPlaynetTarget defaults to hub.fabric.pub + relay.goon.vc', function () {
+    const prevU = process.env.FABRIC_HUB_RPC_URL;
+    const prevH = process.env.FABRIC_HUB_URL;
+    const prevP = process.env.FABRIC_PLAYNET_PEERS;
+    const prevF = process.env.FABRIC_FLUSH_PEERS;
+    try {
+      delete process.env.FABRIC_HUB_RPC_URL;
+      delete process.env.FABRIC_HUB_URL;
+      delete process.env.FABRIC_PLAYNET_PEERS;
+      delete process.env.FABRIC_FLUSH_PEERS;
+      const t = productionPlaynetTarget();
+      assert.strictEqual(t.hubUrl, 'https://hub.fabric.pub');
+      assert.deepStrictEqual(t.peers, ['hub.fabric.pub:7777', 'relay.goon.vc:7777']);
+    } finally {
+      if (prevU === undefined) delete process.env.FABRIC_HUB_RPC_URL;
+      else process.env.FABRIC_HUB_RPC_URL = prevU;
+      if (prevH === undefined) delete process.env.FABRIC_HUB_URL;
+      else process.env.FABRIC_HUB_URL = prevH;
+      if (prevP === undefined) delete process.env.FABRIC_PLAYNET_PEERS;
+      else process.env.FABRIC_PLAYNET_PEERS = prevP;
+      if (prevF === undefined) delete process.env.FABRIC_FLUSH_PEERS;
+      else process.env.FABRIC_FLUSH_PEERS = prevF;
     }
   });
 

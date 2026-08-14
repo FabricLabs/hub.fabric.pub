@@ -1,6 +1,23 @@
 # Production deployment
 Operator checklist for running **hub.fabric.pub** beyond local development—suitable for a public or team-facing Hub.
 
+## Playnet contracts (hub.fabric.pub + relay.goon.vc)
+
+After this Hub is running on **hub.fabric.pub** with a Fabric Peer and Beacon:
+
+1. **Hub registry (`fabric-beacon`)** — `_ensureBeaconNativeContract` publishes and Accepts the native Beacon ARC on Beacon start when validators (or the Hub identity key) exist. Disable only with `settings.beacon.publishNativeContract = false`. Confirm with:
+   ```bash
+   npm run playnet:status -- --production
+   ```
+   Look for `fabric-beacon registry` / `beaconContractId` and an accepted tracked contract of that id.
+2. **GoonCitizen application contract** — from the GoonCitizen tree, with `FABRIC_XPRV` (same operator key) and `FABRIC_HUB_ADMIN_TOKEN`:
+   ```bash
+   npm run playnet:deploy-gooncitizen -- --production --accept
+   ```
+   That gossips `CONTRACT_PUBLISH` to `hub.fabric.pub:7777` and `relay.goon.vc:7777`, then Accepts the namespace on Hub (ADR-001 sidechain at `/namespaces/<id>`).
+
+Env still overrides (`FABRIC_HUB_RPC_URL`, `FABRIC_PLAYNET_PEERS`). Do not commit admin tokens.
+
 ## Pre-flight
 | Step | Command / action |
 |------|-------------------|

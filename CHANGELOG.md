@@ -1,7 +1,13 @@
 # Changelog
 All notable changes to **hub.fabric.pub** (Fabric Hub) are documented here. RCs are coordinated with **`@fabric/core`** and **`@fabric/http`**.
-## [Unreleased]
 
+## [Unreleased]
+- **Identity cluster / device-link:** Hub HTTP ingest for BIP340 `IdentityCrossSign` / `IdentityCrossSignRevoke`; linked-device roster helpers. Package exports: `@fabric/hub/functions/identityCluster`, `identityCrossSign`, `identityCrossSignVerify`, `identityClusterHttp`, `fabricLinkedDevices`. Passport, Android, desktop, and Hub browser are peer-equivalent for `fabric://link`. Device-link HTTP re-exports `@fabric/http` thin-client Origin helpers (`clientMayAccessDeviceLink`) so Android / Passport can rendezvous at this Hub.
+- **Playnet:** `npm run playnet:status -- --production` reports native `fabric-beacon` plus an optional sibling GoonCitizen contract id. Deploy the application namespace from GoonCitizen: `npm run playnet:deploy-gooncitizen -- --production --accept`.
+- **SPA assets:** `assets/scripts/assets/manifest.json` loads the same-origin `/bundles/browser.min.js` (no remote `fabric.pub` script URI).
+- **Pins:** `@fabric/core` lockfile `3745041e…` (wallet lock / Environment); `@fabric/http` lockfile `e167d8e…` (device-link thin clients). `package.json` stays on `#feature/rsi`. `report:install` wipes the lockfile then `npm i --allow-git=all`.
+
+- **Document Market (opt-in):** Accumulate peer document inventories (`FABRIC_DOCUMENT_MARKET_ACCUMULATE=1`) and republish **held** files at a markup (`FABRIC_DOCUMENT_MARKET_REPUBLISH=1`, default +10%). Offer book on Documents; RPC `ListDocumentOffers` / `RefreshDocumentMarket`; reusable helper `@fabric/hub/functions/documentInventoryMarket`. Outbound inventory still lists only local blobs. See [PAYMENTS_PROTOCOL.md](PAYMENTS_PROTOCOL.md) phase **J**.
 - **Dependencies / security:** Align with `@fabric/http` / `@fabric/core` Node **24.15.0**. Bump `ws@8.21.2`, `webpack@5.109.2`, `webpack-dev-server@5.2.6`, `nodemailer@9.0.4`, `electron@39.8.10`, `electron-builder@26.15.7`, `react-router-dom@7.18.2` (drop unused `Switch` imports); add direct `terser-webpack-plugin` for the webpack config. Overrides: `ws`, `uuid@11.1.1`, `tar@7.5.22`, `builder-util-runtime@9.7.0`. See [AUDIT.md](AUDIT.md) (RSC CSRF residual accepted for SPA `BrowserRouter`).
 - **Browser bundle / React Router 7:** Webpack `conditionNames` no longer prefer `import` (which selected react-router `.mjs` and crashed the SPA with `__webpack_modules__[id].call is not a function`). Alias CJS entrypoints for `react-router` / `react-router-dom`; `BrowserRouter` uses RR7 `useTransitions` instead of obsolete v6 `future` flags.
 - **npm git deps:** `.npmrc` / `report:install` use **`allow-git=all`** so nested Hub→http→core git preparation (commit SHAs) is not refused under npm 12+.

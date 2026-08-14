@@ -55,6 +55,7 @@ const {
   runHubStartPhase
 } = require('../functions/hubLifecycle');
 const documentContentKey = require('../functions/documentContentKey');
+const documentInventoryMarket = require('../functions/documentInventoryMarket');
 
 // Fabric Types
 const Chain = require('@fabric/core/types/chain'); // fabric chains
@@ -319,6 +320,21 @@ class Hub extends Service {
         enable: process.env.FABRIC_CHALLENGE_ENABLE ? process.env.FABRIC_CHALLENGE_ENABLE !== 'false' : true,
         persistPath: process.env.FABRIC_CHALLENGE_PERSIST_PATH || 'fabric/storage-challenges.json'
       },
+      /**
+       * Optional Document Market: persist peer inventories and republish held files at a markup.
+       * Off by default. See `functions/documentInventoryMarket.js`.
+       */
+      documents: {
+        market: {
+          accumulatePeerInventories: process.env.FABRIC_DOCUMENT_MARKET_ACCUMULATE === '1'
+            || process.env.FABRIC_DOCUMENT_MARKET_ACCUMULATE === 'true',
+          republishWithMarkup: process.env.FABRIC_DOCUMENT_MARKET_REPUBLISH === '1'
+            || process.env.FABRIC_DOCUMENT_MARKET_REPUBLISH === 'true',
+          markupBps: Number(process.env.FABRIC_DOCUMENT_MARKET_MARKUP_BPS || 1000),
+          markupSats: Number(process.env.FABRIC_DOCUMENT_MARKET_MARKUP_SATS || 0),
+          minPriceSats: Number(process.env.FABRIC_DOCUMENT_MARKET_MIN_PRICE_SATS || 0)
+        }
+      },
       distributed: {
         enable: process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE ? process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE !== 'false' : true,
         programId: process.env.FABRIC_DISTRIBUTED_PROGRAM_ID || '@fabric/hub',
@@ -456,6 +472,7 @@ class Hub extends Service {
     this._lastBitcoinBlockActivityTip = null;
     /** Per-peer cooldown for requesting mainchain inventory over Fabric. */
     this._mainchainInventoryRequestCooldown = new Map();
+    this._documentInventoryRequestCooldown = new Map();
     /** Dedupe in-flight block-sync requests by `peer|hash`. */
     this._pendingMainchainBlockSyncRequests = new Set();
     // Pending pay-to-distribute requests: documentId -> { address, amountSats, config, createdAt }
@@ -1040,7 +1057,7 @@ class Hub extends Service {
   _ensureResourceCollections () {
     this._state.content = this._state.content || {};
     this._state.content.collections = this._state.content.collections || {};
-    const required = new Set(['documents', 'contracts']);
+    const required = new Set(['documents', 'contracts', documentInventoryMarket.COLLECTION]);
 
     try {
       const resources = this.http && this.http.settings && this.http.settings.resources
@@ -1117,7 +1134,7 @@ class Hub extends Service {
         ...(bitcoinBlockHash ? { bitcoinBlockHash: String(bitcoinBlockHash) } : {}),
         ...(bitcoinTxid ? { bitcoinTxid: String(bitcoinTxid) } : {})
       };
-    }).filter(Boolean);
+    }).filter((row) => row && this._hasLocalDocumentBlob(row.id));
   }
 
   /**
@@ -1188,6 +1205,286 @@ class Hub extends Service {
     }
     this._refreshChainState('fabric-resync-inventory');
     this.commit();
+  }
+
+  /**
+   * Optional Document Market policy (`documents.market` / `FABRIC_DOCUMENT_MARKET_*`).
+   * @returns {Object}
+   */
+  _documentMarketPolicy () {
+    return documentInventoryMarket.normalizeMarketPolicy(this.settings);
+  }
+
+  _documentOffersMap () {
+    this._ensureResourceCollections();
+    return this._getCollectionMap(documentInventoryMarket.COLLECTION);
+  }
+
+  _documentMarketSnapshot () {
+    const policy = this._documentMarketPolicy();
+    const offers = documentInventoryMarket.listOffers(this._documentOffersMap());
+    return {
+      accumulatePeerInventories: !!policy.accumulatePeerInventories,
+      republishWithMarkup: !!policy.republishWithMarkup,
+      markupBps: policy.markupBps,
+      markupSats: policy.markupSats,
+      minPriceSats: policy.minPriceSats,
+      offerCount: offers.length
+    };
+  }
+
+  _hasLocalDocumentBlob (documentId) {
+    const id = this._normalizeDocumentId(documentId);
+    if (!id || !this.fs || typeof this.fs.readFile !== 'function') return false;
+    try {
+      const raw = this.fs.readFile(`documents/${id}.json`);
+      if (!raw) return false;
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return !!(parsed && (parsed.contentBase64 || documentContentKey.isSealedDocument(parsed)));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Persist a peer documents inventory snapshot when Document Market accumulate is on.
+   * @param {Object} message GenericMessage / inventory response
+   * @param {Object} [origin]
+   * @returns {object[]}
+   */
+  _accumulatePeerDocumentInventory (message, origin) {
+    const policy = this._documentMarketPolicy();
+    if (!policy.accumulatePeerInventories) return [];
+    const actorId = message && message.actor && message.actor.id ? String(message.actor.id).trim() : '';
+    const myId = this.agent && this.agent.identity && this.agent.identity.id
+      ? String(this.agent.identity.id).trim()
+      : '';
+    if (actorId && myId && actorId === myId) return [];
+    const originAddr = origin && (origin.name || origin.address || origin.id)
+      ? String(origin.name || origin.address || origin.id)
+      : null;
+    let peerAlias = null;
+    try {
+      const known = this.agent && this.agent.knownPeers;
+      const row = (actorId && known && known[actorId]) || (originAddr && known && known[originAddr]);
+      if (row && (row.alias || row.nickname)) peerAlias = String(row.alias || row.nickname);
+    } catch (_) {}
+    const items = documentInventoryMarket.itemsFromInventoryMessage(message);
+    const saved = documentInventoryMarket.replacePeerOffers(this._documentOffersMap(), {
+      peerPubkey: actorId,
+      peerAddress: originAddr,
+      peerAlias
+    }, items);
+    this.commit();
+    return saved;
+  }
+
+  /**
+   * Publish or raise a local listing when we hold the blob and a cheaper remote offer exists.
+   * @param {string[]} [documentIds] limit to these ids; omit to scan offers against local files
+   * @returns {Promise<object[]>}
+   */
+  async _maybeRepublishHeldDocumentsFromMarket (documentIds) {
+    const policy = this._documentMarketPolicy();
+    if (!policy.republishWithMarkup) return [];
+    const map = this._documentOffersMap();
+    const docs = this._state.documents || {};
+    const coll = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+    let ids;
+    if (Array.isArray(documentIds) && documentIds.length) {
+      ids = documentIds.map((id) => this._normalizeDocumentId(id)).filter(Boolean);
+    } else {
+      const seen = new Set();
+      for (const offer of documentInventoryMarket.listOffers(map)) {
+        const id = documentInventoryMarket.normalizeDocumentId(offer && (offer.documentId || offer.sha256));
+        if (id) seen.add(id);
+      }
+      for (const id of Object.keys(docs)) {
+        if (id) seen.add(String(id).toLowerCase());
+      }
+      ids = Array.from(seen);
+    }
+    const changed = [];
+    for (const id of ids) {
+      if (!this._hasLocalDocumentBlob(id)) continue;
+      const publishedMeta = coll[id];
+      const remotes = documentInventoryMarket.offersForDocument(map, id).filter((o) => o.local !== true);
+      const decision = documentInventoryMarket.republishDecision({
+        hasLocalFile: true,
+        published: !!(publishedMeta && publishedMeta.published),
+        publishedPriceSats: publishedMeta && publishedMeta.purchasePriceSats,
+        remoteOffers: remotes,
+        policy
+      });
+      if (decision.action !== 'publish' && decision.action !== 'raise') continue;
+      try {
+        const result = await this._publishHeldDocumentAtPrice(id, decision.purchasePriceSats, {
+          costBasisSats: decision.costBasisSats,
+          marketAction: decision.action
+        });
+        if (result && result.status === 'success') changed.push(result);
+      } catch (err) {
+        if (this.settings && this.settings.debug) {
+          console.warn('[HUB] document market republish failed:', id, err && err.message ? err.message : err);
+        }
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Seal (if needed) and list a held document at `purchasePriceSats`.
+   * @param {string} documentId
+   * @param {number} purchasePriceSats
+   * @param {Object} [extra]
+   * @returns {Promise<Object>}
+   */
+  async _publishHeldDocumentAtPrice (documentId, purchasePriceSats, extra = {}) {
+    const id = this._normalizeDocumentId(documentId);
+    const price = Math.max(0, Math.floor(Number(purchasePriceSats) || 0));
+    if (!id) return { status: 'error', message: 'id required' };
+    if (price > 0 && !FEATURE_FLAGS.DOCUMENT_PURCHASE) {
+      return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: id };
+    }
+    const raw = this.fs && typeof this.fs.readFile === 'function' ? this.fs.readFile(`documents/${id}.json`) : null;
+    if (!raw) return { status: 'error', message: 'document not found', documentId: id };
+    let parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (price > 0) {
+      const sealed = await this._sealDocumentForPricedPublish(id, parsed);
+      parsed = sealed.parsed;
+    }
+    this._ensureResourceCollections();
+    this._state.content.collections.documents = this._state.content.collections.documents || {};
+    this._state.content.counts = this._state.content.counts || {};
+    const exists = !!this._state.content.collections.documents[id];
+    const now = new Date().toISOString();
+    this._state.content.collections.documents[id] = {
+      id,
+      document: id,
+      name: parsed.name,
+      mime: parsed.mime,
+      size: parsed.size,
+      sha256: parsed.sha256 || id,
+      created: parsed.created || now,
+      lineage: parsed.lineage || parsed.id || id,
+      parent: parsed.parent || null,
+      revision: parsed.revision || 1,
+      edited: parsed.edited || parsed.created || now,
+      published: (exists && this._state.content.collections.documents[id]
+        && this._state.content.collections.documents[id].published)
+        ? this._state.content.collections.documents[id].published
+        : now,
+      ...(price > 0 ? { purchasePriceSats: price } : {}),
+      ...(extra.costBasisSats != null ? { costBasisSats: extra.costBasisSats } : {}),
+      ...(documentContentKey.isSealedDocument(parsed)
+        ? { encryption: { scheme: parsed.encryption.scheme, contentSha256: parsed.encryption.contentSha256 } }
+        : {})
+    };
+    if (!exists) {
+      this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
+      await this._appendFabricMessage('PublishDocument', {
+        id,
+        name: parsed.name,
+        mime: parsed.mime
+      });
+    }
+    this._refreshChainState('document-market-republish');
+    this.commit();
+    if (typeof this._pushNetworkStatus === 'function') this._pushNetworkStatus();
+    if (typeof this.recordActivity === 'function') {
+      this.recordActivity({
+        type: extra.marketAction === 'raise' ? 'Update' : 'Publish',
+        object: {
+          type: 'Document',
+          id,
+          name: parsed.name,
+          purchasePriceSats: price,
+          costBasisSats: extra.costBasisSats,
+          source: 'document-market'
+        }
+      });
+    }
+    return {
+      status: 'success',
+      type: 'PublishDocumentResult',
+      document: this._state.content.collections.documents[id],
+      ...extra
+    };
+  }
+
+  /**
+   * Query a connected peer for documents inventory when Document Market accumulate is on.
+   * @param {string} addressInput
+   * @param {string} [reason]
+   * @returns {boolean}
+   */
+  _requestDocumentInventoryFromPeer (addressInput, reason = 'peer-open') {
+    const policy = this._documentMarketPolicy();
+    if (!policy.accumulatePeerInventories) return false;
+    const address = this._resolvePeerAddress(addressInput);
+    if (!address || !this.agent || !this.agent.connections || !this.agent.connections[address]) return false;
+    const now = Date.now();
+    const last = this._documentInventoryRequestCooldown.get(address) || 0;
+    if (now - last < 15000) return false;
+    this._documentInventoryRequestCooldown.set(address, now);
+    try {
+      const payload = {
+        type: FABRIC_DOCUMENT_OFFER,
+        actor: { id: this.agent.identity.id },
+        object: {
+          kind: 'documents',
+          created: now,
+          reason
+        },
+        target: String(address)
+      };
+      this._sendGenericFabricEnvelopeToPeer(address, payload);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  _refreshConnectedDocumentInventories () {
+    const policy = this._documentMarketPolicy();
+    if (!policy.accumulatePeerInventories) {
+      return { requested: 0, peers: [], policy: this._documentMarketSnapshot() };
+    }
+    const viaPeer = documentInventoryMarket.requestConnectedInventories(this.agent);
+    if (viaPeer.requested > 0) {
+      return { ...viaPeer, policy: this._documentMarketSnapshot() };
+    }
+    const peers = [];
+    for (const addr of Object.keys((this.agent && this.agent.connections) || {})) {
+      if (this._requestDocumentInventoryFromPeer(addr, 'refresh')) peers.push(addr);
+    }
+    return { requested: peers.length, peers, policy: this._documentMarketSnapshot() };
+  }
+
+  _decorateDocumentWithMarketOffers (row) {
+    if (!row || !row.id) return row;
+    const policy = this._documentMarketPolicy();
+    if (!policy.accumulatePeerInventories) return row;
+    const offers = documentInventoryMarket.offersForDocument(this._documentOffersMap(), row.id, {
+      localDoc: row,
+      self: {
+        peerPubkey: this.agent && this.agent.identity && this.agent.identity.id,
+        peerAlias: (this.settings && this.settings.alias) || 'this node'
+      }
+    });
+    const remotes = offers.filter((o) => o.local !== true);
+    if (!remotes.length && !offers.length) return row;
+    const best = documentInventoryMarket.cheapestRemotePriceSats(remotes);
+    const coll = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+    const listed = coll[row.id] || {};
+    const costBasis = row.costBasisSats != null ? row.costBasisSats : listed.costBasisSats;
+    return Object.assign({}, row, {
+      offers,
+      offerCount: offers.length,
+      peerCount: remotes.length,
+      ...(Number.isFinite(best) ? { bestPeerPriceSats: best } : {}),
+      ...(costBasis != null ? { costBasisSats: costBasis } : {})
+    });
   }
 
   /**
@@ -9984,6 +10281,7 @@ class Hub extends Service {
       mountFabricDelegationHttp(this);
       mountFabricDesktopAuthHttp(this);
       mountFabricDeviceLinkHttp(this);
+      require('../functions/identityClusterHttp').mountIdentityClusterHttp(this);
 
       // Configure routes
       this._addAllRoutes();
@@ -10674,11 +10972,68 @@ class Hub extends Service {
             return { ...row, storageL1Status: st };
           });
 
-          return { type: 'ListDocumentsResult', documents: listWithStorageL1 };
+          const marketPolicy = this._documentMarketPolicy();
+          let documentsOut = listWithStorageL1;
+          if (marketPolicy.accumulatePeerInventories) {
+            documentsOut = documentInventoryMarket.mergeCatalog(
+              listWithStorageL1,
+              documentInventoryMarket.listOffers(this._documentOffersMap()),
+              { includeRemoteOnly: true }
+            );
+          }
+
+          return {
+            type: 'ListDocumentsResult',
+            documents: documentsOut,
+            documentMarket: this._documentMarketSnapshot()
+          };
         } catch (err) {
           console.error('[HUB] ListDocuments error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'list failed' };
         }
+      });
+
+      this.http._registerMethod('ListDocumentOffers', (...params) => {
+        const arg = params[0];
+        const documentId = this._normalizeDocumentId(arg && (arg.documentId || arg.id || (typeof arg === 'string' ? arg : '')));
+        const policy = this._documentMarketPolicy();
+        if (!policy.accumulatePeerInventories) {
+          return {
+            type: 'ListDocumentOffersResult',
+            offers: [],
+            documentMarket: this._documentMarketSnapshot()
+          };
+        }
+        const map = this._documentOffersMap();
+        const offers = documentId
+          ? documentInventoryMarket.offersForDocument(map, documentId)
+          : documentInventoryMarket.sortOffersByPrice(documentInventoryMarket.listOffers(map));
+        return {
+          type: 'ListDocumentOffersResult',
+          documentId: documentId || null,
+          offers,
+          documentMarket: this._documentMarketSnapshot()
+        };
+      });
+
+      this.http._registerMethod('RefreshDocumentMarket', (...params) => {
+        const policy = this._documentMarketPolicy();
+        if (!policy.accumulatePeerInventories) {
+          return {
+            type: 'RefreshDocumentMarketResult',
+            requested: 0,
+            peers: [],
+            documentMarket: this._documentMarketSnapshot(),
+            message: 'Document Market accumulate is off (FABRIC_DOCUMENT_MARKET_ACCUMULATE=1 or documents.market.accumulatePeerInventories)'
+          };
+        }
+        const out = this._refreshConnectedDocumentInventories();
+        return {
+          type: 'RefreshDocumentMarketResult',
+          requested: out.requested,
+          peers: out.peers,
+          documentMarket: this._documentMarketSnapshot()
+        };
       });
 
       // Get a document (metadata + base64 content)
@@ -10690,6 +11045,30 @@ class Hub extends Service {
         try {
           const raw = this.fs.readFile(`documents/${id}.json`);
           if (!raw) {
+            const marketPolicy = this._documentMarketPolicy();
+            if (marketPolicy.accumulatePeerInventories) {
+              const remotes = documentInventoryMarket.offersForDocument(this._documentOffersMap(), id)
+                .filter((o) => o.local !== true);
+              if (remotes.length) {
+                const best = remotes[0];
+                return {
+                  type: 'GetDocumentResult',
+                  document: this._decorateDocumentWithMarketOffers({
+                    id,
+                    sha256: best.sha256 || id,
+                    name: best.name,
+                    mime: best.mime,
+                    size: best.size,
+                    purchasePriceSats: best.purchasePriceSats,
+                    published: false,
+                    local: false,
+                    source: 'peer'
+                  }),
+                  documentId: id,
+                  local: false
+                };
+              }
+            }
             return { type: 'GetDocumentResult', document: null, documentId: id, message: 'document not found' };
           }
           const parsed = JSON.parse(raw);
@@ -10712,7 +11091,7 @@ class Hub extends Service {
             }
           }
 
-          return { type: 'GetDocumentResult', document: parsed };
+          return { type: 'GetDocumentResult', document: this._decorateDocumentWithMarketOffers(parsed) };
         } catch (err) {
           console.error('[HUB] GetDocument error:', err);
           return {
@@ -12187,6 +12566,8 @@ class Hub extends Service {
           webrtcPeers: this.http.webrtcPeerList || [],
           /** Server process FEATURE_FLAGS (see constants.js / FABRIC_FEATURE_*). */
           featureFlags: publicFeatureFlags(),
+          /** Optional Document Market (peer inventory book + markup republish). Off by default. */
+          documentMarket: this._documentMarketSnapshot(),
           // settings: this.settings,
           state: this.http.state,
           xpub: this._rootKey.xpub
@@ -12488,6 +12869,7 @@ class Hub extends Service {
         this._maybeRequestFabricSeedResync(ev);
         const addr = ev && (ev.address || ev.id);
         this._requestMainchainInventoryFromPeer(addr, 'connection-open').catch(() => {});
+        try { this._requestDocumentInventoryFromPeer(addr, 'connection-open'); } catch (_) {}
         // Opaque CONTRACT_MESSAGE later-relay (hub-blind; does not open seals).
         try {
           const drain = this._drainContractMessageQueueToPeer(addr);
@@ -12794,6 +13176,11 @@ class Hub extends Service {
             receivedFrom: normalized.receivedFrom || (origin && origin.name)
           }
         });
+        this._maybeRepublishHeldDocumentsFromMarket([normalized.id]).catch((republishErr) => {
+          if (this.settings && this.settings.debug) {
+            console.warn('[HUB] document market republish after receive failed:', republishErr && republishErr.message ? republishErr.message : republishErr);
+          }
+        });
       };
 
       // Broadcast chat messages received from the P2P network to UI clients.
@@ -12929,6 +13316,17 @@ class Hub extends Service {
             console.error('[HUB:QUEUE] enqueue failed:', err && err.message ? err.message : err);
           }
         }
+        try {
+          const body = (ev && ev.object) || {};
+          const t = body.type || body['@type'];
+          if (t === 'IdentityCrossSign' || t === 'IdentityCrossSignRevoke') {
+            require('../functions/identityClusterHttp').ingestIdentityCrossSign(
+              this,
+              body,
+              (ev && ev.signer) || body.pubkeyHex
+            );
+          }
+        } catch (_) { /* ignore unverified cluster gossip */ }
         if (this.settings && this.settings.debug) {
           const body = (ev && ev.object) || {};
           console.log('[HUB:CONTRACT]', contract, body.type || null, 'count=', this._contractMessageCounts[contract]);
@@ -13266,6 +13664,19 @@ class Hub extends Service {
               this._mergeFabricResyncInventoryItems(obj.items);
             } catch (mergeErr) {
               console.error('[HUB] fabricResync inventory merge failed:', mergeErr && mergeErr.message ? mergeErr.message : mergeErr);
+            }
+          }
+          if (kind === 'documents') {
+            try {
+              const saved = this._accumulatePeerDocumentInventory(message, origin);
+              if (saved && saved.length) {
+                const ids = saved.map((row) => row.documentId).filter(Boolean);
+                this._maybeRepublishHeldDocumentsFromMarket(ids).catch((republishErr) => {
+                  console.warn('[HUB] document market republish failed:', republishErr && republishErr.message ? republishErr.message : republishErr);
+                });
+              }
+            } catch (accErr) {
+              console.error('[HUB] document market accumulate failed:', accErr && accErr.message ? accErr.message : accErr);
             }
           }
           if (kind === 'mainchain' && Array.isArray(obj && obj.items) && obj.items.length) {

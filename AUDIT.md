@@ -1,12 +1,12 @@
 # Fabric Hub Security Audit
 Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-run **`npm audit`** after dependency changes; keep this file aligned with the current lockfile.
 
-## Status (2026-08-12)
+## Status (2026-08-13)
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#2e4d2ac75e8e37260791cfd5503480cdc0915317` (immutable SHA from `feature/rsi`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#9c9e8f823d11f221f8617ea8bd4019d0a55c9b31` (immutable SHA from `feature/rsi`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `3745041e3f50f484b188ab8e6cb03f515fcccca2`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `e167d8e42e197270a8d582c5682c8ff97a43d89d`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -40,7 +40,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 ## Recommendations
 
 1. After dependency edits: **`npm ci`** (or `npm i`) then **`npm audit`** and **`npm run ci`** (`build` + `test:unit`).
-2. Keep core/http on immutable commit SHAs (refresh from `feature/rsi` then re-pin); use **`npm run link:fabric`** for local monorepo work. Plain **`npm run report:install` keeps `package-lock.json`** — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
+2. Keep core/http on `feature/rsi` during RSI, then re-pin releases to lockfile SHAs; use **`npm run link:fabric`** for local monorepo work. **`npm run report:install` wipes `package-lock.json`** then `npm i --allow-git=all` — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
 3. Do not run **`npm audit fix --force`** casually — it has proposed Electron 43 and React Router downgrades that fight the chosen pins. There is **no** `extract-zip` fix to force in.
 4. Revisit React Router when a release fixes GHSA-qwww without regressing open-redirect advisories.
 5. Webpack must keep **`conditionNames`** without bare **`import`**, plus CJS aliases for **`react-router$` / `react-router-dom$` / `react-router/dom$`** — otherwise RR7’s `.mjs` exports break the SPA bundle at runtime.
@@ -61,7 +61,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | Extension identity sync writing `xprv` | Fixed — `chrome.storage.local` payload is watch-only |
 | Payment test route default | Fixed — opt-in (`FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE`) |
 | Device-link linked GET starving the peer | Fixed upstream in `@fabric/http` (keep until TTL; Hub re-exports) |
-| Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof). Http now shares one poll helper; still not a possession proof. |
+| Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof). Http device-link also allows thin-client Origins on allowlisted hubs; still not a possession proof. |
 | Device-link client-supplied nonce | Open — inherited from `@fabric/http` (prefer always-fresh nonce) |
 | Device-link FIFO eviction under create flood | Open — nit; per-origin quota |
 | Identity import / stronger at-rest crypto | Deferred — heavy lift |

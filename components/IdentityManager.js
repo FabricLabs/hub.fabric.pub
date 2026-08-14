@@ -66,6 +66,13 @@ const {
   fetchDeviceLinkSession,
   postDeviceLinkSignature
 } = require('../functions/fabricDeviceLinkClient');
+const {
+  STORAGE_LINKED_DEVICES,
+  readLinkedDevices,
+  mergeLinkedDevice,
+  publishHubIdentityCrossSign,
+  revokeLinkedDevice
+} = require('../functions/fabricLinkedDevices');
 const { buildFabricAccountSubtreeBackupInner } = require('../functions/fabricIdentityCapabilities');
 const {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
@@ -73,8 +80,6 @@ const {
   writeFabricIdentityLockTimeoutMinutes,
   lockTimeoutMinutesToMs
 } = require('../functions/fabricIdentityLockPrefs');
-
-const STORAGE_LINKED_DEVICES = 'fabric.linkedDevices';
 
 /** Long xpub / Bech32 strings must wrap or mobile modals overflow and the viewport strobes. */
 const identityMonospaceBlockStyle = {
@@ -94,30 +99,6 @@ const identityMonospaceBlockStyle = {
   border: '1px solid rgba(0, 0, 0, 0.06)',
   overflowX: 'auto'
 };
-
-function readLinkedDevices () {
-  try {
-    if (typeof window === 'undefined') return [];
-    const j = readStorageJSON(STORAGE_LINKED_DEVICES, []);
-    return Array.isArray(j) ? j : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function mergeLinkedDevice (entry) {
-  try {
-    if (typeof window === 'undefined') return;
-    let list = readLinkedDevices();
-    if (entry && entry.peerFabricId) {
-      list = list.filter((d) => !(d && d.peerFabricId === entry.peerFabricId));
-    } else {
-      list = list.filter((d) => !(d && d.kind === entry.kind && d.hubOrigin === entry.hubOrigin));
-    }
-    list.push(entry);
-    writeStorageJSON(STORAGE_LINKED_DEVICES, list);
-  } catch (e) {}
-}
 
 function IdentityManager (props) {
   const lockTimeoutMsFromTests = (props && typeof props.lockTimeoutMs === 'number' && props.lockTimeoutMs > 0)
@@ -225,7 +206,28 @@ function IdentityManager (props) {
   const [backupAcknowledged, setBackupAcknowledged] = React.useState(false);
   const [deviceLinkBusy, setDeviceLinkBusy] = React.useState(false);
   const [deviceLinkOffer, setDeviceLinkOffer] = React.useState(null);
+  const [deviceLinkQr, setDeviceLinkQr] = React.useState(null);
+  const [linkedDevicesRev, setLinkedDevicesRev] = React.useState(0);
   const deviceLinkPollRef = React.useRef(null);
+  const linkedDevices = React.useMemo(() => readLinkedDevices(), [linkedDevicesRev, localIdentity]);
+
+  React.useEffect(() => {
+    const url = deviceLinkOffer && deviceLinkOffer.protocolUrl;
+    if (!url) {
+      setDeviceLinkQr(null);
+      return;
+    }
+    let cancelled = false;
+    try {
+      const QRCode = require('qrcode');
+      QRCode.toDataURL(url, { width: 196, margin: 1, errorCorrectionLevel: 'M' })
+        .then((data) => { if (!cancelled) setDeviceLinkQr(data); })
+        .catch(() => { if (!cancelled) setDeviceLinkQr(null); });
+    } catch (_) {
+      setDeviceLinkQr(null);
+    }
+    return () => { cancelled = true; };
+  }, [deviceLinkOffer && deviceLinkOffer.protocolUrl]);
 
   const usesDiskEncryptionPasswordForBackup = !!(
     localIdentity &&
@@ -576,6 +578,7 @@ function IdentityManager (props) {
               linkedAt: new Date().toISOString(),
               label: 'Fabric Hub (desktop)'
             });
+            setLinkedDevicesRev((n) => n + 1);
             setLocalIdentity({
               id: resolvedId,
               xpub,
@@ -710,11 +713,19 @@ function IdentityManager (props) {
                   kind: 'device-link',
                   peerFabricId: done.responder.id,
                   peerXpub: done.responder.xpub,
+                  peerPubkey: done.responder.pubkeyHex,
+                  nonce: st.nonce || created.nonce,
                   label: done.label || st.label || 'Linked device',
                   hubOrigin: origin,
                   linkedAt: new Date().toISOString(),
                   role: 'initiator'
                 });
+                setLinkedDevicesRev((n) => n + 1);
+                void publishHubIdentityCrossSign(
+                  key,
+                  done.responder.pubkeyHex,
+                  st.nonce || created.nonce
+                );
                 setDeviceLinkOffer(null);
                 setDeviceLinkBusy(false);
               }
@@ -726,11 +737,15 @@ function IdentityManager (props) {
                 kind: 'device-link',
                 peerFabricId: st.responder.id,
                 peerXpub: st.responder.xpub,
+                peerPubkey: st.responder.pubkeyHex,
+                nonce: st.nonce,
                 label: st.label || 'Linked device',
                 hubOrigin: origin,
                 linkedAt: new Date().toISOString(),
                 role: 'initiator'
               });
+              setLinkedDevicesRev((n) => n + 1);
+              void publishHubIdentityCrossSign(key, st.responder.pubkeyHex, st.nonce);
               setDeviceLinkOffer(null);
               setDeviceLinkBusy(false);
             }
@@ -744,6 +759,21 @@ function IdentityManager (props) {
       setDeviceLinkBusy(false);
     }
   }, [localIdentity, clearDeviceLinkPoll]);
+
+  const handleRevokeLinkedDevice = React.useCallback(async (device) => {
+    if (!device) return;
+    setError(null);
+    let key = null;
+    try {
+      if (localIdentity && localIdentity.xprv) key = new Key({ xprv: localIdentity.xprv });
+    } catch (_) { key = null; }
+    const r = await revokeLinkedDevice(device, key);
+    if (!r.ok) {
+      setError(r.error || 'Could not revoke device');
+      return;
+    }
+    setLinkedDevicesRev((n) => n + 1);
+  }, [localIdentity]);
 
   const plaintextKeyMaterialOnDisk = React.useMemo(() => {
     try {
@@ -801,31 +831,44 @@ function IdentityManager (props) {
                 <Link to="/settings/security">Security & delegation</Link>
               </Message>
             ) : null}
-            {!suppressForget && readLinkedDevices().length > 0 ? (
+            {!suppressForget && linkedDevices.length > 0 ? (
               <Segment style={{ marginTop: '1em' }}>
                 <Header as="h4" size="small">
                   <Icon name="linkify" />
                   Linked devices
                 </Header>
                 <p style={{ color: '#666', fontSize: '0.95em' }}>
-                  Browsers and apps you have authorized (desktop login or mutual device-link attestations).
+                  Peer-equivalent cluster: Passport, Android, desktop, or this Hub browser can create or accept
+                  a <code>fabric://link</code>. After both sides countersign they publish BIP340 IdentityCrossSign
+                  Fabric Messages. Revoke publishes IdentityCrossSignRevoke — also under{' '}
+                  <Link to="/settings/security">Security &amp; privacy</Link>.
                 </p>
                 <ul style={{ margin: '0.5em 0 0 1em' }}>
-                  {readLinkedDevices().map((d, i) => (
-                    <li key={i}>
+                  {linkedDevices.map((d, i) => (
+                    <li key={i} style={{ marginBottom: '0.45em' }}>
                       <strong>{d.label || d.kind || 'Device'}</strong>
                       {d.peerFabricId ? (
                         <span> — <code style={{ fontSize: '0.85em' }}>{String(d.peerFabricId).slice(0, 18)}…</code></span>
                       ) : null}
                       {d.hubOrigin ? ` — ${d.hubOrigin}` : ''}
                       {d.linkedAt ? ` (${new Date(d.linkedAt).toLocaleString()})` : ''}
+                      {' '}
+                      <Button
+                        size="mini"
+                        negative
+                        basic
+                        disabled={busy}
+                        onClick={() => void handleRevokeLinkedDevice(d)}
+                      >
+                        Revoke
+                      </Button>
                     </li>
                   ))}
                 </ul>
               </Segment>
             ) : suppressForget ? null : (
               <p style={{ color: '#888', fontSize: '0.92em', marginTop: '0.75em', marginBottom: 0 }}>
-                No linked devices yet — use <strong>Link another device</strong> below, or desktop login / Passport.
+                No linked devices yet — use <strong>Link another device</strong> below, or approve a link from Passport / Android / desktop.
               </p>
             )}
             {!suppressForget && localIdentity.xprv ? (
@@ -835,8 +878,9 @@ function IdentityManager (props) {
                   Link another device
                 </Header>
                 <p style={{ color: '#666', fontSize: '0.95em' }}>
-                  Keep separate seeds per app (Passport, Hub, peer applications). Create an offer, open the
-                  {' '}<code>fabric://link</code> URL on the other device, approve, then this browser countersigns.
+                  Any peer can create or accept. This browser can start an offer; the other device (Passport,
+                  GoonCitizen Android, or desktop) approves <code>fabric://link</code> or the HTTPS landing.
+                  Keep separate seeds per app — linking does not copy a mnemonic.
                 </p>
                 <Button
                   size="small"
@@ -851,8 +895,17 @@ function IdentityManager (props) {
                 {deviceLinkOffer && deviceLinkOffer.protocolUrl ? (
                   <div style={{ marginTop: '0.75em' }}>
                     <p style={{ marginBottom: '0.35em', fontSize: '0.9em' }}>
-                      Open this on Passport / a peer app (or copy):
+                      Scan with GoonCitizen (phone or desktop) or open on Passport:
                     </p>
+                    {deviceLinkQr ? (
+                      <img
+                        src={deviceLinkQr}
+                        alt="Scan fabric://link with GoonCitizen"
+                        width={196}
+                        height={196}
+                        style={{ background: '#fff', borderRadius: 4, marginBottom: 8 }}
+                      />
+                    ) : null}
                     <code style={identityMonospaceBlockStyle}>{deviceLinkOffer.protocolUrl}</code>
                     <Button
                       size="mini"

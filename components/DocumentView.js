@@ -1109,6 +1109,12 @@ function DocumentDetail (props) {
                 Published
               </Label>
             )}
+            {doc && doc.source === 'peer' && !isPublishedInStore && (
+              <Label size="small" color="teal" title="Remote inventory listing; this hub does not hold the file">
+                <Icon name="share alternate" aria-hidden="true" />
+                Peer offer
+              </Label>
+            )}
             {storageContractId && (
               <Label
                 size="small"
@@ -1264,6 +1270,58 @@ function DocumentDetail (props) {
               </List.Item>
             </List>
           </Message>
+        )}
+
+        {doc && Array.isArray(doc.offers) && doc.offers.length > 0 && (
+          <Segment>
+            <Header as="h3">
+              <Icon name="exchange" />
+              Peer offers
+            </Header>
+            <p style={{ color: '#666', marginTop: 0 }}>
+              Inventory listings for this content id. This hub only fulfills sales when it holds the file locally;
+              remote rows are cost basis for optional markup republish.
+            </p>
+            {doc.costBasisSats != null && (
+              <p style={{ margin: '0 0 0.75em' }}>
+                Cost basis: <strong>{formatSatsDisplay(doc.costBasisSats)} sats</strong>
+                {docPurchasePriceSats > 0 ? ` · listed at ${formatSatsDisplay(docPurchasePriceSats)} sats` : ''}
+              </p>
+            )}
+            <List divided relaxed>
+              {doc.offers.map((offer, idx) => {
+                const key = offer.id || `${offer.peerPubkey || offer.peerAddress || 'peer'}-${idx}`;
+                const who = offer.local
+                  ? (offer.peerAlias || 'this node')
+                  : (offer.peerAlias || (offer.peerPubkey
+                    ? `${String(offer.peerPubkey).slice(0, 8)}…${String(offer.peerPubkey).slice(-4)}`
+                    : (offer.peerAddress || 'peer')));
+                const sats = offer.purchasePriceSats != null ? Number(offer.purchasePriceSats) : null;
+                return (
+                  <List.Item key={key}>
+                    <List.Icon name={offer.local ? 'home' : 'share alternate'} color={offer.local ? 'blue' : 'teal'} />
+                    <List.Content>
+                      <List.Header>
+                        {who}
+                        {idx === 0 ? (
+                          <Label size="mini" color="olive" style={{ marginLeft: '0.5em' }}>lowest</Label>
+                        ) : null}
+                        {offer.local ? (
+                          <Label size="mini" style={{ marginLeft: '0.35em' }}>local</Label>
+                        ) : null}
+                      </List.Header>
+                      <List.Description>
+                        {sats != null && Number.isFinite(sats)
+                          ? (sats === 0 ? 'free' : `${formatSatsDisplay(sats)} sats`)
+                          : 'unset'}
+                        {offer.peerAddress ? ` · ${offer.peerAddress}` : ''}
+                      </List.Description>
+                    </List.Content>
+                  </List.Item>
+                );
+              })}
+            </List>
+          </Segment>
         )}
 
         {doc && (

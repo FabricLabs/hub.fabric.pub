@@ -26,6 +26,11 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const {
+  readLinkedDevices,
+  peerIdOf,
+  revokeLinkedDevice
+} = require('../functions/fabricLinkedDevices');
 
 function timingSafeStringEqual (a, b) {
   const s = String(a);
@@ -54,6 +59,7 @@ function SecurityHome () {
   const [sessions, setSessions] = React.useState([]);
   const [error, setError] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  const [linkedDevices, setLinkedDevices] = React.useState(() => readLinkedDevices());
   const busyDepthRef = React.useRef(0);
 
   const beginBusy = React.useCallback(() => {
@@ -136,6 +142,27 @@ function SecurityHome () {
       window.removeEventListener('storage', onStorage);
     };
   }, []);
+
+  const refreshLinkedDevices = React.useCallback(() => {
+    setLinkedDevices(readLinkedDevices());
+  }, []);
+
+  const handleRevokeDevice = React.useCallback(async (device) => {
+    beginBusy();
+    setError(null);
+    try {
+      const r = await revokeLinkedDevice(device);
+      if (!r.ok) {
+        setError(r.error || 'Could not revoke device');
+        return;
+      }
+      refreshLinkedDevices();
+    } catch (e) {
+      setError((e && e.message) ? e.message : String(e));
+    } finally {
+      endBusy();
+    }
+  }, [beginBusy, endBusy, refreshLinkedDevices]);
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -230,6 +257,48 @@ function SecurityHome () {
           {error}
         </Message>
       )}
+
+      <Segment>
+        <section aria-labelledby="security-linked-devices-h3">
+        <Header as="h3" id="security-linked-devices-h3">Linked devices</Header>
+        <p style={{ color: '#666', fontSize: '0.95em' }}>
+          Peer-equivalent identity cluster (Passport, Android, desktop, this Hub). Revoke publishes a BIP340
+          IdentityCrossSignRevoke Fabric Message. Unlock this identity first. A stolen device stays you until
+          another cluster member revokes.
+        </p>
+        {linkedDevices.length === 0 ? (
+          <Message>
+            No linked devices on this browser. Create or accept a <code>fabric://link</code> from Identity.
+          </Message>
+        ) : (
+          <List divided relaxed>
+            {linkedDevices.map((d, i) => {
+              const pid = peerIdOf(d);
+              return (
+                <List.Item key={pid || i}>
+                  <List.Content floated="right">
+                    <Button
+                      negative
+                      size="mini"
+                      disabled={busy}
+                      onClick={() => void handleRevokeDevice(d)}
+                    >
+                      Revoke
+                    </Button>
+                  </List.Content>
+                  <List.Header>{d.label || d.kind || 'Device'}</List.Header>
+                  <List.Description>
+                    {pid ? <code style={{ fontSize: '0.85em' }}>{pid}</code> : '—'}
+                    {d.hubOrigin ? ` · ${d.hubOrigin}` : ''}
+                    {d.linkedAt ? ` · ${new Date(d.linkedAt).toLocaleString()}` : ''}
+                  </List.Description>
+                </List.Item>
+              );
+            })}
+          </List>
+        )}
+        </section>
+      </Segment>
 
       <Segment>
         <section aria-labelledby="security-external-signing-h3">

@@ -4124,6 +4124,12 @@ class Bridge extends React.Component {
                   }
                 }));
               }
+              if (result && typeof result === 'object' && result.type === 'RefreshDocumentMarketResult') {
+                window.dispatchEvent(new CustomEvent('documentMarketRefresh', { detail: result }));
+                try {
+                  this.sendListDocumentsRequest();
+                } catch (_) {}
+              }
               if (result && typeof result === 'object' && result.type === 'GetDocumentResult') {
                 if (result.document && result.document.id) {
                   const id = result.document.id;
@@ -5649,6 +5655,16 @@ class Bridge extends React.Component {
           href: '/documents'
         });
       } catch (_) {}
+    }
+  }
+
+  sendRefreshDocumentMarketRequest () {
+    try {
+      const payload = { method: 'RefreshDocumentMarket', params: [] };
+      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
+      this.sendSignedMessage(message.toBuffer());
+    } catch (error) {
+      console.error('[BRIDGE]', 'Error sending RefreshDocumentMarket request:', safeIdentityErr(error));
     }
   }
 

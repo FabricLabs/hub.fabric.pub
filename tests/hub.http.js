@@ -1006,6 +1006,52 @@ describe('@fabric/hub', function () {
         assert.ok(ids.includes(docId), 'ListDocuments should list created document id');
       });
 
+      it('ListDocumentOffers and RefreshDocumentMarket are off by default', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const offers = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 610,
+          method: 'ListDocumentOffers',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(offers.status, 200);
+        const offerRes = offers.body && offers.body.result;
+        assert.ok(offerRes && offerRes.type === 'ListDocumentOffersResult');
+        assert.ok(Array.isArray(offerRes.offers));
+        assert.strictEqual(offerRes.documentMarket.accumulatePeerInventories, false);
+
+        const refresh = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 611,
+          method: 'RefreshDocumentMarket',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(refresh.status, 200);
+        const refreshRes = refresh.body && refresh.body.result;
+        assert.ok(refreshRes && refreshRes.type === 'RefreshDocumentMarketResult');
+        assert.strictEqual(refreshRes.requested, 0);
+        assert.ok(String(refreshRes.message || '').toLowerCase().includes('accumulate'));
+
+        const status = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 612,
+          method: 'GetNetworkStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(status.status, 200);
+        const ns = status.body && status.body.result;
+        assert.ok(ns && ns.documentMarket);
+        assert.strictEqual(ns.documentMarket.accumulatePeerInventories, false);
+      });
+
       it('GetDistributedFederationPolicy JSON-RPC returns policy shape', async function () {
         const probe = await makeRequest('POST', '/services/rpc', {
           jsonrpc: '2.0',

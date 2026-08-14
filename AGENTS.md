@@ -100,6 +100,7 @@ Fabric-native invoices and settlement are the default product shape. Future **L4
 - **Sidechain signals (playnet):** optional per-block scan via **`FABRIC_SIDECHAIN_SCAN=1`** / `bitcoin.sidechainScan` — OP_RETURN magic + watched addresses; Activity `SidechainScan`. Timelock maturation (e.g. +100 blocks) is policy on top of height + `locktime` hints (`functions/sidechainBlockScan.js`).
 - **Fabric hallmarks (opt-in, on-chain only):** **`FABRIC_HALLMARKS=1`** / `bitcoin.hallmarks.enable` publishes a 40-byte OP_RETURN on each new tip (regtest): `c0d3f33d` + last 4 bytes of tip hash + SHA-256 commitment over tip + Hub contract id + latest sidechain/contracts digests. **`FABRIC_HALLMARKS_SCAN=1`** / `hallmarks.scan` decodes hallmarks in tip scan (Activity `FabricHallmark`). Never gossiped on Fabric P2P. Admin RPC: `PublishFabricHallmark`.
 - **L1 → document index:** **`FABRIC_BITCOIN_DOCUMENT_BLOCKS=0`** disables block documents; **`FABRIC_BITCOIN_DOCUMENT_TX=1`** enables per-tx documents; **`FABRIC_BITCOIN_DOC_BLOCK_PRICE_SATS`** / **`FABRIC_BITCOIN_DOC_TX_PRICE_SATS`** set default list prices (`0` = omit `purchasePriceSats`).
+- **Document Market (opt-in):** **`FABRIC_DOCUMENT_MARKET_ACCUMULATE=1`** persists peer `INVENTORY_RESPONSE` rows in `collections.documentoffers`. **`FABRIC_DOCUMENT_MARKET_REPUBLISH=1`** (implies accumulate) republishes **held** files at `markupBps` (default 1000 = 10%) + `markupSats`. Env: **`FABRIC_DOCUMENT_MARKET_MARKUP_BPS`**, **`FABRIC_DOCUMENT_MARKET_MARKUP_SATS`**, **`FABRIC_DOCUMENT_MARKET_MIN_PRICE_SATS`**. Settings: `documents.market`. Helper: [`functions/documentInventoryMarket.js`](functions/documentInventoryMarket.js) (`@fabric/hub/functions/documentInventoryMarket`). Outbound inventory still lists only local blobs.
 
 ### Storage
 - **`stores/hub/`** — Filesystem-based state persistence (LevelDB for peers, JSON for documents).
@@ -146,7 +147,9 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 | `RejectTrackedApplicationContract` | **Admin** — `{ contractId, adminToken }` → drop pending or untrack accepted |
 | `EmitTombstone` | **Admin only** — `{ messageId?, documentId?, adminToken }` (at least one of `messageId`, `documentId`) — appends Fabric message `Tombstone` to the hub log (`_appendFabricMessage`), updates `STATE`, may JSON Patch `remove` an activity row, may **unpublish** a document id from `collections.documents`; broadcasts `GenericMessage` `{ type: 'Tombstone', object: { activityMessageId, documentId } }` so Bridge fires `fabric:tombstone` |
 | `CreateDocument` | Store a document (base64 content) |
-| `ListDocuments` | List document metadata |
+| `ListDocuments` | List document metadata (when Document Market accumulate is on, includes remote offer rows + `documentMarket`) |
+| `ListDocumentOffers` | Peer inventory book (`collections.documentoffers`); optional `{ documentId }` |
+| `RefreshDocumentMarket` | Query connected peers for document inventories (no-op unless accumulate is on) |
 | `GetDocument` | Retrieve document with content |
 | `PublishDocument` | Add document to global state |
 | `VerifyBitcoinL1Payment` | Params `{ txid, address, amountSats }` — confirms L1 pays invoice address (via Hub `bitcoind`) |
@@ -283,7 +286,7 @@ Publish remains free. The distribute amount is user-specified.
 Common methods include:
 - peers: `ListPeers`, `AddPeer`, `RemovePeer`, `GetPeer`
 - chat/files: `SendPeerMessage`, `SendOnion`, `SubmitChatMessage`, `EmitTombstone` (admin), `SendPeerFile`, `RelayFromWebRTC`
-- documents: `CreateDocument`, `ListDocuments`, `GetDocument`, `PublishDocument`
+- documents: `CreateDocument`, `ListDocuments`, `GetDocument`, `PublishDocument`, `ListDocumentOffers`, `RefreshDocumentMarket`
 - distribute: `CreateDistributeInvoice`, `CreateStorageContract`
 - bitcoin: `GetBitcoinStatus`, `ListBlocks`, `ListTransactions`, `SendPayment`, `VerifyBitcoinL1Payment`, `GenerateBlock`
 - inventory HTLC: `RequestPeerInventory` third param `{ buyerRefundPublicKey?, htlcLocktimeBlocks?, htlcAmountSats?, inventoryTarget?, inventoryRelayTtl? }` — `inventoryTarget` is the seller Fabric id when the first param is only a **relay**; hubs forward `INVENTORY_REQUEST` / `INVENTORY_RESPONSE` (`inventoryRelayTtl` default 6). Seller replies to the **immediate** TCP peer (relay-safe). Settlement stores `relayReturnHop` when the buyer is not on the request socket; phase 2 may send `P2P_FILE_SEND` with `deliveryFabricId` + `fileRelayTtl` via that hop so relays forward chunks without persisting. `ConfirmInventoryHtlcPayment` → `ConfirmInventoryHtlcPaymentResult`; Bridge `inventoryHtlcConfirmResult`. On-chain: `INVENTORY_HTLC_ONCHAIN.md`. Seller preimage: `GetInventoryHtlcSellerReveal` (admin). Seller claim broadcast: `ClaimInventoryHtlcOnChain` (admin).

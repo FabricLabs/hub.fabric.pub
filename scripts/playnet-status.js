@@ -14,6 +14,7 @@
 
 const {
   hubRpcBase,
+  productionPlaynetTarget,
   hubRpc,
   hubGetJson,
   loadPlaynetContract
@@ -21,12 +22,15 @@ const {
 
 function printHelp () {
   console.log(`Usage:
-  npm run playnet:status -- [--hub <url>] [--contract <id>]
+  npm run playnet:status -- [--hub <url>] [--production] [--contract <id>]
 
-Prints ListTrackedApplicationContracts, global sidechain STATE, contract
-sidechain STATE, and GET /services/distributed/epoch (when available).
+Prints ListTrackedApplicationContracts (including native fabric-beacon when
+Beacon started), global sidechain STATE, contract sidechain STATE, and
+GET /services/distributed/epoch (when available).
 
+--production         Target https://hub.fabric.pub
 Set FABRIC_PLAYNET_CONTRACT_ID or --contract for a specific tracked namespace.
+Sibling star-citizen-live/contracts/gooncitizen.js is used when unset.
 `);
 }
 
@@ -55,10 +59,17 @@ async function main () {
 
   let hubUrl = hubRpcBase();
   let contractId = '';
+  let production = process.env.FABRIC_PLAYNET_PRODUCTION === '1' ||
+    process.env.FABRIC_PLAYNET_PRODUCTION === 'true';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--hub') hubUrl = String(argv[++i] || '').replace(/\/$/, '');
     else if (a === '--contract') contractId = String(argv[++i] || '').trim().toLowerCase();
+    else if (a === '--production') production = true;
+  }
+  if (production && !process.env.FABRIC_HUB_RPC_URL && !process.env.FABRIC_HUB_URL &&
+      hubUrl === hubRpcBase()) {
+    hubUrl = productionPlaynetTarget().hubUrl;
   }
 
   const loaded = loadPlaynetContract({ contractId: contractId || undefined });
@@ -95,6 +106,18 @@ async function main () {
     });
   } else {
     console.log('[playnet:status] tracked ERROR', tracked.error);
+  }
+
+  const manifest = await safe('GET /services/distributed/manifest', () =>
+    hubGetJson('/services/distributed/manifest', { baseUrl: hubUrl }));
+  if (manifest.ok) {
+    const m = manifest.value || {};
+    console.log('[playnet:status] fabric-beacon registry', {
+      beaconContractId: m.beaconContractId || (m.beacon && m.beacon.contractId) || null,
+      trackedContracts: m.trackedContracts || m.contracts || null
+    });
+  } else {
+    console.log('[playnet:status] manifest ERROR', manifest.error);
   }
 
   const side = await safe('GetSidechainState', () =>

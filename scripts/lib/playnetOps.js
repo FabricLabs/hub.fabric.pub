@@ -107,6 +107,27 @@ function hubRpcBase () {
     .replace(/\/$/, '');
 }
 
+/** Public playnet Hub HTTP + Fabric peers (hub.fabric.pub + relay.goon.vc). */
+const PRODUCTION_HUB_HTTP = 'https://hub.fabric.pub';
+const PRODUCTION_PLAYNET_PEERS = 'hub.fabric.pub:7777,relay.goon.vc:7777';
+
+/**
+ * Targets for `--production` / `FABRIC_PLAYNET_PRODUCTION=1`.
+ * Env still wins when already set.
+ * @returns {{ hubUrl: string, peers: string[] }}
+ */
+function productionPlaynetTarget () {
+  const hubUrl = String(
+    process.env.FABRIC_HUB_RPC_URL || process.env.FABRIC_HUB_URL || PRODUCTION_HUB_HTTP
+  ).trim().replace(/\/$/, '');
+  const peers = String(process.env.FABRIC_PLAYNET_PEERS || process.env.FABRIC_FLUSH_PEERS ||
+    PRODUCTION_PLAYNET_PEERS)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { hubUrl, peers };
+}
+
 function playnetPeers (extraArgv = []) {
   if (Array.isArray(extraArgv) && extraArgv.length) {
     return extraArgv.map((s) => String(s).trim()).filter(Boolean);
@@ -283,6 +304,22 @@ function loadPlaynetContract (opts = {}) {
   if (/^[0-9a-f]{64}$/.test(fromEnv)) {
     return { source: 'env', contractId: fromEnv, definition: opts.definition || null };
   }
+
+  const siblingGc = path.join(ROOT, '..', 'star-citizen-live', 'contracts', 'gooncitizen.js');
+  try {
+    // eslint-disable-next-line import/no-dynamic-require, global-require
+    const gc = require(siblingGc);
+    if (typeof gc.gooncitizenContractId === 'function') {
+      return {
+        source: siblingGc,
+        contractId: gc.gooncitizenContractId(),
+        definition: typeof gc.gooncitizenContractDefinition === 'function'
+          ? gc.gooncitizenContractDefinition()
+          : null
+      };
+    }
+  } catch (_) {}
+
   return { source: 'unset', contractId: null, definition: null };
 }
 
@@ -376,6 +413,9 @@ module.exports = {
   loadLocalOperatorMnemonic,
   loadAdminToken,
   hubRpcBase,
+  productionPlaynetTarget,
+  PRODUCTION_HUB_HTTP,
+  PRODUCTION_PLAYNET_PEERS,
   playnetPeers,
   bitcoinDatadir,
   bitcoinRpcPort,

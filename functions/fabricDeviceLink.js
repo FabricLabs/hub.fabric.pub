@@ -14,5 +14,9 @@ module.exports = {
   verifyIdentitySchnorr: deviceLinkHttp.verifyIdentitySchnorr,
   mountFabricDeviceLinkHttp: deviceLinkHttp.mountFabricDeviceLinkHttp,
   randomNonce: deviceLinkHttp.randomNonce,
-  randomSessionId: deviceLinkHttp.randomSessionId
+  randomSessionId: deviceLinkHttp.randomSessionId,
+  isCompanionWebViewOrigin: deviceLinkHttp.isCompanionWebViewOrigin,
+  isExtensionOrigin: deviceLinkHttp.isExtensionOrigin,
+  isThinClientOrigin: deviceLinkHttp.isThinClientOrigin,
+  clientMayAccessDeviceLink: deviceLinkHttp.clientMayAccessDeviceLink
 };
