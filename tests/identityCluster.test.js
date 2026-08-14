@@ -27,6 +27,22 @@ describe('@fabric/hub identityCluster', function () {
     assert.strictEqual(SIGN_TYPE, 'IdentityCrossSign');
   });
 
+  it('rejects non-hex and colon-smashed pubkeys', function () {
+    const b = 'bb'.repeat(32);
+    const n = nonce();
+    const c = new IdentityCluster();
+    assert.strictEqual(c.ingestCrossSign({
+      localPubkey: 'aa:bb',
+      peerPubkey: b,
+      nonce: n
+    }).ok, false);
+    assert.strictEqual(c.ingestCrossSign({
+      localPubkey: 'not-a-key',
+      peerPubkey: b,
+      nonce: n
+    }).reason, 'invalid pubkey');
+  });
+
   it('does not union independent seeds', function () {
     const a = '11'.repeat(32);
     const b = '22'.repeat(32);

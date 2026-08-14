@@ -105,6 +105,25 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     assert.strictEqual(hubVerify.signCrossSign, coreVerify.signCrossSign);
   });
 
+  it('rejects unknown kind and truncated identity-id hex via the core pin', function () {
+    const crypto = require('crypto');
+    const Identity = require('@fabric/core/types/identity');
+    const { SIGN_TYPE, buildCrossSignMessage } = require('../functions/identityCrossSign');
+    const { signCrossSign } = require('../functions/identityCrossSignVerify');
+    const { fabricIdentityIdFromPubkeyHex } = require('@fabric/core/functions/fabricIdentitySchnorr');
+    const ident = new Identity(new Key());
+    const peer = new Identity(new Key());
+    const nonce = crypto.randomBytes(32).toString('hex');
+    assert.throws(
+      () => signCrossSign(ident, { peerPubkey: peer.pubkey, nonce }, 'ChatMessage'),
+      /unknown cross-sign type/i
+    );
+    assert.strictEqual(buildCrossSignMessage(nonce, 'aa', peer.pubkey), null);
+    assert.throws(() => fabricIdentityIdFromPubkeyHex('02aa'), /66 hex/i);
+    assert.ok(typeof fabricIdentityIdFromPubkeyHex(ident.fabricKey.pubkey) === 'string');
+    assert.strictEqual(SIGN_TYPE, 'IdentityCrossSign');
+  });
+
   it('oracleAttestation + fabricPubkey + fabricChatNormalize re-export http', function () {
     const hubOracle = require('../functions/oracleAttestation');
     const httpOracle = require('@fabric/http/functions/oracleAttestation');

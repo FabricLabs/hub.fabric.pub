@@ -45,11 +45,10 @@ Defaults are conservative; operators often enable **`bitcoin`** and **`sidechain
 | Variable | Role |
 |----------|------|
 | `FABRIC_SEED` / `FABRIC_MNEMONIC` | 24-word seed for Hub identity |
-| `FABRIC_PORT` | Fabric P2P listen (default `7777`) |
+| `FABRIC_PORT` | Fabric P2P listen (default `7777`); must be a **number** so the Peer binds correctly. On the shared `meta.fabric.pub` host, **7777** is Hub + `relay.goon.vc`; other apps use **7778+**. |
 | `FABRIC_HUB_PORT` / `PORT` | HTTP/WebSocket (default `8080`) |
 | `FABRIC_HUB_HOSTNAME` / `HOSTNAME` | Advertised hostname where applicable |
 | `FABRIC_HUB_INTERFACE` / `INTERFACE` | Bind address (default `0.0.0.0`) |
-| `FABRIC_PORT` | Fabric P2P listen (default `7777`); must be a **number** so the Peer binds correctly |
 | `FABRIC_BITCOIN_ENABLE` | Set to `false` to skip the Bitcoin service (Hub starts without `bitcoind`; used for headless E2E) |
 
 See [README.md](../README.md) and [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md) for Bitcoin network ports and managed regtest notes.

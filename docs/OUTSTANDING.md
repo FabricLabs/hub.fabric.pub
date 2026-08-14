@@ -1,7 +1,7 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-14 (Hub `3cc43d1` + this slice, core lockfile `ab0acf77b`, http lockfile `270ebbb`).
+**Last reviewed:** 2026-08-14 (Hub `da0d16f` + this slice, core lockfile `488a87da1`, http lockfile `5161e76`).
 
 ## Blockers before production shared bind
 1. **Inherited login/link redeem** — QR `sessionId` + forgeable Origin is still the capability ([`@fabric/http` OUTSTANDING](https://github.com/FabricLabs/fabric-http/blob/feature/rsi/docs/OUTSTANDING.md)). Hub desktop `allowHubSelfSign` defaults on; http **loopback-gates** the sign so public `hub.fabric.pub` cannot remote self-sign.
@@ -23,7 +23,10 @@ Living queue for this repo. Detail and closed items live in [SECURITY.md](../SEC
 - Dev-seed wipe marker is only cleared when restoring **that** seed (importing another mnemonic leaves suppression in place).
 - Managed regtest attach-on-lock: cookie RPC probe + one spawn-failure retry; do not SIGKILL an attached orphan (`functions/bitcoinManagedAttach.js`). Heap OOM that orphaned Core remains a follow-up (teardown cannot run after V8 abort).
 - Device-link per-origin create quota lives in `@fabric/http` `fabricDeviceLinkHttp` (Hub re-exports `MAX_SESSIONS_PER_ORIGIN` / `evictDeviceLinkOriginOverflow`).
-- Expired `GET /sessions/:delegationToken` requires matching Bearer (http pin `270ebbb`).
+- Expired `GET /sessions/:delegationToken` requires matching Bearer (http pin `5161e76`).
+- Beacon ready-round retry tests use a real Schnorr witness (core `488a87da1` verifies recovered rounds; fake `'00'` now correctly errors).
+- Identity cluster keys are x-only / compressed hex only (no colon-smashed fallback).
+- Http pin `5161e76` (`--wallet -p` is not a path; IdentityCrossSign unknown-kind / truncated-id tests).
 
 ## PRs
-[#15](https://github.com/FabricLabs/hub.fabric.pub/pull/15) — only human inline comment was Terrible URI (fixed). Most June/July CodeRabbit “quick wins” are already in tree (`waitForHub` request timeout, wallet-cache `maxCacheAgeMs`, crowdfund BIP44 account, document upload race / `response.ok`, chrome.storage watch-only, `masterXpub` label, explorer admin token, UI flag normalize, payment test route opt-in, `verifyAdminToken` cap/sub, Semantic sync try/catch). Remaining open: identity import/KDF, login redeem (http), device-link nonce/`sessionId` bind, PR split. Pin `@fabric/core` / `@fabric/http` via lockfile (`#feature/rsi` + `npm run report:install`), currently core **`ab0acf77b`** / http **`270ebbb`**.
+[#15](https://github.com/FabricLabs/hub.fabric.pub/pull/15) — only human inline comment was Terrible URI (fixed). Most June/July CodeRabbit “quick wins” are already in tree (`waitForHub` request timeout, wallet-cache `maxCacheAgeMs`, crowdfund BIP44 account, document upload race / `response.ok`, chrome.storage watch-only, `masterXpub` label, explorer admin token, UI flag normalize, payment test route opt-in, `verifyAdminToken` cap/sub, Semantic sync try/catch). CI after core `488a87da1`: Hub Beacon ready-round retry now uses a real Schnorr witness (core verifies recovered rounds). Remaining open: identity import/KDF, login redeem (http), device-link nonce/`sessionId` bind, PR split. Pin `@fabric/core` / `@fabric/http` via lockfile (`#feature/rsi` + `npm run report:install`), currently core **`488a87da1`** / http **`5161e76`**.

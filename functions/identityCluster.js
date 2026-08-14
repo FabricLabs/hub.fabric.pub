@@ -15,10 +15,7 @@ const {
 } = require('./identityCrossSign');
 
 function keyOf (pk) {
-  const x = pubkeyXOnly(pk);
-  if (x) return x;
-  const s = String(pk || '').trim().toLowerCase().replace(/^0x/, '');
-  return s || null;
+  return pubkeyXOnly(pk);
 }
 
 function edgeKey (a, b) {
