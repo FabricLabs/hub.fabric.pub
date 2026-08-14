@@ -3,7 +3,7 @@ Hub-specific security and deploy queue: **[OUTSTANDING.md](OUTSTANDING.md)**. Op
 
 The type-tree / docs-clutter march below is **inherited from `@fabric/core`** (keep Hub’s public surface on Peer, documents, contracts, Security). Do not expand Hub RC with new payment rails while those leftovers are open.
 
-**This deploy (2026-08-14):** pins core `0ed61d62` + http `61bb801`; Test workflow `.nvmrc` path; **fixed** leftover bitcoinClient `hubAdminToken` on payments URLs; `verifyAdminToken` cap/sub; backup KDF bounds. **Next Hub security slice:** identity import / at-rest KDF (heavy lift). **Suite blocker:** http login/link possession proof.
+**This deploy (2026-08-14):** pins core `5557a2bf` + http `7536341`; Test workflow `.nvmrc` path; **fixed** leftover bitcoinClient `hubAdminToken` on payments URLs; `verifyAdminToken` cap/sub; backup KDF bounds. **Next Hub security slice:** identity import / at-rest KDF (heavy lift). **Suite blocker:** http login/link possession proof.
 
 ---
 

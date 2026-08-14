@@ -9885,7 +9885,10 @@ class Hub extends Service {
         });
       }
 
-      this.lightning.on('debug', (...args) => console.log('[LIGHTNING]', '[DEBUG]', ...args));
+      this.lightning.on('debug', (...args) => {
+        if (!this.settings.debug) return;
+        console.log('[LIGHTNING]', '[DEBUG]', ...args);
+      });
       this.lightning.on('error', (err) => console.error('[LIGHTNING]', '[ERROR]', err && err.message ? err.message : err));
 
       await this.lightning.start();
@@ -9958,7 +9961,12 @@ class Hub extends Service {
 
   async _startPhase_bitcoin () {
       if (this.bitcoin) {
-        this.bitcoin.on('debug', (...args) => console.log('[BITCOIN]', '[DEBUG]', ...args));
+        if (this.settings.debug) {
+          this.bitcoin.on('debug', (...args) => {
+            const text = args.map((a) => (a && a.stack) ? a.stack : String(a)).join(' ');
+            console.log('[BITCOIN]', '[DEBUG]', text.length > 2000 ? `${text.slice(0, 2000)}…` : text);
+          });
+        }
         this.bitcoin.on('error', (...error) => console.error('[BITCOIN]', '[ERROR]', ...error));
         this.bitcoin.on('log', (...log) => console.log('[BITCOIN]', ...log));
         this.bitcoin.on('warning', (...warning) => console.warn('[BITCOIN]', '[WARNING]', ...warning));
@@ -9966,8 +9974,6 @@ class Hub extends Service {
         this.bitcoin.on('transaction', this._handleBitcoinTransactionUpdate.bind(this));
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
-        // Enable debug so bitcoind stdout and RPC wait progress are visible while startup takes time
-        this.bitcoin.settings.debug = true;
         this._repairManagedRegtestSettingsJsonIfCorrupt();
         console.log('[HUB] Starting Bitcoin (blocking until ready or timeout)...');
         const result = await this._startBitcoinServiceWithTimeout();
