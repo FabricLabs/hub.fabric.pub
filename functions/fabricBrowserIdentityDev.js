@@ -136,8 +136,12 @@ function storeUnlockedIdentityFromMnemonic (opts = {}) {
         }));
       }
     } catch (_) {}
-    /** Re-enabling implies the user wants this seed to bootstrap again. */
-    try { clearDevSeedSuppression(); } catch (_) {}
+    /** Only drop the wipe marker when this exact seed is the one being restored. */
+    try {
+      if (readDevSeedSuppressionDigest() === devSeedDigest(phrase, opts.passphrase)) {
+        clearDevSeedSuppression();
+      }
+    } catch (_) {}
     return {
       ok: true,
       identity: {

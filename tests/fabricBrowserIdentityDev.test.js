@@ -28,6 +28,9 @@ describe('fabricBrowserIdentityDev.storeUnlockedIdentityFromMnemonic', function 
         },
         setItem (k, v) {
           this._data[k] = String(v);
+        },
+        removeItem (k) {
+          delete this._data[k];
         }
       }
     };
@@ -81,5 +84,38 @@ describe('fabricBrowserIdentityDev.storeUnlockedIdentityFromMnemonic', function 
     assert.strictEqual(rWithPass.ok, true);
     assert.notStrictEqual(rWithPass.identity.id, idNoPass, 'BIP39 passphrase must change derived keys (BIP-39 salt)');
     assert.notStrictEqual(rWithPass.identity.xpub, rNoPass.identity.xpub);
+  });
+
+  it('does not clear wipe-marker for a different seed', function () {
+    const {
+      storeUnlockedIdentityFromMnemonic,
+      suppressDevSeed,
+      isDevSeedSuppressed
+    } = require('../functions/fabricBrowserIdentityDev');
+    const other = 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong';
+    suppressDevSeed(phrase);
+    assert.strictEqual(isDevSeedSuppressed(phrase), true);
+    const r = storeUnlockedIdentityFromMnemonic({ seed: other, force: true });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(isDevSeedSuppressed(phrase), true);
+  });
+
+  it('clears wipe-marker only when restoring that suppressed seed', function () {
+    const {
+      storeUnlockedIdentityFromMnemonic,
+      suppressDevSeed,
+      isDevSeedSuppressed
+    } = require('../functions/fabricBrowserIdentityDev');
+    suppressDevSeed(phrase);
+    const blocked = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: true });
+    assert.strictEqual(blocked.ok, false);
+    assert.strictEqual(blocked.suppressed, true);
+    const restored = storeUnlockedIdentityFromMnemonic({
+      seed: phrase,
+      force: true,
+      ignoreSuppression: true
+    });
+    assert.strictEqual(restored.ok, true);
+    assert.strictEqual(isDevSeedSuppressed(phrase), false);
   });
 });
