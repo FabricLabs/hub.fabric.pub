@@ -36,7 +36,7 @@ const fetchContract = (id) => {
   return async (dispatch, getState) => {
     dispatch(fetchContractRequest());
 
-    const { token } = getState().auth.token;
+    const { token } = getState().auth;
 
     try {
       const contract = await fetchFromAPI(`/contracts/${id}`, token);

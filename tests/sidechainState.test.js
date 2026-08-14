@@ -4,6 +4,24 @@ const assert = require('assert');
 const sidechainState = require('../functions/sidechainState');
 
 describe('sidechainState', function () {
+  it('/services/rsi path is valid under typical policy', function () {
+    const policy = sidechainState.parseStatechainPathPolicy({
+      allowedPathPrefixes: ['/services', '/app'],
+      maxOps: 32
+    });
+    const r = sidechainState.applyPatchesToState(
+      sidechainState.createInitialState(),
+      [{
+        op: 'add',
+        path: '/services',
+        value: { rsi: { '@type': 'RsiServiceState', digest: 'abc', counts: { missions: 1 } } }
+      }],
+      policy
+    );
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.state.content.services.rsi.digest, 'abc');
+  });
+
   it('stateDigest is stable for same content', function () {
     const a = { version: 1, clock: 0, content: { x: 1 } };
     const b = { version: 1, clock: 0, content: { x: 1 } };
@@ -16,6 +34,16 @@ describe('sidechainState', function () {
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.state.clock, 1);
     assert.strictEqual(r.state.content.hello, 'world');
+  });
+
+  it('applyPatchesToState enforces path policy', function () {
+    const policy = sidechainState.parseStatechainPathPolicy({ allowedPathPrefixes: ['/app'] });
+    const r = sidechainState.applyPatchesToState(
+      sidechainState.createInitialState(),
+      [{ op: 'add', path: '/nope', value: 1 }],
+      policy
+    );
+    assert.strictEqual(r.ok, false);
   });
 
   it('signingStringForSidechainStatePatch is stable', function () {
@@ -53,5 +81,82 @@ describe('sidechainState', function () {
     assert.strictEqual(sidechainState.loadSnapshotForBeaconClock(fs, 7), null);
     sidechainState.pruneSnapshotsForRemovedBeaconClocksSync(fs, [5]);
     assert.strictEqual(sidechainState.loadSnapshotForBeaconClock(fs, 5), null);
+  });
+
+  it('resolveStateForBeaconTip unifies restore and replays unsealed journal', function () {
+    const store = new Map();
+    const fs = {
+      readFile: (name) => {
+        const v = store.get(name);
+        return v != null ? Buffer.from(v, 'utf8') : null;
+      },
+      writeFile: (name, content) => {
+        store.set(name, typeof content === 'string' ? content : content.toString('utf8'));
+        return true;
+      }
+    };
+    const s0 = sidechainState.createInitialState();
+    const p1 = [{ op: 'add', path: '/a', value: 1 }];
+    const r1 = sidechainState.applyPatchesToState(s0, p1);
+    sidechainState.saveSnapshotForBeaconClockSync(fs, 1, r1.state);
+    sidechainState.appendJournalEntrySync(fs, {
+      basisClock: 0,
+      clock: 1,
+      basisDigest: r1.basisDigest,
+      newDigest: r1.newDigest,
+      patches: p1
+    });
+    sidechainState.sealJournalThroughSidechainClockSync(fs, 1, 1);
+    const p2 = [{ op: 'add', path: '/b', value: 2 }];
+    const r2 = sidechainState.applyPatchesToState(r1.state, p2);
+    sidechainState.appendJournalEntrySync(fs, {
+      basisClock: 1,
+      clock: 2,
+      basisDigest: r2.basisDigest,
+      newDigest: r2.newDigest,
+      patches: p2
+    });
+    const resolved = sidechainState.resolveStateForBeaconTip({
+      tipPayload: { clock: 1, sidechain: { stateDigest: sidechainState.stateDigest(r1.state) } },
+      snapshot: sidechainState.loadSnapshotForBeaconClock(fs, 1),
+      loadedState: r2.state,
+      journalEntries: sidechainState.loadJournalDoc(fs).entries
+    });
+    assert.strictEqual(resolved.source, 'snapshot');
+    assert.strictEqual(resolved.unsealedApplied, 1);
+    assert.strictEqual(resolved.state.content.b, 2);
+  });
+
+  it('summarizeJournal and summarizeSnapshots for operator UI', function () {
+    const store = new Map();
+    const fs = {
+      readFile: (name) => {
+        const v = store.get(name);
+        return v != null ? Buffer.from(v, 'utf8') : null;
+      },
+      writeFile: (name, content) => {
+        store.set(name, typeof content === 'string' ? content : content.toString('utf8'));
+        return true;
+      }
+    };
+    const s0 = sidechainState.createInitialState();
+    const patches = [{ op: 'add', path: '/ui', value: true }];
+    const r = sidechainState.applyPatchesToState(s0, patches);
+    sidechainState.appendJournalEntrySync(fs, {
+      basisClock: 0,
+      clock: 1,
+      basisDigest: r.basisDigest,
+      newDigest: r.newDigest,
+      patches
+    });
+    sidechainState.saveSnapshotForBeaconClockSync(fs, 3, r.state);
+    const j = sidechainState.summarizeJournal(fs, { limit: 10 });
+    assert.strictEqual(j.entryCount, 1);
+    assert.strictEqual(j.unsealedCount, 1);
+    assert.strictEqual(j.entries[0].paths[0], '/ui');
+    const sn = sidechainState.summarizeSnapshots(fs, { limit: 10 });
+    assert.strictEqual(sn.snapshotCount, 1);
+    assert.strictEqual(sn.snapshots[0].beaconClock, 3);
+    assert.ok(sn.snapshots[0].stateDigest);
   });
 });

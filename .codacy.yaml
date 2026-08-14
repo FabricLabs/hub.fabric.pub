@@ -35,7 +35,7 @@ engines:
       # Semgrep browser/localStorage/HTTP FPs: storage keys, hub RPC, validated probes, server paths.
       - "constants.js"
       - "services/hub.js"
-      - "electron/desktopHubProbe.js"
+      - "scripts/desktopHubProbe.js"
       - "functions/bitcoinClient.js"
       - "functions/fabricMessageEnvelope.js"
       - "functions/hubUiAlerts.js"

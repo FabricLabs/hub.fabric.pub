@@ -66,7 +66,10 @@ class BitcoinTransactionsHome extends React.Component {
   async refresh () {
     const identity = (this.props && this.props.identity) || {};
     const wallet = getSpendWalletContext(identity);
-    const upstream = this.state.upstream;
+    const upstream = {
+      ...this.state.upstream,
+      hubAdminToken: readHubAdminTokenFromBrowser(this.props && this.props.adminToken) || ''
+    };
     const network = (this.props && this.props.bitcoin && this.props.bitcoin.network)
       ? String(this.props.bitcoin.network).toLowerCase()
       : 'regtest';
@@ -76,7 +79,7 @@ class BitcoinTransactionsHome extends React.Component {
       const [summary, transactions, payments] = await Promise.all([
         fetchWalletSummary(upstream, wallet, { network }).catch(() => ({})),
         fetchWalletTransactions(upstream, wallet, { limit: 100, network }).catch(() => []),
-        fetchPayments(upstream, wallet, { limit: 100 }).catch(() => [])
+        fetchPayments(upstream, wallet, { limit: 100, network }).catch(() => [])
       ]);
       const invLabels = txContractLabels.buildInvoiceTxLabels(invoiceStore.loadInvoices());
       const txRows = Array.isArray(transactions)

@@ -28,6 +28,7 @@ const { formatSatsDisplay } = require('../functions/formatSats');
 const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags');
 const HubPagination = require('./HubPagination');
 const { useHubListPagination } = require('../functions/hubListPagination');
 const { compareDocumentsByHostOfferThenPurchasePrice } = require('../functions/sortDocumentsByHostOfferThenPrice');
@@ -109,6 +110,12 @@ function DocumentsPage (props) {
     ? null
     : (publishedRaw && typeof publishedRaw === 'object' ? publishedRaw : {});
   const fabricPeerId = networkStatus && networkStatus.fabricPeerId ? String(networkStatus.fabricPeerId) : null;
+  const documentMarket = networkStatus && networkStatus.documentMarket && typeof networkStatus.documentMarket === 'object'
+    ? networkStatus.documentMarket
+    : null;
+  const documentMarketAccumulate = !!(documentMarket && documentMarket.accumulatePeerInventories);
+  const serverFlags = loadServerFeatureFlags(current);
+  const distributeEnabled = !!serverFlags.distribute;
 
   const documentsLoadingSubtext = !current
     ? 'Connecting to the hub (WebSocket bridge)…'
@@ -221,7 +228,10 @@ function DocumentsPage (props) {
 
   // Start with all local documents (private by default).
   for (const d of allDocs) {
-    docsById[d.id] = { ...d, isLocal: true };
+    docsById[d.id] = {
+      ...d,
+      isLocal: d.source === 'peer' ? false : (d.local !== false)
+    };
   }
 
   // Merge in published index entries and mark them as published.
@@ -453,9 +463,14 @@ function DocumentsPage (props) {
           <Segment loading={busy}>
             <Header as="h3">Add content</Header>
             <p style={{ color: '#666' }}>
-              Select a file or create a document from text. <strong>Publish</strong> adds the doc to the hub catalog (free).
-              <strong> Distribute</strong> (long-term storage contracts) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
-              <Link to="/services/bitcoin">Bitcoin</Link> (or <Link to="/payments">Payments</Link> when enabled in Admin).
+              Select a file or create a document from text. <strong>Publish</strong> with a price seals content (ciphertext-at-rest);
+              buyers pay an L1 HTLC that reveals the decryption key (Peers inventory or Claim &amp; Unlock).
+              {distributeEnabled ? (
+                <>
+                  {' '}<strong>Distribute</strong> (optional storage bonds) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
+                  <Link to="/services/bitcoin">Bitcoin</Link>.
+                </>
+              ) : null}
             </p>
             <Button
               size="small"
@@ -518,13 +533,15 @@ function DocumentsPage (props) {
           </Segment>
         )}
 
-        <Segment>
-          <Header as="h3">
-            <Icon name="gift" />
-            Offers
-          </Header>
-          <DistributeProposalsList bridgeRef={props.bridgeRef} embedded />
-        </Segment>
+        {distributeEnabled ? (
+          <Segment>
+            <Header as="h3">
+              <Icon name="gift" />
+              Offers
+            </Header>
+            <DistributeProposalsList bridgeRef={props.bridgeRef} embedded />
+          </Segment>
+        ) : null}
 
         <Segment>
           <Header as="h3">Documents</Header>
@@ -540,6 +557,41 @@ function DocumentsPage (props) {
             <Icon name="refresh" />
             Refresh
           </Button>
+          {documentMarketAccumulate && (
+            <Button
+              type="button"
+              size="small"
+              icon
+              labelPosition="left"
+              basic
+              onClick={() => {
+                const bridge = props.bridgeRef && props.bridgeRef.current;
+                if (bridge && typeof bridge.sendRefreshDocumentMarketRequest === 'function') {
+                  bridge.sendRefreshDocumentMarketRequest();
+                }
+              }}
+              disabled={busy}
+              title="Request document inventories from connected Fabric peers"
+            >
+              <Icon name="exchange" />
+              Query peer inventories
+            </Button>
+          )}
+          {documentMarketAccumulate && (
+            <Message info size="small" style={{ marginTop: '1em' }}>
+              <Message.Header>Document Market</Message.Header>
+              <p style={{ margin: '0.35em 0 0' }}>
+                This hub accumulates peer inventories
+                {documentMarket.republishWithMarkup
+                  ? ` and republishes held files at +${Number(documentMarket.markupBps) / 100}%`
+                    + (Number(documentMarket.markupSats) > 0 ? ` + ${documentMarket.markupSats} sats` : '')
+                    + ' markup'
+                  : ''}
+                . Outbound inventory still lists only files this node can deliver.
+                {documentMarket.offerCount != null ? ` ${documentMarket.offerCount} remote offer${documentMarket.offerCount === 1 ? '' : 's'} stored.` : ''}
+              </p>
+            </Message>
+          )}
           {(!hasNetworkSnapshot && allDocs.length === 0) ? (
             <Segment
               placeholder
@@ -684,6 +736,36 @@ function DocumentsPage (props) {
                     >
                       <Icon name="bitcoin" />
                       {payText}
+                    </Label>
+                  );
+                }
+
+                if (doc.source === 'peer' && !doc.isPublished && !doc.isLocal) {
+                  labels.push(
+                    <Label
+                      key="peer-offer"
+                      size="mini"
+                      color="teal"
+                      style={{ marginLeft: '0.25em' }}
+                      title="Listed by a connected peer; this hub does not hold the file yet"
+                    >
+                      <Icon name="share alternate" />
+                      Peer offer
+                    </Label>
+                  );
+                }
+
+                if (doc.bestPeerPriceSats != null && Number(doc.bestPeerPriceSats) >= 0 && doc.source !== 'peer') {
+                  labels.push(
+                    <Label
+                      key="peer-price"
+                      size="mini"
+                      basic
+                      style={{ marginLeft: '0.25em' }}
+                      title="Cheapest remote inventory price"
+                    >
+                      <Icon name="exchange" />
+                      peer {formatSatsDisplay(doc.bestPeerPriceSats)} sats
                     </Label>
                   );
                 }

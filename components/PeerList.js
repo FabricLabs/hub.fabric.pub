@@ -30,7 +30,7 @@ const {
   dedupeFabricPeers,
   fabricPeerPrimaryLabel,
   fabricPeerBech32Id,
-  peerConnectionPubkeyAtHostPort,
+  peerNativePeeringString,
   fabricP2PIdentityConfirmed,
   consolidateUnifiedPeersByFabricId,
   buildWebrtcCombinedRows,
@@ -153,7 +153,7 @@ function UnifiedPeersPaginatedList ({
             const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
             const addrNorm = normalizeFabricPeerAddress(address);
             const isPrimaryRow = !meshRow && primaryPeerNorm && (addrNorm === primaryPeerNorm || String(address) === primaryPeerNorm);
-            const connectionStr = peerConnectionPubkeyAtHostPort(peer, sigHp) || '—';
+            const connectionStr = peerNativePeeringString(peer, sigHp) || '—';
             const p2pConfirmed = fabricP2PIdentityConfirmed(peer);
             const invN = gp ? inventoryDocCountForFabricPeer(gp, bech32Id || routeTarget) : null;
             const tcpForResync = address && !String(address).startsWith('webrtc:')
@@ -458,7 +458,10 @@ class PeersPage extends React.Component {
       : null;
     const shareNodeId = fabricPeerId || legacyUnstableId;
     const hostPort = network && network.address ? String(network.address) : null;
-    const shareableString = [shareNodeId, hostPort].filter(Boolean).join('\n');
+    // Single dial pin for operators / peers: pubkey@host:port (matches Peer#_connect).
+    const shareableString = (shareNodeId && hostPort)
+      ? `${shareNodeId}@${hostPort}`
+      : (shareNodeId || hostPort || '');
 
     // WebRTC peers currently registered with the hub signaling RPC
     const webrtcPeers = Array.isArray(networkStatus && networkStatus.webrtcPeers) ? networkStatus.webrtcPeers : [];
@@ -573,7 +576,7 @@ class PeersPage extends React.Component {
       : null;
 
     return (
-      <fabric-hub-peers class='fade-in'>
+      <fabric-hub-peers class='fade-in' data-testid="hub-peers-page">
         <Segment style={{ clear: 'both', borderRadius: 4, boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
           <section aria-labelledby="peers-page-heading" aria-describedby="peers-page-summary">
             <div
@@ -683,10 +686,10 @@ class PeersPage extends React.Component {
                             }
                           } catch (e) {}
                         }}
-                        title="Copy Fabric Peer ID and listen address"
+                        title="Copy pubkey@host:port peering string for native Fabric dial"
                       >
                         <Icon name="copy" />
-                        Copy Fabric Peer ID + listen
+                        Copy peering string
                       </Button>
                     ) : null}
                   </Grid.Column>
@@ -828,7 +831,7 @@ class PeersPage extends React.Component {
                     <p style={{ margin: '0.35em 0 0', color: '#444', lineHeight: 1.5, maxWidth: '52rem' }}>
                       Use a long-lived hub (e.g. <code>hub.fabric.pub</code>) as <strong>primary authority</strong>: Fabric TCP carries <code>BitcoinBlock</code> gossip and trust scores. Payjoin v2 (directory + HPKE + OHTTP):{' '}
                       <a href="https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77" target="_blank" rel="noreferrer">payjoin.org — BIP 77</a>.
-                      {' '}This build uses BIP77 deposit sessions and BIP78 <code>pj=</code> where enabled; full v2 directory flows are a future integration.
+                      {' '}This build uses BIP78 deposit sessions with absolute <code>pj=</code> where enabled; BIP77 Hub-local experimental mailboxes are available under capabilities <code>fabricProtocol</code>. Full v2 directory + OHTTP flows remain a future integration.
                     </p>
                     <Message info size="small" style={{ marginTop: '0.65em', maxWidth: '52rem' }}>
                       <Message.Header>Regtest coins from another hub</Message.Header>
@@ -972,7 +975,7 @@ class PeersPage extends React.Component {
                       <section aria-labelledby="peers-topology-h3" aria-describedby="peers-topology-desc">
                         <Header as="h3" size="small" id="peers-topology-h3">Peer topology</Header>
                         <p id="peers-topology-desc" style={{ color: '#666', marginBottom: '0.65em', lineHeight: 1.45 }}>
-                          <strong>Solid</strong> edges: TCP peers in this snapshot. <strong>Dotted</strong>: ids from <code>P2P_PEER_GOSSIP</code> (~20 min client cache). Use peer detail <strong>Docs</strong> for <code>INVENTORY_REQUEST</code>; add TCP peers for ids you need directly.
+                          <strong>Solid</strong> edges: TCP peers in this snapshot. <strong>Dotted</strong>: ids from <code>P2P_PEER_GOSSIP</code> (~20 min client cache). Use peer detail <strong>Docs</strong> for document-offer requests; add TCP peers for ids you need directly.
                         </p>
                         <GraphDocumentPreview dotSource={topologyDot} skipIdentityGate />
                         <details style={{ marginTop: '0.65rem' }}>

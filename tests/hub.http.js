@@ -7,6 +7,7 @@ const net = require('net');
 const path = require('path');
 const url = require('url');
 const merge = require('lodash.merge');
+require('../functions/patchLinkedFabricNodePath');
 const Hub = require('../services/hub');
 const settings = require('../settings/local');
 
@@ -130,6 +131,68 @@ describe('@fabric/hub', function () {
       });
     }
 
+    /**
+     * Fomantic (Fabric theme) static assets: packed CSS references `themes/...` (unchanged Gulp output).
+     */
+    function getHttpBuffer (pth) {
+      return new Promise((resolve, reject) => {
+        const requestUrl = url.parse(`${baseUrl}${pth}`);
+        const opt = { hostname: requestUrl.hostname, port: requestUrl.port, path: requestUrl.path, method: 'GET' };
+        const req = http.get(opt, (res) => {
+          const parts = [];
+          res.on('data', (c) => parts.push(c));
+          res.on('end', () => {
+            resolve({
+              status: res.statusCode,
+              headers: res.headers,
+              body: Buffer.concat(parts)
+            });
+          });
+        });
+        req.on('error', reject);
+      });
+    }
+
+    describe('Fomantic static theme (icons + Arvo)', function () {
+      it('serves /semantic.min.css with fabric theme font URLs (Gulp + site.variables @fontPath)', async function () {
+        const { status, body } = await getHttpBuffer('/semantic.min.css');
+        assert.strictEqual(status, 200);
+        const s = body.toString('utf8');
+        assert.ok(
+          s.includes('themes/fabric/assets/fonts/icons.woff2'),
+          'expected icon @font-face to use themes/fabric (see fabric globals/site.variables @fontPath)'
+        );
+        assert.ok(
+          !s.includes('themes/default/'),
+          'fabric build should not reference themes/default/ in the packed CSS'
+        );
+      });
+
+      it('serves Fomantic icon woff2 at /themes/fabric/.../icons.woff2 (assets)', async function () {
+        const { status, body, headers } = await getHttpBuffer('/themes/fabric/assets/fonts/icons.woff2');
+        assert.strictEqual(status, 200);
+        assert.ok(body && body.length > 8, 'expected woff2 bytes');
+        assert.strictEqual(body.toString('ascii', 0, 4), 'wOF2');
+        const ct = (headers['content-type'] || '');
+        assert.ok(
+          ct.includes('font/woff2'),
+          `expected font/woff2 Content-Type (Chromium+nosniff), got: ${ct}`
+        );
+      });
+
+      it('serves Fabric theme Arvo woff2 at /themes/fabric/.../arvo-normal-400.woff2', async function () {
+        const { status, body, headers } = await getHttpBuffer('/themes/fabric/assets/fonts/arvo-normal-400.woff2');
+        assert.strictEqual(status, 200);
+        assert.ok(body && body.length > 8, 'expected woff2 bytes');
+        assert.strictEqual(body.toString('ascii', 0, 4), 'wOF2');
+        const ct = (headers['content-type'] || '');
+        assert.ok(
+          ct.includes('font/woff2'),
+          `expected font/woff2 Content-Type (Chromium+nosniff), got: ${ct}`
+        );
+      });
+    });
+
     describe('/contracts', function () {
       describe('GET /contracts', function () {
         it('should return an ok status and contracts array', async function () {
@@ -149,7 +212,7 @@ describe('@fabric/hub', function () {
       });
 
       describe('POST /contracts', function () {
-        it('should return not implemented error', async function () {
+        it('should create a contract resource redirect', async function () {
           const contractData = {
             name: 'Test Contract',
             type: 'agreement',
@@ -158,17 +221,17 @@ describe('@fabric/hub', function () {
 
           const response = await makeRequest('POST', '/contracts', contractData);
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/contracts/'), 'Location should target the new contract');
         });
 
-        it('should handle empty request body', async function () {
+        it('should create an empty contract payload', async function () {
           const response = await makeRequest('POST', '/contracts', {});
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/contracts/'), 'Location should target the new contract');
         });
       });
 
@@ -202,30 +265,30 @@ describe('@fabric/hub', function () {
       });
 
       describe('POST /peers', function () {
-        it('should return not implemented error', async function () {
+        it('should create a peer resource redirect', async function () {
           const response = await makeRequest('POST', '/peers', { name: 'test-peer', address: 'localhost:8080' });
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/peers/'), 'Location should target the new peer');
         });
 
-        it('should handle empty request body', async function () {
+        it('should create an empty peer payload', async function () {
           const response = await makeRequest('POST', '/peers', {});
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/peers/'), 'Location should target the new peer');
         });
       });
 
       describe('GET /peers/:id', function () {
-        it('should return not implemented error for specific peer', async function () {
+        it('should return not found for unknown peer id', async function () {
           const response = await makeRequest('GET', '/peers/test-peer-id');
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
+          assert.strictEqual(response.status, 404, 'Should return 404 status');
           assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.body.message, 'Peer not found');
         });
       });
     });
@@ -248,7 +311,7 @@ describe('@fabric/hub', function () {
       });
 
       describe('POST /documents', function () {
-        it('should return not implemented error', async function () {
+        it('should create a document resource redirect', async function () {
           const documentData = {
             title: 'Test Document',
             content: 'This is a test document content',
@@ -257,17 +320,17 @@ describe('@fabric/hub', function () {
 
           const response = await makeRequest('POST', '/documents', documentData);
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/documents/'), 'Location should target the new document');
         });
 
-        it('should handle empty request body', async function () {
+        it('should create an empty document payload', async function () {
           const response = await makeRequest('POST', '/documents', {});
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.strictEqual(response.body.status, 'error');
-          assert.strictEqual(response.body.message, 'Not yet implemented.');
+          assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+          assert.ok(response.headers.location, 'Should include Location header');
+          assert.ok(response.headers.location.startsWith('/documents/'), 'Location should target the new document');
         });
 
         it('should handle malformed JSON', async function () {
@@ -312,18 +375,18 @@ describe('@fabric/hub', function () {
       });
 
       describe('GET /documents/:id', function () {
-        it('should return empty object for an unknown specific document', async function () {
+        it('should return 404 for unknown document IDs', async function () {
           const response = await makeRequest('GET', '/documents/test-document-id');
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.deepStrictEqual(response.body, {}, 'Unknown documents should return an empty object');
+          assert.strictEqual(response.status, 404, 'Should return 404 status');
+          assert.strictEqual(response.body.error, 'Document not found');
         });
 
-        it('should handle non-existent document ID', async function () {
+        it('should return 404 for non-existent document IDs', async function () {
           const response = await makeRequest('GET', '/documents/non-existent-id');
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.deepStrictEqual(response.body, {}, 'Non-existent documents should return an empty object');
+          assert.strictEqual(response.status, 404, 'Should return 404 status');
+          assert.strictEqual(response.body.error, 'Document not found');
         });
       });
     });
@@ -332,17 +395,15 @@ describe('@fabric/hub', function () {
       it('should accept JSON content type for POST requests', async function () {
         const response = await makeRequest('POST', '/peers', { test: 'data' }, { 'Content-Type': 'application/json' });
 
-        assert.strictEqual(response.status, 200, 'Should return 200 status');
-        assert.strictEqual(response.body.status, 'error');
-        assert.strictEqual(response.body.message, 'Not yet implemented.');
+        assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+        assert.ok(response.headers.location && response.headers.location.startsWith('/peers/'));
       });
 
       it('should handle requests without content type header', async function () {
         const response = await makeRequest('POST', '/documents', { test: 'data' }, {});
 
-        assert.strictEqual(response.status, 200, 'Should return 200 status');
-        assert.strictEqual(response.body.status, 'error');
-        assert.strictEqual(response.body.message, 'Not yet implemented.');
+        assert.strictEqual(response.status, 303, 'Should return 303 redirect');
+        assert.ok(response.headers.location && response.headers.location.startsWith('/documents/'));
       });
     });
 
@@ -397,6 +458,13 @@ describe('@fabric/hub', function () {
         assert.ok(Array.isArray(run.trace));
         assert.ok(typeof run.runCommitmentHex === 'string');
         assert.strictEqual(run.runCommitmentHex.length, 64);
+        assert.ok(typeof run.programHash === 'string');
+        assert.strictEqual(run.programHash.length, 64);
+        assert.ok(typeof run.executionRunCommitmentHex === 'string');
+        assert.ok(run.fabricProgramRun && run.fabricProgramRun.kind === 'FabricProgramRun');
+        assert.strictEqual(run.fabricProgramRun.runCommitmentHex, run.runCommitmentHex);
+        assert.strictEqual(run.programHash, created.contract.programDigest);
+        assert.strictEqual(run.runner, 'Machine/fabric-execution');
       });
 
       it('CreateExecutionRegistryInvoice returns error when Bitcoin is disabled', async function () {
@@ -520,10 +588,8 @@ describe('@fabric/hub', function () {
         it('should return HTML for POST requests with text/html Accept header', async function () {
           const response = await makeRequest('POST', '/peers', { name: 'test-peer' }, { 'Accept': 'text/html' });
 
-          assert.strictEqual(response.status, 200, 'Should return 200 status');
-          assert.ok(response.headers['content-type'].includes('text/html'), 'Should return HTML content type');
-          assert.ok(typeof response.body === 'string', 'Response should be a string');
-          assert.ok(response.body.includes('<html'), 'Response should contain HTML');
+          assert.strictEqual(response.status, 303, 'Should return redirect status');
+          assert.ok(response.headers.location && response.headers.location.startsWith('/peers/'));
         });
 
         it('should return HTML for specific peer with text/html Accept header', async function () {
@@ -722,6 +788,12 @@ describe('@fabric/hub', function () {
           assert.strictEqual(response.status, 403);
           assert.strictEqual(response.body.status, 'error');
         });
+
+        it('GET /payments returns 503 when Bitcoin is disabled', async function () {
+          const response = await makeRequest('GET', '/payments?limit=5', null, jsonApi);
+          assert.strictEqual(response.status, 503);
+          assert.strictEqual(response.body.status, 'error');
+        });
       });
 
       it('GET /sessions/:sessionId/delegation/audit returns 403 without Bearer token', async function () {
@@ -740,12 +812,14 @@ describe('@fabric/hub', function () {
         const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
         assert.strictEqual(create.status, 200, JSON.stringify(create.body));
         assert.strictEqual(create.body.ok, true);
+        assert.strictEqual(create.body.acceptsClientSignature, true);
         const sid = create.body.sessionId;
         assert.ok(typeof sid === 'string' && sid.length > 16);
 
         const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {});
         assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
         assert.strictEqual(sign.body.ok, true);
+        assert.strictEqual(sign.body.signer, 'hub');
 
         const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
         assert.strictEqual(g1.status, 200);
@@ -755,6 +829,66 @@ describe('@fabric/hub', function () {
         const g2 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
         assert.strictEqual(g2.status, 404);
         assert.strictEqual(g2.body.ok, false);
+
+        const tok = g1.body.delegationToken;
+        const unauthToken = await makeRequest('GET', `/sessions/${encodeURIComponent(tok)}`, null, { Accept: 'application/json' });
+        assert.strictEqual(unauthToken.status, 404);
+        const authedToken = await makeRequest('GET', `/sessions/${encodeURIComponent(tok)}`, null, {
+          Accept: 'application/json',
+          Authorization: 'Bearer ' + tok
+        });
+        assert.strictEqual(authedToken.status, 200);
+        assert.strictEqual(authedToken.body.ok, true);
+        assert.strictEqual(authedToken.body.kind, 'delegation');
+      });
+
+      it('desktop login accepts client-signed player completion (Schnorr over challenge)', async function () {
+        const Key = require('@fabric/core/types/key');
+        const Identity = require('@fabric/core/types/identity');
+        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
+        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
+        const sid = create.body.sessionId;
+        const message = create.body.message;
+        assert.ok(typeof message === 'string' && message.length > 20);
+
+        const key = new Key();
+        const ident = new Identity(key);
+        const fabric = ident.fabricKey;
+        const signature = fabric.signSchnorr(Buffer.from(message, 'utf8')).toString('hex');
+        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
+          signature,
+          pubkeyHex: fabric.pubkey,
+          identity: { id: ident.id, xpub: fabric.xpub }
+        });
+        assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
+        assert.strictEqual(sign.body.ok, true);
+        assert.strictEqual(sign.body.signer, 'client');
+        assert.strictEqual(String(sign.body.identity.id), String(ident.id));
+
+        const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
+        assert.strictEqual(g1.status, 200);
+        assert.strictEqual(g1.body.status, 'signed');
+        assert.strictEqual(g1.body.signer, 'client');
+        assert.ok(g1.body.delegationToken);
+      });
+
+      it('desktop login rejects tampered client signature', async function () {
+        const Key = require('@fabric/core/types/key');
+        const Identity = require('@fabric/core/types/identity');
+        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
+        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
+        const sid = create.body.sessionId;
+        const key = new Key();
+        const ident = new Identity(key);
+        const fabric = ident.fabricKey;
+        const badSig = 'ab'.repeat(64);
+        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
+          signature: badSig,
+          pubkeyHex: fabric.pubkey,
+          identity: { id: ident.id, xpub: fabric.xpub }
+        });
+        assert.strictEqual(sign.status, 400, JSON.stringify(sign.body));
+        assert.strictEqual(sign.body.ok, false);
       });
 
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {
@@ -795,6 +929,138 @@ describe('@fabric/hub', function () {
         }, { Accept: 'application/json' });
 
         assert.strictEqual(publishResponse.status, 200, 'PublishDocument should return 200 status');
+      });
+
+      it('RequestPeerInventory returns peer-not-connected without TCP peer', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const r = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 400,
+          method: 'RequestPeerInventory',
+          params: ['127.0.0.1:59999', 'documents']
+        }, { Accept: 'application/json' });
+        assert.strictEqual(r.status, 200);
+        assert.ok(r.body && r.body.result, 'JSON-RPC result');
+        assert.strictEqual(r.body.result.status, 'error');
+        assert.ok(String(r.body.result.message).toLowerCase().includes('peer'), r.body.result.message);
+      });
+
+      it('RequestPeerInventory with HTLC options still requires connected peer', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const r = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 401,
+          method: 'RequestPeerInventory',
+          params: ['127.0.0.1:59998', 'documents', {
+            buyerRefundPublicKey: '02' + 'a'.repeat(64),
+            inventoryRelayTtl: 3,
+            inventoryTarget: 'fabric-peer-id-placeholder-test'
+          }]
+        }, { Accept: 'application/json' });
+        assert.strictEqual(r.status, 200);
+        assert.strictEqual(r.body.result.status, 'error');
+        assert.ok(String(r.body.result.message).toLowerCase().includes('peer'), r.body.result.message);
+      });
+
+      it('ListDocuments includes id after CreateDocument (HTTP catalog)', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const stamp = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+        const createResponse = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 500,
+          method: 'CreateDocument',
+          params: [{
+            name: `inventory-catalog-test-${stamp}.txt`,
+            mime: 'text/plain',
+            contentBase64: Buffer.from(`catalog-probe-${stamp}`).toString('base64')
+          }]
+        }, { Accept: 'application/json' });
+
+        assert.strictEqual(createResponse.status, 200);
+        assert.ok(createResponse.body.result && createResponse.body.result.document, 'CreateDocument returned document');
+        const docId = createResponse.body.result.document.id;
+
+        const list = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 501,
+          method: 'ListDocuments',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(list.status, 200);
+        const res = list.body && list.body.result;
+        assert.ok(res && res.type === 'ListDocumentsResult', JSON.stringify(res));
+        const ids = (res.documents || []).map((d) => d && d.id).filter(Boolean);
+        assert.ok(ids.includes(docId), 'ListDocuments should list created document id');
+      });
+
+      it('ListDocumentOffers and RefreshDocumentMarket are off by default', async function () {
+        const probe = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'GetSetupStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
+          return this.skip();
+        }
+        const offers = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 610,
+          method: 'ListDocumentOffers',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(offers.status, 200);
+        const offerRes = offers.body && offers.body.result;
+        assert.ok(offerRes && offerRes.type === 'ListDocumentOffersResult');
+        assert.ok(Array.isArray(offerRes.offers));
+        assert.strictEqual(offerRes.documentMarket.accumulatePeerInventories, false);
+
+        const refresh = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 611,
+          method: 'RefreshDocumentMarket',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(refresh.status, 200);
+        const refreshRes = refresh.body && refresh.body.result;
+        assert.ok(refreshRes && refreshRes.type === 'RefreshDocumentMarketResult');
+        assert.strictEqual(refreshRes.requested, 0);
+        assert.ok(String(refreshRes.message || '').toLowerCase().includes('accumulate'));
+
+        const status = await makeRequest('POST', '/services/rpc', {
+          jsonrpc: '2.0',
+          id: 612,
+          method: 'GetNetworkStatus',
+          params: []
+        }, { Accept: 'application/json' });
+        assert.strictEqual(status.status, 200);
+        const ns = status.body && status.body.result;
+        assert.ok(ns && ns.documentMarket);
+        assert.strictEqual(ns.documentMarket.accumulatePeerInventories, false);
       });
 
       it('GetDistributedFederationPolicy JSON-RPC returns policy shape', async function () {

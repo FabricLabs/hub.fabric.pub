@@ -37,6 +37,12 @@ module.exports = Object.assign({}, defaults, {
       // '192.168.50.5:18444'
     ],
     /**
+     * Faucet / local tip dominance: do not accept inbound Core P2P (playnet can
+     * dial our public :18444 and reorg a subsidized tip). Outbound addnode is
+     * already gated by FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1.
+     */
+    listen: false,
+    /**
      * Scan each new block (ZMQ tip) for sidechain-related signals — off by default; enable for playnet federation wiring.
      */
     sidechainScan: {
@@ -69,7 +75,15 @@ module.exports = Object.assign({}, defaults, {
      * Listed L1 prices for inventory / Document Market (HTLC purchase flow). Set to 0 to omit `purchasePriceSats`.
      */
     documentInventoryBlockPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_BLOCK_PRICE_SATS || 1000),
-    documentInventoryTransactionPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_TX_PRICE_SATS || 100)
+    documentInventoryTransactionPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_TX_PRICE_SATS || 100),
+    /**
+     * When non-empty, HTTP watch-only xpub routes that call `scantxoutset` require this shared secret:
+     * **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**, **`GET /services/bitcoin/xpub/transactions`**
+     * (canonical; query **`?xpub=`**), and legacy **`GET /services/bitcoin/wallets/:walletId`** with **`?xpub=`** when `:walletId` ≠ Hub wallet name.
+     * Clients: `Authorization: Bearer`, `?apiToken=` / `?xpubQueryToken=`, or `X-Fabric-Xpub-Query-Token`.
+     * Empty/unset keeps anonymous xpub queries (local dev / legacy). Non-empty `FABRIC_BITCOIN_XPUB_QUERY_TOKEN` overrides at runtime in `Hub` constructor.
+     */
+    xpubQueryToken: (process.env.FABRIC_BITCOIN_XPUB_QUERY_TOKEN && String(process.env.FABRIC_BITCOIN_XPUB_QUERY_TOKEN).trim()) || ''
   },
   payjoin: {
     enable: process.env.FABRIC_PAYJOIN_ENABLE ? process.env.FABRIC_PAYJOIN_ENABLE !== 'false' : true,
@@ -86,8 +100,16 @@ module.exports = Object.assign({}, defaults, {
     port: Number(process.env.FABRIC_LIGHTNING_PORT || 19735)
   },
   http: {
+    /**
+     * Public hostname for links / Origin (not the Peer dial address).
+     * relay.goon.vc production: FABRIC_HUB_HOSTNAME=relay.goon.vc
+     */
     hostname: process.env.FABRIC_HUB_HOSTNAME || process.env.HOSTNAME || 'localhost',
-    interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || '0.0.0.0',
+    /**
+     * HTTP/WebSocket bind. Behind Caddy use 127.0.0.1; bare public NIC use
+     * FABRIC_HUB_INTERFACE=65.21.231.149 (same host as hub.fabric.pub, dedicated IP).
+     */
+    interface: process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE || process.env.FABRIC_HTTP_INTERFACE || '0.0.0.0',
     port: process.env.FABRIC_HUB_PORT || process.env.PORT || 8080
   },
   /** Passed to @fabric/http HTTPServer: optional WebSocket client token (see MESSAGE_TRANSPORT.md). */
@@ -107,8 +129,18 @@ module.exports = Object.assign({}, defaults, {
   path: './stores/hub',
   peering: true,
   title: 'hub.fabric.pub',
+  /**
+   * Fabric Peer (TCP/NOISE) bind address — independent of HTTP `http.interface`.
+   * Pin the public NIC for relay.goon.vc:
+   *   FABRIC_INTERFACE=65.21.231.149
+   * Alias: FABRIC_PEER_INTERFACE. Also resolved at boot via
+   * `@fabric/core/functions/fabricListenInterface` in `scripts/hub.js`.
+   * Default remains all interfaces (`0.0.0.0`).
+   */
+  interface: process.env.FABRIC_INTERFACE || process.env.FABRIC_PEER_INTERFACE || '0.0.0.0',
   peers: [
     'hub.fabric.pub:7777',
+    'relay.goon.vc:7777',
     'sensemaker.io:7777'
   ],
   port: (() => {

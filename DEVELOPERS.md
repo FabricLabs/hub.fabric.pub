@@ -42,7 +42,7 @@ npm link @fabric/http
 
 To restore published packages: `npm install` (overwrites the symlinks with the versions from package.json).
 
-**Major release / downstream (sensemaker, etc.):** See **[docs/UPSTREAM_MONOREPO.md](docs/UPSTREAM_MONOREPO.md)** and **[docs/SENSEMAKER_UPSTREAM.md](docs/SENSEMAKER_UPSTREAM.md)** for what to align across Hub, `@fabric/http`, and `@fabric/core` before bumping downstream apps.
+**Major release / downstream apps:** See **[docs/UPSTREAM_MONOREPO.md](docs/UPSTREAM_MONOREPO.md)** for what to align across Hub, `@fabric/http`, and `@fabric/core` before bumping downstream apps.
 
 The Hub passes `bitcoinExtraParams: ['-dnsseed=0']` and `listen: false` for managed regtest so bitcoind avoids DNS in restricted environments. For active UI iteration:
 ```bash
@@ -70,6 +70,11 @@ To enable a stub Lightning backend so the L2 buttons work without a real node: `
 
 ### Faucet (regtest)
 The **Faucet** on the Bitcoin page sends sats from the Beacon/Hub wallet to a given address. Regtest only; max 1,000,000 sats per request. Requires the Hub wallet to have balance (e.g. from Generate Block or Beacon epochs). `POST /services/bitcoin/faucet` with body `{ address, amountSats? }`.
+
+**Discovery:** when Bitcoin is on **regtest** and the service is up, Hub `OPTIONS /` Application Resource Contract includes `services.faucet` (kind `BitcoinFaucet`, source `beacon`, endpoint `/services/bitcoin/faucet`, optional Beacon `balanceSats`). On **signet / testnet / mainnet** the faucet pointer is omitted — clients must not assume a faucet exists.
+
+### Watch-only xpub HTTP queries (`scantxoutset`)
+Public hubs should set **`FABRIC_BITCOIN_XPUB_QUERY_TOKEN`** (or `settings.bitcoin.xpubQueryToken`) to a long random secret. When set, canonical watch-only **`scantxoutset`** endpoints **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**, and **`GET /services/bitcoin/xpub/transactions`** (all require **`?xpub=`**), and legacy **`GET /services/bitcoin/wallets/:walletId`** with **`?xpub=`** when `:walletId` is not the Hub’s loaded wallet, return **403** unless the client sends the same token via **`Authorization: Bearer`**, **`?apiToken=`** / **`?xpubQueryToken=`**, or header **`X-Fabric-Xpub-Query-Token`**. Omit the env var for local-only hubs where anonymous xpub scans are acceptable.
 
 ## Recent Changes (Contributor Context)
 

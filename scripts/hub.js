@@ -22,6 +22,13 @@ const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+const { spawnedBitcoindPid } = require('../functions/bitcoinManagedAttach');
+let resolveFabricPeerInterface;
+try {
+  ({ resolveFabricPeerInterface } = require('@fabric/core/functions/fabricListenInterface'));
+} catch (_) {
+  resolveFabricPeerInterface = null;
+}
 const _hubDebugLog = installHubDebugFileLog({ userDataRoot });
 if (_hubDebugLog.active && _hubDebugLog.filePath) {
   console.log(
@@ -44,12 +51,23 @@ function bitcoinDataDirForNetwork (root, network) {
   return path.join(root, rel);
 }
 
-// Merge setup settings from stores/hub/settings.json (written during first-time setup)
-const setupPath = path.join(userDataRoot, 'stores', 'hub', 'settings.json');
+// Merge setup settings from internal Hub STATE store (`settings`).
+const statePath = path.join(userDataRoot, 'stores', 'hub', 'STATE');
+let setup = {};
 try {
-  if (fs.existsSync(setupPath)) {
-    const raw = fs.readFileSync(setupPath, 'utf8');
-    const setup = JSON.parse(raw);
+  if (fs.existsSync(statePath)) {
+    const rawState = fs.readFileSync(statePath, 'utf8');
+    const parsedState = JSON.parse(rawState);
+    const candidate = parsedState && typeof parsedState === 'object' ? parsedState.settings : null;
+    if (candidate && typeof candidate === 'object') {
+      setup = candidate;
+    }
+  }
+} catch (e) {
+  setup = {};
+}
+try {
+  if (setup && typeof setup === 'object' && Object.keys(setup).length) {
     const parseVal = (v) => {
       if (v === undefined || v === null) return undefined;
       if (typeof v === 'string') {
@@ -108,7 +126,7 @@ try {
   // Ignore; use defaults from local.js
 }
 
-// Explicit Bitcoin env wins over first-time setup (e.g. `npm run start:mainnet-local` while settings.json still says regtest).
+// Explicit Bitcoin env wins over first-time setup (e.g. `npm run start:mainnet-local` while settings still says regtest).
 if (process.env.FABRIC_BITCOIN_NETWORK && String(process.env.FABRIC_BITCOIN_NETWORK).trim()) {
   settings = {
     ...settings,
@@ -130,16 +148,10 @@ if (Object.prototype.hasOwnProperty.call(process.env, 'FABRIC_BITCOIN_MANAGED') 
   };
 }
 
-// Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.json.
+// Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.
 // Without this, settings/local.js default interface would be 0.0.0.0. CLI/dev without FABRIC_HUB_USER_DATA keeps LAN-open default.
 if (process.env.FABRIC_HUB_USER_DATA && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
-  let sharedDefined = false;
-  try {
-    if (fs.existsSync(setupPath)) {
-      const disk = JSON.parse(fs.readFileSync(setupPath, 'utf8'));
-      sharedDefined = disk && Object.prototype.hasOwnProperty.call(disk, 'HTTP_SHARED_MODE');
-    }
-  } catch (_) {}
+  const sharedDefined = setup && Object.prototype.hasOwnProperty.call(setup, 'HTTP_SHARED_MODE');
   if (!sharedDefined) {
     settings = {
       ...settings,
@@ -169,6 +181,17 @@ if (process.env.FABRIC_HUB_USER_DATA) {
   };
 }
 
+// Fabric Peer bind: FABRIC_INTERFACE / FABRIC_PEER_INTERFACE (canonical helper).
+if (typeof resolveFabricPeerInterface === 'function') {
+  settings = {
+    ...settings,
+    interface: resolveFabricPeerInterface({
+      interface: settings.interface,
+      env: process.env
+    })
+  };
+}
+
 // Services
 const Hub = require('../services/hub');
 const { logCrashReportHint } = require('../functions/fabricReportHint');
@@ -190,15 +213,16 @@ async function exitWithHubStop (reason = 'unknown', exitCode = 0) {
     console.error('[FABRIC:HUB]', 'Error during shutdown:', err && err.stack ? err.stack : err);
     exitCode = 1;
   } finally {
-    // Ensure managed bitcoind is killed so it does not dangle (e.g. if stop() timed out or threw)
-    if (activeHub && activeHub._bitcoindPid) {
+    // Kill only a bitcoind this Hub spawned (not an attached orphan we reused).
+    const bitcoindPid = spawnedBitcoindPid(activeHub);
+    if (bitcoindPid) {
       try {
-        process.kill(activeHub._bitcoindPid, 'SIGKILL');
-        console.log('[FABRIC:HUB]', 'Killed managed bitcoind PID:', activeHub._bitcoindPid);
+        process.kill(bitcoindPid, 'SIGKILL');
+        console.log('[FABRIC:HUB]', 'Killed managed bitcoind PID:', bitcoindPid);
       } catch (e) {
         if (e.code !== 'ESRCH') console.warn('[FABRIC:HUB]', 'Could not kill managed bitcoind:', e.message || e);
       }
-      activeHub._bitcoindPid = null;
+      if (activeHub) activeHub._bitcoindPid = null;
     }
     process.exit(exitCode);
   }
@@ -228,8 +252,11 @@ async function main (input = {}) {
   });
 
   hub.on('chat', function (chat) {
-    const ts = new Date(chat.object.created);
-    console.log('[FABRIC:CHAT]', `[${ts.toISOString()}]`, `[@${chat.actor.id}]: ${chat.object.content}`);
+    const obj = (chat && chat.object) || {};
+    const text = obj.content || obj.body || '';
+    const actor = (chat && chat.actor && chat.actor.id) || 'unknown';
+    const ts = new Date(obj.created || Date.now());
+    console.log('[FABRIC:CHAT]', `[${ts.toISOString()}]`, `[@${actor}]: ${text}`);
   });
 
   hub.on('connections:open', function (peer) {

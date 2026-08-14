@@ -1,0 +1,8 @@
+digraph monetization {
+  rankdir=LR;
+
+
+  subgraph cluster_lightning {
+    "Routing Payments"
+  }
+}

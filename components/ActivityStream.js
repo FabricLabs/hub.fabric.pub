@@ -530,7 +530,7 @@ class ActivityStreamElement extends React.Component {
                   : (target && (target.name || target.id)) || null;
 
                 if (isChat) {
-                  const content = (entry.object && (entry.object.content || entry.object.text)) || '';
+                  const content = (entry.object && (entry.object.content || entry.object.body || entry.object.text)) || '';
                   const isPending = entry.status === 'pending';
                   const isQueued = entry.status === 'queued';
                   const transport = entry.transport || null;

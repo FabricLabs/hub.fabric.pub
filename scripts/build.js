@@ -2,6 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const {
+  resolveFabricHttpRoots,
+  runBuildSemantic,
+  syncSemanticAssetsFromRoot
+} = require('../functions/fabricHttpSemantic');
 
 require('../functions/patchLinkedFabricNodePath');
 
@@ -36,6 +41,24 @@ const webpackConfigModule = require('../webpack.config');
 // Components
 const HubInterface = require('../components/HubInterface');
 
+function syncSemanticAssetsFromFabricHttp () {
+  const root = path.join(__dirname, '..');
+  const roots = resolveFabricHttpRoots(root);
+  const sourceRoot = roots.withAssets || roots.withSources;
+  if (!sourceRoot) {
+    console.warn('[BUILD:SITE] @fabric/http assets not found, skipping Semantic asset sync.');
+    return;
+  }
+  try {
+    if (roots.withSources && !roots.withAssets) {
+      runBuildSemantic(roots.withSources);
+    }
+    syncSemanticAssetsFromRoot(sourceRoot, root);
+  } catch (e) {
+    console.warn('[BUILD:SITE] Semantic asset sync failed:', e && e.message ? e.message : e);
+  }
+}
+
 function resolveWebpackConfig () {
   return typeof webpackConfigModule === 'function'
     ? webpackConfigModule({}, { mode: 'development' })
@@ -44,6 +67,7 @@ function resolveWebpackConfig () {
 
 // Program Body
 async function main (input = {}) {
+  syncSemanticAssetsFromFabricHttp();
   const site = new HubInterface(input);
   const buildWebpackConfig = Object.assign({}, resolveWebpackConfig(), { watch: false });
   const compiler = new Compiler({

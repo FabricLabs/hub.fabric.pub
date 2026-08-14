@@ -2,7 +2,7 @@
 
 /**
  * `fabric:` protocol — opaque **fabric:&lt;hex&gt;** carries only a serialized {@link Message} (no `//` host).
- * Legacy: `fabric://login?…`, `fabric://message?hex=…` (see `electron/main.js`).
+ * Legacy: `fabric://login?…`, `fabric://message?hex=…` (see `scripts/desktop.js`).
  * @see `functions/fabricMessageEnvelope.js` for JSON body envelope v1.
  */
 

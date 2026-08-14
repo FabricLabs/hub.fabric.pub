@@ -544,9 +544,12 @@ function fabricId (hub) {
       if (!/Fee exceeds maximum|maxfeerate|maxtxfee/i.test(msg)) throw e;
     }
 
-    const addrBRes = await httpJson(httpB, 'POST', '/services/bitcoin', { method: 'getwalletaddress' });
+    const addrBRes = await httpJson(httpB, 'POST', '/services/bitcoin', {
+      method: 'getwalletaddress',
+      adminToken: tokenB
+    });
     const toB = addrBRes.body && addrBRes.body.address;
-    assert.ok(toB);
+    assert.ok(toB, `hub B wallet address: status=${addrBRes.status} raw=${String(addrBRes.raw || '').slice(0, 240)}`);
     const crossSats = 350_000;
     const payCross = await httpJson(httpA, 'POST', '/services/bitcoin', {
       method: 'sendpayment',
@@ -578,9 +581,12 @@ function fabricId (hub) {
     const feePoints = [];
     for (const fr of feeRatesBtcPerKb) {
       const satPerVb = Math.max(1, Math.round((fr * 1e8) / 1000));
-      const addrRes = await httpJson(httpA, 'POST', '/services/bitcoin', { method: 'getwalletaddress' });
+      const addrRes = await httpJson(httpA, 'POST', '/services/bitcoin', {
+        method: 'getwalletaddress',
+        adminToken: tokenA
+      });
       const to = addrRes.body && addrRes.body.address;
-      assert.ok(to);
+      assert.ok(to, `hub A wallet address: status=${addrRes.status} raw=${String(addrRes.raw || '').slice(0, 240)}`);
       const txid = await btcFund._makeWalletRequest(
         'sendtoaddress',
         [

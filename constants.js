@@ -31,8 +31,22 @@ const FEATURE_FLAGS = {
   INVOICES: featureFlag('INVOICES', true),
   DISTRIBUTE: featureFlag('DISTRIBUTE', false),
   LIGHTNING: featureFlag('LIGHTNING', false),
-  WEBRTC: featureFlag('WEBRTC', true)
+  /** Off by default — Document market focuses on L1 inventory HTLC, not browser mesh. */
+  WEBRTC: featureFlag('WEBRTC', false)
 };
+
+/** Public snapshot for GetNetworkStatus / browser gates (booleans only). */
+function publicFeatureFlags () {
+  return {
+    bitcoin: !!FEATURE_FLAGS.BITCOIN,
+    documentPurchase: !!FEATURE_FLAGS.DOCUMENT_PURCHASE,
+    payjoin: !!FEATURE_FLAGS.PAYJOIN,
+    invoices: !!FEATURE_FLAGS.INVOICES,
+    distribute: !!FEATURE_FLAGS.DISTRIBUTE,
+    lightning: !!FEATURE_FLAGS.LIGHTNING,
+    webrtc: !!FEATURE_FLAGS.WEBRTC
+  };
+}
 
 /** Satoshis per 1 BTC (BIP-176 / fixed-point sats in this Hub). */
 const SATS_PER_BTC = 100_000_000;
@@ -77,6 +91,7 @@ module.exports = {
   ENABLE_NETWORK,
   FEATURE_FLAGS,
   featureFlag,
+  publicFeatureFlags,
   SATS_PER_BTC,
   BITCOIN_MAX_SUPPLY_BTC,
   SUB_SATOSHI_EPSILON,

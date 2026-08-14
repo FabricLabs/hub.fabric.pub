@@ -4,6 +4,7 @@ const React = require('react');
 const { Link } = require('react-router-dom');
 const { Header, Icon, Message, Segment, Button, Loader } = require('semantic-ui-react');
 const { fetchBitcoinStatus, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const {
   REGTEST_EPOCH_INTERVAL_MINUTES,
@@ -30,7 +31,10 @@ function BeaconAdminPanel () {
   const refresh = React.useCallback(async () => {
     setError(null);
     try {
-      const upstream = loadUpstreamSettings();
+      const upstream = {
+        ...loadUpstreamSettings(),
+        hubAdminToken: readHubAdminTokenFromBrowser(null) || ''
+      };
       const s = await fetchBitcoinStatus(upstream);
       setStatus(s && typeof s === 'object' ? s : null);
     } catch (e) {
@@ -114,12 +118,12 @@ function BeaconAdminPanel () {
             Beacon Federation contract
           </Button>
           <Button as={Link} to="/sidechains" basic size="small" style={{ marginTop: '0.5em', marginLeft: '0.35em' }}>
-            Sidechain &amp; demo
+            Sidechain
           </Button>
         </React.Fragment>
       ) : (
         <p style={{ color: '#888', fontSize: '0.9em', marginTop: '0.75em', marginBottom: 0, lineHeight: 1.45 }}>
-          Enable <strong>Sidechain</strong> under Admin → Feature visibility to open Beacon Federation and the sidechain demo from here.
+          Enable <strong>Sidechain</strong> under Admin → Feature visibility to open Beacon Federation and the sidechain tools from here.
         </p>
       )}
     </Segment>

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Fabric Hub",
+  "version": "0.1.0",
+  "description": "Fabric Hub interface from @fabric/hub (rendezvous, identity, WebSocket bridge).",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Fabric Hub"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:*/*", "http://127.0.0.1:*/*", "https://hub.fabric.pub/*", "https://*.hub.fabric.pub/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "permissions": [
+    "storage"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-bridge.js"],
+      "matches": [
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*",
+        "https://hub.fabric.pub/*",
+        "https://*.hub.fabric.pub/*"
+      ]
+    }
+  ]
+}

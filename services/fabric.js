@@ -8,7 +8,7 @@ const Service = require('@fabric/core/types/service');
 const Remote = require('@fabric/http/types/remote');
 
 /**
- * Defines the Fabric interface for Sensemaker.
+ * Defines the Fabric remote interface for Hub.
  */
 class FabricService extends Service {
   /**
@@ -23,7 +23,6 @@ class FabricService extends Service {
     this.settings = Object.assign({
       name: 'Fabric',
       remotes: [
-        { host: 'sensemaker.io', port: 443, secure: true },
         { host: 'hub.fabric.pub', port: 443, secure: true },
         { host: 'beta.jeeves.dev', port: 443, secure: true }
       ],

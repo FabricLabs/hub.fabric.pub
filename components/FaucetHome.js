@@ -9,9 +9,12 @@ const {
   fetchUTXOs,
   getNextReceiveWalletContext,
   loadUpstreamSettings,
-  requestFaucet
+  requestFaucet,
+  clearBalanceCache
 } = require('../functions/bitcoinClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { computeHubWalletSpendHints } = require('../functions/bitcoinSpendBounds');
+const { fundLocalKeyFromHubFaucet } = require('../functions/fundLocalKeyFromHubFaucet');
 const { SATS_PER_BTC } = require('../constants');
 
 function hubWalletSatsFromDetail (detail) {
@@ -40,7 +43,8 @@ class FaucetHome extends React.Component {
       hubBitcoinLoading: false,
       hubBitcoinError: null,
       hubWalletUtxos: null,
-      hubUtxosError: null
+      hubUtxosError: null,
+      fundMyBusy: false
     };
   }
 
@@ -48,8 +52,94 @@ class FaucetHome extends React.Component {
     void this.refreshHubWalletStatus();
   }
 
+  async fundMyWallet () {
+    const identity = (this.props && this.props.identity) || {};
+    if (!identity.xpub) {
+      this.setState({
+        faucetResult: { error: 'Unlock or create a local identity first (Identity panel).' },
+        faucetNotice: ''
+      });
+      return;
+    }
+    const hubDetail = this.state.hubBitcoinDetail;
+    const network = hubDetail && hubDetail.network
+      ? String(hubDetail.network).toLowerCase()
+      : ((this.props && this.props.bitcoin && this.props.bitcoin.network)
+        ? String(this.props.bitcoin.network).toLowerCase()
+        : 'regtest');
+    if (network !== 'regtest') {
+      this.setState({
+        faucetResult: { error: 'Faucet is regtest-only.' },
+        faucetNotice: ''
+      });
+      return;
+    }
+    const amountSats = Math.round(Number(this.state.amountSats || 10000));
+    this.setState({
+      fundMyBusy: true,
+      loading: true,
+      faucetResult: null,
+      faucetNotice: 'Funding your local receive address from the Hub faucet…'
+    });
+    try {
+      const funded = await fundLocalKeyFromHubFaucet({
+        identity,
+        adminToken: this.props && this.props.adminToken,
+        amountSats: Number.isFinite(amountSats) && amountSats > 0 ? amountSats : 10000,
+        network,
+        mineConfirm: true
+      });
+      this.setState({
+        fundMyBusy: false,
+        loading: false,
+        sendTo: funded.address,
+        faucetResult: {
+          ok: true,
+          address: funded.address,
+          amountSats: funded.amountSats,
+          txid: funded.txid,
+          mined: funded.mined
+        },
+        faucetNotice: funded.mined && funded.mined.error
+          ? `Faucet sent ${funded.amountSats} sats to your local key. Confirm with Generate block (admin) if the top-bar balance is still zero.`
+          : `Funded your local key with ${funded.amountSats.toLocaleString()} sats` +
+            (funded.txid ? ` (${funded.txid.slice(0, 12)}…)` : '') +
+            (funded.mined && !funded.mined.error ? ' and mined a confirmation.' : '.'),
+        faucetLastStatus: {
+          ok: true,
+          when: Date.now(),
+          address: funded.address,
+          amountSats: funded.amountSats,
+          txid: funded.txid || '',
+          error: ''
+        }
+      }, () => {
+        void this.refreshHubWalletStatus();
+      });
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      this.setState({
+        fundMyBusy: false,
+        loading: false,
+        faucetResult: { error: message },
+        faucetNotice: '',
+        faucetLastStatus: {
+          ok: false,
+          when: Date.now(),
+          address: String(this.state.sendTo || ''),
+          amountSats: amountSats,
+          txid: '',
+          error: message
+        }
+      });
+    }
+  }
+
   async refreshHubWalletStatus () {
-    const upstream = loadUpstreamSettings();
+    const upstream = {
+      ...loadUpstreamSettings(),
+      hubAdminToken: readHubAdminTokenFromBrowser(this.props && this.props.adminToken) || ''
+    };
     this.setState({ hubBitcoinLoading: true, hubBitcoinError: null, upstream });
     try {
       const detail = await fetchBitcoinStatus(upstream);
@@ -230,7 +320,17 @@ class FaucetHome extends React.Component {
           error: faucetResult && faucetResult.error ? String(faucetResult.error) : ''
         }
       }, () => {
-        if (!faucetResult.error) void this.refreshHubWalletStatus();
+        if (!faucetResult.error) {
+          void this.refreshHubWalletStatus();
+          try {
+            const identity = (this.props && this.props.identity) || {};
+            const wallet = getNextReceiveWalletContext(identity);
+            if (wallet && wallet.walletId) clearBalanceCache(wallet.walletId);
+          } catch (_) {}
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('clientBalanceUpdate'));
+          }
+        }
       });
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
@@ -305,8 +405,26 @@ class FaucetHome extends React.Component {
             </Header>
           </div>
           <p style={{ color: '#666', marginTop: '0.6em', marginBottom: 0 }}>
-            Regtest faucet requests funds from the Hub wallet. Use your wallet receive address so balance updates in this browser.
+            Regtest faucet moves coins from the Hub / Beacon wallet onto <strong>your local key</strong> receive
+            address so the top-bar balance updates. Desktop auto-funds once per session when the Hub faucet is funded.
           </p>
+          {faucetAllowed ? (
+            <div style={{ marginTop: '0.85em' }}>
+              <Button
+                primary
+                type="button"
+                size="large"
+                disabled={this.state.loading || this.state.fundMyBusy || this.state.resolvingAddress || !hubReady}
+                onClick={() => void this.fundMyWallet()}
+              >
+                <Icon name="tint" />
+                {this.state.fundMyBusy ? 'Funding local key…' : 'Fund my local key'}
+              </Button>
+              <p style={{ color: '#666', marginTop: '0.5em', marginBottom: 0, fontSize: '0.95em' }}>
+                One click: resolve your receive address → Hub faucet → mine a confirmation (when admin token is present).
+              </p>
+            </div>
+          ) : null}
           {faucetAllowed ? (
             <Message info size="small" style={{ marginTop: '0.75em' }}>
               <Message.Header>Playnet past subsidy — use the network</Message.Header>

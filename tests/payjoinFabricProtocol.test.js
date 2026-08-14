@@ -8,12 +8,14 @@ describe('payjoinFabricProtocol', () => {
     const p = buildFabricPayjoinProtocolProfile({
       endpointBasePath: '/services/payjoin',
       joinmarketTaprootTemplate: true,
-      beaconFederationLeafConfigured: false
+      beaconFederationLeafConfigured: false,
+      bip77MailboxExperimental: true
     });
     assert.strictEqual(p.canonicalPaymentsApi.payjoinRestBasePath, '/services/payjoin');
     assert.ok((p.canonicalPaymentsApi.legacyAliases.payjoin || []).includes('/payments/payjoin'));
     assert.strictEqual(p.canonicalPaymentsApi.onchainPaymentsPostPath, '/payments');
     assert.ok(Array.isArray(p.receiver.activeModes));
+    assert.ok(p.receiver.activeModes.includes('bip78_http_psbt'));
     assert.ok(p.privacy.mitigations.length >= 2);
     assert.strictEqual(p.extensions.joinmarketTaprootReceiveTemplate, true);
   });

@@ -1,0 +1,317 @@
+// hub.fabric.pub — Complete UX Flow Diagram
+// Generate with: dot -Tsvg contracts/ux.dot -o contracts/ux.svg
+// Or: dot -Tpng contracts/ux.dot -o contracts/ux.png
+
+digraph UX {
+  rankdir=TB;
+  splines=ortho;
+  nodesep=0.4;
+  ranksep=0.6;
+  fontname="Helvetica";
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled"];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // ========== Entry & App Shell ==========
+  subgraph cluster_entry {
+    label="Entry & Shell";
+    style=filled;
+    fillcolor="#f8f9fa";
+
+    AppLoad [label="App Load", fillcolor="#e3f2fd"];
+  }
+
+  subgraph cluster_shell {
+    label="App Shell";
+    style=filled;
+    fillcolor="#fff3e0";
+
+    TopPanel [label="TopPanel\n(Header)", fillcolor="#ffe0b2"];
+    BottomPanel [label="BottomPanel\n(Footer)", fillcolor="#ffe0b2"];
+    Bridge [label="Bridge\n(WebSocket + WebRTC)", fillcolor="#e1bee7"];
+  }
+
+  // ========== Bootstrap States ==========
+  subgraph cluster_bootstrap {
+    label="Bootstrap";
+    style=filled;
+    fillcolor="#f1f8e9";
+
+    SetupCheck [label="Setup Check\n(needsSetup?)", fillcolor="#c8e6c9"];
+  }
+
+  subgraph cluster_states {
+    label="App States";
+    style=filled;
+    fillcolor="#fce4ec";
+
+    Connecting [label="Connecting…\n(Loader)", fillcolor="#f8bbd9"];
+  }
+
+  subgraph cluster_onboarding {
+    label="First-Time Setup";
+    style=filled;
+    fillcolor="#e8eaf6";
+
+    Onboarding [label="Onboarding Modal\n(node name, Bitcoin network,\nmanaged, disk, cost)", fillcolor="#c5cae9"];
+    OnboardingComplete [label="Configuration Complete\n(admin token stored)", fillcolor="#9fa8da"];
+  }
+
+  // ========== Main Routes ==========
+  subgraph cluster_routes {
+    label="Routes";
+    style=filled;
+    fillcolor="#e0f2f1";
+
+    Home [label="Home (/)\nBridge status, Library,\nActivity stream", fillcolor="#b2dfdb"];
+    PeerList [label="PeerList (/peers)\nFabric + WebRTC peers", fillcolor="#b2dfdb"];
+    PeerView [label="PeerView (/peers/:id)\nPeer detail, chat, files", fillcolor="#b2dfdb"];
+    DocumentList [label="DocumentList (/documents)\nList, create, upload", fillcolor="#b2dfdb"];
+    DocumentView [label="DocumentView (/documents/:id)\nView, publish, distribute,\npurchase", fillcolor="#b2dfdb"];
+    ContractList [label="ContractList (/contracts)\nStorage contracts", fillcolor="#b2dfdb"];
+    ContractView [label="ContractView (/contracts/:id)\nContract detail", fillcolor="#b2dfdb"];
+    BitcoinHome [label="BitcoinHome (/services/bitcoin)\nBlocks, wallet, Lightning,\nPayjoin, faucet", fillcolor="#b2dfdb"];
+    BitcoinBlockView [label="BitcoinBlockView\n(/services/bitcoin/blocks/:hash)", fillcolor="#b2dfdb"];
+    BitcoinTxView [label="BitcoinTransactionView\n(/services/bitcoin/transactions/:txhash)", fillcolor="#b2dfdb"];
+    BitcoinPaymentsHome [label="BitcoinPaymentsHome\n(/services/bitcoin/payments)\nSend, receive, Payjoin,\nLightning", fillcolor="#b2dfdb"];
+    InvoiceListHome [label="InvoiceListHome\n(/services/bitcoin/invoices)\nCreate, list invoices", fillcolor="#b2dfdb"];
+  }
+
+  // ========== Modals ==========
+  subgraph cluster_modals {
+    label="Modals";
+    style=filled;
+    fillcolor="#fff8e1";
+
+    IdentityManagerModal [label="IdentityManager Modal\n(create, restore, unlock,\nbackup, forget)", fillcolor="#fff59d"];
+    SettingsModal [label="Settings Modal\n(hub address)", fillcolor="#fff59d"];
+    SignVerifyModal [label="Sign & Verify Message Modal", fillcolor="#fff59d"];
+    DestroyIdentityModal [label="Destroy Identity Modal\n(confirm)", fillcolor="#ffcc80"];
+    QrScannerModal [label="QrScannerModal\n(camera scan)", fillcolor="#fff59d"];
+    DistributeModal [label="Distribute Modal\n(amount, copies, duration)", fillcolor="#fff59d"];
+    PurchaseModal [label="Purchase Modal\n(HTLC invoice)", fillcolor="#fff59d"];
+    ShareModal [label="Share Modal\n(document link)", fillcolor="#fff59d"];
+  }
+
+  // ========== Sub-components ==========
+  subgraph cluster_subcomponents {
+    label="Sub-components";
+    style=filled;
+    fillcolor="#f3e5f5";
+
+    ActivityStream [label="ActivityStream\n(chat, messages)", fillcolor="#e1bee7"];
+    ChatInput [label="ChatInput", fillcolor="#e1bee7"];
+    Invoice [label="Invoice component", fillcolor="#e1bee7"];
+    DistributeProposalsList [label="DistributeProposalsList", fillcolor="#e1bee7"];
+    LoginGate [label="LoginGate\n(gated routes)", fillcolor="#e1bee7"];
+  }
+
+  // ========== Identity Flows ==========
+  subgraph cluster_identity {
+    label="Identity";
+    style=filled;
+    fillcolor="#e8f5e9";
+
+    Login [label="Login\n(no identity)", fillcolor="#a5d6a7"];
+    Unlock [label="Unlock\n(password)", fillcolor="#a5d6a7"];
+    Lock [label="Lock\n(clear xprv)", fillcolor="#a5d6a7"];
+    CreateIdentity [label="Create Identity\n(generate seed)", fillcolor="#a5d6a7"];
+    RestoreIdentity [label="Restore Identity\n(seed phrase)", fillcolor="#a5d6a7"];
+    ImportXpub [label="Import xpub\n(read-only)", fillcolor="#a5d6a7"];
+    SignMessage [label="Sign Message", fillcolor="#a5d6a7"];
+    VerifyMessage [label="Verify Message", fillcolor="#a5d6a7"];
+    DestroyIdentity [label="Destroy Identity", fillcolor="#ef9a9a"];
+    UserProfile [label="User Profile", fillcolor="#a5d6a7"];
+  }
+
+  // ========== Peer Flows ==========
+  subgraph cluster_peer_flows {
+    label="Peer Actions";
+    style=filled;
+    fillcolor="#e3f2fd";
+
+    AddPeer [label="Add Peer\n(address)", fillcolor="#90caf9"];
+    RemovePeer [label="Remove Peer", fillcolor="#90caf9"];
+    SetNickname [label="Set Nickname", fillcolor="#90caf9"];
+    SendPeerMessage [label="Send Chat Message", fillcolor="#90caf9"];
+    SendPeerFile [label="Send File", fillcolor="#90caf9"];
+    DiscoverWebRTC [label="Discover WebRTC Peers", fillcolor="#90caf9"];
+    ConnectWebRTC [label="Connect WebRTC Peer\n(by ID)", fillcolor="#90caf9"];
+    DisconnectWebRTC [label="Disconnect WebRTC", fillcolor="#90caf9"];
+    PublishOffer [label="Publish WebRTC Offer", fillcolor="#90caf9"];
+    PingMesh [label="Ping Mesh", fillcolor="#90caf9"];
+  }
+
+  // ========== Document Flows ==========
+  subgraph cluster_doc_flows {
+    label="Document Actions";
+    style=filled;
+    fillcolor="#fce4ec";
+
+    CreateDocument [label="Create Document\n(name + content)", fillcolor="#f8bbd9"];
+    UploadDocument [label="Upload File", fillcolor="#f8bbd9"];
+    AddLocalDocument [label="Add Local Document", fillcolor="#f8bbd9"];
+    PublishDocument [label="Publish Document", fillcolor="#f8bbd9"];
+    GetDocument [label="Get Document", fillcolor="#f8bbd9"];
+    DecryptDocument [label="Decrypt Document\n(requires unlock)", fillcolor="#f8bbd9"];
+    RequestDistributeInvoice [label="Request Distribute Invoice", fillcolor="#f8bbd9"];
+    CreateStorageContract [label="Create Storage Contract\n(pay + txid)", fillcolor="#f8bbd9"];
+    RequestPurchaseInvoice [label="Request Purchase Invoice", fillcolor="#f8bbd9"];
+    ClaimPurchase [label="Claim Purchase\n(txid)", fillcolor="#f8bbd9"];
+  }
+
+  // ========== Bitcoin Flows ==========
+  subgraph cluster_bitcoin_flows {
+    label="Bitcoin Actions";
+    style=filled;
+    fillcolor="#fff3e0";
+
+    GenerateBlock [label="Generate Block\n(admin token)", fillcolor="#ffcc80"];
+    SendPayment [label="Send Payment\n(address + amount)", fillcolor="#ffcc80"];
+    ReceivePayment [label="Receive\n(address, QR)", fillcolor="#ffcc80"];
+    CreatePayjoinDeposit [label="Create Payjoin Deposit", fillcolor="#ffcc80"];
+    SubmitPayjoinProposal [label="Submit Payjoin Proposal", fillcolor="#ffcc80"];
+    PayLightningInvoice [label="Pay Lightning Invoice", fillcolor="#ffcc80"];
+    CreateLightningInvoice [label="Create Lightning Invoice", fillcolor="#ffcc80"];
+    CreateInvoice [label="Create Invoice\n(localStorage)", fillcolor="#ffcc80"];
+    RequestFaucet [label="Request Faucet\n(regtest)", fillcolor="#ffcc80"];
+    CreateLightningChannel [label="Create Lightning Channel", fillcolor="#ffcc80"];
+  }
+
+  // ========== Navigation (TopPanel) ==========
+  subgraph cluster_nav {
+    label="TopPanel Navigation";
+    style=filled;
+    fillcolor="#f5f5f5";
+
+    NavHome [label="Home", fillcolor="#eeeeee"];
+    NavPeers [label="Peers", fillcolor="#eeeeee"];
+    NavDocuments [label="Documents", fillcolor="#eeeeee"];
+    NavActivity [label="Activity", fillcolor="#eeeeee"];
+    NavBitcoin [label="Bitcoin", fillcolor="#eeeeee"];
+    NavPayments [label="Payments", fillcolor="#eeeeee"];
+    NavInvoices [label="Invoices", fillcolor="#eeeeee"];
+    NavContracts [label="Contracts", fillcolor="#eeeeee"];
+  }
+
+  // ========== Edges: Entry & Bootstrap ==========
+  AppLoad -> SetupCheck;
+  SetupCheck -> Connecting [label="!setupChecked"];
+  SetupCheck -> Onboarding [label="needsSetup"];
+  SetupCheck -> TopPanel [label="configured"];
+  Onboarding -> OnboardingComplete [label="POST /settings"];
+  OnboardingComplete -> TopPanel;
+
+  // ========== Edges: Shell ==========
+  TopPanel -> Bridge [style=dashed];
+  TopPanel -> BottomPanel [style=dashed];
+  TopPanel -> Home;
+  TopPanel -> PeerList;
+  TopPanel -> DocumentList;
+  TopPanel -> BitcoinHome;
+  TopPanel -> ContractList;
+
+  // ========== Edges: Modals from TopPanel ==========
+  TopPanel -> IdentityManagerModal [label="Login / Profile"];
+  TopPanel -> SettingsModal [label="Settings"];
+  TopPanel -> SignVerifyModal [label="Sign message"];
+  TopPanel -> DestroyIdentityModal [label="Destroy identity"];
+  TopPanel -> BitcoinPaymentsHome [label="Balance click"];
+
+  // ========== Edges: Identity flows ==========
+  IdentityManagerModal -> Login;
+  IdentityManagerModal -> Unlock;
+  IdentityManagerModal -> CreateIdentity;
+  IdentityManagerModal -> RestoreIdentity;
+  IdentityManagerModal -> ImportXpub;
+  IdentityManagerModal -> UserProfile;
+  TopPanel -> Lock [label="Lock icon"];
+  TopPanel -> Unlock [label="Unlock"];
+  SignVerifyModal -> SignMessage;
+  SignVerifyModal -> VerifyMessage;
+  DestroyIdentityModal -> DestroyIdentity;
+
+  // ========== Edges: Routes & Navigation ==========
+  NavHome -> Home;
+  NavPeers -> PeerList;
+  NavDocuments -> DocumentList;
+  NavActivity -> Home [label="Activity section"];
+  NavBitcoin -> BitcoinHome;
+  NavPayments -> BitcoinPaymentsHome;
+  NavInvoices -> InvoiceListHome;
+  NavContracts -> ContractList;
+
+  // ========== Edges: Route drill-down ==========
+  Home -> ActivityStream;
+  Home -> DocumentView [label="Library link"];
+  PeerList -> PeerView [label="Peer click"];
+  PeerList -> AddPeer;
+  PeerList -> RemovePeer;
+  PeerList -> SetNickname;
+  PeerList -> SendPeerMessage;
+  PeerList -> SendPeerFile;
+  PeerList -> DiscoverWebRTC;
+  PeerList -> ConnectWebRTC;
+  PeerList -> DisconnectWebRTC;
+  PeerList -> PublishOffer;
+  PeerList -> PingMesh;
+
+  PeerView -> SendPeerMessage [label="Chat input"];
+  PeerView -> SendPeerFile;
+  PeerView -> ChatInput;
+
+  DocumentList -> DocumentView [label="Document click"];
+  DocumentList -> CreateDocument;
+  DocumentList -> UploadDocument;
+  DocumentList -> AddLocalDocument;
+  DocumentList -> PublishDocument;
+
+  DocumentView -> GetDocument;
+  DocumentView -> DecryptDocument;
+  DocumentView -> PublishDocument;
+  DocumentView -> RequestDistributeInvoice;
+  DocumentView -> DistributeModal;
+  DocumentView -> RequestPurchaseInvoice;
+  DocumentView -> PurchaseModal;
+  DocumentView -> ShareModal;
+  DistributeModal -> CreateStorageContract;
+  PurchaseModal -> ClaimPurchase;
+
+  ContractList -> ContractView [label="Contract click"];
+  ContractView -> DocumentView [label="document link"];
+
+  BitcoinHome -> BitcoinBlockView [label="Block click"];
+  BitcoinHome -> BitcoinTxView [label="Tx click"];
+  BitcoinHome -> GenerateBlock;
+  BitcoinHome -> SendPayment;
+  BitcoinHome -> ReceivePayment;
+  BitcoinHome -> CreatePayjoinDeposit;
+  BitcoinHome -> PayLightningInvoice;
+  BitcoinHome -> CreateLightningInvoice;
+  BitcoinHome -> CreateLightningChannel;
+  BitcoinHome -> RequestFaucet;
+
+  BitcoinPaymentsHome -> SendPayment;
+  BitcoinPaymentsHome -> ReceivePayment;
+  BitcoinPaymentsHome -> QrScannerModal [label="Scan QR"];
+  BitcoinPaymentsHome -> CreatePayjoinDeposit;
+  BitcoinPaymentsHome -> SubmitPayjoinProposal;
+  BitcoinPaymentsHome -> PayLightningInvoice;
+
+  InvoiceListHome -> CreateInvoice;
+
+  // ========== Edges: Login gate ==========
+  DocumentView -> LoginGate [label="encrypted doc\n!identity"];
+  ActivityStream -> LoginGate [label="!identity"];
+
+  // ========== Legend ==========
+  subgraph cluster_legend {
+    label="Legend";
+    style=filled;
+    fillcolor="#fafafa";
+
+    L1 [label="Routes = pages", fillcolor="#b2dfdb"];
+    L2 [label="Modals = overlays", fillcolor="#fff59d"];
+    L3 [label="Actions = user operations", fillcolor="#90caf9"];
+    L4 [label="States = app conditions", fillcolor="#f8bbd9"];
+  }
+}

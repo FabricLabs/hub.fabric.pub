@@ -10,6 +10,6 @@ module.exports = {
   REGTEST_EPOCH_INTERVAL_MS: Number(process.env.FABRIC_BEACON_INTERVAL_MS || 600000),
   REGTEST_EPOCH_INTERVAL_MINUTES: Math.round(Number(process.env.FABRIC_BEACON_INTERVAL_MS || 600000) / 60000) || 10,
   NON_REGTEST_CADENCE_LABEL: 'each new Bitcoin block',
-  /** Default policy: L1 deposits to the federation Taproot remain unspendable for this many main-chain confirmations. */
+  /** Default CSV degradation window: softer vault tier unlocks after this many confirmations (BIP68). Also used as operator-facing L1 deposit maturity. */
   DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS: 144
 };

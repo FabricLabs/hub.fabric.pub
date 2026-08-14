@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fabric Passport — background mesh</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    code { background: #f4f4f4; padding: 0.15em 0.35em; border-radius: 4px; }
+    button { margin-right: 0.5rem; margin-top: 0.5rem; padding: 0.5em 1em; cursor: pointer; }
+    #status { margin-top: 1rem; color: #333; }
+  </style>
+</head>
+<body>
+  <h1>Fabric Passport — Hub background mesh</h1>
+  <p>
+    With <strong>@fabric/passport</strong> installed, this page registers long-lived WebRTC signaling
+    (extension service worker + offscreen document) for <strong>this Hub origin</strong>.
+    Close this tab after registering; the mesh stays up until you unregister or remove the extension.
+  </p>
+  <p>
+    <button type="button" id="register">Register background mesh</button>
+    <button type="button" id="unregister">Unregister</button>
+  </p>
+  <p id="status"></p>
+  <script>
+    (function () {
+      var SOURCE = 'fabric-hub';
+      var statusEl = document.getElementById('status');
+      function setStatus (msg) { statusEl.textContent = msg; }
+      var hubAddress = window.location.origin + '/';
+      document.getElementById('register').onclick = function () {
+        window.postMessage({
+          source: SOURCE,
+          type: 'FABRIC_HUB_REGISTER_MESH',
+          hubAddress: hubAddress
+        }, '*');
+        setStatus('Sent register for ' + hubAddress);
+      };
+      document.getElementById('unregister').onclick = function () {
+        window.postMessage({ source: SOURCE, type: 'FABRIC_HUB_UNREGISTER_MESH' }, '*');
+        setStatus('Sent unregister.');
+      };
+    })();
+  </script>
+</body>
+</html>

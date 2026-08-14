@@ -635,8 +635,9 @@
 --------------------*/
 
 /* For source only. Modified in gulp for dist */
-@imagePath : '../../themes/default/assets/images';
-@fontPath  : '../../themes/default/assets/fonts';
+/* Theme asset roots: Gulp output is `dist/themes/<theme>/...`; @site is fabric, so point at this theme. */
+@imagePath : '../../themes/fabric/assets/images';
+@fontPath  : '../../themes/fabric/assets/fonts';
 
 /*-------------------
        Em Sizes

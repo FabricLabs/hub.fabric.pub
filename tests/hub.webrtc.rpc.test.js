@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+const Message = require('@fabric/core/types/message');
+const { MAGIC_BYTES, HEADER_SIZE } = require('@fabric/core/constants');
 const Hub = require('../services/hub');
 
 describe('Hub WebRTC RPC methods', function () {
@@ -148,6 +150,21 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(broadcasts.length, 1, 'should broadcast to WebSocket clients');
     assert.strictEqual(relayP2pCalls.length, 1, 'should relay to Fabric P2P');
 
+    // WS fanout keeps JSON hops envelope for Bridge.
+    const wsRelay = broadcasts[0];
+    assert.strictEqual(wsRelay.type, 'P2P_RELAY');
+    const wsEnv = JSON.parse(wsRelay.body);
+    assert.strictEqual(wsEnv.originalType, 'P2P_CHAT_MESSAGE');
+    assert.ok(Array.isArray(wsEnv.hops) && wsEnv.hops.length >= 1);
+
+    // TCP Peer path uses raw inner Message bytes (core onion layout).
+    const p2pRelay = relayP2pCalls[0].msg;
+    assert.strictEqual(p2pRelay.type, 'P2P_RELAY');
+    const innerBuf = p2pRelay.raw.data;
+    assert.ok(Buffer.isBuffer(innerBuf) && innerBuf.length >= HEADER_SIZE);
+    assert.strictEqual(innerBuf.readUInt32BE(0), MAGIC_BYTES);
+    assert.strictEqual(Message.fromBuffer(innerBuf).type, 'P2P_CHAT_MESSAGE');
+
     const tooManyHops = {
       fromPeerId: 'webrtc-peer-a',
       envelope: {
@@ -285,6 +302,34 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(r.status, 'success');
     assert.strictEqual(broadcasts.length, 1);
     assert.strictEqual(relayP2pCalls.length, 1);
+  });
+
+  it('RelayFromWebRTC accepts author-signed CONTRACT_MESSAGE wire', function () {
+    const { methods, broadcasts, relayP2pCalls } = harness;
+    const Key = require('@fabric/core/types/key');
+    const Message = require('@fabric/core/types/message');
+    const author = new Key();
+    const signed = Message.fromVector([
+      'CONTRACT_MESSAGE',
+      JSON.stringify({
+        contract: '11'.repeat(32),
+        type: 'MessageReceipt',
+        messageId: '22'.repeat(32)
+      })
+    ]).signWithKey(author);
+    const wireB64 = signed.toBuffer().toString('base64');
+    const r = methods.RelayFromWebRTC({
+      fromPeerId: 'webrtc-contract',
+      envelope: {
+        original: wireB64,
+        originalType: 'CONTRACT_MESSAGE',
+        hops: []
+      }
+    });
+    assert.strictEqual(r.status, 'success', JSON.stringify(r));
+    assert.strictEqual(broadcasts.length, 1);
+    assert.strictEqual(relayP2pCalls.length, 1);
+    assert.strictEqual(relayP2pCalls[0].tag, '_webrtc');
   });
 
   it('requires document id for GetDocument', async function () {

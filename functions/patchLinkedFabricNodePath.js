@@ -13,6 +13,20 @@ const Module = require('module');
 const hubRoot = path.resolve(__dirname, '..');
 const nm = path.join(hubRoot, 'node_modules');
 
+/**
+ * Prefer `@fabric/http/functions/fabricDocumentPayment402` (exported). Older npm
+ * tarballs sometimes omitted the file while `sendPaymentRequired402Response`
+ * still required it — with current `@fabric/http` this overlay is unused.
+ */
+function ensureHttpFabricDocumentPayment402Symlink () {
+  try {
+    require.resolve('@fabric/http/functions/fabricDocumentPayment402');
+  } catch (_) {
+    // Linked / published http must export fabricDocumentPayment402.
+  }
+}
+ensureHttpFabricDocumentPayment402Symlink();
+
 function realPackageRoot (pkg) {
   const p = path.join(nm, pkg);
   try {

@@ -7,7 +7,7 @@ const Service = require('@fabric/core/types/service');
 
 /**
  * Outbound email: Postmark HTTP API or SMTP (e.g. Mailpit at 127.0.0.1:1025).
- * Ported from Sensemaker for use by Hub invitations and operator notifications.
+ * Email service for Hub invitations and operator notifications.
  */
 class EmailService extends Service {
   constructor (settings = {}) {

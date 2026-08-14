@@ -1,5 +1,14 @@
-# Production March Tracker
-This is the single living document for driving `@fabric/core` to production readiness with a tighter surface area:
+# Production March Tracker (Hub)
+Hub-specific security and deploy queue: **[OUTSTANDING.md](OUTSTANDING.md)**. Operator cut: [PRODUCTION.md](PRODUCTION.md). Product phases: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md).
+
+The type-tree / docs-clutter march below is **inherited from `@fabric/core`** (keep Hub’s public surface on Peer, documents, contracts, Security). Do not expand Hub RC with new payment rails while those leftovers are open.
+
+**This deploy (2026-08-14):** pins core `1fc616492` + http `852520a`; Test workflow `.nvmrc` path; leftover bitcoinClient admin-token leak on payments URLs; `verifyAdminToken` cap/sub; backup KDF bounds. **Next Hub security slice:** identity import / at-rest KDF (heavy lift). **Suite blocker:** http login/link possession proof.
+
+---
+
+# Core class-surface march (copy)
+This section drives `@fabric/core` production readiness with a tighter surface area:
 
 - fewer classes
 - less generated/documentation noise

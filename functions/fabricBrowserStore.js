@@ -2,6 +2,16 @@
 
 const { applyPatch } = require('fast-json-patch');
 
+function getFabricBrowserGlobal () {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.window != null) return globalThis.window;
+  } catch (_) {}
+  try {
+    if (typeof window !== 'undefined') return window;
+  } catch (_) {}
+  return undefined;
+}
+
 function cloneJSON (value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -76,7 +86,8 @@ function createFabricBrowserStore (opts = {}) {
 
   function hasStorage () {
     try {
-      return typeof window !== 'undefined' && !!window.localStorage;
+      const w = getFabricBrowserGlobal();
+      return !!w && !!w.localStorage;
     } catch (e) {
       return false;
     }
@@ -85,7 +96,9 @@ function createFabricBrowserStore (opts = {}) {
   function save () {
     if (!hasStorage()) return false;
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify(state));
+      const w = getFabricBrowserGlobal();
+      if (!w) return false;
+      w.localStorage.setItem(storageKey, JSON.stringify(state));
       return true;
     } catch (e) {
       return false;
@@ -95,7 +108,9 @@ function createFabricBrowserStore (opts = {}) {
   function load () {
     if (!hasStorage()) return false;
     try {
-      const raw = window.localStorage.getItem(storageKey);
+      const w = getFabricBrowserGlobal();
+      if (!w) return false;
+      const raw = w.localStorage.getItem(storageKey);
       if (!raw) return false;
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;

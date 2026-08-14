@@ -2,16 +2,18 @@
 
 const React = require('react');
 const { Link, useLocation, useNavigate } = require('react-router-dom');
-const { Button, Header, Icon, Segment, Card, Message, Checkbox, Form, Divider } = require('semantic-ui-react');
-const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { Button, Header, Icon, Segment, Card, Message, Checkbox, Form, Divider, Modal, Input } = require('semantic-ui-react');
+const { readHubAdminTokenFromBrowser, clearHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { fetchBitcoinStatus, loadUpstreamSettings } = require('../functions/bitcoinClient');
 const {
   loadHubUiFeatureFlags,
   setHubUiFeatureFlag,
+  setAllHubUiFeatureFlags,
   FLAG_KEYS,
   anyBitcoinSubFeatureEnabled,
   fetchPersistedHubUiFeatureFlags,
-  persistHubUiFeatureFlags
+  persistHubUiFeatureFlags,
+  documentMarketUiFlags
 } = require('../functions/hubUiFeatureFlags');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BeaconAdminPanel = require('./BeaconAdminPanel');
@@ -40,6 +42,9 @@ const WORK_QUEUE_STRATEGY_OPTIONS = [
   { key: 'oldest_high_value_first', value: 'oldest_high_value_first', text: 'Oldest first, value tie-breaker' }
 ];
 
+/** Must match {@link HUB_SELF_DESTRUCT_CONFIRM_PHRASE} in `services/hub.js` (POST `/settings/self-destruct`). */
+const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
+
 function AdminHome (props) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -66,6 +71,11 @@ function AdminHome (props) {
   const [workerLoading, setWorkerLoading] = React.useState(false);
   const [workerActionBusy, setWorkerActionBusy] = React.useState(false);
   const [workerError, setWorkerError] = React.useState(null);
+  const [selfDestructOpen, setSelfDestructOpen] = React.useState(false);
+  const [selfDestructPhrase, setSelfDestructPhrase] = React.useState('');
+  const [selfDestructBusy, setSelfDestructBusy] = React.useState(false);
+  const [selfDestructErr, setSelfDestructErr] = React.useState(null);
+  const [selfDestructOk, setSelfDestructOk] = React.useState(null);
 
   const rpcCall = React.useCallback(async (method, params = {}) => {
     const res = await fetch('/services/rpc', {
@@ -126,6 +136,46 @@ function AdminHome (props) {
     } while (cur >= 1024 && idx < units.length - 1);
     return `${cur.toFixed(cur >= 100 ? 0 : cur >= 10 ? 1 : 2)} ${units[idx]}`;
   }, []);
+
+  const runSelfDestruct = React.useCallback(async () => {
+    const token = readHubAdminTokenFromBrowser(adminTokenProp);
+    if (!token) {
+      setSelfDestructErr('Admin token required in this browser.');
+      return;
+    }
+    setSelfDestructBusy(true);
+    setSelfDestructErr(null);
+    try {
+      const res = await fetch('/settings/self-destruct', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ confirmPhrase: selfDestructPhrase.trim() })
+      });
+      const raw = await res.text();
+      let json = {};
+      try {
+        json = raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        json = {};
+      }
+      if (!res.ok) {
+        throw new Error((json && json.message) || raw || `${res.status} ${res.statusText}`);
+      }
+      setSelfDestructOk(json.message || 'Local data wipe started. The Hub process will exit.');
+      clearHubAdminTokenFromBrowser();
+      setSelfDestructOpen(false);
+      setSelfDestructPhrase('');
+      setTimeout(() => navigate('/'), 2000);
+    } catch (e) {
+      setSelfDestructErr(e && e.message ? e.message : String(e));
+    } finally {
+      setSelfDestructBusy(false);
+    }
+  }, [adminTokenProp, selfDestructPhrase, navigate]);
 
   const formatDuration = React.useCallback((secIn) => {
     const sec = Number(secIn);
@@ -275,6 +325,21 @@ function AdminHome (props) {
       return;
     }
     setUiFlagsPersistMsg('Persisted to hub settings (disk) and restored on startup.');
+  };
+
+  const applyDocumentMarketPreset = async () => {
+    const next = setAllHubUiFeatureFlags(documentMarketUiFlags());
+    setUiFlags(next);
+    if (!adminToken) {
+      setUiFlagsPersistMsg('Document market preset saved in this browser only. Save admin token to persist on hub disk.');
+      return;
+    }
+    const result = await persistHubUiFeatureFlags(next, adminToken);
+    if (!result.ok) {
+      setUiFlagsPersistMsg(`Document market preset in browser; hub-disk save failed: ${result.message || 'unknown error'}`);
+      return;
+    }
+    setUiFlagsPersistMsg('Document market preset persisted to hub settings (disk).');
   };
 
   const runWorkerNow = async () => {
@@ -605,14 +670,25 @@ function AdminHome (props) {
 
       <Divider section />
 
-      <Header as="h3" id="admin-ui-visibility-heading">Feature visibility (this browser)</Header>
+      <Header as="h3" id="admin-ui-visibility-heading">Feature visibility</Header>
       <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Optional areas of the UI are <strong>off by default</strong>. When a toggle is off, that area is hidden for{' '}
-        <strong>everyone</strong> using this browser profile (including operators) until you turn it back on.
+        Defaults favor the <strong>Document market</strong> (Documents, Peers, Bitcoin invoices/explorer).
+        When a toggle is off, that area is hidden for this browser profile until you turn it back on.
         Home, Documents, Contracts, Settings, Security, and this Admin page stay available.
-        Toggles below take effect when saved (including Activities, Features, explorer, and Invoices).
-        Choices are cached in the browser Fabric state store and, with admin token, persisted to hub settings on disk and restored at startup.
+        Each browser merges local cache with hub-stored defaults when loaded; with admin token, saves persist to hub disk.
       </p>
+      <Button
+        type="button"
+        size="small"
+        primary
+        basic
+        id="fabric-hub-ui-flag-document-market-preset"
+        style={{ marginBottom: '0.75em' }}
+        onClick={() => { applyDocumentMarketPreset(); }}
+      >
+        <Icon name="file alternate outline" aria-hidden="true" />
+        Document market preset
+      </Button>
       {uiFlagsPersistMsg ? (
         <Message info size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setUiFlagsPersistMsg(null)}>
           {uiFlagsPersistMsg}
@@ -689,6 +765,85 @@ function AdminHome (props) {
           Enable <strong>Sidechain</strong> and/or any <strong>Bitcoin …</strong> toggle to show operator shortcut cards (federation, Bitcoin dashboard link).
         </p>
           )}
+
+          <Divider section />
+
+          <Header as="h3" id="admin-self-destruct-heading" style={{ color: '#9f3a38', marginTop: '1.5em' }}>
+            <Icon name="bomb" aria-hidden="true" /> Danger zone
+          </Header>
+          <Message negative style={{ marginBottom: '0.75em' }}>
+            <Message.Header>Self-destruct — wipe local Hub data</Message.Header>
+            <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
+              Deletes this Hub&apos;s writable <code>stores/</code> and <code>logs/</code> under its data directory (setup, documents, Fabric state, local Bitcoin/Lightning/Payjoin files, and related indexes).
+              The server stops and exits so files can be removed; <strong>restart the Hub manually</strong> to run first-time setup again. This cannot be undone.
+            </p>
+          </Message>
+          {selfDestructOk ? (
+            <Message positive size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setSelfDestructOk(null)}>
+              {selfDestructOk}
+            </Message>
+          ) : null}
+          <Button
+            negative
+            basic
+            id="fabric-hub-admin-self-destruct-open"
+            disabled={!hasAdmin || selfDestructBusy}
+            loading={selfDestructBusy}
+            onClick={() => {
+              setSelfDestructErr(null);
+              setSelfDestructPhrase('');
+              setSelfDestructOpen(true);
+            }}
+          >
+            <Icon name="bomb" aria-hidden="true" /> Self-destruct…
+          </Button>
+
+          <Modal
+            closeOnDimmerClick={!selfDestructBusy}
+            open={selfDestructOpen}
+            onClose={() => !selfDestructBusy && setSelfDestructOpen(false)}
+            size="small"
+          >
+            <Modal.Header style={{ color: '#9f3a38' }}>Confirm total data wipe</Modal.Header>
+            <Modal.Content>
+              <p style={{ marginBottom: '0.75em', lineHeight: 1.45 }}>
+                Type the phrase below exactly to confirm. The Hub process will shut down and delete local data.
+              </p>
+              <p style={{ marginBottom: '0.5em' }}>
+                <code style={{ fontSize: '1rem', userSelect: 'all' }}>{HUB_SELF_DESTRUCT_CONFIRM_PHRASE}</code>
+              </p>
+              {selfDestructErr ? (
+                <Message negative size="small" style={{ marginBottom: '0.75em' }}>
+                  {selfDestructErr}
+                </Message>
+              ) : null}
+              <Input
+                fluid
+                placeholder="Confirmation phrase"
+                aria-label="Self-destruct confirmation phrase"
+                value={selfDestructPhrase}
+                disabled={selfDestructBusy}
+                onChange={(_, d) => setSelfDestructPhrase(d.value)}
+              />
+            </Modal.Content>
+            <Modal.Actions>
+              <Button onClick={() => !selfDestructBusy && setSelfDestructOpen(false)} disabled={selfDestructBusy}>
+                Cancel
+              </Button>
+              <Button
+                negative
+                id="fabric-hub-admin-self-destruct-confirm"
+                disabled={
+                  selfDestructBusy ||
+                  selfDestructPhrase.trim() !== HUB_SELF_DESTRUCT_CONFIRM_PHRASE
+                }
+                loading={selfDestructBusy}
+                onClick={runSelfDestruct}
+              >
+                Wipe all local data and exit
+              </Button>
+            </Modal.Actions>
+          </Modal>
         </React.Fragment>
       )}
     </Segment>

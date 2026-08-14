@@ -1,14 +1,19 @@
-$ npm i
+$ npm i --allow-git=all
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated rimraf@2.6.3: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated glob@8.1.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+npm warn deprecated crypto-js@4.2.0: Active development of CryptoJS has been discontinued. This library is no longer maintained.
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
-added 1734 packages, and audited 1735 packages in 3m
+added 1341 packages, and audited 1342 packages in 1m
 
-219 packages are looking for funding
+211 packages are looking for funding
   run `npm fund` for details
 
-33 vulnerabilities (4 low, 19 moderate, 10 high)
-
-To address issues that do not require attention, run:
-  npm audit fix
+6 high severity vulnerabilities
 
 To address all issues possible (including breaking changes), run:
   npm audit fix --force
@@ -17,3 +22,13 @@ Some issues need review, and may require choosing
 a different dependency.
 
 Run `npm audit` for details.
+npm warn install-scripts 7 packages had install scripts blocked because they are not covered by allowScripts:
+npm warn install-scripts   @fabric/core@0.1.0-RC1 (install: node scripts/install-native.js)
+npm warn install-scripts   @soatok/elliptic-to-noble@9999.0.0 (postinstall: node postinstall.js)
+npm warn install-scripts   zeromq@6.5.0 (install: node ./script/install.js)
+npm warn install-scripts   puppeteer@24.37.5 (postinstall: node install.mjs)
+npm warn install-scripts   electron-winstaller@5.4.0 (install: node ./script/select-7z-arch.js)
+npm warn install-scripts   classic-level@3.0.0 (install: node-gyp-build)
+npm warn install-scripts   fsevents@2.3.3 (install: node-gyp rebuild)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.

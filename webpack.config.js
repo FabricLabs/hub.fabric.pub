@@ -20,6 +20,20 @@ function linkedFabricResolvePaths () {
   }
   return out;
 }
+
+/** @fabric/http `assets/` so dev server can serve `semantic.min.css` + `/themes/...` (same paths as the Hub’s second static root). */
+function resolveFabricHttpAssetsDir () {
+  try {
+    const main = require.resolve('@fabric/http');
+    const dir = path.join(path.resolve(path.dirname(main), '..'), 'assets');
+    const check = path.join(dir, 'semantic.min.css');
+    if (fs.existsSync(check)) {
+      return fs.realpathSync(dir);
+    }
+  } catch (_) { /* not installed */ }
+  return null;
+}
+
 const TerserPlugin = require('terser-webpack-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 
@@ -27,6 +41,29 @@ module.exports = (env, argv) => {
   const mode = argv.mode || 'development';
   const hubProxyOrigin = process.env.FABRIC_HUB_DEV_PROXY
     || `http://127.0.0.1:${process.env.FABRIC_HUB_PORT || 8080}`;
+
+  const devServerStatic = [
+    {
+      directory: path.join(__dirname, 'assets'),
+      publicPath: '/',
+      watch: true
+    }
+  ];
+  const fabricHttpAssets = resolveFabricHttpAssetsDir();
+  if (fabricHttpAssets) {
+    devServerStatic.push({
+      directory: fabricHttpAssets,
+      publicPath: '/',
+      watch: true
+    });
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[webpack] @fabric/http assets/ not found (expected semantic.min.css). Install the package or `npm run link:fabric` ' +
+        'and run `npm run build:semantic` in the fabric-http clone.'
+    );
+  }
+
   return {
   mode,
   devtool: 'eval-source-map',
@@ -76,11 +113,13 @@ module.exports = (env, argv) => {
   },
   resolve: {
     extensions: ['.js', '.jsx'],
-    // Prefer CJS over ESM when resolving package exports (avoids secp256k1 "exports is not defined")
+    // Prefer CJS over ESM when resolving package exports (avoids secp256k1 "exports is not defined"
+    // and react-router@7 `.mjs` interop failures under webpack).
     // 'browser' before 'node' so @noble/hashes uses crypto.js not cryptoNode.js (avoids node:crypto error)
     // Include 'browser' so react-dom/server resolves to server.browser.js (avoids TextEncoder error)
     // Omit 'node' so @noble/hashes/crypto resolves to browser crypto.js not cryptoNode.js
-    conditionNames: ['require', 'browser', 'import'],
+    // Omit 'import' so package `exports` do not prefer ESM `.mjs` over CJS `.js`.
+    conditionNames: ['require', 'browser', 'default'],
     // Allow imports without extensions (fixes process/browser in @msgpack/msgpack ESM)
     fullySpecified: false,
     // Prefer hub's node_modules so linked @fabric/core uses the same copies of
@@ -97,7 +136,13 @@ module.exports = (env, argv) => {
       '@noble/hashes/ripemd160': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
       '@noble/hashes/sha1': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
       'node:crypto': require.resolve('crypto-browserify'),
-      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js')
+      'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js'),
+      // react-router@7 package exports prefer `.mjs` when `import` is in conditionNames;
+      // webpack then hits `__webpack_modules__[id].call is not a function` on ESM interop.
+      // Pin CJS builds (`$` = exact package root only, so `react-router/dom` still resolves).
+      'react-router-dom$': path.resolve(__dirname, 'node_modules/react-router-dom/dist/index.js'),
+      'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/development/index.js'),
+      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/development/dom-export.js')
     },
     fallback: {
       // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle
@@ -114,16 +159,11 @@ module.exports = (env, argv) => {
     }
   },
   devServer: {
+    // With `true`, paths containing a file extension (e.g. .css, .woff2) do not get index.html (default dot rule)
     historyApiFallback: true,
     hot: true,
     port: 3000,
-    static: [
-      {
-        directory: path.join(__dirname, 'assets'),
-        publicPath: '/',
-        watch: true
-      }
-    ],
+    static: devServerStatic,
     // Proxy backend services when running via webpack-dev-server
     // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
     proxy: [

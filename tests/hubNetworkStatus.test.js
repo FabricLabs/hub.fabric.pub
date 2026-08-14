@@ -14,6 +14,10 @@ describe('hubNetworkStatus', function () {
     assert.strictEqual(isHubNetworkStatusShape({ bitcoin: { available: true } }), true);
     assert.strictEqual(isHubNetworkStatusShape({ setup: { configured: true, needsSetup: false } }), true);
     assert.strictEqual(isHubNetworkStatusShape({ publishedDocuments: {} }), true);
+    assert.strictEqual(isHubNetworkStatusShape({
+      publishedDocuments: {},
+      documentMarket: { accumulatePeerInventories: false, offerCount: 0, markupBps: 1000 }
+    }), true);
     assert.strictEqual(isHubNetworkStatusShape({ state: { status: 'ready', services: {} } }), true);
   });
 

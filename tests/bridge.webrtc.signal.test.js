@@ -2,6 +2,8 @@
 
 const assert = require('assert');
 const { P2P_PEER_GOSSIP } = require('@fabric/core/constants');
+const Message = require('@fabric/core/types/message');
+const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');
 require('@babel/register');
 
 describe('Bridge WebRTC signaling metadata', function () {
@@ -20,10 +22,7 @@ describe('Bridge WebRTC signaling metadata', function () {
     };
   }
 
-  before(function () {
-    previousWindow = global.window;
-    previousRTCSessionDescription = global.RTCSessionDescription;
-
+  function installWindowMock () {
     global.window = {
       location: {
         hostname: 'localhost',
@@ -36,12 +35,24 @@ describe('Bridge WebRTC signaling metadata', function () {
       removeEventListener: () => {},
       dispatchEvent: () => {}
     };
+  }
+
+  before(function () {
+    previousWindow = global.window;
+    previousRTCSessionDescription = global.RTCSessionDescription;
+
+    installWindowMock();
 
     global.RTCSessionDescription = function RTCSessionDescription (init) {
       return init;
     };
 
     Bridge = require('../components/Bridge');
+  });
+
+  beforeEach(function () {
+    resetFabricBrowserStateStore();
+    installWindowMock();
   });
 
   after(function () {
@@ -264,7 +275,8 @@ describe('Bridge WebRTC signaling metadata', function () {
     });
 
     const payload = bridge._buildWebRTCPeerGossipPayload();
-    assert.strictEqual(payload.type, P2P_PEER_GOSSIP);
+    assert.ok(Message.typeEquals(payload.type, P2P_PEER_GOSSIP));
+    assert.strictEqual(payload.type, 'P2P_PEER_GOSSIP', 'JSON gossip frames use the wire name');
     assert.ok(Array.isArray(payload.object.peers));
     assert.ok(payload.object.peers.some((p) => p.id === 'node-self'));
     assert.ok(payload.object.peers.some((p) => p.id === 'mesh-neighbor'));

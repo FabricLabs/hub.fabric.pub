@@ -88,7 +88,7 @@ function DistributedFederationPanel (props) {
         <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
           {!hideSidechainNavLink ? (
             <React.Fragment>
-              <Link to="/sidechains">Sidechain &amp; demo</Link>
+              <Link to="/sidechains">Statechain</Link>
               {' · '}
             </React.Fragment>
           ) : null}
@@ -124,7 +124,7 @@ function DistributedFederationPanel (props) {
 
   const scopeLine = (
     <span>
-      <strong>Execution contracts:</strong> registry publish and <code>RunExecutionContract</code> use L1 invoice verification (when Bitcoin is on) and a deterministic <code>runCommitmentHex</code> only; they do <strong>not</strong> use federation witnesses.
+      <strong>Execution contracts:</strong> registry publish and <code>RunExecutionContract</code> use L1 invoice verification (when Bitcoin is on). Runs emit forward <code>FabricProgramRun</code> digests (<code>programHash</code> + <code>runCommitmentHex</code>) plus legacy <code>executionRunCommitmentHex</code>; they do <strong>not</strong> use federation witnesses.
     </span>
   );
 
@@ -252,7 +252,7 @@ function DistributedFederationPanel (props) {
       <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
         {!hideSidechainNavLink ? (
           <React.Fragment>
-            <Link to="/sidechains">Sidechain &amp; demo</Link>
+            <Link to="/sidechains">Statechain</Link>
             {' · '}
           </React.Fragment>
         ) : null}

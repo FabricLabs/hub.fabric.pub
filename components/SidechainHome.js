@@ -11,7 +11,9 @@ const {
   Segment,
   TextArea,
   Divider,
-  Label
+  Label,
+  Table,
+  Statistic
 } = require('semantic-ui-react');
 
 // Fabric Types
@@ -22,8 +24,11 @@ const { fabricIdentityNeedFullKeyPlain } = require('../functions/hubIdentityUiHi
 const { sha256 } = require('@noble/hashes/sha2.js');
 const {
   getSidechainState,
+  getSidechainJournal,
+  getSidechainSnapshots,
   submitSidechainStatePatch,
-  fetchDistributedEpoch
+  fetchDistributedEpoch,
+  fetchDistributedManifest
 } = require('../functions/sidechainHubClient');
 const {
   createOfferRecord,
@@ -80,6 +85,10 @@ class SidechainHome extends React.Component {
       sidechain: null,
       epoch: null,
       epochError: null,
+      manifest: null,
+      journal: null,
+      snapshots: null,
+      showContentJson: false,
       patchJson: '[\n  { "op": "add", "path": "/example", "value": true }\n]',
       federationWitnessJson: '',
       basisClockNote: '',
@@ -153,11 +162,26 @@ class SidechainHome extends React.Component {
   async refresh () {
     this.setState({ loading: true, epochError: null });
     try {
-      const [st, ep] = await Promise.all([getSidechainState(), fetchDistributedEpoch()]);
-      const next = { sidechain: st.ok ? st.state : null };
-      if (!st.ok) next.epochError = st.error || 'GetSidechainState failed';
+      const [st, ep, man, jr, sn] = await Promise.all([
+        getSidechainState(),
+        fetchDistributedEpoch(),
+        fetchDistributedManifest(),
+        getSidechainJournal({ limit: 40 }),
+        getSidechainSnapshots({ limit: 40 })
+      ]);
+      const next = {
+        sidechain: st.ok ? st.state : null,
+        journal: jr.ok ? jr.journal : null,
+        snapshots: sn.ok ? sn.snapshots : null,
+        manifest: man.ok ? man.data : null
+      };
+      const errs = [];
+      if (!st.ok) errs.push(st.error || 'GetSidechainState failed');
+      if (!ep.ok) errs.push(ep.error || 'epoch fetch failed');
+      if (!jr.ok) errs.push(jr.error || 'GetSidechainJournal failed');
+      if (!sn.ok) errs.push(sn.error || 'GetSidechainSnapshots failed');
+      if (errs.length) next.epochError = errs.join(' · ');
       if (ep.ok) next.epoch = ep.data;
-      else if (!next.epochError) next.epochError = ep.error || 'epoch fetch failed';
       if (st.ok && st.state && typeof st.state.clock === 'number') {
         next.patchJson = this.state.patchJson;
         next.basisClockNote = `Current logical clock: ${st.state.clock} — use this as basisClock when submitting patches.`;
@@ -168,6 +192,19 @@ class SidechainHome extends React.Component {
     } finally {
       this.setState({ loading: false });
     }
+  }
+
+  _shortDigest (hex, n = 10) {
+    const s = String(hex || '');
+    if (s.length <= n * 2) return s || '—';
+    return `${s.slice(0, n)}…${s.slice(-n)}`;
+  }
+
+  _effectivePolicy () {
+    const fromState = this.state.sidechain && this.state.sidechain.policy;
+    if (fromState) return fromState;
+    const fromMan = this.state.manifest && this.state.manifest.sidechainPolicy;
+    return fromMan || null;
   }
 
   _sealedDigestHint () {
@@ -742,29 +779,40 @@ class SidechainHome extends React.Component {
   }
 
   render () {
-    const { loading, sidechain, epoch, epochError, patchJson, basisClockNote, lastPatchResult, inboundOffer } = this.state;
+    const {
+      loading, sidechain, epoch, epochError, patchJson, basisClockNote, lastPatchResult, inboundOffer,
+      journal, snapshots, showContentJson
+    } = this.state;
     void this.state.hubUiFlagsRev;
     const hubUi = loadHubUiFeatureFlags();
     const hint = this._sealedDigestHint();
     const beacon = epoch && epoch.beacon;
     const lastPayload = beacon && beacon.last && beacon.last.payload;
+    const policy = this._effectivePolicy();
+    const journalEntries = (journal && Array.isArray(journal.entries)) ? journal.entries : [];
+    const snapshotRows = (snapshots && Array.isArray(snapshots.snapshots)) ? snapshots.snapshots : [];
 
     return (
       <Segment.Group>
         <Segment>
           <Header as="h2">
             <Icon name="chain" />
-            Sidechain & beacon (operator)
+            Sidechain (shared state)
           </Header>
           <p style={{ color: '#666', maxWidth: '52em' }}>
-            Logical <code>sidechain/STATE</code> with JSON Patch updates; beacon epochs seal{' '}
-            <code>payload.sidechain</code>. Use the same Hub origin when testing LAN nodes (e.g.{' '}
-            <code>http://192.168.50.5:8080</code>). Multi-hop chat: use Home → WebRTC discovery, then send chat;
-            offers can mirror to chat for visibility.
+            Shared JSON at <code>sidechain/STATE</code>, patched under optional contract path policy, sealed into
+            Beacon epochs, recoverable via <code>SNAPSHOTS</code> + <code>JOURNAL</code>. Use the same Hub origin
+            for LAN nodes (e.g. <code>http://192.168.50.5:8080</code>).
             {' '}
-            <Link to="/contracts">Execution contracts</Link> cover L1 registry, deterministic runs, and how federation relates (or does not) to <code>RunExecutionContract</code>.
-            {' '}
-            The <strong>Federation guarantees</strong> panel below links to Beacon settings, live manifest/epoch JSON, and reproducing <code>federationWitness</code> with <code>@fabric/core</code>.
+            <Link to="/contracts">Execution contracts</Link>
+            {' · '}
+            <Link to="/federations">Federations</Link>
+            {' · '}
+            <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">manifest</a>
+            {' · '}
+            <a href="/services/distributed/sidechain" target="_blank" rel="noopener noreferrer">HTTP state</a>
+            {' · '}
+            <a href="/services/distributed/sidechain/journal" target="_blank" rel="noopener noreferrer">journal</a>
           </p>
           <div
             role="toolbar"
@@ -815,6 +863,48 @@ class SidechainHome extends React.Component {
         </Segment>
 
         <Segment>
+          <Header as="h3">Head status</Header>
+          <Statistic.Group size="tiny" style={{ marginBottom: '0.75em' }}>
+            <Statistic>
+              <Statistic.Value>{sidechain && sidechain.clock != null ? String(sidechain.clock) : '—'}</Statistic.Value>
+              <Statistic.Label>Logical clock</Statistic.Label>
+            </Statistic>
+            <Statistic>
+              <Statistic.Value>{journal && journal.unsealedCount != null ? String(journal.unsealedCount) : '—'}</Statistic.Value>
+              <Statistic.Label>Unsealed journal</Statistic.Label>
+            </Statistic>
+            <Statistic>
+              <Statistic.Value>{snapshots && snapshots.snapshotCount != null ? String(snapshots.snapshotCount) : '—'}</Statistic.Value>
+              <Statistic.Label>Sealed snapshots</Statistic.Label>
+            </Statistic>
+            <Statistic>
+              <Statistic.Value>{beacon && beacon.epochCount != null ? String(beacon.epochCount) : '—'}</Statistic.Value>
+              <Statistic.Label>Beacon epochs</Statistic.Label>
+            </Statistic>
+          </Statistic.Group>
+          <Label color={hint.color} style={{ marginBottom: '0.5em' }}>{hint.text}</Label>
+          {sidechain && sidechain.stateDigest ? (
+            <p style={{ fontFamily: 'monospace', fontSize: '12px', color: '#444', wordBreak: 'break-all' }}>
+              stateDigest: {sidechain.stateDigest}
+            </p>
+          ) : null}
+          {basisClockNote && <p style={{ color: '#555' }}>{basisClockNote}</p>}
+        </Segment>
+
+        <Segment>
+          <Header as="h3">Contract path policy</Header>
+          <p style={{ color: '#666', fontSize: '0.9em', maxWidth: '48em' }}>
+            From hub settings / env (<code>sidechainPolicy</code> on the distributed manifest). Empty means any
+            RFC6902 path under <code>content</code> is allowed (still requires admin or federation auth).
+          </p>
+          {policy ? (
+            <pre style={{ fontSize: '12px', overflow: 'auto' }}>{safeJson(policy)}</pre>
+          ) : (
+            <Message info>No path policy configured — patches are auth-gated only.</Message>
+          )}
+        </Segment>
+
+        <Segment>
           <Header as="h3">Beacon / distributed epoch</Header>
           <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75em', maxWidth: '48em' }}>
             Hub summary (not the full sealed message). Compare any L1 height/hash in the live epoch payload to your node; re-verify Schnorr witness bytes against the manifest pubkeys (see the Federation guarantees panel above).
@@ -841,12 +931,104 @@ class SidechainHome extends React.Component {
         </Segment>
 
         <Segment>
+          <Header as="h3">Sealed snapshots</Header>
+          <p style={{ color: '#666', fontSize: '0.9em' }}>
+            Full state copies keyed by Beacon <code>payload.clock</code> (reorg rewind). Digests only below.
+          </p>
+          {snapshotRows.length ? (
+            <Table celled compact size="small">
+              <Table.Header>
+                <Table.Row>
+                  <Table.HeaderCell>Beacon clock</Table.HeaderCell>
+                  <Table.HeaderCell>Sidechain clock</Table.HeaderCell>
+                  <Table.HeaderCell>stateDigest</Table.HeaderCell>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {snapshotRows.map((row) => (
+                  <Table.Row key={`snap-${row.beaconClock}`}>
+                    <Table.Cell>{row.beaconClock}</Table.Cell>
+                    <Table.Cell>{row.sidechainClock}</Table.Cell>
+                    <Table.Cell style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                      {this._shortDigest(row.stateDigest, 12)}
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table>
+          ) : (
+            <Message info>No snapshots yet — wait for a Beacon epoch after state exists.</Message>
+          )}
+        </Segment>
+
+        <Segment>
+          <Header as="h3">Patch journal</Header>
+          <p style={{ color: '#666', fontSize: '0.9em' }}>
+            Append-only transitions. <code>sealedBeaconClock</code> is set when an epoch seals that sidechain clock;
+            null means unsealed (replayed on restore).
+            {journal ? ` Showing ${journalEntries.length} of ${journal.entryCount}.` : ''}
+          </p>
+          {journalEntries.length ? (
+            <Table celled compact size="small">
+              <Table.Header>
+                <Table.Row>
+                  <Table.HeaderCell>seq</Table.HeaderCell>
+                  <Table.HeaderCell>clock</Table.HeaderCell>
+                  <Table.HeaderCell>sealed</Table.HeaderCell>
+                  <Table.HeaderCell>ops</Table.HeaderCell>
+                  <Table.HeaderCell>paths</Table.HeaderCell>
+                  <Table.HeaderCell>patchDigest</Table.HeaderCell>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {journalEntries.map((row) => (
+                  <Table.Row key={`j-${row.seq}`} warning={row.sealedBeaconClock == null}>
+                    <Table.Cell>{row.seq}</Table.Cell>
+                    <Table.Cell>{row.basisClock}→{row.clock}</Table.Cell>
+                    <Table.Cell>
+                      {row.sealedBeaconClock == null ? (
+                        <Label size="mini" color="orange">unsealed</Label>
+                      ) : (
+                        row.sealedBeaconClock
+                      )}
+                    </Table.Cell>
+                    <Table.Cell>{row.opCount}</Table.Cell>
+                    <Table.Cell style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                      {(row.paths || []).join(', ') || '—'}
+                    </Table.Cell>
+                    <Table.Cell style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                      {this._shortDigest(row.patchDigest, 8)}
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table>
+          ) : (
+            <Message info>Journal empty — apply a patch to create the first entry.</Message>
+          )}
+        </Segment>
+
+        <Segment>
           <Header as="h3">Live sidechain state</Header>
           <Label color={hint.color} style={{ marginBottom: '0.75em' }}>{hint.text}</Label>
-          {sidechain ? (
-            <pre style={{ fontSize: '12px', overflow: 'auto', maxHeight: '22em' }}>{safeJson(sidechain)}</pre>
+          <Button
+            size="small"
+            basic
+            style={{ marginBottom: '0.75em' }}
+            onClick={() => this.setState({ showContentJson: !showContentJson })}
+          >
+            {showContentJson ? 'Hide full JSON' : 'Show full JSON'}
+          </Button>
+          {showContentJson ? (
+            sidechain ? (
+              <pre style={{ fontSize: '12px', overflow: 'auto', maxHeight: '22em' }}>{safeJson(sidechain)}</pre>
+            ) : (
+              <Message warning>Could not load GetSidechainState (check Hub RPC and session).</Message>
+            )
           ) : (
-            <Message warning>Could not load GetSidechainState (check Hub RPC and session).</Message>
+            <p style={{ color: '#666' }}>
+              Full document hidden by default. Clock and digest are in <strong>Head status</strong> above.
+            </p>
           )}
           {basisClockNote && <p style={{ color: '#555' }}>{basisClockNote}</p>}
         </Segment>

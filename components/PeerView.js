@@ -35,7 +35,12 @@ const { peerNeighborhoodToDot } = require('../functions/peerTopologyDot');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
-const { shortenPublicId, fabricPeerBech32Id, peerConnectionPubkeyAtHostPort } = require('../functions/peerIdentity');
+const {
+  shortenPublicId,
+  fabricPeerBech32Id,
+  peerNativePeeringString,
+  peerPeeringEndpointIsSignaling
+} = require('../functions/peerIdentity');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   loadHubUiFeatureFlags,
@@ -133,6 +138,7 @@ function PeerDetail (props) {
   const [contactAddBusy, setContactAddBusy] = React.useState(false);
   const [contactAddErr, setContactAddErr] = React.useState(null);
   const [contactAddOk, setContactAddOk] = React.useState(null);
+  const [peeringCopied, setPeeringCopied] = React.useState(false);
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
@@ -144,6 +150,36 @@ function PeerDetail (props) {
     return () => window.removeEventListener('networkStatusUpdate', onNs);
   }, []);
   void networkStatusTick;
+  React.useEffect(() => {
+    const onInv = (ev) => {
+      const d = ev && ev.detail;
+      if (!d || typeof d !== 'object') return;
+      if (d.status === 'error' && d.message) {
+        setInventoryRequestMeta((m) => (
+          m ? { ...m, status: 'error', hubMessage: String(d.message) } : m
+        ));
+        return;
+      }
+      if (d.status === 'success') {
+        const viaTag = (d.via !== undefined && d.via !== null && String(d.via).trim() !== '')
+          ? String(d.via).trim()
+          : '';
+        setInventoryRequestMeta((m) => (
+          m ? {
+            ...m,
+            status: 'accepted',
+            hubMessage: '',
+            requestVia: viaTag
+          } : m
+        ));
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('fabric:peerInventoryRequestResult', onInv);
+      return () => window.removeEventListener('fabric:peerInventoryRequestResult', onInv);
+    }
+    return undefined;
+  }, []);
   const uf = loadHubUiFeatureFlags();
 
   const bridge = props.bridge;
@@ -401,11 +437,22 @@ function PeerDetail (props) {
     }
   }, [peer, id, gossipNeighbors]);
 
-  const sendInventoryRequest = (kind, opts) => {
-    const invDest = (peer && peer.address) || id;
+  const sendInventoryRequest = (kind, optsIn) => {
+    // Prefer both id + address when present so hub _resolvePeerAddress / TCP map matches ListPeers rows.
+    const invDest = (peer && peer.address && peer.id)
+      ? { address: peer.address, id: peer.id }
+      : ((peer && peer.address) || (peer && peer.id) || id);
     if (!invDest || !bridgeRef || !bridgeRef.current || typeof bridgeRef.current.sendPeerInventoryRequest !== 'function') return;
+    const opts = optsIn && typeof optsIn === 'object' ? { ...optsIn } : {};
+    try {
+      const bi = bridgeRef.current;
+      if (bi && typeof bi.getHtlcRefundPublicKeyHex === 'function') {
+        const pk = bi.getHtlcRefundPublicKeyHex();
+        if (pk && !opts.buyerRefundPublicKey) opts.buyerRefundPublicKey = pk;
+      }
+    } catch (_) {}
     setInventoryRequestMeta({ at: Date.now(), kind: kind || 'documents', status: 'sent' });
-    bridgeRef.current.sendPeerInventoryRequest(invDest, kind || 'documents', opts || {});
+    bridgeRef.current.sendPeerInventoryRequest(invDest, kind || 'documents', opts);
   };
 
   const openNicknameModal = React.useCallback(() => {
@@ -665,7 +712,7 @@ function PeerDetail (props) {
                     <Input
                       size="small"
                       placeholder="Relay: seller Fabric id (optional)"
-                      title="When this connection is a relay, set the seller’s Fabric id so the hub forwards INVENTORY_REQUEST"
+                      title="When this connection is a relay, set the seller’s Fabric id so the hub forwards document-offer requests (FABRIC_DOCUMENT_OFFER)"
                       value={inventoryRelayTarget}
                       onChange={(e, { value }) => setInventoryRelayTarget(value)}
                       style={{ minWidth: '12em', maxWidth: '18rem', flex: '1 1 12em' }}
@@ -782,15 +829,52 @@ function PeerDetail (props) {
                 <Table compact definition striped size="small" style={{ marginBottom: '0.65rem' }}>
                   <Table.Body>
                     {(() => {
-                      const connStr = typeof window !== 'undefined'
-                        ? peerConnectionPubkeyAtHostPort(peer, window.location.host)
-                        : peerConnectionPubkeyAtHostPort(peer, '');
+                      const sigHost = typeof window !== 'undefined' ? window.location.host : '';
+                      const connStr = peerNativePeeringString(peer, sigHost);
                       if (!connStr) return null;
+                      const signaling = peerPeeringEndpointIsSignaling(peer);
+                      const copyPeering = () => {
+                        try {
+                          if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(connStr);
+                          } else if (typeof document !== 'undefined') {
+                            const ta = document.createElement('textarea');
+                            ta.value = connStr;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                          }
+                          setPeeringCopied(true);
+                          window.setTimeout(() => setPeeringCopied(false), 1500);
+                        } catch (e) { /* ignore */ }
+                      };
                       return (
                         <Table.Row>
-                          <Table.Cell collapsing>Id @ endpoint</Table.Cell>
+                          <Table.Cell collapsing>Peering</Table.Cell>
                           <Table.Cell>
                             <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{connStr}</code>
+                            {' '}
+                            <Button
+                              size="mini"
+                              basic
+                              icon
+                              type="button"
+                              onClick={copyPeering}
+                              title="Copy pubkey@host:port peering string for native Fabric dial"
+                              aria-label="Copy peering string"
+                              style={{ marginLeft: '0.35em', verticalAlign: 'middle' }}
+                            >
+                              <Icon name="copy" />
+                              {peeringCopied ? 'Copied' : 'Copy'}
+                            </Button>
+                            <div style={{ color: '#767676', fontSize: '0.82em', marginTop: '0.35em' }}>
+                              {signaling
+                                ? 'WebRTC signaling host (this site) — browsers will peer here; native nodes use Fabric TCP when advertised.'
+                                : 'Native Fabric dial pin (pubkey@host:port).'}
+                            </div>
                           </Table.Cell>
                         </Table.Row>
                       );
@@ -852,7 +936,7 @@ function PeerDetail (props) {
                   <Segment secondary style={{ marginTop: '0.35rem' }}>
                     <Header as="h4" style={{ marginBottom: '0.35rem' }}>Gossip neighborhood</Header>
                     <p style={{ color: '#666', marginBottom: '0.5rem', fontSize: '0.9em', lineHeight: 1.45 }}>
-                      Fabric ids from <code>P2P_PEER_GOSSIP</code>. Use <strong>Inventory</strong> tab → Docs (or the advanced panel) for <code>INVENTORY_REQUEST</code>.
+                      Fabric ids from <code>P2P_PEER_GOSSIP</code>. Use <strong>Inventory</strong> tab → Docs (or the advanced panel) for document-offer requests (<code>FABRIC_DOCUMENT_OFFER</code>).
                     </p>
                     <GraphDocumentPreview dotSource={neighborDot} skipIdentityGate />
                     <List relaxed size="small" style={{ marginTop: '0.5rem' }}>
@@ -943,7 +1027,7 @@ function PeerDetail (props) {
                   const actor = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && chat.actor?.id)
                     ? bridgeInstance.getPeerDisplayName(chat.actor.id)
                     : rawActor;
-                  const content = (chat.object && (chat.object.content || chat.object.text)) || '';
+                  const content = (chat.object && (chat.object.content || chat.object.body || chat.object.text)) || '';
                   const isPending = chat.status === 'pending';
                   const isQueued = chat.status === 'queued';
                   const style = {
@@ -1002,14 +1086,21 @@ function PeerDetail (props) {
             <p style={{ color: '#666', marginBottom: '0.65em', fontSize: '0.92em', lineHeight: 1.45 }}>
               Documents offered by this <strong>publisher</strong>
               {id ? <> (Fabric peer <code style={{ fontSize: '0.9em' }}>{id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-8)}` : id}</code>)</> : ''}.
-              <strong> Author</strong> is the creator&apos;s document id when known (lineage). Use <strong>Docs</strong> while connected to send <code>INVENTORY_REQUEST</code>; responses are merged under this peer&apos;s Fabric id and TCP address keys.
+              <strong> Author</strong> is the creator&apos;s document id when known (lineage). With the peer <strong>connected</strong>, use the advanced panel <strong>Docs</strong> button to send a document-offer request; responses are merged under this peer&apos;s Fabric id and TCP address keys.
             </p>
             {inventoryRequestMeta && (
-              <p style={{ fontSize: '0.85em', color: '#666', marginBottom: '0.65em' }}>
+              <p style={{ fontSize: '0.85em', color: inventoryRequestMeta.status === 'error' ? '#9f3a38' : inventoryRequestMeta.status === 'accepted' ? '#276749' : '#666', marginBottom: '0.65em' }}>
                 Last inventory request: {formatMaybeDate(inventoryRequestMeta.at)}
                 {inventoryRequestMeta.kind ? ` (${inventoryRequestMeta.kind})` : ''}
-                {' — '}
-                {inventoryDocs.length > 0 ? `${inventoryDocs.length} item(s) in client state.` : 'no items yet (wait for response or check relay target).'}
+                {inventoryRequestMeta.requestVia === 'http' ? ' · HTTP fallback' : ''}
+                {inventoryRequestMeta.requestVia === 'ws' ? ' · websocket' : ''}
+                {inventoryRequestMeta.hubMessage
+                  ? ` — ${inventoryRequestMeta.hubMessage}`
+                  : inventoryRequestMeta.status === 'accepted'
+                    ? ` — hub accepted and sent the peer request.`
+                    : ` — ${inventoryDocs.length > 0
+                    ? `${inventoryDocs.length} item(s) in client state.`
+                    : 'no items yet (wait for response or check relay target).'}`}
               </p>
             )}
             <div style={{ marginBottom: '0.75em' }}>
@@ -1221,7 +1312,7 @@ function PeerDetail (props) {
                 ))}
               </List>
             ) : (
-              <p style={{ color: '#666' }}>No remote document inventory yet. Use <strong>Docs</strong> (when connected) to send <code>INVENTORY_REQUEST</code>.</p>
+              <p style={{ color: '#666' }}>No remote document inventory yet. Use <strong>Docs</strong> (when connected) to send a document-offer request.</p>
             )}
           </Segment>
         )}

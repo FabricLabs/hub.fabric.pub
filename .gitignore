@@ -76,10 +76,11 @@ typings/
 # Local Hub UI test secrets (mnemonic / xprv / admin token — never commit)
 local/hub-ui-test-secrets.json
 
-# Cursor / agent Fabric identity (mnemonic + keys — never commit)
+# Local Fabric operator identity (mnemonic + keys — never commit)
+local/fabric-operator-identity.json
 local/cursor-agent-fabric-identity.json
 
-# Hub browser bootstrap with dev seed (generated from local/cursor-agent-fabric-identity.json)
+# Hub browser bootstrap with dev seed (generated from operator-identity emit-hub-config)
 assets/config.local.js
 
 # parcel-bundler cache (https://parceljs.org/)

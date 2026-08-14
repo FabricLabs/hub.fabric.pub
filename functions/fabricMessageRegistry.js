@@ -39,18 +39,62 @@ const SUGGESTED_HUB_OPCODE_BLOCK_END = 16299;
 const OUTER_WIRE_TYPES = [
   { name: 'JSONCall', opcodeDec: 16000, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Hub/browser JSON-RPC; body { method, params }.' },
   { name: 'JSONPatch', opcodeDec: 1024, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'State patch to clients.' },
-  { name: 'ChatMessage', opcodeDec: 103, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Chat broadcast (0x67).' },
+  { name: 'ChatMessage', opcodeDec: 103, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Chat broadcast (0x67); legacy re-signed relay path.' },
+  { name: 'P2P_CHAT_MESSAGE', opcodeDec: 104, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'First-class peer chat frame (0x68). Body = raw UTF-8 text; author is the AMP signature. Hub SPA may still cache a JSON ChatMessage (0x67) on WebSocket.' },
   { name: 'Ping', opcodeDec: 18, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PING keepalive.' },
   { name: 'Pong', opcodeDec: 19, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PONG response.' },
-  { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Relay envelope (original + originalType + hops).' },
+  { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Peer mesh flood: body = raw inner Message bytes. Hub↔browser WS may still use JSON { original, originalType, hops }. Not IP-hiding — use P2P_FORWARD.' },
   { name: 'P2P_MESSAGE_RECEIPT', opcodeDec: 68, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Server ack after handling inbound frame.' },
+  { name: 'P2P_FORWARD', opcodeDec: 69, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Directed onion hop (0x45): fields nextPeer (bytes32 x-only), ttl (u8), inner (nested Message). TCP Peer / Hub SendOnion only — do not WS-flood.' },
   { name: 'JSONBlob', opcodeDec: 15104, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'GENERIC+1; JSON payload, prefer named type when available.' },
-  { name: 'GenericMessage', opcodeDec: 15103, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'Placeholder outer type; prefer dedicated opcode + structured body.' },
+  { name: 'GenericMessage', opcodeDec: 15103, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'Registered in @fabric/core as GENERIC_MESSAGE (15103); prefer dedicated opcodes when stable.' },
   { name: 'PeerMessage', opcodeDec: 49, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'P2P_BASE_MESSAGE; generic peer payload carrier.' },
   { name: 'DocumentPublish', opcodeDec: 998, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Document publish.' },
   { name: 'DocumentRequest', opcodeDec: 999, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Document request.' },
-  { name: 'ContractProposal', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Batched messages + chain Merkle root + JSON Patch (+ optional PSBT); see @fabric/core docs/CONTRACT_PROPOSAL.md.' }
+  { name: 'ContractProposal', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Batched messages + chain Merkle root + JSON Patch (+ optional PSBT); optional `contractId` namespace; see @fabric/core docs/CONTRACT_PROPOSAL.md.' },
+  { name: 'CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Publishes a contract definition; registers under a deterministic Actor id (contract namespace). Emits contract:publish (0x5f). Alias: P2P_CONTRACT_PUBLISH. See @fabric/core docs/APPLICATION_NAMESPACES.md.' },
+  { name: 'CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Namespaced contract event; body carries `contract: <id>`. Dispatch routes by namespace (contract:message). State ops apply only to locally registered contracts (0x60). Alias: P2P_CONTRACT_MESSAGE.' },
+  // Encode aliases (same opcodes) — Message.fromVector accepts these names.
+  { name: 'P2P_CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_PUBLISH (0x5f).' },
+  { name: 'P2P_CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_MESSAGE (0x60).' },
+  { name: 'P2P_CONTRACT_PROPOSAL', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of ContractProposal / CONTRACT_PROPOSAL (0x8a).' }
 ];
+
+/**
+ * Shared CONTRACT_MESSAGE body `type` strings (application namespaces).
+ * Prefer `@fabric/core/functions/applicationNamespaces`; Hub metadata rows
+ * annotate which apps use each type.
+ */
+const APPLICATION_CONTRACT_BODY_META = Object.freeze({
+  FederationContractInvite: { apps: ['hub', 'application'], notes: 'Hub-shaped join / co-signer invite (v2 + proposedPolicy).' },
+  FederationContractInviteResponse: { apps: ['hub', 'application'], notes: 'Accept / reject invite.' },
+  MissionCreated: { apps: ['application'], notes: 'Network mission register upsert (application genesis).' },
+  MissionBroadcast: { apps: ['application'], notes: 'Network mission offer.' },
+  SCEventBatch: { apps: ['application'], notes: 'Log / event batch.' },
+  GameStateSnapshot: { apps: ['hub', 'application'], notes: 'Cumulative analytics snapshot for Hub / Beacon seal.' },
+  GroupChat: { apps: ['application'], notes: 'Group Federation channel chat.' },
+  GroupChange: { apps: ['application'], notes: 'Group membership / meta change.' },
+  GroupShare: { apps: ['application'], notes: 'Group-scoped share (e.g. mission offer).' }
+});
+
+function buildApplicationContractBodyTypes () {
+  let bodyTypes = null;
+  try {
+    bodyTypes = require('@fabric/core/functions/applicationNamespaces').CONTRACT_BODY_TYPES;
+  } catch (_) {
+    bodyTypes = null;
+  }
+  // Merge core shared types with Hub/app meta (MissionBroadcast, etc.).
+  const keys = bodyTypes
+    ? [...new Set([...Object.keys(bodyTypes), ...Object.keys(APPLICATION_CONTRACT_BODY_META)])]
+    : Object.keys(APPLICATION_CONTRACT_BODY_META);
+  return keys.map((type) => {
+    const meta = APPLICATION_CONTRACT_BODY_META[type] || { apps: [], notes: '' };
+    return { type, apps: meta.apps || [], notes: meta.notes || '' };
+  });
+}
+
+const APPLICATION_CONTRACT_BODY_TYPES = buildApplicationContractBodyTypes();
 
 /**
  * **Inner** domain payloads often carried today inside `GenericMessage` UTF-8 JSON (ActivityStreams-style `type` field).
@@ -59,8 +103,9 @@ const OUTER_WIRE_TYPES = [
 const INNER_DOMAIN_PENDING_PROMOTION = [
   { innerType: 'INVENTORY_REQUEST', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned },
   { innerType: 'INVENTORY_RESPONSE', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned },
+  { innerType: 'FABRIC_DOCUMENT_OFFER', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned, notes: 'Canonical document-offer request; aliases INVENTORY_REQUEST on wire (@fabric/core).' },
+  { innerType: 'FABRIC_DOCUMENT_OFFER_RESPONSE', typicalCarrier: 'GenericMessage JSON body', stability: Stability.planned, notes: 'Canonical document-offer reply; aliases INVENTORY_RESPONSE on wire (@fabric/core).' },
   { innerType: 'P2P_FILE_SEND', typicalCarrier: 'Peer P2P / GenericMessage fanout', stability: Stability.stable },
-  { innerType: 'P2P_CHAT_MESSAGE', typicalCarrier: 'P2P / WebRTC / ChatMessage', stability: Stability.stable },
   { innerType: 'P2P_PEER_GOSSIP', typicalCarrier: 'GenericMessage / P2P_RELAY', stability: Stability.stable },
   { innerType: 'P2P_PEERING_OFFER', typicalCarrier: 'GenericMessage / P2P_RELAY', stability: Stability.stable },
   { innerType: 'Tombstone', typicalCarrier: 'GenericMessage (hub broadcast) + Fabric log type', stability: Stability.stable, notes: 'Hub `EmitTombstone`; object carries activityMessageId and/or documentId.' },
@@ -70,7 +115,8 @@ const INNER_DOMAIN_PENDING_PROMOTION = [
 ];
 
 function outerTypeNames () {
-  return OUTER_WIRE_TYPES.map((t) => t.name);
+  // Unique names only (aliases share opcodes with canonical rows).
+  return [...new Set(OUTER_WIRE_TYPES.map((t) => t.name))];
 }
 
 function findOuterByName (name) {
@@ -90,6 +136,7 @@ module.exports = {
   SUGGESTED_HUB_OPCODE_BLOCK_START,
   SUGGESTED_HUB_OPCODE_BLOCK_END,
   OUTER_WIRE_TYPES,
+  APPLICATION_CONTRACT_BODY_TYPES,
   INNER_DOMAIN_PENDING_PROMOTION,
   outerTypeNames,
   findOuterByName,

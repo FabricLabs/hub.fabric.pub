@@ -1,17 +1,20 @@
 'use strict';
 
-const {
-  readStorageJSON,
-  writeStorageJSON
-} = require('./fabricBrowserState');
+const { store, getFabricBrowserGlobal } = require('./fabricBrowserState');
 
 /**
- * Browser-only feature visibility for the hub SPA (localStorage). Stored values are honored after
- * normalize (including explicit `false` for any flag key). **peers** defaults true; explicit
- * **`peers: false`** hides Peers nav/routes. Bitcoin dashboard stays routable; sub-areas use
+ * Browser-only feature visibility for the hub SPA (`fabric:state` → `ui.featureFlags`).
+ * Defaults favor the **Document market** (Documents + Peers + Bitcoin invoices/explorer).
+ * Persisted `{ value }` from `GET /settings/HUB_UI_FEATURE_FLAGS` overwrites locals.
+ *
+ * **`advancedMode`** is still used for UX that truly needs an explicit “power user” opt-in elsewhere.
+ *
+ * Explicit **`peers: false`** hides Peers nav; Bitcoin explorer remains routable; sub-areas use
  * bitcoinPayments, bitcoinResources, etc.
  */
-const STORAGE_KEY = 'fabric.hub.uiFeatureFlags';
+/** Path under `fabric:state` JSON (see {@link ./fabricBrowserState.js}). */
+const UI_FEATURE_FLAGS_STATE_PATH = '/ui/featureFlags';
+
 const CHANGED_EVENT = 'fabricHubUiFeatureFlagsChanged';
 const SETTINGS_KEY = 'HUB_UI_FEATURE_FLAGS';
 
@@ -37,12 +40,13 @@ const FLAG_KEYS = [
 /** @deprecated No keys are forced on; kept as an empty list for older callers. */
 const ALWAYS_ON_FLAG_KEYS = [];
 
+/** Document-market profile: peers + invoices/explorer; unrelated surfaces off. */
 function defaultFlags () {
   return {
     promo: false,
     advancedMode: false,
     peers: true,
-    activities: true,
+    activities: false,
     features: false,
     sidechain: false,
     bitcoinPayments: false,
@@ -54,9 +58,23 @@ function defaultFlags () {
   };
 }
 
+/** Alias for Admin preset / callers that want an explicit name. */
+function documentMarketUiFlags () {
+  return defaultFlags();
+}
+
+function hasStoredUiFlagShape (raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  /** `bitcoin: true` is a sentinel that enables all BTC sub-features. */
+  if (Object.prototype.hasOwnProperty.call(raw, 'bitcoin')) return true;
+  return FLAG_KEYS.some((k) => Object.prototype.hasOwnProperty.call(raw, k));
+}
+
 function normalizeFlags (raw) {
   const d = defaultFlags();
   if (!raw || typeof raw !== 'object') return d;
+  // Empty `{}` is not intentional config; real storage can accidentally hold `{}` under fabric:state only.
+  if (!hasStoredUiFlagShape(raw)) return d;
   if (raw.bitcoin === true) {
     for (const k of BITCOIN_UI_FLAG_KEYS) d[k] = true;
   }
@@ -65,37 +83,71 @@ function normalizeFlags (raw) {
       d[k] = !!raw[k];
     }
   }
-  // Beginner-safe mode: keep the core surface lean unless Advanced Mode is explicitly enabled.
+  // Without Advanced Mode, keys omitted from `raw` keep bundled defaults (`defaultFlags`), not implicit off.
   if (!d.advancedMode) {
-    d.peers = false;
-    d.activities = false;
-    d.features = false;
-    d.sidechain = false;
-    d.bitcoinResources = false;
-    d.bitcoinExplorer = false;
-    d.bitcoinLightning = false;
-    d.bitcoinCrowdfund = false;
+    const baseWhenUnset = defaultFlags();
+    const KEYS_INHERIT_WHEN_ABSENT_FROM_RAW = [
+      'peers',
+      'activities',
+      'features',
+      'sidechain',
+      'bitcoinResources',
+      'bitcoinExplorer',
+      'bitcoinLightning',
+      'bitcoinCrowdfund'
+    ];
+    for (const k of KEYS_INHERIT_WHEN_ABSENT_FROM_RAW) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) {
+        d[k] = !!baseWhenUnset[k];
+      }
+    }
   }
   return d;
 }
 
 function loadHubUiFeatureFlags () {
-  if (typeof window === 'undefined') return defaultFlags();
+  if (!getFabricBrowserGlobal()) return defaultFlags();
   try {
-    const s = readStorageJSON(STORAGE_KEY, null);
-    if (!s) return defaultFlags();
-    return normalizeFlags(s);
+    const v = store().GET(UI_FEATURE_FLAGS_STATE_PATH);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return defaultFlags();
+    return normalizeFlags(v);
   } catch (e) {
     return defaultFlags();
   }
 }
 
+/**
+ * Test / automation hook: keep in-memory `fabric:state` and localStorage aligned.
+ * Installed once on first browser access (Hub SPA + Puppeteer helpers).
+ */
+function installHubUiFeatureFlagsWindowApi () {
+  const w = getFabricBrowserGlobal();
+  if (!w || w.__fabricHubUiFeatureFlags) return;
+  w.__fabricHubUiFeatureFlags = {
+    load: loadHubUiFeatureFlags,
+    setAll: setAllHubUiFeatureFlags,
+    set: setHubUiFeatureFlag,
+    save: saveHubUiFeatureFlags,
+    persist: persistHubUiFeatureFlags,
+    defaultFlags
+  };
+}
+
 function saveHubUiFeatureFlags (flags) {
-  if (typeof window === 'undefined') return;
+  if (!getFabricBrowserGlobal()) return;
   const next = normalizeFlags(flags);
-  writeStorageJSON(STORAGE_KEY, next);
   try {
-    window.dispatchEvent(new CustomEvent(CHANGED_EVENT, { detail: next }));
+    const st = store();
+    const ui = st.GET('/ui');
+    const merged =
+      ui && typeof ui === 'object' && !Array.isArray(ui)
+        ? Object.assign({}, ui, { featureFlags: next })
+        : { featureFlags: next };
+    st.PUT('/ui', merged);
+  } catch (e) { /* ignore */ }
+  try {
+    const w = getFabricBrowserGlobal();
+    if (w) w.dispatchEvent(new CustomEvent(CHANGED_EVENT, { detail: next }));
   } catch (e) { /* ignore */ }
 }
 
@@ -118,7 +170,8 @@ function setAllHubUiFeatureFlags (patch) {
 }
 
 function subscribeHubUiFeatureFlags (callback) {
-  if (typeof window === 'undefined' || typeof callback !== 'function') {
+  const w = getFabricBrowserGlobal();
+  if (!w || typeof callback !== 'function') {
     return function noop () {};
   }
   const handler = () => {
@@ -126,8 +179,8 @@ function subscribeHubUiFeatureFlags (callback) {
       callback(loadHubUiFeatureFlags());
     } catch (e) { /* ignore */ }
   };
-  window.addEventListener(CHANGED_EVENT, handler);
-  return () => window.removeEventListener(CHANGED_EVENT, handler);
+  w.addEventListener(CHANGED_EVENT, handler);
+  return () => w.removeEventListener(CHANGED_EVENT, handler);
 }
 
 /**
@@ -136,10 +189,17 @@ function subscribeHubUiFeatureFlags (callback) {
  * @returns {Promise<object>}
  */
 async function fetchPersistedHubUiFeatureFlags () {
-  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+  if (!getFabricBrowserGlobal() || typeof fetch !== 'function') {
     return loadHubUiFeatureFlags();
   }
+  installHubUiFeatureFlagsWindowApi();
   try {
+    // Re-read localStorage first so Puppeteer / other-tab writes are not clobbered by a stale
+    // in-memory fabric:state singleton (common browser-test race).
+    try {
+      if (typeof store().load === 'function') store().load();
+    } catch (_) { /* ignore */ }
+
     const res = await fetch(`/settings/${encodeURIComponent(SETTINGS_KEY)}`, {
       method: 'GET',
       headers: { Accept: 'application/json' }
@@ -147,9 +207,21 @@ async function fetchPersistedHubUiFeatureFlags () {
     if (res.status === 404) return loadHubUiFeatureFlags();
     if (!res.ok) return loadHubUiFeatureFlags();
     const body = await res.json().catch(() => ({}));
-    const value = body && body.value && typeof body.value === 'object' ? body.value : null;
-    if (!value) return loadHubUiFeatureFlags();
-    const next = normalizeFlags(value);
+    let raw = body && Object.prototype.hasOwnProperty.call(body, 'value') ? body.value : null;
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch (_) {
+        raw = null;
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !hasStoredUiFlagShape(raw)) {
+      return loadHubUiFeatureFlags();
+    }
+    // Normalize the persisted server payload directly. Omitted keys fall back to
+    // bundled defaults inside normalizeFlags — do not re-merge stale localStorage
+    // toggles that can pin disabled features on.
+    const next = normalizeFlags(raw);
     saveHubUiFeatureFlags(next);
     return next;
   } catch (_) {
@@ -167,7 +239,7 @@ async function fetchPersistedHubUiFeatureFlags () {
 async function persistHubUiFeatureFlags (flags, adminToken) {
   const next = normalizeFlags(flags);
   saveHubUiFeatureFlags(next);
-  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+  if (!getFabricBrowserGlobal() || typeof fetch !== 'function') {
     return { ok: false, flags: next, persisted: false, message: 'window/fetch unavailable' };
   }
   const token = String(adminToken || '').trim();
@@ -211,7 +283,9 @@ module.exports = {
   subscribeHubUiFeatureFlags,
   fetchPersistedHubUiFeatureFlags,
   persistHubUiFeatureFlags,
+  installHubUiFeatureFlagsWindowApi,
   anyBitcoinSubFeatureEnabled,
   defaultHubUiFeatureFlags: defaultFlags,
+  documentMarketUiFlags,
   HUB_UI_FEATURE_FLAGS_SETTING_KEY: SETTINGS_KEY
 };
