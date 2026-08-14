@@ -34,4 +34,15 @@ describe('looksLikeBulkSecurityAdvisory', function () {
     }), false);
     assert.strictEqual(looksLikeBulkSecurityAdvisory(Buffer.from('hello fabric', 'utf8')), false);
   });
+
+  it('drops JSON arrays of advisory objects', function () {
+    assert.strictEqual(looksLikeBulkSecurityAdvisory([
+      { name: 'readme.md' },
+      { security_advisory: { ghsa_id: 'GHSA-aaaa-bbbb-cccc' } }
+    ]), true);
+    assert.strictEqual(looksLikeBulkSecurityAdvisory(JSON.stringify([
+      { security_advisory: { type: 'malware' } }
+    ])), true);
+    assert.strictEqual(looksLikeBulkSecurityAdvisory([{ name: 'readme.md' }]), false);
+  });
 });

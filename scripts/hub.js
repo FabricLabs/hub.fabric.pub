@@ -5,6 +5,10 @@ const path = require('path');
 
 require('../functions/patchLinkedFabricNodePath');
 
+try {
+  require('@fabric/core/functions/fabricHomeEnv').loadFabricHomeEnv();
+} catch (_) { /* older @fabric/core pin */ }
+
 // Settings
 let settings = require('../settings/local');
 
@@ -190,6 +194,34 @@ if (typeof resolveFabricPeerInterface === 'function') {
       env: process.env
     })
   };
+}
+
+function _keyBagEmpty (bag) {
+  if (!bag || typeof bag !== 'object') return true;
+  const xprv = String(bag.xprv || '').trim();
+  const seed = String(bag.seed || '').trim();
+  const mnemonic = String(bag.mnemonic || '').trim();
+  return !(xprv || seed || mnemonic);
+}
+
+if (_keyBagEmpty(settings.key)) {
+  try {
+    const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
+    const fromWallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
+    if (fromWallet && fromWallet.xprv) {
+      settings = {
+        ...settings,
+        key: {
+          ...(settings.key || {}),
+          xprv: fromWallet.xprv,
+          seed: fromWallet.seed || (settings.key && settings.key.seed) || null,
+          mnemonic: fromWallet.mnemonic || (settings.key && settings.key.mnemonic) || null,
+          xpub: fromWallet.xpub || (settings.key && settings.key.xpub) || null
+        }
+      };
+      console.log('[FABRIC:HUB] Identity loaded from ~/.fabric/wallet.json');
+    }
+  } catch (_) { /* older core pin or locked wallet */ }
 }
 
 // Services

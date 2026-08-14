@@ -13,6 +13,10 @@ const { URL } = require('url');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
+try {
+  require('@fabric/core/functions/fabricHomeEnv').loadFabricHomeEnv();
+} catch (_) { /* older @fabric/core pin */ }
+
 /**
  * Optional local operator identity (gitignored). Prefer FABRIC_XPRV in the environment.
  * @returns {{ mnemonic: string, xprv: string }|null}
@@ -48,24 +52,46 @@ function loadLocalOperatorMnemonic () {
  *
  * Priority:
  *   1. `FABRIC_XPRV` — preferred for public docs and production
- *   2. `FABRIC_SEED` / `FABRIC_MNEMONIC` — BIP39 phrase, or an `xprv…` string
- *   3. Optional `local/fabric-operator-identity.json` (automation fallback only)
+ *   2. `FABRIC_SEED` — raw BIP32 seed hex (or a legacy mnemonic / `xprv…` string)
+ *   3. `FABRIC_MNEMONIC` — BIP39 phrase
+ *   4. `~/.fabric/wallet.json` (`FABRIC_PASSWORD` unlocks a sealed wallet)
+ *   5. Optional `local/fabric-operator-identity.json` (automation fallback only)
  *
  * @param {object} [opts]
  * @param {boolean} [opts.allowLocalIdentityFallback=true]
- * @returns {{ xprv: string }|{ mnemonic: string }|null}
+ * @param {boolean} [opts.allowWalletFallback]
+ * @returns {{ xprv: string }|{ mnemonic: string }|{ seed: string }|null}
  */
 function loadPeerKeySettings (opts = {}) {
   const allowLocal = opts.allowLocalIdentityFallback !== false;
-  const fromXprv = String(process.env.FABRIC_XPRV || '').trim();
-  if (fromXprv.startsWith('xprv') || fromXprv.startsWith('tprv')) {
-    return { xprv: fromXprv };
+  const allowWallet = opts.allowWalletFallback != null
+    ? opts.allowWalletFallback
+    : true;
+
+  try {
+    const { keySettingsFromEnv } = require('@fabric/core/functions/fabricKeyMaterial');
+    const fromEnv = keySettingsFromEnv(process.env);
+    if (fromEnv) return fromEnv;
+  } catch (_) {
+    const fromXprv = String(process.env.FABRIC_XPRV || '').trim();
+    if (fromXprv.startsWith('xprv') || fromXprv.startsWith('tprv')) {
+      return { xprv: fromXprv };
+    }
+    const seed = String(process.env.FABRIC_SEED || process.env.FABRIC_MNEMONIC || '').trim();
+    if (seed.startsWith('xprv') || seed.startsWith('tprv')) {
+      return { xprv: seed };
+    }
+    if (seed) return { mnemonic: seed };
   }
-  const seed = String(process.env.FABRIC_SEED || process.env.FABRIC_MNEMONIC || '').trim();
-  if (seed.startsWith('xprv') || seed.startsWith('tprv')) {
-    return { xprv: seed };
+
+  if (allowWallet) {
+    try {
+      const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
+      const wallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
+      if (wallet && wallet.xprv) return { xprv: wallet.xprv };
+    } catch (_) { /* older core pin or locked wallet */ }
   }
-  if (seed) return { mnemonic: seed };
+
   if (!allowLocal) return null;
   const local = loadLocalOperatorIdentityFile();
   if (!local) return null;

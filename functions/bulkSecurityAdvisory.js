@@ -31,7 +31,19 @@ function looksLikeBulkSecurityAdvisory (input) {
     return false;
   }
   if (typeof input !== 'object') return false;
-  if (input.security_advisory && typeof input.security_advisory === 'object') return true;
+  if (Array.isArray(input)) {
+    const n = Math.min(input.length, 32);
+    for (let i = 0; i < n; i++) {
+      if (looksLikeBulkSecurityAdvisory(input[i])) return true;
+    }
+    return false;
+  }
+  if (input.security_advisory != null) {
+    if (typeof input.security_advisory === 'object') return true;
+    if (typeof input.security_advisory === 'string') {
+      return looksLikeBulkSecurityAdvisory(input.security_advisory);
+    }
+  }
   const summary = String(input.summary || input.title || input.name || '');
   if (input.ghsa_id && /malicious code in @/i.test(summary)) return true;
   if (/@zalastax\/nolb-/i.test(summary) || /malicious code in @/i.test(summary)) return true;

@@ -57,6 +57,7 @@ const {
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
+const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const {
   isManagedBitcoinSpawnEarlyExit,
   wrapBitcoinRpcProbeCandidatesForPort
@@ -3165,11 +3166,30 @@ class Hub extends Service {
     };
   }
 
+  /**
+   * Local developer env is the production publisher: Hub `_rootKey` (HD master)
+   * and Peer `agent.key` (BIP44 child) share `FABRIC_XPRV`. Accept tokens minted
+   * from either.
+   * @param {string} token
+   * @returns {boolean}
+   */
+  _verifyOperatorAdminToken (token) {
+    const t = String(token || '').trim();
+    if (!t) return false;
+    if (this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(t)) {
+      return true;
+    }
+    return isOperatorAdminToken(t, [this._rootKey, this.agent && this.agent.key]);
+  }
+
   async _acceptTrackedApplicationContract (params = {}) {
     const req = (params && typeof params === 'object') ? params : {};
     const token = String(req.adminToken || req.token || '').trim();
-    if (!this.setup || !this.setup.verifyAdminToken(token)) {
+    if (!token) {
       return { status: 'error', message: 'adminToken required' };
+    }
+    if (!this._verifyOperatorAdminToken(token)) {
+      return { status: 'error', message: 'adminToken invalid' };
     }
     const contractId = req.contractId != null ? String(req.contractId).trim() : '';
     if (!contractId) return { status: 'error', message: 'contractId required' };
@@ -3243,8 +3263,11 @@ class Hub extends Service {
   async _rejectTrackedApplicationContract (params = {}) {
     const req = (params && typeof params === 'object') ? params : {};
     const token = String(req.adminToken || req.token || '').trim();
-    if (!this.setup || !this.setup.verifyAdminToken(token)) {
+    if (!token) {
       return { status: 'error', message: 'adminToken required' };
+    }
+    if (!this._verifyOperatorAdminToken(token)) {
+      return { status: 'error', message: 'adminToken invalid' };
     }
     const contractId = req.contractId != null ? String(req.contractId).trim() : '';
     if (!contractId) return { status: 'error', message: 'contractId required' };
@@ -9896,9 +9919,12 @@ class Hub extends Service {
         console.error('[HUB:AGENT:ERROR]', err && err.stack ? err.stack : err);
       });
 
-      this.agent.on('debug', (err) => {
-        console.debug('[HUB:AGENT:DEBUG]', err && err.stack ? err.stack : err);
-      });
+      if (this.settings.debug) {
+        this.agent.on('debug', (line) => {
+          const text = line && line.stack ? line.stack : String(line == null ? '' : line);
+          console.debug('[HUB:AGENT:DEBUG]', text.length > 2000 ? `${text.slice(0, 2000)}…` : text);
+        });
+      }
 
       // Directed onion (P2P_FORWARD) — TCP Peer only; never WS-flood outer frames.
       this.agent.on('onion:sent', (ev) => {

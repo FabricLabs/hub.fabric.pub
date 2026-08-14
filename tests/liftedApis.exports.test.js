@@ -21,6 +21,8 @@ describe('Hub lifted API package exports', function () {
     './functions/oracleAttestation',
     './functions/fabricPubkey',
     './functions/fabricChatNormalize',
+    './functions/bulkSecurityAdvisory',
+    './functions/operatorAdminToken',
     './functions/hubLifecycle',
     './functions/documentInventoryMarket',
     './functions/identityCluster',
@@ -146,7 +148,7 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     const httpChat = require('@fabric/http/functions/fabricChatNormalize');
     const coreChat = require('@fabric/core/functions/fabricChatText');
     // Hub wraps http normalize to sanitize Number(null)/'' created timestamps (epoch 0).
-    // http `cbdfa858` re-exports core shoutbox helpers.
+    // http `61bb801` re-exports core shoutbox helpers (core pin `0ed61d62`).
     assert.strictEqual(httpChat.chatTextOf, coreChat.chatTextOf);
     assert.strictEqual(hubChat.chatTextOf, httpChat.chatTextOf);
     assert.strictEqual(hubChat.chatActorIdOf, httpChat.chatActorIdOf);
@@ -158,6 +160,15 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
       { signer: key.pubkey }
     );
     assert.ok(Number(coerced.object.created) > 0);
+  });
+
+  it('resolves core home-env / key-material helpers on this pin', function () {
+    const home = require('@fabric/core/functions/fabricHomeEnv');
+    const material = require('@fabric/core/functions/fabricKeyMaterial');
+    assert.strictEqual(typeof home.loadFabricHomeEnv, 'function');
+    assert.strictEqual(typeof material.parseRawSeedHex, 'function');
+    assert.strictEqual(typeof material.keySettingsFromEnv, 'function');
+    assert.strictEqual(material.classifyFabricKeyMaterial('aa'.repeat(32)).kind, 'seedHex');
   });
 
   it('fabricDelegation exports mount + session helpers', function () {

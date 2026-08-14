@@ -31,6 +31,8 @@
     "./functions/oracleAttestation": "./functions/oracleAttestation.js",
     "./functions/fabricPubkey": "./functions/fabricPubkey.js",
     "./functions/fabricChatNormalize": "./functions/fabricChatNormalize.js",
+    "./functions/bulkSecurityAdvisory": "./functions/bulkSecurityAdvisory.js",
+    "./functions/operatorAdminToken": "./functions/operatorAdminToken.js",
     "./functions/hubLifecycle": "./functions/hubLifecycle.js",
     "./functions/sidechainState": "./functions/sidechainState.js",
     "./functions/peerIdentity": "./functions/peerIdentity.js",
