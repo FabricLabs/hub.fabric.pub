@@ -69,7 +69,7 @@ Full table with opcodes and stability: **`fabricMessageRegistry.OUTER_WIRE_TYPES
 | `Ping` / `Pong` | Keepalive. |
 | `P2P_MESSAGE_RECEIPT` | Server ack. |
 | `ChatMessage` | Chat broadcast (legacy re-signed relay path). |
-| `P2P_CHAT_MESSAGE` | First-class peer chat frame (opcode `104` / `0x68`). Relayed with per-hop re-sign for key-pinning continuity; author carried in body. |
+| `P2P_CHAT_MESSAGE` | First-class peer chat frame (opcode `104` / `0x68`). Body = raw UTF-8 text; author is the AMP signature. Hub SPA may still fan out a JSON `ChatMessage` (0x67) on WebSocket. |
 | `CONTRACT_PUBLISH` | Publishes a contract definition; registers under a deterministic Actor id (contract namespace). Hub records `ContractPublish`. |
 | `CONTRACT_MESSAGE` | Namespaced contract event; body carries `contract: <id>`. Dispatch routes by namespace; Hub records `ContractMessage`. |
 | `ContractProposal` | Batched signed messages + Merkle + JSON Patch (+ optional PSBT); optional `contractId` namespace. |

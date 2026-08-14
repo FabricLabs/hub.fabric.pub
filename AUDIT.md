@@ -5,8 +5,8 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `488a87da150b23c2591f1c75fa2c1ad6dac201f4`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `5161e760a451bad9f3654a500b4b270988d699ce`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `1fc616492428ec6e8c731e3afb74fd841407aa0e`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `852520a2bd1070bb974b1a34297811f3c63588eb`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |

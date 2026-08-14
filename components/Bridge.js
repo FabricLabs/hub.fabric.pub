@@ -3002,18 +3002,10 @@ class Bridge extends React.Component {
               }));
               this._persistMessages();
 
-              // Relay chat in the envelope shape Hub / P2P_RELAY receivers expect.
+              // Mesh body is UTF-8 text (Peer rejects JSON chat envelopes).
               if (this._isConnected && this.ws && this.ws.readyState === 1) {
                 const envelope = {
-                  original: JSON.stringify({
-                    type: Message.canonicalTypeName(P2P_CHAT_MESSAGE),
-                    actor: { id: actorId },
-                    object: {
-                      content: trimmed,
-                      created,
-                      clientId
-                    }
-                  }),
+                  original: trimmed,
                   originalType: Message.canonicalTypeName(P2P_CHAT_MESSAGE),
                   hops: [{ from: peerId, at: Date.now() }]
                 };

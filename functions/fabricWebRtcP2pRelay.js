@@ -10,6 +10,7 @@
 
 const Message = require('@fabric/core/types/message');
 const { HEADER_SIZE, MAGIC_BYTES } = require('@fabric/core/constants');
+const { chatTextOf } = require('@fabric/http/functions/fabricChatNormalize');
 
 /** Inner types that are not first-class outer opcodes — carry as GENERIC_MESSAGE JSON. */
 const GENERIC_CARRIER_TYPES = new Set([
@@ -57,6 +58,33 @@ function tryDecodeWireBuffer (original) {
 }
 
 /**
+ * Mesh shoutbox / alias bodies are raw UTF-8. Legacy Hub/Bridge envelopes
+ * stuffed JSON `{ type, object.content }` into `original` — extract text so
+ * Peer does not drop the frame as a JSON chat envelope.
+ * @param {string|Buffer} original
+ * @returns {string}
+ */
+function utf8ChatBodyFromOriginal (original) {
+  const body = Buffer.isBuffer(original)
+    ? original.toString('utf8')
+    : String(original || '');
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const text = chatTextOf(parsed);
+      if (text && String(text).trim()) return String(text);
+      if (parsed && typeof parsed === 'object') {
+        const name = parsed.alias || parsed.name
+          || (parsed.object && (parsed.object.alias || parsed.object.name));
+        if (name != null && String(name).trim()) return String(name).trim();
+      }
+    } catch (_) { /* keep raw */ }
+  }
+  return body;
+}
+
+/**
  * @param {string|Buffer} original
  * @param {string} originalType
  * @param {object} signingKey Key with signWithKey support (hub agent / root key)
@@ -89,7 +117,9 @@ function buildInnerWireBuffer (original, originalType, signingKey) {
 
   let outerType = type;
   let outerBody = body;
-  if (GENERIC_CARRIER_TYPES.has(type)) {
+  if (type === 'P2P_CHAT_MESSAGE' || type === 'P2P_PEER_ALIAS') {
+    outerBody = utf8ChatBodyFromOriginal(original);
+  } else if (GENERIC_CARRIER_TYPES.has(type)) {
     outerType = 'GenericMessage';
     // If caller already sent a bare object, wrap with the domain type.
     try {

@@ -40,7 +40,7 @@ const OUTER_WIRE_TYPES = [
   { name: 'JSONCall', opcodeDec: 16000, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Hub/browser JSON-RPC; body { method, params }.' },
   { name: 'JSONPatch', opcodeDec: 1024, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'State patch to clients.' },
   { name: 'ChatMessage', opcodeDec: 103, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Chat broadcast (0x67); legacy re-signed relay path.' },
-  { name: 'P2P_CHAT_MESSAGE', opcodeDec: 104, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'First-class peer chat frame (0x68). Relayed with per-hop re-sign for key-pinning continuity; author carried in body.' },
+  { name: 'P2P_CHAT_MESSAGE', opcodeDec: 104, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'First-class peer chat frame (0x68). Body = raw UTF-8 text; author is the AMP signature. Hub SPA may still cache a JSON ChatMessage (0x67) on WebSocket.' },
   { name: 'Ping', opcodeDec: 18, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PING keepalive.' },
   { name: 'Pong', opcodeDec: 19, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PONG response.' },
   { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Peer mesh flood: body = raw inner Message bytes. Hub↔browser WS may still use JSON { original, originalType, hops }. Not IP-hiding — use P2P_FORWARD.' },

@@ -2,12 +2,13 @@
 All notable changes to **hub.fabric.pub** (Fabric Hub) are documented here. RCs are coordinated with **`@fabric/core`** and **`@fabric/http`**.
 
 ## [Unreleased]
+- **Chat shoutbox:** WebRTC → Fabric TCP `P2P_RELAY` inner chat is UTF-8 text (legacy JSON `{ object.content }` envelopes are unpacked). Registry marks `P2P_CHAT_MESSAGE` as `utf8-text`; author is AMP signature.
 - **IdentityCrossSign:** `functions/identityCrossSign.js` / `identityCrossSignVerify.js` re-export `@fabric/core`.
 - **Identity cluster:** ingest keys must be compressed or x-only hex (`pubkeyXOnly`); colon-smashed strings are `invalid pubkey`.
 - **Beacon:** Hub ready-round retry tests match core recovered-witness checks (real Schnorr; fake `'00'` is rejected).
 - **Device link:** per-origin create quota is in `@fabric/http` (`MAX_SESSIONS_PER_ORIGIN`); Hub re-exports it from `functions/fabricDeviceLink.js`. Browser device-link fetch omits client-set Origin/Referer.
 - **Site login:** expired `GET /sessions/:delegationToken` requires matching `Authorization: Bearer` (http pin).
-- **Pins:** `@fabric/core` lockfile `488a87da1…` (IdentityCrossSign kind/id guards, recovered Beacon witness check); `@fabric/http` lockfile `5161e76…` (`--wallet -p` is not a path, IdentityCrossSign re-export tests, peer `:7778` canonicalize, Bearer path-token). `package.json` stays on `#feature/rsi`. `report:install` wipes the lockfile then `npm i --allow-git=all`.
+- **Pins:** `@fabric/core` lockfile `1fc616492…` (first-tier RC1 contract, undersize AMP drop, IdentityCrossSign kind/id guards, canonical `host:port` dial keys); `@fabric/http` lockfile `852520a…` (`pubkey@` strip + dedicated-NIC `:7778`→`:7777`, `--wallet -p` is not a path, Bearer path-token). `package.json` stays on `#feature/rsi`. `report:install` wipes the lockfile then `npm i --allow-git=all`.
 - **Managed Bitcoin:** Hub RPC probe keeps cookie credentials (no longer a port-only stub that 401s an orphan `bitcoind`). Spawn early-exit / datadir lock **attaches** to the live node instead of `pm2` crash-looping. Shutdown kills only a Core this process spawned.
 - **Playnet:** `npm run playnet:status -- --production` reports native `fabric-beacon` plus an optional sibling GoonCitizen contract id. Deploy the application namespace from GoonCitizen: `npm run playnet:deploy-gooncitizen -- --production --accept`.
 - **SPA assets:** `assets/scripts/assets/manifest.json` loads the same-origin `/bundles/browser.min.js` (no remote `fabric.pub` script URI).

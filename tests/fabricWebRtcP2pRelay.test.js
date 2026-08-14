@@ -12,12 +12,14 @@ const {
 describe('fabricWebRtcP2pRelay', function () {
   const key = new Key();
 
-  it('builds P2P_CHAT_MESSAGE inner bytes for Peer P2P_RELAY', function () {
+  it('builds P2P_CHAT_MESSAGE inner bytes as UTF-8 text (not JSON envelope)', function () {
     const chat = JSON.stringify({ type: 'P2P_CHAT_MESSAGE', object: { content: 'hi' } });
     const inner = buildInnerWireBuffer(chat, 'P2P_CHAT_MESSAGE', key);
     assert.ok(looksLikeFabricMessageBuffer(inner));
     const parsed = Message.fromBuffer(inner);
     assert.strictEqual(parsed.type, 'P2P_CHAT_MESSAGE');
+    const { messageDataToString } = require('@fabric/core/functions/wireJson');
+    assert.strictEqual(messageDataToString(parsed.raw.data), 'hi');
   });
 
   it('wrapPeerP2pRelay body is raw Message bytes (not JSON envelope)', function () {
@@ -32,6 +34,8 @@ describe('fabricWebRtcP2pRelay', function () {
     assert.notStrictEqual(body[0], 0x7b /* '{' */);
     const unwrapped = Message.fromBuffer(body);
     assert.strictEqual(unwrapped.type, 'P2P_CHAT_MESSAGE');
+    const { messageDataToString } = require('@fabric/core/functions/wireJson');
+    assert.strictEqual(messageDataToString(unwrapped.raw.data), 'hi');
   });
 
   it('preserves fabric-message author signature bytes', function () {

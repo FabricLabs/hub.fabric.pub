@@ -29,6 +29,7 @@ describe('fabricMessageRegistry', function () {
   it('P2P_CHAT_MESSAGE opcode matches @fabric/core', function () {
     const row = registry.findOuterByName('P2P_CHAT_MESSAGE');
     assert.ok(row, 'P2P_CHAT_MESSAGE should be a first-class outer type');
+    assert.strictEqual(row.encoding, registry.PayloadEncoding.utf8Text);
     // 0x68 = 104. When the linked @fabric/core exports the constant, require
     // exact alignment; otherwise assert the canonical literal (pre-core-upgrade).
     if (typeof constants.P2P_CHAT_MESSAGE === 'number') {
