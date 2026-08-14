@@ -1373,11 +1373,11 @@ async function fetchWalletTransactions (settings = {}, wallet = {}, options = {}
   const xpub = wallet.xpub ? String(wallet.xpub).trim() : '';
   const walletId = String(wallet.walletId || '').trim();
   const limit = Math.max(1, Math.min(100, Number(options.limit || 50)));
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
 
   if (xpub) {
     const baseUrl = normalizeXpubWatchBaseUrl(settings.paymentsBaseUrl);
     if (!baseUrl) return [];
+    const authTok = resolveBitcoinClientAuthToken(settings, baseUrl);
     const params = new URLSearchParams();
     params.set('xpub', xpub);
     params.set('limit', String(limit));
@@ -1394,6 +1394,7 @@ async function fetchWalletTransactions (settings = {}, wallet = {}, options = {}
   const baseUrl = normalizeWalletsBaseUrl(settings.paymentsBaseUrl);
   if (!baseUrl) return [];
   if (!walletId) return [];
+  const authTok = resolveBitcoinClientAuthToken(settings, baseUrl);
 
   const params = new URLSearchParams();
   params.set('limit', String(limit));
@@ -1526,7 +1527,7 @@ async function fetchPayments (settings = {}, wallet = {}, options = {}) {
     const addrs = deriveWatchAddresses(wallet, net, 25, 25);
     if (addrs.length > 0) params.set('addresses', addrs.join(','));
   }
-  const authTok = String(settings.hubAdminToken || '').trim() || settings.apiToken || '';
+  const authTok = resolveBitcoinClientAuthToken(settings, baseUrl);
   const result = await tryRequests(baseUrl, [
     { path: `?${params.toString()}` }
   ], authTok);

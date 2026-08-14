@@ -146,7 +146,7 @@ Beacon epochs optionally attach **`federationWitness`** over **`signingStringFor
 | `functions/sidechainState.js` | Re-exports `@fabric/core/functions/sidechainState` (vendored `fabricStatechain.js` fallback) |
 | `@fabric/core/functions/sidechainState` | Digests, patch + path policy, journal, restore, serialize queue, wire body helpers |
 | `services/hub.js` | RPC + HTTP sidechain routes, epoch snapshot + journal seal, reorg/reconcile via `resolveStateForBeaconTip` |
-| `types/distributedExecution.js` | **Deprecated** thin re-export — use `functions/beaconFederationSigning` + `Machine`/`Program` |
+| `functions/fabricDistributedExecution.js` | Hub facade for `@fabric/core` Machine / Program / federation signing (not `types/distributedExecution.js`) |
 | `tests/beacon.reorg.test.js`, `tests/sidechainState.test.js` | Unit coverage |
 
 ---

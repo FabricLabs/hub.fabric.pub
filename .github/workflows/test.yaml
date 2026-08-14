@@ -20,16 +20,17 @@ jobs:
       uses: actions/checkout@v4
       with:
         path: hub
-    - name: Checkout fabric-http (@fabric/http via file:../fabric-http)
+    - name: Checkout fabric-http (sibling for file:../fabric-http layouts)
       uses: actions/checkout@v4
       with:
         repository: FabricLabs/fabric-http
-        ref: feature/v0.1.0-RC1
+        ref: feature/rsi
         path: fabric-http
     - name: Install Node.js on ${{ matrix.os }}
       uses: actions/setup-node@v4
       with:
-        node-version-file: '.nvmrc'
+        # Checkout uses path: hub, so .nvmrc is hub/.nvmrc (not repo root).
+        node-version-file: 'hub/.nvmrc'
         cache: 'npm'
         cache-dependency-path: hub/package-lock.json
     - name: Install dependencies

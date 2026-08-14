@@ -108,6 +108,9 @@ async function decryptFabricIdentityBackupToPayload (encryptedFile, password) {
   const salt = b64ToU8(String(encryptedFile.kdf?.salt || ''));
   const iv = b64ToU8(String(encryptedFile.iv || ''));
   const rawCipher = b64ToU8(String(encryptedFile.ciphertext || ''));
+  if (salt.length < 16) throw new Error('Backup KDF salt is too short.');
+  if (iv.length !== 12) throw new Error('Backup AES-GCM iv must be 12 bytes.');
+  if (!rawCipher.length) throw new Error('Backup ciphertext is empty.');
 
   const baseKey = await subtle.importKey(
     'raw',
@@ -116,7 +119,10 @@ async function decryptFabricIdentityBackupToPayload (encryptedFile, password) {
     false,
     ['deriveBits']
   );
-  const iterations = Number(encryptedFile.kdf?.iterations || 210000) || 210000;
+  const iterations = Number(encryptedFile.kdf?.iterations || 210000);
+  if (!Number.isFinite(iterations) || iterations < 100000 || iterations > 1000000) {
+    throw new Error('Backup KDF iterations are out of range.');
+  }
   const bits = await subtle.deriveBits(
     {
       name: 'PBKDF2',

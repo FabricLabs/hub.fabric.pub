@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   resolveFabricHttpRoots,
+  runBuildSemantic,
   syncSemanticAssetsFromRoot
 } = require('../functions/fabricHttpSemantic');
 
@@ -48,7 +49,14 @@ function syncSemanticAssetsFromFabricHttp () {
     console.warn('[BUILD:SITE] @fabric/http assets not found, skipping Semantic asset sync.');
     return;
   }
-  syncSemanticAssetsFromRoot(sourceRoot, root);
+  try {
+    if (roots.withSources && !roots.withAssets) {
+      runBuildSemantic(roots.withSources);
+    }
+    syncSemanticAssetsFromRoot(sourceRoot, root);
+  } catch (e) {
+    console.warn('[BUILD:SITE] Semantic asset sync failed:', e && e.message ? e.message : e);
+  }
 }
 
 function resolveWebpackConfig () {

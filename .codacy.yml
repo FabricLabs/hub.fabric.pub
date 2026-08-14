@@ -1,0 +1,12 @@
+# Codacy — reduce noise on generated / vendor / report trees (PR #15 100-issue cap).
+# https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+---
+exclude_paths:
+  - "assets/**"
+  - "libraries/**"
+  - "reports/**"
+  - "docs/**"
+  - "tests/**"
+  - "scripts/**"
+  - "extension/vendor/**"
+  - "coverage/**"

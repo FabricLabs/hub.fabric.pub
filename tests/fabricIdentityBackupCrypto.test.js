@@ -27,4 +27,21 @@ describe('fabricIdentityBackupCrypto', function () {
     assert.strictEqual(plain.xprv, inner.xprv);
     assert.strictEqual(plain.xpub, inner.xpub);
   });
+
+  it('rejects imported backups with extreme KDF iterations', async function () {
+    const crypto = require('crypto');
+    if (typeof globalThis.crypto === 'undefined') {
+      globalThis.crypto = crypto.webcrypto;
+    }
+    const {
+      encryptFabricIdentityBackupPayload,
+      decryptFabricIdentityBackupToPayload
+    } = require('../functions/fabricIdentityBackupCrypto');
+    const enc = await encryptFabricIdentityBackupPayload({ xprv: 'x' }, 'test-pass-ok!');
+    enc.kdf.iterations = 50_000_000;
+    await assert.rejects(
+      () => decryptFabricIdentityBackupToPayload(enc, 'test-pass-ok!'),
+      /iterations are out of range/
+    );
+  });
 });

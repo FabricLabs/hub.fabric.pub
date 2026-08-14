@@ -226,7 +226,12 @@ class SetupService {
   verifyAdminToken (bearerToken) {
     if (!bearerToken || typeof bearerToken !== 'string') return false;
     if (!this._rootKey) return false;
-    return Token.verifySigned(bearerToken, this._rootKey) !== null;
+    const payload = Token.verifySigned(bearerToken, this._rootKey);
+    if (!payload || typeof payload !== 'object') return false;
+    // Signed payload uses cap/sub; constructor options use capability/subject.
+    const cap = payload.cap || payload.capability;
+    const sub = payload.sub || payload.subject;
+    return cap === 'OP_IDENTITY' && sub === 'admin';
   }
 
   /**

@@ -1,6 +1,8 @@
 # Security (`@fabric/hub` / hub.fabric.pub)
 Rendezvous hub, browser gateway, and Bitcoin-facing operator surface.
 
+**Outstanding queue:** [docs/OUTSTANDING.md](docs/OUTSTANDING.md). Production: [docs/PRODUCTION.md](docs/PRODUCTION.md). March: [docs/PRODUCTION_MARCH.md](docs/PRODUCTION_MARCH.md).
+
 ## Adversarial environment
 Fabric networks are intended for deployment where **peers, relays, hubs, and operators may be hostile**. Design and review against:
 
@@ -25,7 +27,7 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - ~~**Encrypted backup export**~~ — primary “Download encrypted backup” requires an unlocked signing `xprv` (watch-only disabled + labeled).
 - **Large WIP split** — PR #15 still spans far more than review-tool limits; land remaining RSI work as stacked PRs (identity, Bitcoin/HTLC, WebRTC, docs).
 - **`GenericMessage` / WS** — see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md); prefer named AMP types on public hubs.
-- ~~**`@fabric/core` / `@fabric/http` pin hygiene**~~ — pins: core `3745041e…`, http `e167d8e…` (refreshed via `feature/rsi`; `report:install` wipes the lockfile then `npm i --allow-git=all`). Keep `package.json` on moving `feature/rsi` during RSI; re-pin releases to lockfile SHAs.
+- ~~**`@fabric/core` / `@fabric/http` pin hygiene**~~ — pins: core `39bfbcb7b…`, http `17abf49…` (refreshed via `feature/rsi`; `report:install` wipes the lockfile then `npm i --allow-git=all`). Keep `package.json` on moving `feature/rsi` during RSI; re-pin releases to lockfile SHAs.
 - ~~**Fabric coin types**~~ — `functions/fabricAccountDerivedIdentity.js` uses core `fabricIdentityDerivationPath` (default **7778**; optional `mainnet` / **7777**). Wire Hub UI / bitcoin network into that optional arg where product wants mainnet identity paths.
 - **Site-login / device-link Origin gates** — inherited from `@fabric/http` (forgeable Origin/Referer for session/device-link redeem on shared hosts; Hub self-sign is opt-in + loopback-only in http). Site-login uses `clientMayPollDesktopSession`. Device-link uses that plus thin-client Origins on allowlisted hubs (`clientMayAccessDeviceLink`, re-exported from `functions/fabricDeviceLink.js`). Not a possession proof. Prefer possession proofs before treating QR `sessionId` as browser-grade auth; cleartext production hubs are no longer default-allowlisted. Remaining http follow-ups: always-fresh device-link nonce (reject client-supplied), bind `sessionId` into link messages in a coordinated client bump, per-origin create quota.
 - **Payment test route** — Hub defaults `exposePaymentTestRoute` **off**; set `FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE=1` (or legacy `FABRIC_HTTP_PAYMENTS_HIDE_TEST_ROUTE=0`) when needed for local 402 checks.
@@ -33,6 +35,9 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - ~~**HTLC key reveal chat**~~ — inbound `HTLC_KEY_REVEAL` is relay-only (no `_cacheChatMessage` / WS broadcast); inventory settlements retain `documentContentKey.readContentKey` as `preimageHex`.
 - ~~**UI flag fetch**~~ — `fetchPersistedHubUiFeatureFlags` normalizes the server payload directly (no stale localStorage merge).
 - ~~**Peer alias attribution**~~ — WebRTC aliases bind to the session peer id; hub-wire AMP aliases bind to `message.author` (not local identity).
+- ~~**Admin token capability**~~ — `verifyAdminToken` requires `cap=OP_IDENTITY` and `sub=admin`.
+- ~~**bitcoinClient admin token on payments URLs**~~ — `fetchWalletTransactions` / `fetchPayments` use `resolveBitcoinClientAuthToken`.
+- ~~**Backup KDF import bounds**~~ — decrypt rejects iterations outside 100k–1M and short salt / wrong iv.
 - ~~**Tracked application contract keys**~~ — reject `__proto__` / `constructor` / `prototype` ids; pending republish must match signer/origin/definitionDigest.
 - ~~**Setup status safety timer**~~ — timeout no longer flips `setupChecked` (avoids skipping onboarding); Retry stays on the loading gate.
 - ~~**Beacon federation round close**~~ — core `addSignature` rejects further sigs when status is `ready` or `sealed`; Hub `createRound` wrapper defaults omitted `policy` to `{}`. Ready-round **retry finalize** lives in core `Beacon#submitFederationEpochSignature`; Hub `contracts/beacon.js` is a thin subclass.
