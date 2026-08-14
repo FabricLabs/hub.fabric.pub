@@ -144,7 +144,10 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
 
     const hubChat = require('../functions/fabricChatNormalize');
     const httpChat = require('@fabric/http/functions/fabricChatNormalize');
+    const coreChat = require('@fabric/core/functions/fabricChatText');
     // Hub wraps http normalize to sanitize Number(null)/'' created timestamps (epoch 0).
+    // http `cbdfa858` re-exports core shoutbox helpers.
+    assert.strictEqual(httpChat.chatTextOf, coreChat.chatTextOf);
     assert.strictEqual(hubChat.chatTextOf, httpChat.chatTextOf);
     assert.strictEqual(hubChat.chatActorIdOf, httpChat.chatActorIdOf);
     assert.notStrictEqual(hubChat.normalizeP2pChatMessage, httpChat.normalizeP2pChatMessage);

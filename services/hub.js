@@ -56,6 +56,7 @@ const {
 } = require('../functions/hubLifecycle');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
+const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const {
   isManagedBitcoinSpawnEarlyExit,
   wrapBitcoinRpcProbeCandidatesForPort
@@ -1156,6 +1157,7 @@ class Hub extends Service {
     const now = new Date().toISOString();
     for (const it of items) {
       if (!it || !it.published) continue;
+      if (looksLikeBulkSecurityAdvisory(it)) continue;
       const id = this._normalizeDocumentId(it.id);
       if (!id) continue;
       const existed = !!coll[id];
@@ -1758,6 +1760,9 @@ class Hub extends Service {
   recordActivity (activity = {}) {
     try {
       if (!activity || typeof activity !== 'object') return null;
+      if (looksLikeBulkSecurityAdvisory(activity) || looksLikeBulkSecurityAdvisory(activity.object)) {
+        return null;
+      }
 
       const actorId = (activity.actor && activity.actor.id) ||
         (this.agent && this.agent.identity && this.agent.identity.id) ||
@@ -10876,6 +10881,9 @@ class Hub extends Service {
         const buffer = Buffer.from(contentBase64, 'base64');
         const sizeErr = this._validateDocumentSize(buffer);
         if (sizeErr) return sizeErr;
+        if (looksLikeBulkSecurityAdvisory(doc) || looksLikeBulkSecurityAdvisory(buffer) || looksLikeBulkSecurityAdvisory(name)) {
+          return { status: 'error', message: 'bulk security-advisory documents are not ingested' };
+        }
         const sha256 = doc.sha256 ? String(doc.sha256) : crypto.createHash('sha256').update(buffer).digest('hex');
         const id = sha256;
         const now = new Date().toISOString();
@@ -13168,6 +13176,10 @@ class Hub extends Service {
         const incomingBuffer = Buffer.from(doc.contentBase64, 'base64');
         if (this._validateDocumentSize(incomingBuffer)) {
           console.warn('[HUB] Dropping incoming file (too large):', doc.id);
+          return;
+        }
+        if (looksLikeBulkSecurityAdvisory(doc) || looksLikeBulkSecurityAdvisory(incomingBuffer)) {
+          console.warn('[HUB] Dropping bulk security-advisory document:', doc && (doc.name || doc.id));
           return;
         }
 

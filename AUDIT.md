@@ -5,8 +5,8 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `1fc616492428ec6e8c731e3afb74fd841407aa0e`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `852520a2bd1070bb974b1a34297811f3c63588eb`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `9f2eb9453d3af0678b1b393ac0b157b2810f56a0`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `cbdfa858a40fb5ad17be66860d2de928114d1686`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -63,9 +63,9 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | Device-link linked GET starving the peer | Fixed upstream in `@fabric/http` (keep until TTL; Hub re-exports) |
 | Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof). Http device-link also allows thin-client Origins on allowlisted hubs; still not a possession proof. |
 | Device-link client-supplied nonce | Open — inherited from `@fabric/http` (prefer always-fresh nonce) |
-| Device-link FIFO eviction under create flood | Open — nit; per-origin quota |
+| Device-link FIFO eviction under create flood | Fixed — http `MAX_SESSIONS_PER_ORIGIN`; Hub re-exports |
 | Identity import / stronger at-rest crypto | Deferred — heavy lift |
-| Large WIP split into stacked PRs | Open — process |
+| Large WIP split into stacked PRs | Open — process ([#15](https://github.com/FabricLabs/hub.fabric.pub/pull/15) merged; remaining RSI is follow-up PRs) |
 | Fabric hallmarks (opt-in OP_RETURN) | In tree — Hub publish/scan + docs; regtest-only |
 
 ## Disclosure
