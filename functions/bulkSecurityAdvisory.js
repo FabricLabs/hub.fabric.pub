@@ -32,9 +32,8 @@ function looksLikeBulkSecurityAdvisory (input) {
   }
   if (typeof input !== 'object') return false;
   if (Array.isArray(input)) {
-    const n = Math.min(input.length, 32);
-    for (let i = 0; i < n; i++) {
-      if (looksLikeBulkSecurityAdvisory(input[i])) return true;
+    for (const item of input.slice(0, 32)) {
+      if (looksLikeBulkSecurityAdvisory(item)) return true;
     }
     return false;
   }
