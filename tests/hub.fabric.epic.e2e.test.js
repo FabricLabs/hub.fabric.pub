@@ -139,7 +139,7 @@ async function waitForDocumentPayload (baseUrl, docId, wantBase64, timeoutMs) {
     const r = await rpc(baseUrl, 'GetDocument', [{ id: docId }]);
     const doc = r && r.document;
     if (doc && doc.contentBase64 === wantBase64) return doc;
-    lastMsg = (doc && doc.contentBase64)
+    lastMsg = (doc && typeof doc.contentBase64 === 'string')
       ? 'payload mismatch'
       : (r && r.message)
         || (doc && doc.local === false ? 'peer metadata only' : '')

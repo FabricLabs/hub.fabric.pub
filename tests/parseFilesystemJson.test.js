@@ -9,6 +9,10 @@ describe('parseFilesystemJson', function () {
     const text = JSON.stringify(obj);
     assert.deepStrictEqual(parseFilesystemJson(text), obj);
     assert.deepStrictEqual(parseFilesystemJson(Buffer.from(text, 'utf8')), obj);
+    assert.deepStrictEqual(
+      parseFilesystemJson(Uint8Array.from(Buffer.from(text, 'utf8'))),
+      obj
+    );
   });
 
   it('returns already-decoded objects (test mocks)', function () {

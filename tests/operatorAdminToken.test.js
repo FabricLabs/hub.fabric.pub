@@ -58,5 +58,11 @@ describe('operatorAdminToken', function () {
       subject: 'admin'
     }).toSignedString();
     assert.strictEqual(isOperatorAdminToken(other, key), false);
+    const nonAdmin = new Token({
+      capability: 'OP_IDENTITY',
+      issuer: key,
+      subject: 'operator'
+    }).toSignedString();
+    assert.strictEqual(isOperatorAdminToken(nonAdmin, key), false);
   });
 });
