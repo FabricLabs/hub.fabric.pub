@@ -59,6 +59,14 @@ const documentInventoryMarket = require('../functions/documentInventoryMarket');
 const parseFilesystemJson = require('../functions/parseFilesystemJson');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
+const hubHeapBounds = require('../functions/hubHeapBounds');
+const {
+  installFilesystemPublishHeapGuard
+} = require('../functions/hubFilesystemPersist');
+const {
+  shouldStartManagedLightning,
+  lightningdOnPath
+} = require('../functions/hubLightningGate');
 const {
   isManagedBitcoinSpawnEarlyExit,
   wrapBitcoinRpcProbeCandidatesForPort
@@ -477,6 +485,8 @@ class Hub extends Service {
     this._bitcoinScanInflight = new Map();
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
     this._lastBitcoinBlockActivityTip = null;
+    /** Bounded recent BitcoinBlock tips so P2P ingest does not scan the full message log. */
+    this._bitcoinBlockTips = new Set();
     /** Per-peer cooldown for requesting mainchain inventory over Fabric. */
     this._mainchainInventoryRequestCooldown = new Map();
     this._documentInventoryRequestCooldown = new Map();
@@ -685,6 +695,7 @@ class Hub extends Service {
 
     // Storage and Network
     this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
+    installFilesystemPublishHeapGuard(this.fs);
     // Setup must read persisted `STATE` from disk via `SetupService._loadStateContent`, not only the in-memory
     // `settings.state` template. Otherwise `getSetupStatus()` runs before `start()` merges disk (`needsSetup` stays
     // true on early GET /settings / desktop reload). Passing `state: null` forces filesystem reads.
@@ -1105,6 +1116,99 @@ class Hub extends Service {
     return Object.values(this._getCollectionMap('messages'))
       .filter((item) => item && typeof item === 'object')
       .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+  }
+
+  /**
+   * Cap in-memory Activity + Fabric message maps. Durable rows stay on disk
+   * under `messages/*.json`.
+   * @returns {void}
+   */
+  _capHeapCollections () {
+    const collections = this._state && this._state.content && this._state.content.collections;
+    if (collections && collections.messages && typeof collections.messages === 'object') {
+      hubHeapBounds.capMapKeepHighestSeq(collections.messages, hubHeapBounds.MAX_FABRIC_MESSAGE_LOG);
+    }
+    if (this._state && this._state.messages && typeof this._state.messages === 'object') {
+      hubHeapBounds.capMapKeepNewest(
+        this._state.messages,
+        hubHeapBounds.MAX_ACTIVITY_MESSAGES,
+        hubHeapBounds.activityTime
+      );
+    }
+    if (this._state && this._state.content && this._state.content.chain) {
+      const ids = this._getFabricMessages().map((e) => e.id).filter(Boolean);
+      this._state.content.chain.messages = ids;
+      if (this._state.content.chain.tree && typeof this._state.content.chain.tree === 'object') {
+        this._state.content.chain.tree.leaves = ids.length;
+      }
+    }
+  }
+
+  /**
+   * @param {string} tip 64-hex block hash
+   * @returns {void}
+   */
+  _rememberBitcoinBlockTip (tip) {
+    const hex = String(tip || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hex)) return;
+    if (!this._bitcoinBlockTips) this._bitcoinBlockTips = new Set();
+    this._bitcoinBlockTips.add(hex);
+    const max = hubHeapBounds.MAX_BITCOIN_BLOCK_TIPS;
+    while (this._bitcoinBlockTips.size > max) {
+      const oldest = this._bitcoinBlockTips.values().next().value;
+      this._bitcoinBlockTips.delete(oldest);
+    }
+  }
+
+  /**
+   * @returns {void}
+   */
+  _hydrateBitcoinBlockTipsFromLog () {
+    const msgs = this._getFabricMessages();
+    for (const m of msgs) {
+      if (m && m.type === 'BitcoinBlock' && m.payload && m.payload.tip) {
+        this._rememberBitcoinBlockTip(m.payload.tip);
+      }
+    }
+  }
+
+  /**
+   * Load the newest `messages/*.json` files when STATE restore skipped the log.
+   * @returns {number} rows loaded
+   */
+  _loadRecentFabricMessagesFromDisk () {
+    if (!this.fs || typeof this.fs.path !== 'string') return 0;
+    const dir = path.join(this.fs.path, 'messages');
+    if (!fs.existsSync(dir)) return 0;
+    let names = [];
+    try {
+      names = fs.readdirSync(dir).filter((n) => String(n).endsWith('.json')).sort();
+    } catch (err) {
+      return 0;
+    }
+    const slice = names.slice(-hubHeapBounds.MAX_FABRIC_MESSAGE_LOG);
+    const map = this._getCollectionMap('messages');
+    let loaded = 0;
+    for (const name of slice) {
+      try {
+        const raw = fs.readFileSync(path.join(dir, name), 'utf8');
+        const entry = JSON.parse(raw);
+        if (!entry || typeof entry !== 'object' || !entry.id) continue;
+        map[entry.id] = entry;
+        loaded++;
+        if (entry.seq != null) {
+          this._state.content.counts = this._state.content.counts || {};
+          const seq = Number(entry.seq);
+          if (Number.isFinite(seq) && seq > Number(this._state.content.counts.messages || 0)) {
+            this._state.content.counts.messages = seq;
+          }
+        }
+        if (entry.type === 'BitcoinBlock' && entry.payload && entry.payload.tip) {
+          this._rememberBitcoinBlockTip(entry.payload.tip);
+        }
+      } catch (_) { /* skip unreadable row */ }
+    }
+    return loaded;
   }
 
   /**
@@ -1667,11 +1771,11 @@ class Hub extends Service {
 
   _buildMessageTreeFromLog () {
     const entries = this._getFabricMessages();
-    const leaves = entries.map((entry) => JSON.stringify({
+    const leaves = entries.map((entry) => crypto.createHash('sha256').update(JSON.stringify({
       seq: entry.seq,
       type: entry.type,
       payload: entry.payload
-    }));
+    })).digest('hex'));
     this._fabricMessageTree = new Tree({ leaves });
     if (this.fs) this.fs.tree = this._fabricMessageTree;
     const root = this._fabricMessageTree && this._fabricMessageTree.root
@@ -1698,6 +1802,10 @@ class Hub extends Service {
 
     map[id] = Object.assign({ id }, base);
     this._state.content.counts.messages = nextSeq;
+    if (String(type) === 'BitcoinBlock' && payload && payload.tip) {
+      this._rememberBitcoinBlockTip(payload.tip);
+    }
+    this._capHeapCollections();
     this._buildMessageTreeFromLog();
     const entry = map[id];
 
@@ -1817,7 +1925,16 @@ class Hub extends Service {
    * Finalizes the current state.
    */
   commit () {
-    this.fs.publish('STATE', JSON.stringify(this.state, null, '  '));
+    this._capHeapCollections();
+    if (!this.fs) return;
+    const body = JSON.stringify(this._state.content || {});
+    if (typeof this.fs.writeFile === 'function') {
+      this.fs.writeFile('STATE', body);
+      return;
+    }
+    if (typeof this.fs.publish === 'function') {
+      this.fs.publish('STATE', body);
+    }
   }
 
   /**
@@ -1861,6 +1978,11 @@ class Hub extends Service {
 
       this._state.messages = this._state.messages || {};
       this._state.messages[id] = base;
+      hubHeapBounds.capMapKeepNewest(
+        this._state.messages,
+        hubHeapBounds.MAX_ACTIVITY_MESSAGES,
+        hubHeapBounds.activityTime
+      );
 
       const patch = {
         op: 'add',
@@ -1900,6 +2022,11 @@ class Hub extends Service {
         : `chat:${entry.object.created}:${actorId}`;
       this._state.messages = this._state.messages || {};
       this._state.messages[id] = entry;
+      hubHeapBounds.capMapKeepNewest(
+        this._state.messages,
+        hubHeapBounds.MAX_ACTIVITY_MESSAGES,
+        hubHeapBounds.activityTime
+      );
       return { id, message: entry };
     } catch (err) {
       console.warn('[HUB] _cacheChatMessage failed:', err && err.message ? err.message : err);
@@ -2590,12 +2717,14 @@ class Hub extends Service {
     }
   }
 
-  async _maybeScanFederationRegistryBlock (blockHash, height) {
+  async _maybeScanFederationRegistryBlock (blockHash, height, preloadedBlock) {
     if (!this._federationRegistryScanEnabled() || !blockHash) return;
     const bitcoin = this._getBitcoinService();
     if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') return;
     try {
-      const block = await bitcoin._makeRPCRequest('getblock', [blockHash, 2]);
+      const loaded = preloadedBlock && typeof preloadedBlock === 'object' ? preloadedBlock : null;
+      const hasVerboseTx = !!(loaded && Array.isArray(loaded.tx) && loaded.tx.some((t) => t && typeof t === 'object' && Array.isArray(t.vout)));
+      const block = hasVerboseTx ? loaded : await bitcoin._makeRPCRequest('getblock', [blockHash, 2]);
       if (!block) return;
       const anns = federationRegistry.extractFederationAnnouncementsFromBlock(
         block,
@@ -5918,12 +6047,17 @@ class Hub extends Service {
     try {
       const tip = String(payload.tip || '').trim();
       if (!tip || !/^[0-9a-fA-F]{64}$/.test(tip)) return;
+      const tipHex = tip.toLowerCase();
+      if (this._bitcoinBlockTips && this._bitcoinBlockTips.has(tipHex)) return;
       const cached = this._bitcoinStatusCache && this._bitcoinStatusCache.value;
-      if (cached && String(cached.bestHash || '') === tip) return;
+      if (cached && String(cached.bestHash || '').toLowerCase() === tipHex) return;
       const msgs = this._getFabricMessages();
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
-        if (m && m.type === 'BitcoinBlock' && m.payload && String(m.payload.tip) === tip) return;
+        if (m && m.type === 'BitcoinBlock' && m.payload && String(m.payload.tip).toLowerCase() === tipHex) {
+          this._rememberBitcoinBlockTip(tipHex);
+          return;
+        }
       }
       const height = payload.height != null ? Number(payload.height) : undefined;
       await this._appendFabricMessage('BitcoinBlock', {
@@ -5998,15 +6132,18 @@ class Hub extends Service {
 
       const docBlocksCfg = this.settings.bitcoin && this.settings.bitcoin.documentBlocks;
       const documentBlocksEnabled = !(docBlocksCfg === false || docBlocksCfg === 'false' || docBlocksCfg === 0 || docBlocksCfg === '0');
-      if (documentBlocksEnabled && tip) {
+      const docTxCfg = this.settings.bitcoin && this.settings.bitcoin.documentTransactions;
+      const documentTxEnabled = docTxCfg === true || docTxCfg === 'true' || docTxCfg === 1 || docTxCfg === '1';
+      const federationScan = this._federationRegistryScanEnabled();
+      let fullBlock = null;
+      if ((documentBlocksEnabled || federationScan) && tip) {
         try {
           const bitcoinSvc = this._getBitcoinService();
           if (bitcoinSvc && typeof bitcoinSvc._makeRPCRequest === 'function') {
-            const fullBlock = await bitcoinSvc._makeRPCRequest('getblock', [tip, 2]);
-            if (fullBlock) {
+            const verbosity = (documentTxEnabled || federationScan) ? 2 : 1;
+            fullBlock = await bitcoinSvc._makeRPCRequest('getblock', [tip, verbosity]);
+            if (fullBlock && documentBlocksEnabled) {
               await this._ensureBitcoinBlockPublishedDocument(fullBlock, status.network);
-              const docTxCfg = this.settings.bitcoin && this.settings.bitcoin.documentTransactions;
-              const documentTxEnabled = docTxCfg === true || docTxCfg === 'true' || docTxCfg === 1 || docTxCfg === '1';
               if (documentTxEnabled) {
                 await this._ensureBitcoinTransactionPublishedDocuments(fullBlock, status.network);
               }
@@ -6024,7 +6161,7 @@ class Hub extends Service {
       }
 
       await this._maybeScanSidechainBlock(tip, Number.isFinite(height) ? height : null);
-      await this._maybeScanFederationRegistryBlock(tip, Number.isFinite(height) ? height : null);
+      await this._maybeScanFederationRegistryBlock(tip, Number.isFinite(height) ? height : null, fullBlock);
       await this._maybePublishFabricHallmark(tip, Number.isFinite(height) ? height : null);
     } catch (err) {
       console.error('[HUB] _handleBitcoinBlockUpdate error:', err && err.message ? err.message : err);
@@ -9923,10 +10060,19 @@ class Hub extends Service {
       return;
     }
 
-    const lightningManaged = this.settings.lightning && this.settings.lightning.managed !== false;
+    if (this.settings.lightning && this.settings.lightning.stub === true) {
+      return;
+    }
+
+    const lightningManaged = shouldStartManagedLightning(this.settings);
+    const socketPath = this.settings.lightning && this.settings.lightning.socketPath;
 
     try {
       if (lightningManaged) {
+        if (!lightningdOnPath()) {
+          console.warn('[HUB:LIGHTNING] lightningd not on PATH; managed Lightning not started.');
+          return;
+        }
         const btcSettings = bitcoin.settings || {};
         const btcDatadirRaw = btcSettings.datadir || './stores/bitcoin-regtest';
         const btcDatadir = path.isAbsolute(btcDatadirRaw)
@@ -9964,12 +10110,7 @@ class Hub extends Service {
           },
           disablePlugins: ['cln-grpc']
         });
-      } else {
-        const socketPath = this.settings.lightning && this.settings.lightning.socketPath;
-        if (!socketPath || typeof socketPath !== 'string' || !socketPath.trim()) {
-          console.warn('[HUB:LIGHTNING] External Lightning socket path not configured; Lightning not started.');
-          return;
-        }
+      } else if (socketPath && typeof socketPath === 'string' && socketPath.trim()) {
         const fullPath = path.resolve(socketPath.trim());
         this.lightning = new Lightning({
           managed: false,
@@ -9978,6 +10119,8 @@ class Hub extends Service {
           socket: path.basename(fullPath),
           debug: !!this.settings.debug
         });
+      } else {
+        return;
       }
 
       this.lightning.on('debug', (...args) => {
@@ -10112,10 +10255,21 @@ class Hub extends Service {
   async _startPhase_state () {
       // Load prior state
       const file = this.fs.readFile('STATE');
-      const state = (file) ? JSON.parse(file) : this.state;
+      let state = null;
+      if (file && file.length > hubHeapBounds.MAX_HUB_STATE_BYTES) {
+        console.warn('[HUB] STATE snapshot is', file.length, 'bytes (limit', hubHeapBounds.MAX_HUB_STATE_BYTES, '); skipping in-memory restore. Message files under messages/ still load a window.');
+      } else if (file) {
+        try {
+          state = JSON.parse(file);
+        } catch (parseErr) {
+          console.warn('[HUB] STATE snapshot parse failed:', parseErr && parseErr.message ? parseErr.message : parseErr);
+        }
+      }
 
       // Assign properties
-      Object.assign(this._state.content, state);
+      if (state && typeof state === 'object') {
+        Object.assign(this._state.content, state);
+      }
       this._ensureResourceCollections();
 
       // Migrate to Fabric chain shape: chain.tree, chain.genesis. Messages stay at top level (collections.messages).
@@ -10163,6 +10317,14 @@ class Hub extends Service {
         }
         delete this._state.content.collections.merkle;
       }
+
+      this._capHeapCollections();
+      const restoredMessages = this._getCollectionMap('messages');
+      if (!restoredMessages || Object.keys(restoredMessages).length === 0) {
+        this._loadRecentFabricMessagesFromDisk();
+        this._capHeapCollections();
+      }
+      this._hydrateBitcoinBlockTipsFromLog();
 
       // Sanitize services on restore — only public info in global state
       this._state.content.services = this._state.content.services || {};

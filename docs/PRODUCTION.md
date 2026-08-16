@@ -56,7 +56,11 @@ See [README.md](../README.md) and [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md) 
 ## Process supervision
 - Run `node scripts/hub.js` (or `npm run start:fast` after `npm run build`) under **systemd**, **supervisor**, or a container restart policy.
 - Ensure a **single** Hub instance per port set; `EADDRINUSE` means another process holds the port.
-- **Managed regtest + `pm2`:** if Hub Node OOMs, Core can be reparented to PID 1 and hold `stores/bitcoin-regtest`. This tree **attaches** via cookie RPC instead of spawning another `bitcoind` onto the lock. Ops: `pm2 stop hub`, confirm the lock holder is Hub’s datadir (not Sensemaker’s), then `pm2 start hub`. Rotate oversized `~/.pm2/logs/hub-*.log`. Do not raise `--max-old-space-size` as the only OOM fix.
+- **Managed regtest + `pm2`:** if Hub Node OOMs, Core can be reparented to PID 1 and hold `stores/bitcoin-regtest`. This tree **attaches** via cookie RPC instead of spawning another `bitcoind` onto the lock. Ops: `pm2 stop hub`, confirm the lock holder is Hub’s datadir (not Sensemaker’s), then `pm2 start hub`.
+- **PM2 logs (P0):** install **`pm2-logrotate`** (`pm2 install pm2-logrotate`). Playnet `~/.pm2/logs` has grown to tens of GiB (`hub-error` / `hub-out`) with no rotation. Truncate once, then rotate. Do **not** raise `--max-old-space-size` as the OOM fix.
+- **Node:** Hub PM2 should be **24.15.x** (same as RSI / `package.json` `engines`), not 24.5.x.
+- **Fabric `peers`:** do not seed **`sensemaker.io:7778`** (or `:7777`) when Sensemaker already listens on this host (`:7778`). Point at the **local** address or drop the row — remote DNS timeouts stall every boot.
+- **Lightning:** managed `lightningd` is **opt-in** (`lightning.managed: true` or `lightning.enable: true`, and `lightningd` on `PATH`). Datadir-only settings from `scripts/hub.js` must not spawn CLN. Until CLN is actually run, leave it off (stub is `FABRIC_LIGHTNING_STUB=1`).
 
 ## Protocol surfaces (for integrators)
 - **WebSocket JSON-RPC** — peer, document, chat, Bitcoin, Payjoin, inventory HTLC (`ConfirmInventoryHtlcPayment`, etc.).
