@@ -66,7 +66,7 @@ module.exports = (env, argv) => {
 
   return {
   mode,
-  devtool: 'eval-source-map',
+  devtool: mode === 'production' ? false : 'eval-source-map',
   entry: './scripts/browser.js',
   // Sequential processing to avoid intermittent race conditions (concatenateModules
   // is already disabled for similar reasons with @msgpack/msgpack). Trades build speed for reliability.
@@ -74,7 +74,8 @@ module.exports = (env, argv) => {
   output: {
     path: path.resolve(__dirname, 'assets/bundles'),
     filename: 'browser.min.js',
-    publicPath: '/bundles/'
+    publicPath: '/bundles/',
+    clean: mode === 'production'
   },
   cache: false,
   experiments: {
@@ -130,6 +131,10 @@ module.exports = (env, argv) => {
     // bs58check still require @noble/hashes/* entrypoints that existed in noble-hashes@1 only;
     // map those names to the v2 modules (no duplicate noble versions).
     alias: {
+      // bitcoinjs-lib@6 deep-imports bip174@2 paths; npm link hoists bip174@3
+      // whose package "exports" only expose ".". Files still exist on disk.
+      'bip174/src/lib/converter/varint': path.resolve(__dirname, 'node_modules/bip174/src/lib/converter/varint.js'),
+      'bip174/src/lib/utils': path.resolve(__dirname, 'node_modules/bip174/src/lib/utils.js'),
       '@noble/hashes/sha256': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
       '@noble/hashes/sha512': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
       '@noble/hashes/hmac': path.resolve(__dirname, 'node_modules/@noble/hashes/hmac.js'),
@@ -141,8 +146,8 @@ module.exports = (env, argv) => {
       // webpack then hits `__webpack_modules__[id].call is not a function` on ESM interop.
       // Pin CJS builds (`$` = exact package root only, so `react-router/dom` still resolves).
       'react-router-dom$': path.resolve(__dirname, 'node_modules/react-router-dom/dist/index.js'),
-      'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/development/index.js'),
-      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/development/dom-export.js')
+      'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/production/index.js'),
+      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/production/dom-export.js')
     },
     fallback: {
       // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle

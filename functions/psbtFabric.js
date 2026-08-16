@@ -3,9 +3,14 @@
 /**
  * PSBT helpers for contract proposals, Payjoin, and HTLC flows (bitcoinjs-lib v6).
  * Does not initialize ECC; signing callers must use the same ecc as elsewhere.
+ *
+ * Unsigned builders sort vin/vout with BIP-69 (`sortPsbtInputBags` /
+ * `sortPsbtOutputBags`) before the first signature. Do not reorder a PSBT
+ * that already has partial signatures (Payjoin ACP appends at the end).
  */
 
 const bitcoin = require('bitcoinjs-lib');
+const { sortInputs, sortOutputs } = require('@fabric/core/functions/bip69');
 
 function assertString (label, v) {
   if (typeof v !== 'string' || !v.trim()) throw new Error(`${label} is required.`);
@@ -48,6 +53,48 @@ function extractTransactionId (psbt) {
 }
 
 /**
+ * BIP-69 sort of bitcoinjs `addInput` bags. Extra PSBT fields travel with the row.
+ * Hex `hash` is treated as a display txid (bitcoinjs-lib convention).
+ *
+ * @param {Array<Object>} inputs
+ * @returns {Array<Object>}
+ */
+function sortPsbtInputBags (inputs) {
+  if (!Array.isArray(inputs)) throw new TypeError('inputs must be an array');
+  const rows = inputs.map((row) => {
+    const out = Object.assign({}, row);
+    if (out.txid == null && typeof out.hash === 'string') out.txid = out.hash;
+    if (out.vout == null && out.index != null) out.vout = out.index;
+    if (out.index == null && out.vout != null) out.index = out.vout;
+    if (typeof out.hash === 'string') out.hashIsDisplay = true;
+    return out;
+  });
+  return sortInputs(rows);
+}
+
+/**
+ * BIP-69 sort of bitcoinjs `addOutput` bags. `address` is converted to
+ * scriptPubKey for comparison; the original address is kept.
+ *
+ * @param {Array<Object>} outputs
+ * @param {Object} network bitcoinjs network
+ * @returns {Array<Object>}
+ */
+function sortPsbtOutputBags (outputs, network) {
+  if (!Array.isArray(outputs)) throw new TypeError('outputs must be an array');
+  const rows = outputs.map((row) => {
+    const out = Object.assign({}, row);
+    if (out.script == null && out.address) {
+      out.script = Buffer.from(bitcoin.address.toOutputScript(String(out.address).trim(), network));
+    } else if (out.script && !Buffer.isBuffer(out.script)) {
+      out.script = Buffer.from(out.script);
+    }
+    return out;
+  });
+  return sortOutputs(rows);
+}
+
+/**
  * @returns {{ inputCount: number, outputCount: number, unsignedTxid?: string }}
  */
 function describePsbt (base64) {
@@ -67,5 +114,7 @@ module.exports = {
   combinePsbtBase64,
   extractTransactionHex,
   extractTransactionId,
-  describePsbt
+  describePsbt,
+  sortPsbtInputBags,
+  sortPsbtOutputBags
 };

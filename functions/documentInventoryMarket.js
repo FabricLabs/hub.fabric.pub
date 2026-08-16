@@ -280,8 +280,7 @@ function cheapestRemotePriceSats (offers) {
 }
 
 /**
- * Drop operator-only reseller fields from a catalog / GetDocument row.
- * Remote list prices stay on `offers` / `bestPeerPriceSats`.
+ * Drop operator-only reseller fields from a catalog / GET row.
  * @param {object} row
  * @returns {object}
  */
@@ -476,8 +475,8 @@ module.exports = {
   sortOffersByPrice,
   offersForDocument,
   cheapestRemotePriceSats,
-  omitPrivateMarketFields,
   mergeCatalog,
+  omitPrivateMarketFields,
   republishDecision,
   requestConnectedInventories
 };

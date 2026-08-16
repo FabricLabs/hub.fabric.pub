@@ -231,6 +231,9 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "npmRebuild": false,
+    "compression": "maximum",
+    "executableName": "FabricHub",
     "files": [
       "assets/**/*",
       "scripts/desktop.js",
@@ -244,9 +247,62 @@
       "settings/**/*",
       "shims/**/*",
       "package.json",
-      "node_modules/**/*",
-      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
-      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/.git/**",
+      "!**/node_modules/@fabric/http/assets/**",
+      "!**/node_modules/@fabric/http/node_modules/**",
+      "!**/node_modules/@fabric/http/.git/**",
+      "!**/node_modules/@fabric/http/{tests,docs,coverage,stores,examples,reports,libraries,logs}/**",
+      "!**/node_modules/@fabric/core/node_modules/**",
+      "!**/node_modules/@fabric/core/.git/**",
+      "!**/node_modules/@fabric/core/{src,tests,docs,coverage,coverage-*,coverage-hot,coverage-hot2,coverage-hot3,coverage-hot4,coverage-covfocus,stores,examples,_book,reports,assets,native}/**",
+      "!**/node_modules/@fabric/core/.envrc",
+      "!**/node_modules/@fabric/core/.hub-dev-data/**",
+      "!**/node_modules/@fabric/core/settings/local.js",
+      "!**/node_modules/@fabric/http/settings/local.js",
+      "!**/node_modules/@hpcc-js/wasm/**",
+      "!**/node_modules/blessed/**",
+      "!**/node_modules/redis/**",
+      "!**/node_modules/ts-morph/**",
+      "!**/node_modules/@ts-morph/**",
+      "!**/node_modules/node-gyp/**",
+      "!**/node_modules/@webassemblyjs/**",
+      "!**/node_modules/mocha/**",
+      "!**/node_modules/puppeteer/**",
+      "!**/node_modules/puppeteer-core/**",
+      "!**/node_modules/@puppeteer/**",
+      "!**/node_modules/electron/**",
+      "!**/node_modules/electron-builder/**",
+      "!**/node_modules/webpack/**",
+      "!**/node_modules/webpack-cli/**",
+      "!**/node_modules/webpack-dev-server/**",
+      "!**/node_modules/jsdom/**",
+      "!**/node_modules/d3/**",
+      "!**/node_modules/d3-*/**",
+      "!**/node_modules/@babel/**",
+      "!**/node_modules/babel-loader/**",
+      "!**/node_modules/semantic-ui-react/**",
+      "!**/node_modules/react/**",
+      "!**/node_modules/react-dom/**",
+      "!**/node_modules/react-router/**",
+      "!**/node_modules/react-router-dom/**",
+      "!**/node_modules/jsdoc/**",
+      "!**/node_modules/jsdoc-to-markdown/**",
+      "!**/node_modules/caniuse-lite/**",
+      "!**/node_modules/chromium-bidi/**",
+      "!**/node_modules/jquery/**",
+      "!**/node_modules/terser-webpack-plugin/**",
+      "!**/*.map",
+      "!assets/*.ldb",
+      "!assets/CURRENT",
+      "!assets/LOCK",
+      "!assets/LOG",
+      "!assets/LOG.old",
+      "!assets/MANIFEST-*",
+      "!assets/semantic.css",
+      "!assets/semantic.rtl.css",
+      "!assets/semantic.js",
+      "!assets/scripts/semantic.js",
+      "!assets/scripts/jquery-3.4.1.js",
       "!stores/**",
       "!tests/**",
       "!docs/**",
@@ -281,15 +337,36 @@
     },
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "linux": {
       "target": [
-        "AppImage",
-        "deb"
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "executableName": "FabricHub",
+      "artifactName": "fabrichub_${version}_${arch}.${ext}",
+      "maintainer": "Fabric Labs <support@fabric.pub>"
+    },
+    "deb": {
+      "packageName": "fabrichub"
     }
   },
   "allowScripts": {

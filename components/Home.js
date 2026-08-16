@@ -737,7 +737,7 @@ class Home extends React.Component {
           </>
         )}
 
-        {/* ─── Global chat ─── */}
+        {/* ─── Public mesh shoutbox ─── */}
         {networkStatus ? (
           <Segment
             role="region"
@@ -745,7 +745,7 @@ class Home extends React.Component {
             aria-labelledby="home-global-chat-heading"
           >
             <Header as="h2" id="home-global-chat-heading" style={{ marginTop: 0 }}>
-              Global chat
+              Public mesh shoutbox
             </Header>
             <p style={{ color: '#666', marginTop: '-0.25em', marginBottom: '0.75em' }}>
               {uf.activities ? (

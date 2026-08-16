@@ -4,6 +4,8 @@
  * Payjoin + SIGHASH_ALL|ANYONECANPAY (0x81): payer fixes all outputs but only commits to their own input(s).
  * The Hub may append a wallet UTXO (classic payjoin receiver contribution) without invalidating those signatures,
  * as long as output scripts and values are unchanged — extra input value increases the implicit fee.
+ * Do not BIP-69 reorder this PSBT: payer signatures sit on existing input slots, and BIP-78
+ * senders re-sign assuming those indices (ACP always appends).
  */
 
 const bitcoin = require('bitcoinjs-lib');

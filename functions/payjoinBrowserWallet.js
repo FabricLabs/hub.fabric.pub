@@ -23,6 +23,7 @@ const ECPairFactory = typeof ecpairMod === 'function' ? ecpairMod : (ecpairMod.d
 bitcoin.initEccLib(ecc);
 const ecpair = ECPairFactory(ecc);
 const { SATS_PER_BTC } = require('../constants');
+const { sortPsbtInputBags, sortPsbtOutputBags } = require('./psbtFabric');
 
 /** 0x81 — commit to all outputs; only this input is bound (others may be appended). */
 const SIGHASH_ALL_ANYONECANPAY = bitcoin.Transaction.SIGHASH_ALL | bitcoin.Transaction.SIGHASH_ANYONECANPAY;
@@ -154,6 +155,7 @@ async function postPayjoinProposalWithDesktopFallback (pjUrl, psbtBase64, opts =
  * @param {number} [opts.feeSatPerVbyte]
  * @param {boolean} [opts.anyoneCanPayAll] - if true, sign with SIGHASH_ALL|ANYONECANPAY so a receiver may add inputs without changing outputs
  * @returns {Promise<{ psbtBase64: string, ourInputIndices: number[], usedUtxos: object[] }>}
+ *   `ourInputIndices` are sequential after BIP-69 ordering of the original unsigned tx.
  */
 async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const xprv = String(opts.xprv || '').trim();
@@ -178,6 +180,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const bip32 = BIP32Factory(ecc);
   const root = bip32.fromBase58(xprv, decodeNetwork);
 
+  /** Greedy largest-first for coin selection only; BIP-69 orders the unsigned PSBT later. */
   const sorted = utxos
     .map((u) => ({
       ...u,
@@ -221,12 +224,20 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
     throw new Error('Insufficient funds for amount plus estimated fee (try single-output after dust change).');
   }
 
+  const pickedSorted = sortPsbtInputBags(picked.map((u) => ({
+    ...u,
+    txid: String(u.txid),
+    vout: Number(u.vout),
+    index: Number(u.vout)
+  })));
+  const outputsSorted = sortPsbtOutputBags(outputs, network);
+
   const psbt = new bitcoin.Psbt({ network });
   const ourInputIndices = [];
   const usedUtxos = [];
 
-  for (let i = 0; i < picked.length; i++) {
-    const u = picked[i];
+  for (let i = 0; i < pickedSorted.length; i++) {
+    const u = pickedSorted[i];
     const hex = await getPrevTxHex(String(u.txid));
     if (!hex || !/^[0-9a-fA-F]+$/i.test(hex)) throw new Error(`Prev tx hex missing for ${u.txid}`);
     const prev = bitcoin.Transaction.fromHex(hex);
@@ -260,7 +271,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
     usedUtxos.push(u);
   }
 
-  for (const o of outputs) {
+  for (const o of outputsSorted) {
     psbt.addOutput({ address: o.address, value: o.value });
   }
 

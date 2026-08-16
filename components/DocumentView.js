@@ -1280,12 +1280,12 @@ function DocumentDetail (props) {
             </Header>
             <p style={{ color: '#666', marginTop: 0 }}>
               Inventory listings for this content id. This hub only fulfills sales when it holds the file locally;
-              remote rows are peer list prices (operator markup stays private).
+              remote rows are cost basis for optional markup republish.
             </p>
-            {doc.bestPeerPriceSats != null && Number.isFinite(Number(doc.bestPeerPriceSats)) && (
+            {doc.costBasisSats != null && (
               <p style={{ margin: '0 0 0.75em' }}>
-                Cheapest peer: <strong>{formatSatsDisplay(doc.bestPeerPriceSats)} sats</strong>
-                {docPurchasePriceSats > 0 ? ` · this hub lists at ${formatSatsDisplay(docPurchasePriceSats)} sats` : ''}
+                Cost basis: <strong>{formatSatsDisplay(doc.costBasisSats)} sats</strong>
+                {docPurchasePriceSats > 0 ? ` · listed at ${formatSatsDisplay(docPurchasePriceSats)} sats` : ''}
               </p>
             )}
             <List divided relaxed>
