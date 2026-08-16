@@ -139,7 +139,11 @@ async function waitForDocumentPayload (baseUrl, docId, wantBase64, timeoutMs) {
     const r = await rpc(baseUrl, 'GetDocument', [{ id: docId }]);
     const doc = r && r.document;
     if (doc && doc.contentBase64 === wantBase64) return doc;
-    lastMsg = (doc && doc.contentBase64) ? 'payload mismatch' : (r && r.message) || 'no document';
+    lastMsg = (doc && doc.contentBase64)
+      ? 'payload mismatch'
+      : (r && r.message)
+        || (doc && doc.local === false ? 'peer metadata only' : '')
+        || (doc ? 'document without contentBase64' : 'no document');
     await sleep(400);
   }
   throw new Error(`GetDocument wait timeout (${docId.slice(0, 8)}…): ${lastMsg}`);

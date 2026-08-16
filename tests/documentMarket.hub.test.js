@@ -260,6 +260,22 @@ describe('Hub Document Market accumulate + republish', function () {
     await hub.stop().catch(() => {});
   });
 
+  it('GetDocument parses Filesystem Buffers (disk readFileSync)', async function () {
+    const hub = await makeHub();
+    const fileId = 'ff'.repeat(32);
+    await holdBlob(hub, fileId);
+    const inner = hub.fs.readFile;
+    hub.fs.readFile = (name) => {
+      const v = inner(name);
+      return v == null ? null : Buffer.from(String(v), 'utf8');
+    };
+    assert.strictEqual(hub._hasLocalDocumentBlob(fileId), true);
+    const got = await hub._getDocumentPayload(fileId);
+    assert.ok(got.document);
+    assert.strictEqual(got.document.contentBase64, Buffer.from('held').toString('base64'));
+    await hub.stop().catch(() => {});
+  });
+
   it('decorate without accumulate still omits private fields', async function () {
     const hub = await makeHub({ accumulatePeerInventories: false, republishWithMarkup: false });
     const row = hub._decorateDocumentWithMarketOffers({

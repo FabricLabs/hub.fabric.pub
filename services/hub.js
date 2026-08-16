@@ -56,6 +56,7 @@ const {
 } = require('../functions/hubLifecycle');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
+const parseFilesystemJson = require('../functions/parseFilesystemJson');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const {
@@ -1249,7 +1250,7 @@ class Hub extends Service {
     try {
       const raw = this.fs.readFile(`documents/${id}.json`);
       if (!raw) return false;
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const parsed = parseFilesystemJson(raw);
       return !!(parsed && (parsed.contentBase64 || documentContentKey.isSealedDocument(parsed)));
     } catch (_) {
       return false;
@@ -1358,7 +1359,7 @@ class Hub extends Service {
     }
     const raw = this.fs && typeof this.fs.readFile === 'function' ? this.fs.readFile(`documents/${id}.json`) : null;
     if (!raw) return { status: 'error', message: 'document not found', documentId: id };
-    let parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    let parsed = parseFilesystemJson(raw);
     if (price > 0) {
       const sealed = await this._sealDocumentForPricedPublish(id, parsed);
       parsed = sealed.parsed;
@@ -1538,7 +1539,7 @@ class Hub extends Service {
         }
         return { type: 'GetDocumentResult', document: null, documentId: id, message: 'document not found' };
       }
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const parsed = parseFilesystemJson(raw);
       const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
       const publishedMeta = collections[id];
       if (publishedMeta && publishedMeta.published && !parsed.published) {

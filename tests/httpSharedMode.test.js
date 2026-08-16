@@ -28,6 +28,10 @@ describe('httpSharedMode', () => {
     assert.strictEqual(typeof resolveHttpListenHost, 'function');
     assert.strictEqual(resolveHttpListenHost({ mode: 'relay', env: {} }), '127.0.0.1');
     assert.strictEqual(resolveHttpListenHost({ mode: 'server', env: {} }), '0.0.0.0');
+    assert.strictEqual(
+      resolveHttpListenHost({ host: '10.0.0.8', env: { INTERFACE: '0.0.0.0' } }),
+      '10.0.0.8'
+    );
   });
 
   it('applySharedModeWebsocketGate requires token when shared + env token', () => {

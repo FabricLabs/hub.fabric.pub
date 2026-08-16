@@ -40,17 +40,16 @@ function resolveHttpListenHostLocal (opts = {}) {
   if (opts.envHost != null) {
     const forced = String(opts.envHost).trim();
     if (forced) return forced;
-  } else {
-    const keys = Array.isArray(opts.envHostKeys) && opts.envHostKeys.length
-      ? opts.envHostKeys
-      : DEFAULT_HTTP_LISTEN_ENV_KEYS;
-    for (const key of keys) {
-      const v = String(env[key] || '').trim();
-      if (v) return v;
-    }
   }
   const explicit = String(opts.host || '').trim();
   if (explicit) return explicit;
+  const keys = Array.isArray(opts.envHostKeys) && opts.envHostKeys.length
+    ? opts.envHostKeys
+    : DEFAULT_HTTP_LISTEN_ENV_KEYS;
+  for (const key of keys) {
+    const v = String(env[key] || '').trim();
+    if (v) return v;
+  }
   if (String(opts.mode || '') === 'server') return '0.0.0.0';
   if (isHttpSharedModeEnabledLocal(opts.httpSharedMode)) return '0.0.0.0';
   return '127.0.0.1';
@@ -58,11 +57,20 @@ function resolveHttpListenHostLocal (opts = {}) {
 
 try {
   const httpMod = require('@fabric/http/functions/httpSharedMode');
-  module.exports = Object.assign({}, httpMod, {
+  module.exports = {
+    DEFAULT_HTTP_LISTEN_ENV_KEYS: Array.isArray(httpMod.DEFAULT_HTTP_LISTEN_ENV_KEYS)
+      ? httpMod.DEFAULT_HTTP_LISTEN_ENV_KEYS
+      : DEFAULT_HTTP_LISTEN_ENV_KEYS,
+    isHttpSharedModeEnabled: typeof httpMod.isHttpSharedModeEnabled === 'function'
+      ? httpMod.isHttpSharedModeEnabled
+      : isHttpSharedModeEnabledLocal,
+    resolveHttpListenHost: typeof httpMod.resolveHttpListenHost === 'function'
+      ? httpMod.resolveHttpListenHost
+      : resolveHttpListenHostLocal,
     applySharedModeWebsocketGate: typeof httpMod.applySharedModeWebsocketGate === 'function'
       ? httpMod.applySharedModeWebsocketGate
       : applySharedModeWebsocketGateLocal
-  });
+  };
 } catch (_) {
   module.exports = {
     DEFAULT_HTTP_LISTEN_ENV_KEYS,
