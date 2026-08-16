@@ -5,9 +5,13 @@ const path = require('path');
 
 require('../functions/patchLinkedFabricNodePath');
 
+let loadFabricHomeEnv;
 try {
-  require('@fabric/core/functions/fabricHomeEnv').loadFabricHomeEnv();
-} catch (_) { /* older @fabric/core pin */ }
+  ({ loadFabricHomeEnv } = require('@fabric/core/functions/fabricHomeEnv'));
+} catch (err) {
+  if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+}
+if (typeof loadFabricHomeEnv === 'function') loadFabricHomeEnv();
 
 // Settings
 let settings = require('../settings/local');
@@ -25,7 +29,7 @@ const defaultBitcoinRpcPort = (network) => {
 const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
-const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+const { isHttpSharedModeEnabled, applySharedModeWebsocketGate } = require('../functions/httpSharedMode');
 const { spawnedBitcoindPid } = require('../functions/bitcoinManagedAttach');
 let resolveFabricPeerInterface;
 try {
@@ -124,6 +128,9 @@ try {
           interface: bindAll ? '0.0.0.0' : '127.0.0.1'
         }
       };
+      if (typeof applySharedModeWebsocketGate === 'function') {
+        settings = applySharedModeWebsocketGate(settings, { bindAll, env: process.env });
+      }
     }
   }
 } catch (e) {

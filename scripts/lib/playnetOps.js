@@ -15,7 +15,9 @@ const ROOT = path.resolve(__dirname, '..', '..');
 
 try {
   require('@fabric/core/functions/fabricHomeEnv').loadFabricHomeEnv();
-} catch (_) { /* older @fabric/core pin */ }
+} catch (err) {
+  if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+}
 
 /**
  * Optional local operator identity (gitignored). Prefer FABRIC_XPRV in the environment.
@@ -48,6 +50,49 @@ function loadLocalOperatorMnemonic () {
 }
 
 /**
+ * Even-length BIP32 seed hex (16–64 bytes), optional `0x` prefix.
+ * @param {string} value
+ * @returns {boolean}
+ */
+function looksLikeRawSeedHex (value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  if (!/^(?:0x)?[0-9a-fA-F]+$/i.test(trimmed)) return false;
+  const hex = trimmed.slice(0, 2).toLowerCase() === '0x' ? trimmed.slice(2) : trimmed;
+  if (hex.length % 2 !== 0) return false;
+  const bytes = hex.length / 2;
+  return bytes >= 16 && bytes <= 64;
+}
+
+/**
+ * Classify env identity when `@fabric/core/functions/fabricKeyMaterial` is missing.
+ * Raw `FABRIC_SEED` hex stays `{ seed }` — never `{ mnemonic }`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ xprv: string }|{ seed: string }|{ mnemonic: string }|null}
+ */
+function fallbackPeerKeySettingsFromEnv (env = process.env) {
+  const xprv = String((env && env.FABRIC_XPRV) || '').trim();
+  if (xprv.startsWith('xprv') || xprv.startsWith('tprv')) return { xprv };
+
+  const seedRaw = String((env && env.FABRIC_SEED) || '').trim();
+  if (seedRaw.startsWith('xprv') || seedRaw.startsWith('tprv')) return { xprv: seedRaw };
+  if (looksLikeRawSeedHex(seedRaw)) {
+    const hex = seedRaw.slice(0, 2).toLowerCase() === '0x' ? seedRaw.slice(2) : seedRaw;
+    return { seed: hex.toLowerCase() };
+  }
+  if (seedRaw && /\s/.test(seedRaw)) return { mnemonic: seedRaw };
+
+  const mnemonic = String((env && env.FABRIC_MNEMONIC) || '').trim();
+  if (mnemonic.startsWith('xprv') || mnemonic.startsWith('tprv')) return { xprv: mnemonic };
+  if (looksLikeRawSeedHex(mnemonic)) {
+    const hex = mnemonic.slice(0, 2).toLowerCase() === '0x' ? mnemonic.slice(2) : mnemonic;
+    return { seed: hex.toLowerCase() };
+  }
+  if (mnemonic) return { mnemonic };
+  return null;
+}
+
+/**
  * Operator Peer key for playnet scripts (suite-wide).
  *
  * Priority:
@@ -72,16 +117,10 @@ function loadPeerKeySettings (opts = {}) {
     const { keySettingsFromEnv } = require('@fabric/core/functions/fabricKeyMaterial');
     const fromEnv = keySettingsFromEnv(process.env);
     if (fromEnv) return fromEnv;
-  } catch (_) {
-    const fromXprv = String(process.env.FABRIC_XPRV || '').trim();
-    if (fromXprv.startsWith('xprv') || fromXprv.startsWith('tprv')) {
-      return { xprv: fromXprv };
-    }
-    const seed = String(process.env.FABRIC_SEED || process.env.FABRIC_MNEMONIC || '').trim();
-    if (seed.startsWith('xprv') || seed.startsWith('tprv')) {
-      return { xprv: seed };
-    }
-    if (seed) return { mnemonic: seed };
+  } catch (err) {
+    if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+    const fallback = fallbackPeerKeySettingsFromEnv(process.env);
+    if (fallback) return fallback;
   }
 
   if (allowWallet) {
@@ -435,6 +474,7 @@ module.exports = {
   ROOT,
   loadMnemonic,
   loadPeerKeySettings,
+  fallbackPeerKeySettingsFromEnv,
   loadLocalOperatorIdentityFile,
   loadLocalOperatorMnemonic,
   loadAdminToken,

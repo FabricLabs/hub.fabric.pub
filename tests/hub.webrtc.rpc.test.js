@@ -422,6 +422,39 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(latest.document.id, edited.document.id, 'revision id should fetch latest document');
   });
 
+  it('EditDocument drops bulk GHSA / OpenSSF advisory payloads (PR #16)', async function () {
+    const { methods } = harness;
+    const created = await methods.CreateDocument({
+      name: 'notes.txt',
+      mime: 'application/json',
+      contentBase64: Buffer.from('{"ok":true}').toString('base64')
+    });
+    assert.strictEqual(created.type, 'CreateDocumentResult');
+    const edited = await methods.EditDocument({
+      id: created.document.id,
+      name: 'advisory.json',
+      mime: 'application/json',
+      contentBase64: Buffer.from(JSON.stringify({
+        security_advisory: { ghsa_id: 'GHSA-xxxx-yyyy-zzzz', type: 'malware' }
+      })).toString('base64')
+    });
+    assert.strictEqual(edited.status, 'error');
+    assert.match(String(edited.message), /advisory/i);
+  });
+
+  it('CreateDocument drops the same advisory shape', async function () {
+    const { methods } = harness;
+    const created = await methods.CreateDocument({
+      name: 'ghsa.json',
+      mime: 'application/json',
+      contentBase64: Buffer.from(JSON.stringify({
+        security_advisory: { ghsa_id: 'GHSA-aaaa-bbbb-cccc' }
+      })).toString('base64')
+    });
+    assert.strictEqual(created.status, 'error');
+    assert.match(String(created.message), /advisory/i);
+  });
+
   it('exposes chain with tree, genesis, and messages array', async function () {
     const { methods, hub } = harness;
     const created = await methods.CreateDocument({

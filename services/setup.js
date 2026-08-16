@@ -153,7 +153,7 @@ class SetupService {
    * Create and sign an admin token. Token is returned to the client only; never stored on server.
    * Only succeeds when not yet configured (first client).
    * @param {Object} [initialConfig] Optional initial settings (NODE_NAME, etc.)
-   * @returns {Promise<{token: string, configured: boolean, expiresAt?: number}>}
+   * @returns {Promise<{token: string, configured: boolean, expiresAt: (number|undefined)}>}
    */
   async createAdminToken (initialConfig = {}) {
     const status = this.getSetupStatus();
@@ -194,7 +194,7 @@ class SetupService {
    * Refresh an admin token. Verifies the current token and returns a new one.
    * Token is never stored on server.
    * @param {string} currentToken
-   * @returns {Promise<{token: string, expiresAt?: number}>}
+   * @returns {Promise<{token: string, expiresAt: (number|undefined)}>}
    */
   async refreshAdminToken (currentToken) {
     if (!currentToken || typeof currentToken !== 'string') {

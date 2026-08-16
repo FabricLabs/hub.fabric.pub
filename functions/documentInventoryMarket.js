@@ -279,6 +279,25 @@ function cheapestRemotePriceSats (offers) {
   return best;
 }
 
+/**
+ * Drop operator-only reseller fields from a catalog / GetDocument row.
+ * Remote list prices stay on `offers` / `bestPeerPriceSats`.
+ * @param {object} row
+ * @returns {object}
+ */
+function omitPrivateMarketFields (row) {
+  if (!row || typeof row !== 'object') return row;
+  if (row.costBasisSats == null && row.local !== false) return row;
+  const out = Object.assign({}, row);
+  delete out.costBasisSats;
+  if (out.local === false) {
+    delete out.contentBase64;
+    delete out.ciphertext;
+    delete out.content;
+  }
+  return out;
+}
+
 function catalogRowFromOffers (documentId, group) {
   const sorted = sortOffersByPrice(group);
   const best = sorted[0] || {};
@@ -340,7 +359,7 @@ function mergeCatalog (localDocs, offers, opts) {
       byId.set(id, catalogRowFromOffers(id, group));
     }
   }
-  return Array.from(byId.values());
+  return Array.from(byId.values()).map(omitPrivateMarketFields);
 }
 
 /**
@@ -457,6 +476,7 @@ module.exports = {
   sortOffersByPrice,
   offersForDocument,
   cheapestRemotePriceSats,
+  omitPrivateMarketFields,
   mergeCatalog,
   republishDecision,
   requestConnectedInventories

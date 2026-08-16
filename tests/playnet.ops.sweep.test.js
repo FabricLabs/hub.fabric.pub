@@ -17,6 +17,7 @@ const {
   productionPlaynetTarget,
   loadMnemonic,
   loadPeerKeySettings,
+  fallbackPeerKeySettingsFromEnv,
   loadLocalOperatorMnemonic
 } = require('../scripts/lib/playnetOps');
 
@@ -204,6 +205,49 @@ describe('playnet ops sweep (wipe → fund → deploy)', function () {
       const fromMn = loadPeerKeySettings({ allowLocalIdentityFallback: false });
       assert.ok(fromMn && fromMn.mnemonic === primary.mnemonic);
       assert.strictEqual(loadMnemonic({ allowLocalIdentityFallback: false }), primary.mnemonic);
+    } finally {
+      if (prevX === undefined) delete process.env.FABRIC_XPRV;
+      else process.env.FABRIC_XPRV = prevX;
+      if (prevS === undefined) delete process.env.FABRIC_SEED;
+      else process.env.FABRIC_SEED = prevS;
+      if (prevM === undefined) delete process.env.FABRIC_MNEMONIC;
+      else process.env.FABRIC_MNEMONIC = prevM;
+    }
+  });
+
+  it('fallbackPeerKeySettingsFromEnv keeps raw FABRIC_SEED hex as seed', function () {
+    const hex = 'ab'.repeat(32);
+    const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    assert.deepStrictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_SEED: hex, FABRIC_MNEMONIC: phrase }),
+      { seed: hex }
+    );
+    assert.deepStrictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_SEED: '0x' + hex.toUpperCase() }),
+      { seed: hex }
+    );
+    assert.strictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_SEED: 'not-a-seed-or-mnemonic' }),
+      null
+    );
+    assert.deepStrictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_MNEMONIC: phrase }),
+      { mnemonic: phrase }
+    );
+  });
+
+  it('does not treat invalid FABRIC_SEED as a mnemonic when core keySettingsFromEnv is present', function () {
+    const prevX = process.env.FABRIC_XPRV;
+    const prevS = process.env.FABRIC_SEED;
+    const prevM = process.env.FABRIC_MNEMONIC;
+    try {
+      delete process.env.FABRIC_XPRV;
+      delete process.env.FABRIC_MNEMONIC;
+      process.env.FABRIC_SEED = 'not-a-seed-or-mnemonic';
+      assert.strictEqual(loadPeerKeySettings({
+        allowLocalIdentityFallback: false,
+        allowWalletFallback: false
+      }), null);
     } finally {
       if (prevX === undefined) delete process.env.FABRIC_XPRV;
       else process.env.FABRIC_XPRV = prevX;

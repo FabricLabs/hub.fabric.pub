@@ -757,6 +757,15 @@ class ActivityStreamElement extends React.Component {
           )}
         </div>
         <div style={{ marginTop: '0.5em' }}>
+          {showChatChrome && (
+            <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
+              <strong>Public mesh shoutbox</strong>
+              {' — '}
+              cleartext <code>P2P_CHAT_MESSAGE</code> flood (relays can read).
+              Confidential traffic uses onion-sealed <code>SendOnion</code> or sealed GroupChat on contracts;
+              peering/gossip stays the primary mesh fabric.
+            </div>
+          )}
           {showChatChrome && (meshStatus || chatDebug) && (
             <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
               WebRTC Debug: mesh connected {meshStatus && Number.isFinite(meshStatus.connected) ? meshStatus.connected : 0}

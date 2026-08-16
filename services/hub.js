@@ -1158,7 +1158,10 @@ class Hub extends Service {
     const now = new Date().toISOString();
     for (const it of items) {
       if (!it || !it.published) continue;
-      if (looksLikeBulkSecurityAdvisory(it)) continue;
+      if (looksLikeBulkSecurityAdvisory(it)) {
+        console.warn('[HUB] Dropping bulk security-advisory resync item:', it && (it.name || it.id));
+        continue;
+      }
       const id = this._normalizeDocumentId(it.id);
       if (!id) continue;
       const existed = !!coll[id];
@@ -1471,27 +1474,95 @@ class Hub extends Service {
   _decorateDocumentWithMarketOffers (row) {
     if (!row || !row.id) return row;
     const policy = this._documentMarketPolicy();
-    if (!policy.accumulatePeerInventories) return row;
+    if (!policy.accumulatePeerInventories) {
+      return documentInventoryMarket.omitPrivateMarketFields(row);
+    }
     const offers = documentInventoryMarket.offersForDocument(this._documentOffersMap(), row.id, {
-      localDoc: row,
+      localDoc: row.local === false ? null : row,
       self: {
         peerPubkey: this.agent && this.agent.identity && this.agent.identity.id,
         peerAlias: (this.settings && this.settings.alias) || 'this node'
       }
     });
     const remotes = offers.filter((o) => o.local !== true);
-    if (!remotes.length && !offers.length) return row;
+    if (!remotes.length && !offers.length) {
+      return documentInventoryMarket.omitPrivateMarketFields(row);
+    }
     const best = documentInventoryMarket.cheapestRemotePriceSats(remotes);
-    const coll = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
-    const listed = coll[row.id] || {};
-    const costBasis = row.costBasisSats != null ? row.costBasisSats : listed.costBasisSats;
-    return Object.assign({}, row, {
+    return documentInventoryMarket.omitPrivateMarketFields(Object.assign({}, row, {
       offers,
       offerCount: offers.length,
       peerCount: remotes.length,
-      ...(Number.isFinite(best) ? { bestPeerPriceSats: best } : {}),
-      ...(costBasis != null ? { costBasisSats: costBasis } : {})
-    });
+      ...(Number.isFinite(best) ? { bestPeerPriceSats: best } : {})
+    }));
+  }
+
+  /**
+   * GetDocument body: local blob when held, else peer-only metadata from the offer book.
+   * @param {string} idRef
+   * @returns {Promise<object>}
+   */
+  async _getDocumentPayload (idRef) {
+    const id = this._normalizeDocumentId(idRef && (idRef.id || idRef));
+    if (!id) {
+      return { type: 'GetDocumentResult', document: null, documentId: null, message: 'id required' };
+    }
+    try {
+      const raw = this.fs && typeof this.fs.readFile === 'function'
+        ? this.fs.readFile(`documents/${id}.json`)
+        : null;
+      if (!raw) {
+        const marketPolicy = this._documentMarketPolicy();
+        if (marketPolicy.accumulatePeerInventories) {
+          const remotes = documentInventoryMarket.offersForDocument(this._documentOffersMap(), id)
+            .filter((o) => o.local !== true);
+          if (remotes.length) {
+            const best = remotes[0];
+            return {
+              type: 'GetDocumentResult',
+              document: this._decorateDocumentWithMarketOffers({
+                id,
+                sha256: best.sha256 || id,
+                name: best.name,
+                mime: best.mime,
+                size: best.size,
+                purchasePriceSats: best.purchasePriceSats,
+                published: false,
+                local: false,
+                source: 'peer'
+              }),
+              documentId: id,
+              local: false
+            };
+          }
+        }
+        return { type: 'GetDocumentResult', document: null, documentId: id, message: 'document not found' };
+      }
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+      const publishedMeta = collections[id];
+      if (publishedMeta && publishedMeta.published && !parsed.published) {
+        parsed.published = publishedMeta.published;
+      }
+      if (publishedMeta && publishedMeta.purchasePriceSats != null) {
+        parsed.purchasePriceSats = publishedMeta.purchasePriceSats;
+      }
+      const contracts = (this._state.content && this._state.content.collections && this._state.content.collections.contracts) || {};
+      for (const [cid, c] of Object.entries(contracts)) {
+        if (c && c.document === id) {
+          parsed.storageContractId = cid;
+          break;
+        }
+      }
+      return { type: 'GetDocumentResult', document: this._decorateDocumentWithMarketOffers(parsed), documentId: id };
+    } catch (err) {
+      return {
+        type: 'GetDocumentResult',
+        document: null,
+        documentId: id,
+        message: err && err.message ? err.message : 'get failed'
+      };
+    }
   }
 
   /**
@@ -1839,7 +1910,7 @@ class Hub extends Service {
    * Remove a document from the hub published collection (in-memory + persisted via {@link #commit}).
    * Does not delete the underlying `documents/<id>.json` file.
    * @param {string} documentId Normalized document id (sha256).
-   * @returns {{ ok: boolean, message?: string }}
+   * @returns {{ ok: boolean, message: (string|undefined)}}
    */
   _unpublishDocument (documentId) {
     const id = this._normalizeDocumentId(documentId);
@@ -1871,7 +1942,7 @@ class Hub extends Service {
    * @param {Object} options
    * @param {string} [options.messageId] Key in `this._state.messages` (omit to unpublish-only).
    * @param {string} [options.documentId] Published document id to remove from `collections.documents`.
-   * @returns {Promise<{ status: string, messageId?: string|null, documentId?: string|null, message?: string }>}
+   * @returns {Promise<{ status: string, messageId: (string|null|undefined), documentId: (string|null|undefined), message: (string|undefined)}>}
    */
   async recordTombstone (options = {}) {
     try {
@@ -2438,7 +2509,7 @@ class Hub extends Service {
 
   /**
    * Persisted federation policy from `stores/hub/settings.json` key `DISTRIBUTED_FEDERATION`, when present.
-   * @returns {{ validators: string[], threshold?: number }|undefined}
+   * @returns {{ validators: string[], threshold: (number|undefined)}|undefined}
    */
   _distributedFederationPersisted () {
     if (!this.setup || typeof this.setup.getSetting !== 'function') return undefined;
@@ -2868,7 +2939,7 @@ class Hub extends Service {
 
   /**
    * Ingest CONTRACT_PUBLISH into the pending tracked-application-contract queue.
-   * @param {{ contract?: string, object?: object, signer?: string|null, origin?: object }} ev
+   * @param {{ contract: (string|undefined), object: (object|undefined), signer: (string|null|undefined), origin: (object|undefined)}} ev
    */
   async _recordTrackedContractPublish (ev = {}) {
     const contractId = ev && ev.contract ? String(ev.contract) : null;
@@ -2949,7 +3020,7 @@ class Hub extends Service {
   /**
    * Later-relay: write pending opaque frames to a newly opened peer connection.
    * @param {string} addressInput
-   * @param {{ limitPerContract?: number }} [opts]
+   * @param {{ limitPerContract: (number|undefined)}} [opts]
    * @returns {{ delivered: number, contracts: number }}
    */
   _drainContractMessageQueueToPeer (addressInput, opts = {}) {
@@ -3347,7 +3418,7 @@ class Hub extends Service {
 
   /**
    * Contract Statechain head for an accepted CONTRACT_PUBLISH namespace (ADR-001).
-   * @param {{ contractId?: string }} params
+   * @param {{ contractId: (string|undefined)}} params
    */
   _getContractSidechainStateJson (params = {}) {
     const contractId = params.contractId != null ? String(params.contractId).trim() : '';
@@ -3639,7 +3710,7 @@ class Hub extends Service {
 
   /**
    * After Bitcoin reorg: prune sidechain snapshots for dropped beacon epochs and reload `STATE` from the surviving tip snapshot.
-   * @param {{ removedBeaconClocks?: number[], inclusiveMaxHeight?: number, sameHeight?: boolean }} info
+   * @param {{ removedBeaconClocks: (number[]|undefined), inclusiveMaxHeight: (number|undefined), sameHeight: (boolean|undefined)}} info
    */
   async _handleBeaconReorgForSidechain (info = {}) {
     const removed = Array.isArray(info.removedBeaconClocks) ? info.removedBeaconClocks : [];
@@ -3978,7 +4049,7 @@ class Hub extends Service {
 
   /**
    * Assert Hub federation vault address matches accepted fabric-beacon ARC spendAddress.
-   * @returns {{ ok: boolean, vault?: string|null, beacon?: string|null, contractId?: string|null, code?: string, message?: string }}
+   * @returns {{ ok: boolean, vault: (string|null|undefined), beacon: (string|null|undefined), contractId: (string|null|undefined), code: (string|undefined), message: (string|undefined)}}
    */
   _assertBeaconVaultSpendUnity () {
     const vs = this._buildFederationVaultSummary();
@@ -4677,7 +4748,7 @@ class Hub extends Service {
    * Buyer-targeted HTLC key reveal (never embed preimage in relayed file chunks).
    * @param {string} address - next-hop connection key
    * @param {object} payload
-   * @param {{ deliveryFabricId?: string, fileRelayTtl?: number }|null} [relayMeta]
+   * @param {{ deliveryFabricId: (string|undefined), fileRelayTtl: (number|undefined)}|null} [relayMeta]
    */
   _sendHtlcKeyRevealToPeer (address, payload, relayMeta = null) {
     if (!address || !this.agent.connections[address]) {
@@ -6514,7 +6585,7 @@ class Hub extends Service {
   }
 
   /**
-   * @param {import('express').Response} res
+   * @param {http.ServerResponse} res
    */
   _scheduleHubSelfDestructWipe (res) {
     const hub = this;
@@ -7668,15 +7739,38 @@ class Hub extends Service {
     };
   }
 
+  /**
+   * Resolve watch-only xpub from a request without preferring query strings
+   * (which land in access logs). Order: `X-Fabric-Xpub` header → JSON body
+   * `xpub` → `?xpub=` (legacy).
+   * @param {object} req
+   * @returns {string}
+   */
+  _bitcoinXpubFromRequest (req) {
+    const h = (req && req.headers) || {};
+    const headerRaw = h['x-fabric-xpub'] || h['x-fabric-xpub-key'] || '';
+    const fromHeader = typeof headerRaw === 'string' ? headerRaw.trim() : '';
+    if (fromHeader) return fromHeader;
+    const body = req && req.body && typeof req.body === 'object' ? req.body : null;
+    if (body && body.xpub != null) {
+      const fromBody = String(body.xpub).trim();
+      if (fromBody) return fromBody;
+    }
+    if (req && req.query && req.query.xpub != null) {
+      return String(req.query.xpub).trim();
+    }
+    return '';
+  }
+
   _handleBitcoinXpubSummaryRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
-      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const xpub = this._bitcoinXpubFromRequest(req);
       if (!xpub) {
         return res.status(400).json({
           status: 'error',
-          message: 'xpub query parameter is required for watch-only balance.'
+          message: 'xpub is required (prefer X-Fabric-Xpub header or JSON body; ?xpub= remains for legacy clients).'
         });
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
@@ -7699,11 +7793,11 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
-      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const xpub = this._bitcoinXpubFromRequest(req);
       if (!xpub) {
         return res.status(400).json({
           status: 'error',
-          message: 'xpub query parameter is required for watch-only UTXOs.'
+          message: 'xpub is required (prefer X-Fabric-Xpub header or JSON body; ?xpub= remains for legacy clients).'
         });
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
@@ -7725,11 +7819,11 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
-      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const xpub = this._bitcoinXpubFromRequest(req);
       if (!xpub) {
         return res.status(400).json({
           status: 'error',
-          message: 'xpub query parameter is required for watch-only transaction list.'
+          message: 'xpub is required (prefer X-Fabric-Xpub header or JSON body; ?xpub= remains for legacy clients).'
         });
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
@@ -7793,7 +7887,7 @@ class Hub extends Service {
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
       const walletId = (req.params && req.params.walletId) || (req.query && req.query.walletId) || bitcoin.walletName;
-      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const xpub = this._bitcoinXpubFromRequest(req);
 
       const isHubWallet = walletId && String(walletId) === String(bitcoin.walletName);
       const isClientWallet = !isHubWallet && xpub;
@@ -7970,7 +8064,7 @@ class Hub extends Service {
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
       const walletId = (req.params && req.params.walletId) || (req.query && req.query.walletId) || bitcoin.walletName;
-      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const xpub = this._bitcoinXpubFromRequest(req);
       const isHubWallet = walletId && String(walletId) === String(bitcoin.walletName);
       const isClientWallet = !isHubWallet && xpub;
 
@@ -8018,7 +8112,7 @@ class Hub extends Service {
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
       const walletId = (req.params && req.params.walletId) || (req.query && req.query.walletId) || bitcoin.walletName;
-      const xpub = (req.query && req.query.xpub) ? String(req.query.xpub).trim() : '';
+      const xpub = this._bitcoinXpubFromRequest(req);
       const isHubWallet = walletId && String(walletId) === String(bitcoin.walletName);
       const isClientWallet = !isHubWallet && xpub;
       const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
@@ -10262,8 +10356,11 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/bitcoin/transactions', this._handleBitcoinTransactionsListRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/transactions/:txhash', this._handleBitcoinTransactionViewRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/xpub/utxos', this._handleBitcoinXpubUtxosRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/xpub/utxos', this._handleBitcoinXpubUtxosRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/xpub/transactions', this._handleBitcoinXpubTransactionsRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/xpub/transactions', this._handleBitcoinXpubTransactionsRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/xpub', this._handleBitcoinXpubSummaryRequest.bind(this));
+      this.http._addRoute('POST', '/services/bitcoin/xpub', this._handleBitcoinXpubSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/wallets', this._handleBitcoinWalletSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/wallets/:walletId', this._handleBitcoinWalletSummaryRequest.bind(this));
       this.http._addRoute('GET', '/services/bitcoin/addresses', this._handleBitcoinWalletAddressRequest.bind(this));
@@ -11054,6 +11151,7 @@ class Hub extends Service {
               { includeRemoteOnly: true }
             );
           }
+          documentsOut = documentsOut.map((row) => documentInventoryMarket.omitPrivateMarketFields(row));
 
           return {
             type: 'ListDocumentsResult',
@@ -11109,71 +11207,9 @@ class Hub extends Service {
         };
       });
 
-      // Get a document (metadata + base64 content)
+      // Get a document (metadata + base64 content when held locally)
       this.http._registerMethod('GetDocument', async (...params) => {
-        const id = this._normalizeDocumentId(params[0] && (params[0].id || params[0]));
-        if (!id) {
-          return { type: 'GetDocumentResult', document: null, documentId: null, message: 'id required' };
-        }
-        try {
-          const raw = this.fs.readFile(`documents/${id}.json`);
-          if (!raw) {
-            const marketPolicy = this._documentMarketPolicy();
-            if (marketPolicy.accumulatePeerInventories) {
-              const remotes = documentInventoryMarket.offersForDocument(this._documentOffersMap(), id)
-                .filter((o) => o.local !== true);
-              if (remotes.length) {
-                const best = remotes[0];
-                return {
-                  type: 'GetDocumentResult',
-                  document: this._decorateDocumentWithMarketOffers({
-                    id,
-                    sha256: best.sha256 || id,
-                    name: best.name,
-                    mime: best.mime,
-                    size: best.size,
-                    purchasePriceSats: best.purchasePriceSats,
-                    published: false,
-                    local: false,
-                    source: 'peer'
-                  }),
-                  documentId: id,
-                  local: false
-                };
-              }
-            }
-            return { type: 'GetDocumentResult', document: null, documentId: id, message: 'document not found' };
-          }
-          const parsed = JSON.parse(raw);
-
-          // Decorate with published + storageContractId from hub state, if present
-          const collections = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
-          const publishedMeta = collections[id];
-          if (publishedMeta && publishedMeta.published && !parsed.published) {
-            parsed.published = publishedMeta.published;
-          }
-          if (publishedMeta && publishedMeta.purchasePriceSats != null) {
-            parsed.purchasePriceSats = publishedMeta.purchasePriceSats;
-          }
-
-          const contracts = (this._state.content && this._state.content.collections && this._state.content.collections.contracts) || {};
-          for (const [cid, c] of Object.entries(contracts)) {
-            if (c && c.document === id) {
-              parsed.storageContractId = cid;
-              break;
-            }
-          }
-
-          return { type: 'GetDocumentResult', document: this._decorateDocumentWithMarketOffers(parsed) };
-        } catch (err) {
-          console.error('[HUB] GetDocument error:', err);
-          return {
-            type: 'GetDocumentResult',
-            document: null,
-            documentId: id,
-            message: err && err.message ? err.message : 'get failed'
-          };
-        }
+        return this._getDocumentPayload(params[0]);
       });
 
       // Create a pay-to-distribute invoice: returns address + amount for L1 payment.
@@ -11683,6 +11719,9 @@ class Hub extends Service {
           const buffer = Buffer.from(nextContentBase64, 'base64');
           const sizeErr = this._validateDocumentSize(buffer);
           if (sizeErr) return sizeErr;
+          if (looksLikeBulkSecurityAdvisory(buffer) || looksLikeBulkSecurityAdvisory(nextName)) {
+            return { status: 'error', message: 'bulk security-advisory documents are not ingested' };
+          }
 
           const now = new Date().toISOString();
           const nextId = crypto.createHash('sha256').update(buffer).digest('hex');

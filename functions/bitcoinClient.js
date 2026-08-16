@@ -449,7 +449,7 @@ function deriveFabricBitcoinAccountKeys (masterXprv, masterXpub, accountIndex) {
 /**
  * Fabric master key for Bitcoin BIP44 (m/44'/0'/n') is always the HD root (master xpriv).
  * When {@link fabricIdentityMode} is `account`, {@link masterXprv} holds that root; {@link xprv} is the
- * Fabric-protocol signing key at m/44'/7778'/… and must not be used for Bitcoin derivation.
+ * Fabric-protocol signing key at `fabricIdentityDerivationPath` (7777/7778) and must not be used for Bitcoin derivation.
  */
 function bitcoinDerivationSecretsFromFabricIdentity (identity = {}) {
   if (identity && identity.fabricIdentityMode === 'account' &&

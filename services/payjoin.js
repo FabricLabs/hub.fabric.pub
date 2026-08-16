@@ -439,7 +439,7 @@ class PayjoinService extends Service {
 
   /**
    * Best-effort txid for wallet labeling (final tx, unsigned PSBT id, or decodepsbt hints).
-   * @param {{ psbt?: string, txhex?: string, analysis?: object, proposalTxid?: string }} proposal
+   * @param {{ psbt: (string|undefined), txhex: (string|undefined), analysis: (object|undefined), proposalTxid: (string|undefined)}} proposal
    * @returns {string} hex64 or ''
    */
   extractProposalTxid (proposal) {

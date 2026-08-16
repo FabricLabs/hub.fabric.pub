@@ -45,4 +45,16 @@ describe('looksLikeBulkSecurityAdvisory', function () {
     ])), true);
     assert.strictEqual(looksLikeBulkSecurityAdvisory([{ name: 'readme.md' }]), false);
   });
+
+  it('does not flag an unvalidated security_advisory object', function () {
+    assert.strictEqual(looksLikeBulkSecurityAdvisory({
+      security_advisory: { source: 'internal-notes' }
+    }), false);
+  });
+
+  it('stops nested payload recursion at the depth cap', function () {
+    let nested = { security_advisory: { ghsa_id: 'GHSA-aaaa-bbbb-cccc' } };
+    for (let i = 0; i < 12; i++) nested = { payload: nested };
+    assert.strictEqual(looksLikeBulkSecurityAdvisory(nested), false);
+  });
 });

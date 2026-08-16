@@ -1,7 +1,7 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-14 ([#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16); core lockfile `5557a2bf`, http lockfile `7536341`).
+**Last reviewed:** 2026-08-15 ([#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16); core lockfile `4a1ff0a57`, http lockfile `cff2ce66`).
 
 ## Blockers before production shared bind
 1. **Inherited login/link redeem** — QR `sessionId` + forgeable Origin is still the capability ([`@fabric/http` OUTSTANDING](https://github.com/FabricLabs/fabric-http/blob/feature/rsi/docs/OUTSTANDING.md)). Hub desktop `allowHubSelfSign` defaults on; http **loopback-gates** the sign so public `hub.fabric.pub` cannot remote self-sign.
@@ -11,13 +11,13 @@ Living queue for this repo. Detail and closed items live in [SECURITY.md](../SEC
 ## Next slices
 - [ ] Always-fresh device-link nonce (reject client-supplied) — coordinated with http.
 - [ ] Named AMP types on public Hub UI WebSocket (`GenericMessage` remaining).
-- [ ] Remaining Hub heap climb after `361a750` deploy ([tick 1/8](https://relay.goon.vc/downstream.agents.md): restarts **248**, new PID ~38 m, RSS ~150 MiB early life). `361a750` did **not** stop OOM. This tree no longer forces `bitcoin.settings.debug = true` after start (every RPC was allocating debug strings). Dual `bitcoind` and `hub-out` rotation stay ops. Hub↔RSI Fabric ESTAB still missing on that tick — sibling-NIC self-filter is in `@fabric/http` `collectOwnFabricHosts` (http pin `7536341`).
+- [ ] Remaining Hub heap climb after `361a750` deploy ([tick 1/8](https://relay.goon.vc/downstream.agents.md): restarts **248**, new PID ~38 m, RSS ~150 MiB early life). `361a750` did **not** stop OOM. This tree no longer forces `bitcoin.settings.debug = true` after start (every RPC was allocating debug strings). Dual `bitcoind` and `hub-out` rotation stay ops. Hub↔RSI Fabric ESTAB still missing on that tick — sibling-NIC self-filter is in `@fabric/http` `collectOwnFabricHosts` (http pin `cff2ce66`).
 
 ## Closed this pass (do not re-open)
 - Bulk OpenSSF / GHSA malware-advisory documents are not ingested (`functions/bulkSecurityAdvisory.js`, package export `./functions/bulkSecurityAdvisory`; JSON arrays of advisory objects recurse). Array walk uses `for…of` (not `input[i]`) so Codacy Semgrep “object injection” on the bounded advisory list is a non-issue.
 - WebRTC → TCP shoutbox inner body is UTF-8 `P2P_CHAT_MESSAGE` (legacy JSON envelopes unpacked). Registry encoding `utf8-text`.
 - Identity cluster HTTP ingest + package exports; device-link re-exports http thin-client Origin helpers.
-- IdentityCrossSign / verify re-export `@fabric/core` (commit/push core before Hub CI, or `npm link @fabric/core`).
+- IdentityCrossSign / verify re-export `@fabric/core` (commit/push core before Hub CI, or `npm link @fabric/core`). `fabricAccountDerivedIdentity` re-exports `fabricIdentityAccountPath` (core helper when present; else strips the receive leaf).
 - Playnet `--production` (`hub.fabric.pub` + `relay.goon.vc`); document market helper export.
 - HTTPS-only default hub allowlist; Hub self-sign remote path closed in http.
 - Test workflow `hub/.nvmrc`; leftover bitcoinClient `hubAdminToken` on payments URLs; `verifyAdminToken` cap/sub; backup KDF import bounds.
@@ -28,8 +28,8 @@ Living queue for this repo. Detail and closed items live in [SECURITY.md](../SEC
 - Beacon ready-round retry tests use a real Schnorr witness (core pin verifies recovered rounds; fake `'00'` now correctly errors).
 - Identity cluster keys are x-only / compressed hex only (no colon-smashed fallback).
 - Operator Accept tokens verify against Hub `_rootKey` **or** Peer `agent.key` (`functions/operatorAdminToken.js`, package export).
-- CLI loads `~/.fabric/env` via core `fabricHomeEnv` (process env wins).
-- Core pin `5557a2bf` (home-env / key-material, numeric `P2P_PEERING_OFFER` dispatch, UTF-8 shoutbox `fabricChatText`, IPv6 `_connect` bracket strip, `FROM_SEED` seeded status, `loadWallet({ fromFile: true })`). Http pin `7536341` (core `5557a2bf`, CLI `fabricHomeEnv`, Internal-log + commit snapshot cut, `fabricChatNormalize` re-exports core `fabricChatText`, `pubkey@` strip + dedicated-NIC `:7778`→`:7777`, unicast `FABRIC_INTERFACE` does not treat sibling NICs as self). WebRTC shoutbox `chatTextOf` uses core `fabricChatText`.
+- CLI loads `~/.fabric/env` via core `fabricHomeEnv` (process env wins). Playnet `loadPeerKeySettings` / `fabricHomeEnv` catch only `MODULE_NOT_FOUND` (a broken home env still fails).
+- Core pin `4a1ff0a57` (MuSig2/BIP helpers, IPv6 candidate `[host]:port`, generic-message debug exact-match, inventory JSON `type: 98` still smuggles a peering offer on this SHA — local core follow-up uncommitted). Http pin `cff2ce66` (core `4a1ff0a57` nested, 402 blob-id omit, CLI `fabricHomeEnv`, Internal-log + commit snapshot cut, `fabricChatNormalize` re-exports core `fabricChatText`, `pubkey@` strip + dedicated-NIC `:7778`→`:7777`, unicast `FABRIC_INTERFACE` does not treat sibling NICs as self). WebRTC shoutbox `chatTextOf` uses core `fabricChatText`. Playnet `fallbackPeerKeySettingsFromEnv` keeps raw `FABRIC_SEED` hex as `{ seed }` when core `fabricKeyMaterial` is missing.
 
 ## PRs
-[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — open **Production Polish** (bulk GHSA drop + WebRTC shoutbox unpack). [#15](https://github.com/FabricLabs/hub.fabric.pub/pull/15) merged. Ubuntu CI **673 passing**; macOS `test` job flake: `hub.document.network.e2e` `ECONNRESET` (ubuntu green). Codacy ACTION_REQUIRED was Semgrep “object injection” on `input[i]` in the advisory detector (false positive; staged `for…of` plus `.codacy.yml` Semgrep exclude). Vercel `pub-fabric-hub` account blocked (unrelated). Remaining open: identity import/KDF, login redeem (http), device-link nonce/`sessionId` bind. Pin `@fabric/core` / `@fabric/http` via lockfile (`#feature/rsi` + `npm run report:install`), currently core **`5557a2bf`** / http **`7536341`**. Local `d235f3e` (bitcoin RPC debug gate) is still unpushed vs GitHub `361a750`.
+[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — open **Production Polish** (bulk GHSA drop + WebRTC shoutbox unpack). [#15](https://github.com/FabricLabs/hub.fabric.pub/pull/15) merged. Ubuntu CI **673 passing**; macOS `test` job flake: `Hub fabric epic E2E` `ECONNRESET` (ubuntu green; coverage step then fails). Codacy **SUCCESS** on this SHA after Semgrep exclude + `for…of`. Vercel `pub-fabric-hub` account blocked (unrelated). Remaining open: identity import/KDF, login redeem (http), device-link nonce/`sessionId` bind. Pin `@fabric/core` / `@fabric/http` via lockfile (`#feature/rsi` + `npm run report:install`), currently core **`4a1ff0a57`** / http **`cff2ce66`**. Hub-level Accept/Reject tests that bypass `setup.verifyAdminToken` are still open (low-level `isOperatorAdminToken` covers `_rootKey` / `agent.key` / unset list entries). Dropping the advisory-detector Semgrep exclude is **wontfix** (Codacy ignores `nosemgrep`).

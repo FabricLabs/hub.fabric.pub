@@ -41,6 +41,14 @@ describe('operatorAdminToken', function () {
     assert.strictEqual(isOperatorAdminToken(mintAdmin(a), b), false);
   });
 
+  it('skips unset keys in a mixed issuer list', function () {
+    const master = new Key();
+    const derived = master.derive(DERIVE);
+    const token = mintAdmin(derived);
+    assert.strictEqual(isOperatorAdminToken(token, [undefined, derived]), true);
+    assert.strictEqual(isOperatorAdminToken(token, [master, undefined]), false);
+  });
+
   it('rejects missing or non-admin tokens', function () {
     const key = new Key();
     assert.strictEqual(isOperatorAdminToken('', key), false);

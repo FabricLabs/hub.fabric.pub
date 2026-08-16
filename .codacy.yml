@@ -1,14 +1,8 @@
 # Codacy — reduce noise on generated / vendor / report trees (PR #15 100-issue cap).
 # https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+# Advisory detector stays in Semgrep/Opengrep (array walk is `for…of`, not `input[i]`).
 ---
 engines:
-  # Bounded advisory-list walk is not object injection; Semgrep still flags `input[i]`.
-  semgrep:
-    exclude_paths:
-      - "functions/bulkSecurityAdvisory.js"
-  opengrep:
-    exclude_paths:
-      - "functions/bulkSecurityAdvisory.js"
   remark-lint:
     enabled: false
 exclude_paths:
