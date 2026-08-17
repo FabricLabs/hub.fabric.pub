@@ -5,8 +5,8 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `4a1ff0a5707143d965a2da61f700eda4be3a24ae`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `cff2ce66a62d358f709b0150d2574d3910931047`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `9938917804e2bf5ba5cf1fab7bf0975129d9063f`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `7d7f1c7c918dabe7f2ae59d638b16e1a020d08bd`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
@@ -40,7 +40,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 ## Recommendations
 
 1. After dependency edits: **`npm ci`** (or `npm i`) then **`npm audit`** and **`npm run ci`** (`build` + `test:unit`).
-2. Keep core/http on `feature/rsi` during RSI, then re-pin releases to lockfile SHAs; use **`npm run link:fabric`** for local monorepo work. **`npm run report:install` wipes `package-lock.json`** then `npm i --allow-git=all` — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
+2. Keep core/http on `feature/rsi` during RSI, then re-pin releases to lockfile SHAs; use **`npm run link:fabric`** for local monorepo work. **`npm run report:install` removes `package-lock.json`** then `npm i --allow-git=all` — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
 3. Do not run **`npm audit fix --force`** casually — it has proposed Electron 43 and React Router downgrades that fight the chosen pins. There is **no** `extract-zip` fix to force in.
 4. Revisit React Router when a release fixes GHSA-qwww without regressing open-redirect advisories.
 5. Webpack must keep **`conditionNames`** without bare **`import`**, plus CJS aliases for **`react-router$` / `react-router-dom$` / `react-router/dom$`** — otherwise RR7’s `.mjs` exports break the SPA bundle at runtime.

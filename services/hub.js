@@ -1126,10 +1126,13 @@ class Hub extends Service {
   _capHeapCollections () {
     const collections = this._state && this._state.content && this._state.content.collections;
     if (collections && collections.messages && typeof collections.messages === 'object') {
-      hubHeapBounds.capMapKeepHighestSeq(collections.messages, hubHeapBounds.MAX_FABRIC_MESSAGE_LOG);
+      collections.messages = hubHeapBounds.capMapKeepHighestSeq(
+        collections.messages,
+        hubHeapBounds.MAX_FABRIC_MESSAGE_LOG
+      );
     }
     if (this._state && this._state.messages && typeof this._state.messages === 'object') {
-      hubHeapBounds.capMapKeepNewest(
+      this._state.messages = hubHeapBounds.capMapKeepNewest(
         this._state.messages,
         hubHeapBounds.MAX_ACTIVITY_MESSAGES,
         hubHeapBounds.activityTime
@@ -1183,18 +1186,24 @@ class Hub extends Service {
     let names = [];
     try {
       names = fs.readdirSync(dir).filter((n) => String(n).endsWith('.json')).sort();
-    } catch (err) {
+    } catch (_) {
       return 0;
     }
     const slice = names.slice(-hubHeapBounds.MAX_FABRIC_MESSAGE_LOG);
     const map = this._getCollectionMap('messages');
     let loaded = 0;
     for (const name of slice) {
+      const base = path.basename(String(name));
+      if (base !== String(name) || !/^[0-9A-Za-z._-]+\.json$/.test(base)) continue;
       try {
-        const raw = fs.readFileSync(path.join(dir, name), 'utf8');
+        // Hub message log is a local directory; `base` is basename-only.
+        // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+        const raw = fs.readFileSync(path.join(dir, base), 'utf8');
         const entry = JSON.parse(raw);
-        if (!entry || typeof entry !== 'object' || !entry.id) continue;
-        map[entry.id] = entry;
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !entry.id) continue;
+        const id = String(entry.id);
+        if (!id || id === '__proto__' || id === 'prototype' || id === 'constructor') continue;
+        Object.assign(map, Object.fromEntries([[id, entry]]));
         loaded++;
         if (entry.seq != null) {
           this._state.content.counts = this._state.content.counts || {};
@@ -1978,7 +1987,7 @@ class Hub extends Service {
 
       this._state.messages = this._state.messages || {};
       this._state.messages[id] = base;
-      hubHeapBounds.capMapKeepNewest(
+      this._state.messages = hubHeapBounds.capMapKeepNewest(
         this._state.messages,
         hubHeapBounds.MAX_ACTIVITY_MESSAGES,
         hubHeapBounds.activityTime
@@ -2022,7 +2031,7 @@ class Hub extends Service {
         : `chat:${entry.object.created}:${actorId}`;
       this._state.messages = this._state.messages || {};
       this._state.messages[id] = entry;
-      hubHeapBounds.capMapKeepNewest(
+      this._state.messages = hubHeapBounds.capMapKeepNewest(
         this._state.messages,
         hubHeapBounds.MAX_ACTIVITY_MESSAGES,
         hubHeapBounds.activityTime
@@ -10260,7 +10269,7 @@ class Hub extends Service {
         console.warn('[HUB] STATE snapshot is', file.length, 'bytes (limit', hubHeapBounds.MAX_HUB_STATE_BYTES, '); skipping in-memory restore. Message files under messages/ still load a window.');
       } else if (file) {
         try {
-          state = JSON.parse(file);
+          state = parseFilesystemJson(file);
         } catch (parseErr) {
           console.warn('[HUB] STATE snapshot parse failed:', parseErr && parseErr.message ? parseErr.message : parseErr);
         }

@@ -30,6 +30,8 @@ function lightningdOnPath () {
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
     try {
+      // PATH entries are local directories; basename `lightningd` is a literal.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       if (fs.existsSync(path.join(dir, name))) return true;
     } catch (_) { /* skip unreadable PATH entry */ }
   }

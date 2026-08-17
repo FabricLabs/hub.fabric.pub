@@ -1,9 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const fs = require('fs');
 const os = require('os');
-const path = require('path');
 
 const Hub = require('../services/hub');
 const hubHeapBounds = require('../functions/hubHeapBounds');
@@ -39,10 +37,10 @@ describe('Hub heap bounds', function () {
   it('capMapKeepHighestSeq keeps the newest seqs', function () {
     const map = {};
     for (let i = 1; i <= 10; i++) map['id-' + i] = { id: 'id-' + i, seq: i };
-    hubHeapBounds.capMapKeepHighestSeq(map, 3);
-    assert.strictEqual(Object.keys(map).length, 3);
-    assert.ok(map['id-8'] && map['id-9'] && map['id-10']);
-    assert.strictEqual(map['id-1'], undefined);
+    const next = hubHeapBounds.capMapKeepHighestSeq(map, 3);
+    assert.strictEqual(Object.keys(next).length, 3);
+    assert.ok(next['id-8'] && next['id-9'] && next['id-10']);
+    assert.strictEqual(next['id-1'], undefined);
   });
 
   it('capMapKeepNewest keeps the latest activity timestamps', function () {
@@ -51,8 +49,8 @@ describe('Hub heap bounds', function () {
       b: { object: { created: '2026-08-16T00:00:00.000Z' } },
       c: { object: { created: '2026-03-01T00:00:00.000Z' } }
     };
-    hubHeapBounds.capMapKeepNewest(map, 1, hubHeapBounds.activityTime);
-    assert.deepStrictEqual(Object.keys(map), ['b']);
+    const next = hubHeapBounds.capMapKeepNewest(map, 1, hubHeapBounds.activityTime);
+    assert.deepStrictEqual(Object.keys(next), ['b']);
   });
 
   it('recordActivity caps the in-memory activity map', function () {
