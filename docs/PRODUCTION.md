@@ -29,6 +29,9 @@ Env still overrides (`FABRIC_HUB_RPC_URL`, `FABRIC_PLAYNET_PEERS`). Do not commi
 | Crowdfund L1 test (optional) | `npm run test:crowdfund-regtest` (managed regtest, integration path). |
 | Document exchange L1 test (optional) | `npm run test:e2e-document-purchase` and `npm run test:e2e-storage-contract`. |
 
+## Heap / retainer telemetry
+Hub logs a single parseable line **`[HUB:HEAP] {…}`** on start and every Beacon-aligned interval (default **10 min**, floor **60 s**). Payload includes `process.memoryUsage`, V8 heap stats, and in-memory retainer sizes (`documentsPublished`, fabric/activity maps, peers, last `STATE` write bytes). **Log-only** — durable `messages/`, documents, and STATE are not truncated, so full replay stays intact. Disable with **`FABRIC_HUB_HEAP_TELEMETRY=0`**; override cadence with **`FABRIC_HUB_HEAP_TELEMETRY_MS`**. Agents scrape PM2 stdout (pair with `pm2-logrotate`).
+
 ## Hub UI feature flags (browser + disk restore)
 The SPA caches flags in **`localStorage`** key **`fabric.hub.uiFeatureFlags`** and hydrates from Hub setting **`HUB_UI_FEATURE_FLAGS`** on startup. With an admin token present, feature toggles on `/settings/admin` are persisted to `stores/hub/settings.json` and restored after hub restart. Keys include **`peers`**, **`sidechain`**, **`bitcoinPayments`**, **`bitcoinLightning`**, **`bitcoinCrowdfund`**, and **`bitcoin: true`** to enable all Bitcoin-related flags at once. Implementation: [`functions/hubUiFeatureFlags.js`](../functions/hubUiFeatureFlags.js). **Peers** in the top nav stays gated on the Hub **admin token** (browser `localStorage`).
 
@@ -37,7 +40,7 @@ Defaults are conservative; operators often enable **`bitcoin`** and **`sidechain
 ## Security
 - **Identity:** Set `FABRIC_SEED` / `FABRIC_MNEMONIC` in production so the Hub identity is stable and backed up. Never commit seeds or paste them into tickets.
 - **Admin token:** Issued at first-time setup; stored in the **browser only**. Operators refresh via `POST /settings/refresh`. Treat like a high-privilege API key.
-- **Network:** Put the HTTP surface behind **TLS** (reverse proxy: nginx, Caddy, Traefik). Bind P2P (`FABRIC_PORT`) and HTTP (`FABRIC_HUB_PORT` / `PORT`) intentionally; use `FABRIC_HUB_INTERFACE` / `INTERFACE` if you must restrict bind addresses.
+- **Network:** Put the HTTP surface behind **TLS** (reverse proxy: nginx, Caddy, Traefik). Production HTTP should bind **loopback** (`FABRIC_HUB_INTERFACE=127.0.0.1` or `HTTP_SHARED_MODE=false`) so only the proxy is public. The constructor default remains `0.0.0.0` for LAN/playnet; Electron desktop already forces `127.0.0.1`. P2P (`FABRIC_PORT`) is a separate bind.
 - **Bitcoin RPC:** For non-regtest, use **cookie or restricted RPC** on a trusted network; do not expose `bitcoind` RPC to the open internet.
 - **State on disk:** `stores/hub/` holds LevelDB, documents, message log, and optional regtest chain data. **Back up** this directory for production nodes; **do not** publish backups publicly.
 
@@ -48,7 +51,7 @@ Defaults are conservative; operators often enable **`bitcoin`** and **`sidechain
 | `FABRIC_PORT` | Fabric P2P listen (default `7777`); must be a **number** so the Peer binds correctly. On the shared `meta.fabric.pub` host, **7777** is Hub + `relay.goon.vc`; other apps use **7778+**. |
 | `FABRIC_HUB_PORT` / `PORT` | HTTP/WebSocket (default `8080`) |
 | `FABRIC_HUB_HOSTNAME` / `HOSTNAME` | Advertised hostname where applicable |
-| `FABRIC_HUB_INTERFACE` / `INTERFACE` | Bind address (default `0.0.0.0`) |
+| `FABRIC_HUB_INTERFACE` / `INTERFACE` | HTTP bind. Constructor default `0.0.0.0`. Production behind a proxy: `127.0.0.1`. |
 | `FABRIC_BITCOIN_ENABLE` | Set to `false` to skip the Bitcoin service (Hub starts without `bitcoind`; used for headless E2E) |
 
 See [README.md](../README.md) and [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md) for Bitcoin network ports and managed regtest notes.

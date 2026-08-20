@@ -283,4 +283,38 @@ describe('playnet ops sweep (wipe → fund → deploy)', function () {
       else process.env.FABRIC_SEED = prevS;
     }
   });
+
+  it('plans local Hub as playnet registry (loopback Accept, omit public Hub peer)', function () {
+    const { planLocalHubAsPlaynetRegistry } = require('../scripts/lib/playnetOps');
+    const plan = planLocalHubAsPlaynetRegistry({
+      hub: 'http://127.0.0.1:8080',
+      includeRelay: true
+    });
+    assert.strictEqual(plan.role, 'local-registry');
+    assert.strictEqual(plan.networkAlwaysExists, true);
+    assert.strictEqual(plan.management.shortTerm, 'local-lead');
+    assert.strictEqual(plan.management.longTerm, 'hub.fabric.pub');
+    assert.strictEqual(plan.safe, true);
+    assert.strictEqual(plan.acceptMethod, 'AcceptTrackedApplicationContract');
+    assert.strictEqual(plan.peers[0], '127.0.0.1:7777');
+    assert.ok(plan.peers.includes('relay.goon.vc:7777'));
+    assert.ok(!plan.peers.some((p) => /hub\.fabric\.pub/i.test(p)));
+    assert.ok(plan.readinessRpc.includes('ListTrackedApplicationContracts'));
+    assert.strictEqual(plan.expectNativeBeacon, 'fabric-beacon');
+
+    const bad = planLocalHubAsPlaynetRegistry({ hub: 'https://hub.fabric.pub' });
+    assert.strictEqual(bad.safe, false);
+    assert.ok(bad.blockers.length >= 1);
+  });
+
+  it('plans short-term local lead vs long-term hub.fabric.pub management', function () {
+    const { planPlaynetLeadCapture } = require('../scripts/lib/playnetOps');
+    const local = planPlaynetLeadCapture({ horizon: 'local-lead' });
+    assert.strictEqual(local.networkAlwaysExists, true);
+    assert.strictEqual(local.horizon, 'local-lead');
+    assert.strictEqual(local.safe, true);
+    const remote = planPlaynetLeadCapture({ horizon: 'hub.fabric.pub' });
+    assert.strictEqual(remote.horizon, 'hub.fabric.pub');
+    assert.strictEqual(remote.active.registryPeer, 'hub.fabric.pub:7777');
+  });
 });

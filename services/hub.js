@@ -60,6 +60,7 @@ const parseFilesystemJson = require('../functions/parseFilesystemJson');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const hubHeapBounds = require('../functions/hubHeapBounds');
+const hubHeapTelemetry = require('../functions/hubHeapTelemetry');
 const {
   installFilesystemPublishHeapGuard
 } = require('../functions/hubFilesystemPersist');
@@ -655,6 +656,10 @@ class Hub extends Service {
     this._workQueueById = new Set();
     this._workQueueBusy = false;
     this._workQueueTimer = null;
+    /** @type {ReturnType<typeof setInterval>|null} */
+    this._heapTelemetryTimer = null;
+    /** UTF-8 byte length of last `commit()` STATE body (telemetry; avoids re-stringify). */
+    this._lastStateWriteBytes = null;
     this._stopPromise = null;
     /** Inventory L1 HTLC settlement state (seller-side). */
     /** @type {Map<string, Object>} */
@@ -1937,6 +1942,7 @@ class Hub extends Service {
     this._capHeapCollections();
     if (!this.fs) return;
     const body = JSON.stringify(this._state.content || {});
+    this._lastStateWriteBytes = Buffer.byteLength(body, 'utf8');
     if (typeof this.fs.writeFile === 'function') {
       this.fs.writeFile('STATE', body);
       return;
@@ -1944,6 +1950,49 @@ class Hub extends Service {
     if (typeof this.fs.publish === 'function') {
       this.fs.publish('STATE', body);
     }
+  }
+
+  /**
+   * Log-only heap / retainer snapshot for agents (PM2 stdout). Does not mutate
+   * durable stores — full replay of `messages/` + documents + STATE remains.
+   * @returns {object|null}
+   */
+  _reportHeapTelemetry () {
+    return hubHeapTelemetry.logHubHeapTelemetry(this);
+  }
+
+  /**
+   * Start periodic `[HUB:HEAP]` lines (Beacon cadence by default). Idempotent.
+   * @returns {void}
+   */
+  _startHeapTelemetry () {
+    if (this._heapTelemetryTimer) return;
+    if (!hubHeapTelemetry.isHeapTelemetryEnabled(this.settings)) return;
+    const ms = hubHeapTelemetry.resolveHeapTelemetryIntervalMs(this.settings);
+    this._reportHeapTelemetry();
+    this._heapTelemetryTimer = setInterval(() => {
+      this._reportHeapTelemetry();
+    }, ms);
+    if (typeof this._heapTelemetryTimer.unref === 'function') {
+      this._heapTelemetryTimer.unref();
+    }
+    console.log(
+      hubHeapTelemetry.LOG_PREFIX,
+      'periodic telemetry every',
+      ms,
+      'ms (disable with FABRIC_HUB_HEAP_TELEMETRY=0)'
+    );
+  }
+
+  /**
+   * @returns {void}
+   */
+  _stopHeapTelemetry () {
+    if (!this._heapTelemetryTimer) return;
+    try {
+      clearInterval(this._heapTelemetryTimer);
+    } catch (_) { /* ignore */ }
+    this._heapTelemetryTimer = null;
   }
 
   /**
@@ -6805,7 +6854,8 @@ class Hub extends Service {
     // refresh on `/settings`); JSON for `Accept: application/json`. The app must not rely on
     // default `*/*` for the setup probe—`HubInterface` and tests use `Accept: application/json`.
     return this.http.jsonOrShell(req, res, async () => {
-      const settings = this.setup.listSettings();
+      const isAdmin = this._isSetupAdminRequest(req);
+      const settings = this.setup.redactSettingsForHttp(this.setup.listSettings(), isAdmin);
       const setupStatus = this.setup.getSetupStatus();
       const hubSetupSecret = getHubSetupUiSecretTrimmed();
       const requiresSetupUiSecret = !!(setupStatus.needsSetup && hubSetupSecret.length > 0);
@@ -6875,8 +6925,9 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const name = req.params && req.params.name;
       if (!name) return res.status(400).json({ error: 'Setting name is required' });
-      const value = this.setup.getSetting(name);
-      if (value === undefined) return res.status(404).json({ error: 'Setting not found', setting: name });
+      const raw = this.setup.getSetting(name);
+      if (raw === undefined) return res.status(404).json({ error: 'Setting not found', setting: name });
+      const value = this.setup.redactSettingValue(name, raw, this._isSetupAdminRequest(req));
       return res.status(200).json({ success: true, setting: name, value });
     });
   }
@@ -7683,15 +7734,25 @@ class Hub extends Service {
 
   /**
    * @param {object} req
+   * @returns {boolean}
+   */
+  _isSetupAdminRequest (req) {
+    const token = this._extractOptionalAdminTokenFromRequest(req);
+    return !!(this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(token));
+  }
+
+  /**
+   * @param {object} req
    * @param {object} res
+   * @param {string} [message]
    * @returns {boolean} false when 403 already sent
    */
-  _requireAdminTokenForHubWalletHttp (req, res) {
+  _requireAdminTokenForHubWalletHttp (req, res, message) {
     const token = this._extractOptionalAdminTokenFromRequest(req);
     if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' || !this.setup.verifyAdminToken(token)) {
       res.status(403).json({
         status: 'error',
-        message: 'Admin token required to access the Hub node Bitcoin wallet.'
+        message: message || 'Admin token required to access the Hub node Bitcoin wallet.'
       });
       return false;
     }
@@ -8589,8 +8650,11 @@ class Hub extends Service {
       const receiveTemplate = String(body.receiveTemplate || '').trim();
       const federationXOnlyHex = String(body.federationXOnlyHex || '').trim();
       let address = String(body.address || '').trim();
-      if (!receiveTemplate) {
-        address = address || (bitcoin ? await bitcoin.getUnusedAddress() : '');
+      if (!receiveTemplate && !address) {
+        if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to allocate a Hub wallet address for Payjoin.')) {
+          return;
+        }
+        address = bitcoin ? await bitcoin.getUnusedAddress() : '';
       }
       if (!receiveTemplate && !address) {
         return res.status(400).json({ status: 'error', message: 'Deposit address is required.' });
@@ -9528,6 +9592,9 @@ class Hub extends Service {
     if (stub) {
       return res.status(200).json({ closed: true, stub: true, channelId });
     }
+    if (this.lightning && !this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required for live Lightning mutations.')) {
+      return;
+    }
     if (!this.lightning) {
       return res.status(503).json({
         available: false,
@@ -9586,6 +9653,9 @@ class Hub extends Service {
     }
 
     if (this.lightning) {
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required for live Lightning mutations.')) {
+        return;
+      }
       return this.http.jsonOrShell(req, res, async () => {
         try {
           if (pathName.endsWith('/invoices') || pathName.includes('/invoice')) {
@@ -14132,6 +14202,7 @@ class Hub extends Service {
         }, 2000);
       }
       await this.startBeacon();
+      this._startHeapTelemetry();
 
       // Local State
       this._state.status = 'STARTED';
@@ -14182,6 +14253,7 @@ class Hub extends Service {
           this._workQueueTimer = null;
         } catch (e) {}
       }
+      this._stopHeapTelemetry();
       if (this._pushNetworkStatus) {
         try {
           this.agent.removeListener('connections:open', this._pushNetworkStatus);

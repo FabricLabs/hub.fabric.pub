@@ -82,4 +82,19 @@ describe('Hub Accept/Reject operator tokens', function () {
     });
     assert.strictEqual(bad.message, 'adminToken invalid');
   });
+
+  it('skips an unset _rootKey and still accepts the agent.key token', async function () {
+    const hub = stubHub();
+    hub._rootKey = undefined;
+    const ok = await hub._rejectTrackedApplicationContract({
+      adminToken: mintAdmin(hub.agent.key),
+      contractId: 'missing'
+    });
+    assert.strictEqual(ok.message, 'unknown contract publish');
+    const bad = await hub._rejectTrackedApplicationContract({
+      adminToken: mintAdmin(new Key()),
+      contractId: 'missing'
+    });
+    assert.strictEqual(bad.message, 'adminToken invalid');
+  });
 });

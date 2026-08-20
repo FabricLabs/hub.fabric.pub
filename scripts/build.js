@@ -62,9 +62,17 @@ function syncSemanticAssetsFromFabricHttp () {
   }
 }
 
+function resolveWebpackMode () {
+  // `npm start` / `desktop` / `ci` call this script without NODE_ENV=production.
+  // Default minify; `webpack serve --mode development` stays the HMR path.
+  return process.env.NODE_ENV === 'development' ? 'development' : 'production';
+}
+
 function resolveWebpackConfig () {
+  const mode = resolveWebpackMode();
+  console.log('[BUILD:SITE] webpack mode=' + mode);
   return typeof webpackConfigModule === 'function'
-    ? webpackConfigModule({}, { mode: process.env.NODE_ENV === 'production' ? 'production' : 'development' })
+    ? webpackConfigModule({}, { mode })
     : webpackConfigModule;
 }
 

@@ -6,8 +6,7 @@
  * every Hub life (10 RPC-sock retries when CLN is not installed).
  */
 
-const fs = require('fs');
-const path = require('path');
+const { execFileSync } = require('child_process');
 
 /**
  * @param {object} [settings]
@@ -22,20 +21,19 @@ function shouldStartManagedLightning (settings) {
 }
 
 /**
+ * True when `lightningd` is on PATH (`which` / `where`). Avoids joining PATH
+ * entries into `fs.existsSync` (Codacy Semgrep dynamic-path gate).
  * @returns {boolean}
  */
 function lightningdOnPath () {
-  const pathEnv = process.env.PATH || '';
-  const name = process.platform === 'win32' ? 'lightningd.exe' : 'lightningd';
-  for (const dir of pathEnv.split(path.delimiter)) {
-    if (!dir) continue;
-    try {
-      // PATH entries are local directories; basename `lightningd` is a literal.
-      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      if (fs.existsSync(path.join(dir, name))) return true;
-    } catch (_) { /* skip unreadable PATH entry */ }
+  const bin = process.platform === 'win32' ? 'lightningd.exe' : 'lightningd';
+  const finder = process.platform === 'win32' ? 'where' : 'which';
+  try {
+    execFileSync(finder, [bin], { stdio: 'ignore', timeout: 2000 });
+    return true;
+  } catch (_) {
+    return false;
   }
-  return false;
 }
 
 module.exports = {

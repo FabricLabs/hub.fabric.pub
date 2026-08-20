@@ -30,6 +30,9 @@ const GLOBAL_SETTINGS = [
   'HTTP_SHARED_MODE'
 ];
 
+/** Setting names that must not leave the Hub over unauthenticated GET /settings. */
+const SECRET_SETTING_NAMES = new Set(['BITCOIN_PASSWORD']);
+
 /**
  * Setup service for Hub first-time configuration.
  */
@@ -97,6 +100,36 @@ class SetupService {
     const state = this._loadStateContent();
     state[SETTINGS_KEY] = settings;
     await this._saveStateContent(state);
+  }
+
+  /**
+   * Drop secret setting values unless the caller presented a valid admin token.
+   * @param {string} name
+   * @param {*} value
+   * @param {boolean} isAdmin
+   * @returns {*}
+   */
+  redactSettingValue (name, value, isAdmin) {
+    if (isAdmin) return value;
+    if (SECRET_SETTING_NAMES.has(String(name))) {
+      if (value == null || value === '') return value;
+      return '';
+    }
+    return value;
+  }
+
+  /**
+   * @param {Object} settings
+   * @param {boolean} isAdmin
+   * @returns {Object}
+   */
+  redactSettingsForHttp (settings, isAdmin) {
+    const src = settings && typeof settings === 'object' ? settings : {};
+    const result = {};
+    for (const [name, value] of Object.entries(src)) {
+      result[name] = this.redactSettingValue(name, value, isAdmin);
+    }
+    return result;
   }
 
   /**

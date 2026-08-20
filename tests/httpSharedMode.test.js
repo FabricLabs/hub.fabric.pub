@@ -50,7 +50,12 @@ describe('httpSharedMode', () => {
   });
 
   it('applySharedModeWebsocketGate fail-closes shared bind without env token', () => {
-    const gated = applySharedModeWebsocketGate({}, { bindAll: true, env: {} });
+    // Handshake reject is the gate. Do not throw at Hub startup when the
+    // shared-mode WS token is unset (HTTPServer refuses the socket).
+    let gated;
+    assert.doesNotThrow(() => {
+      gated = applySharedModeWebsocketGate({}, { bindAll: true, env: {} });
+    });
     assert.strictEqual(gated.websocket.requireClientToken, true);
     assert.ok(!gated.websocket.clientToken);
   });

@@ -3,7 +3,7 @@
 /**
  * @fileoverview Hub Filesystem writes must not use `@fabric/core` `Filesystem.publish`
  * on the npm git pin: that retains every body in `_state.documents` and
- * `synchronize()`s the tree (desktop Electron ~3.7 GiB OOM; playnet PM2 loop).
+ * `synchronize()`s the tree (desktop Electron ~3.7 GiB OOM; playnet PM2 loop).
  */
 
 /**

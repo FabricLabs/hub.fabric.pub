@@ -29,3 +29,18 @@ describe('bitcoinProtocolUrl', function () {
     assert.strictEqual(hubPaymentsPathFromBitcoinUri('lightning:lnbc1fake'), null);
   });
 });
+
+const { buildCrowdfundFunderBitcoinUri } = require('../functions/bitcoinClient');
+const { parseBitcoinUri } = require('@fabric/core/functions/bip21');
+
+describe('buildCrowdfundFunderBitcoinUri', function () {
+  it('uses core BIP-21 encode for address-only and amount URIs', function () {
+    assert.strictEqual(buildCrowdfundFunderBitcoinUri(''), '');
+    const bare = buildCrowdfundFunderBitcoinUri('bcrt1qtestaddr');
+    assert.strictEqual(bare, 'bitcoin:bcrt1qtestaddr');
+    const paid = buildCrowdfundFunderBitcoinUri('bcrt1qtestaddr', 0.00005);
+    const parsed = parseBitcoinUri(paid);
+    assert.strictEqual(parsed.address, 'bcrt1qtestaddr');
+    assert.strictEqual(Number(parsed.amount), 0.00005);
+  });
+});

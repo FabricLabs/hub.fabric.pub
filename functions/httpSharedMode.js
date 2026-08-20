@@ -13,6 +13,8 @@ function applySharedModeWebsocketGateLocal (settings = {}, opts = {}) {
     ws.requireClientToken === 0 ||
     ws.requireClientToken === '0';
   if (explicitOff) return settings;
+  // Fail closed at the handshake: require a token, but do not abort Hub
+  // start when FABRIC_WS_CLIENT_TOKEN / websocket.clientToken is empty.
   ws.requireClientToken = true;
   const envTok = String(env.FABRIC_WS_CLIENT_TOKEN || '').trim();
   if (envTok && !ws.clientToken) ws.clientToken = envTok;

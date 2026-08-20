@@ -1,7 +1,7 @@
 'use strict';
 
-const { URL } = require('url');
 const { SATS_PER_BTC } = require('../constants');
+const { parseBitcoinUri } = require('@fabric/core/functions/bip21');
 
 /**
  * Build a Hub SPA path for Bitcoin Payments from a BIP21 `bitcoin:` URI.
@@ -12,25 +12,22 @@ const { SATS_PER_BTC } = require('../constants');
  * @returns {{ relativePath: string }|null}
  */
 function hubPaymentsPathFromBitcoinUri (uriStr) {
-  const raw = String(uriStr || '').trim();
-  if (!raw.toLowerCase().startsWith('bitcoin:')) return null;
-  let u;
+  let parsed;
   try {
-    u = new URL(raw);
+    parsed = parseBitcoinUri(uriStr);
   } catch (_) {
     return null;
   }
-  if (u.protocol !== 'bitcoin:') return null;
-  const address = String(u.pathname || '').replace(/^\//, '').trim();
+  const address = String(parsed.address || '').trim();
   if (!address) return null;
 
   const params = new URLSearchParams();
-  if (u.searchParams.get('pj')) {
-    params.set('bitcoinUri', raw);
+  const pj = parsed.extras && parsed.extras.pj;
+  if (pj) {
+    params.set('bitcoinUri', String(uriStr || '').trim());
   } else {
     params.set('payTo', address);
-    const amountStr = u.searchParams.get('amount');
-    const amountBtc = amountStr != null ? Number(amountStr) : NaN;
+    const amountBtc = parsed.amount != null ? Number(parsed.amount) : NaN;
     if (Number.isFinite(amountBtc) && amountBtc > 0) {
       params.set('payAmountSats', String(Math.round(amountBtc * SATS_PER_BTC)));
     }

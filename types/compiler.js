@@ -81,7 +81,7 @@ class Compiler extends HTTPCompiler {
       },
       // Use provided webpack config if present, otherwise use default
       webpack: settings.webpack || {
-        mode: settings.mode || 'development',
+        mode: settings.mode || 'production',
         entry: path.resolve('./scripts/browser.js'),
         experiments: {
           asyncWebAssembly: true

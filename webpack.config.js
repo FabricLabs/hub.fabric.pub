@@ -38,7 +38,7 @@ const TerserPlugin = require('terser-webpack-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 
 module.exports = (env, argv) => {
-  const mode = argv.mode || 'development';
+  const mode = (argv && argv.mode) || 'production';
   const hubProxyOrigin = process.env.FABRIC_HUB_DEV_PROXY
     || `http://127.0.0.1:${process.env.FABRIC_HUB_PORT || 8080}`;
 

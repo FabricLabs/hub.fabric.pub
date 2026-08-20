@@ -470,6 +470,98 @@ function planPlaynetOperatorSweep (opts = {}) {
   };
 }
 
+/**
+ * Plan for this Hub process to act as the live playnet registry (local takeover).
+ * Accept authority stays on loopback; Fabric peer omits public hub.fabric.pub.
+ *
+ * @param {object} [opts]
+ * @returns {object}
+ */
+function planLocalHubAsPlaynetRegistry (opts = {}) {
+  const hubUrl = String(
+    opts.hub || opts.hubUrl || process.env.FABRIC_LOCAL_HUB_RPC_URL || 'http://127.0.0.1:8080'
+  ).trim().replace(/\/$/, '');
+  let loopback = false;
+  try {
+    const u = new URL(hubUrl);
+    const host = String(u.hostname || '').toLowerCase();
+    loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch (_) {
+    loopback = false;
+  }
+  const productionHttp = /(?:^|[./])hub\.fabric\.pub(?::|\/|$)/i.test(hubUrl);
+  const localPeer = String(opts.localPeer || process.env.FABRIC_LOCAL_HUB_PEER || '127.0.0.1:7777').trim();
+  const peers = [localPeer];
+  if (opts.includeRelay !== false) peers.push('relay.goon.vc:7777');
+
+  return {
+    role: 'local-registry',
+    hubUrl,
+    peers,
+    omitProductionHubPeer: true,
+    networkAlwaysExists: true,
+    management: {
+      shortTerm: 'local-lead',
+      longTerm: 'hub.fabric.pub'
+    },
+    acceptMethod: 'AcceptTrackedApplicationContract',
+    readinessRpc: [
+      'GetNetworkStatus',
+      'ListTrackedApplicationContracts',
+      'GetSidechainState'
+    ],
+    readinessHttp: [
+      '/services/peering',
+      '/services/distributed/manifest',
+      '/services/distributed/epoch'
+    ],
+    expectNativeBeacon: 'fabric-beacon',
+    safe: loopback && !productionHttp,
+    blockers: [
+      !loopback ? 'registry Hub HTTP must be loopback' : null,
+      productionHttp ? 'refusing production hub.fabric.pub as local registry' : null
+    ].filter(Boolean)
+  };
+}
+
+/**
+ * Short-term local playnet lead; long-term management on hub.fabric.pub.
+ * @param {object} [opts]
+ * @param {'local-lead'|'hub.fabric.pub'} [opts.horizon]
+ * @returns {object}
+ */
+function planPlaynetLeadCapture (opts = {}) {
+  const horizon = opts.horizon === 'hub.fabric.pub' ? 'hub.fabric.pub' : 'local-lead';
+  const local = planLocalHubAsPlaynetRegistry(opts);
+  const shortTerm = {
+    horizon: 'local-lead',
+    registryHttp: local.hubUrl,
+    registryPeer: (local.peers && local.peers[0]) || '127.0.0.1:7777',
+    plan: local
+  };
+  const longTerm = {
+    horizon: 'hub.fabric.pub',
+    registryHttp: PRODUCTION_HUB_HTTP,
+    registryPeer: 'hub.fabric.pub:7777',
+    deployFlags: ['--production', '--accept'],
+    steps: [
+      'align-operator-FABRIC_XPRV-with-hub-_rootKey',
+      'AcceptTracked-on-hub.fabric.pub',
+      'publish-management-from-hub.fabric.pub',
+      'retire-local-lead-authority'
+    ]
+  };
+  return {
+    role: 'playnet-lead-capture',
+    networkAlwaysExists: true,
+    horizon,
+    active: horizon === 'hub.fabric.pub' ? longTerm : shortTerm,
+    shortTerm,
+    longTerm,
+    safe: horizon === 'local-lead' ? !!local.safe : true
+  };
+}
+
 module.exports = {
   ROOT,
   loadMnemonic,
@@ -492,5 +584,7 @@ module.exports = {
   loadPlaynetContract,
   waitForPeerConnections,
   localFlushToSnapshot,
-  planPlaynetOperatorSweep
+  planPlaynetOperatorSweep,
+  planLocalHubAsPlaynetRegistry,
+  planPlaynetLeadCapture
 };

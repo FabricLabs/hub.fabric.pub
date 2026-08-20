@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const BIP32 = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
 const payments = require('bitcoinjs-lib/src/payments');
+const { encodeBitcoinUri } = require('@fabric/core/functions/bip21');
 const {
   readStorageJSON,
   writeStorageJSON,
@@ -1756,9 +1757,12 @@ function buildCrowdfundFunderBitcoinUri (address, amountBtc) {
   const addr = String(address || '').trim();
   if (!addr) return '';
   const n = Number(amountBtc);
-  if (!Number.isFinite(n) || n <= 0) return `bitcoin:${addr}`;
-  const amt = n.toFixed(8).replace(/\.?0+$/, '') || '0';
-  return `bitcoin:${addr}?amount=${amt}`;
+  try {
+    if (!Number.isFinite(n) || n <= 0) return encodeBitcoinUri({ address: addr });
+    return encodeBitcoinUri({ address: addr, amount: n });
+  } catch (_) {
+    return '';
+  }
 }
 
 /**
@@ -2102,6 +2106,7 @@ module.exports = {
   getCrowdfundingBeneficiaryPrivateKey32,
   getCrowdfundingBeneficiaryPayoutAddress,
   signCrowdfundingPayoutPsbtBeneficiary,
+  encodeBitcoinUri,
   buildCrowdfundFunderBitcoinUri,
   buildCrowdfundPaymentsDeepLink,
   crowdfundCampaignApiUrl,

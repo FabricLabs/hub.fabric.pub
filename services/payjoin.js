@@ -9,6 +9,7 @@ const { buildFabricPayjoinProtocolProfile } = require('../functions/payjoinFabri
 const { resolvePayjoinPublicOrigin, joinOriginPath } = require('../functions/payjoinPublicOrigin');
 const { PayjoinAsyncMailbox } = require('../functions/payjoinAsyncMailbox');
 const { SATS_PER_BTC } = require('../constants');
+const { encodeBitcoinUri } = require('@fabric/core/functions/bip21');
 
 class PayjoinService extends Service {
   constructor (settings = {}) {
@@ -422,13 +423,17 @@ class PayjoinService extends Service {
   }
 
   _buildBIP21Uri (address, amountSats, label, proposalURL) {
-    const params = [];
+    const extras = {};
+    if (proposalURL) extras.pj = proposalURL;
+    const opts = {
+      address: String(address || '').trim(),
+      extras
+    };
     if (Number.isFinite(amountSats) && amountSats > 0) {
-      params.push(`amount=${(amountSats / SATS_PER_BTC).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')}`);
+      opts.amount = amountSats / SATS_PER_BTC;
     }
-    if (label) params.push(`label=${encodeURIComponent(label)}`);
-    if (proposalURL) params.push(`pj=${encodeURIComponent(proposalURL)}`);
-    return `bitcoin:${address}${params.length ? `?${params.join('&')}` : ''}`;
+    if (label) opts.label = label;
+    return encodeBitcoinUri(opts);
   }
 
   _createEvent (type, payload = {}) {
