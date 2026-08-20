@@ -10,6 +10,8 @@
 ## Project Overview
 `hub.fabric.pub` is the Fabric rendezvous hub and browser gateway. It runs a Fabric peer node, exposes HTTP/WebSocket APIs, and serves a React UI for operators.
 
+**HTML-only / CDN:** serving `assets/` without `scripts/hub.js` is a supported UI mode. The SPA classifies `GET /settings` (JSON vs HTML/CDN protection) in `functions/hubClientEnvironment.js` and shows only client-exclusive features until Hub HTTP is present. Do not hide operator chrome when that probe is Hub JSON. Point a CDN build at live Hubs with **`window.FABRIC_HUB_SEEDS`** (or env **`FABRIC_HUB_SEEDS`**) so the client can `OPTIONS /` those origins, join their WebRTC mesh, probe `GET /services/peering`, and list Documents from peer inventories. **`/downloads`** is always available: it browses `assets/downloads/index.json` (generated at build) and serves installer files as static assets.
+
 Primary responsibilities:
 - peer discovery and connection brokerage
 - websocket JSON-RPC bridge for browser clients
@@ -100,25 +102,31 @@ Fabric-native invoices and settlement are the default product shape. Future **L4
 - **Sidechain signals (playnet):** optional per-block scan via **`FABRIC_SIDECHAIN_SCAN=1`** / `bitcoin.sidechainScan` — OP_RETURN magic + watched addresses; Activity `SidechainScan`. Timelock maturation (e.g. +100 blocks) is policy on top of height + `locktime` hints (`functions/sidechainBlockScan.js`).
 - **Fabric hallmarks (opt-in, on-chain only):** **`FABRIC_HALLMARKS=1`** / `bitcoin.hallmarks.enable` publishes a 40-byte OP_RETURN on each new tip (regtest): `c0d3f33d` + last 4 bytes of tip hash + SHA-256 commitment over tip + Hub contract id + latest sidechain/contracts digests. **`FABRIC_HALLMARKS_SCAN=1`** / `hallmarks.scan` decodes hallmarks in tip scan (Activity `FabricHallmark`). Never gossiped on Fabric P2P. Admin RPC: `PublishFabricHallmark`.
 - **L1 → document index:** **`FABRIC_BITCOIN_DOCUMENT_BLOCKS=0`** disables block documents; **`FABRIC_BITCOIN_DOCUMENT_TX=1`** enables per-tx documents; **`FABRIC_BITCOIN_DOC_BLOCK_PRICE_SATS`** / **`FABRIC_BITCOIN_DOC_TX_PRICE_SATS`** set default list prices (`0` = omit `purchasePriceSats`).
+- **Federation vault internal key:** **`FABRIC_FEDERATION_INTERNAL_KEY_MODE`** / `settings.federation.internalKeyMode` — default **`nums`** (keep historical NUMS UTXOs). Core n≥2 ladder default is MuSig2 (new address). Do not switch to `musig2` until those coins are swept. Beacon genesis omits the field; Hub overlays at Accept so vault ≡ Beacon `spendAddress`.
 - **Document Market (opt-in):** **`FABRIC_DOCUMENT_MARKET_ACCUMULATE=1`** persists peer `INVENTORY_RESPONSE` rows in `collections.documentoffers`. **`FABRIC_DOCUMENT_MARKET_REPUBLISH=1`** (implies accumulate) republishes **held** files at `markupBps` (default 1000 = 10%) + `markupSats`. Env: **`FABRIC_DOCUMENT_MARKET_MARKUP_BPS`**, **`FABRIC_DOCUMENT_MARKET_MARKUP_SATS`**, **`FABRIC_DOCUMENT_MARKET_MIN_PRICE_SATS`**. Settings: `documents.market`. Helper: [`functions/documentInventoryMarket.js`](functions/documentInventoryMarket.js) (`@fabric/hub/functions/documentInventoryMarket`). Outbound inventory still lists only local blobs.
 
 ### Storage
-- **`stores/hub/`** — Filesystem-based state persistence (LevelDB for peers, JSON for documents).
-- **`stores/hub/settings.json`** — First-time setup settings (NODE_NAME, IS_CONFIGURED, etc.).
+- **`stores/hub/`** — Filesystem-based state persistence (LevelDB for peers, JSON for documents and `STATE`).
+- **`stores/hub/STATE`** → **`.settings`** — First-time setup (`NODE_NAME`, `IS_CONFIGURED`, Bitcoin knobs). Wiping this directory restarts onboarding. **`npm run reset:stores`** removes CLI `stores/hub`, desktop `~/Library/Application Support/Fabric Hub/stores/hub`, the legacy Electron profile copy, and (unless `--setup-only`) Bitcoin/Lightning datadirs + logs. Quit Hub first. Bitcoin/Lightning chain data is **not** inside `stores/hub` itself (`stores/bitcoin-*`, `stores/lightning/`).
 - Admin token is **client-only** (never stored on server); verified by Schnorr signature.
 - **`assets/`** — Static web assets served by HTTP server.
 
 ## First-Time Setup
-On first run (no `stores/hub/settings.json` with `IS_CONFIGURED`), the UI shows an Onboarding modal:
-1. Operator sets node name and completes setup.
-2. Hub creates and signs an admin token (Fabric Token, capability OP_IDENTITY).
-3. Token is returned to the first client only; settings in `stores/hub/settings.json`.
-4. Admin token authenticates `PUT /settings/:name` (Bearer header).
-5. Token is stored in client `localStorage`; client refreshes via `POST /settings/refresh` before expiry (1-year lifetime).
+On first run (no `stores/hub/STATE` with `settings.IS_CONFIGURED`), Hub defers managed bitcoind and the UI shows a staged Onboarding modal:
+1. **Welcome** — what Hub is, admin token is browser-only, how to reset (`npm run reset:stores`; tray **Reveal Hub data folder**).
+2. **Node** — name, optional LAN HTTP (`HTTP_SHARED_MODE`), document disk / cost-per-byte.
+3. **Bitcoin** — beginner knobs aligned with Jameson Lopp’s [Bitcoin Core Config Generator](https://jlopp.github.io/bitcoin-core-config-generator/) (preset, network, managed vs remote RPC, listen, prune vs txindex, dbcache, maxconnections, maxuploadtarget, optional Lightning). The Bitcoin step shows **one accordion group at a time**. Managed bitcoind defaults to **no transaction relay** (`-blocksonly=1`; Core 29 has no `-txrelay` flag). Completing setup downloads pinned **Bitcoin Core 29.4** and (when requested) **Core Lightning** into `binaries/<platform>-<arch>/`.
+4. Hub creates and signs an admin token (Fabric Token, capability OP_IDENTITY), seeds Hub `STATE` collections + `peers/`, and shows a spinner for **at least 2.5s** while `GET /settings` reports `configured`.
+5. Token is returned to the first client only; next process boot reads `stores/hub/STATE` `.settings`.
+6. Admin token authenticates `PUT /settings/:name` (Bearer header).
+7. Token is stored in client `localStorage`; client refreshes via `POST /settings/refresh` before expiry (1-year lifetime).
 
 **Settings API** (base path `/settings`): Serves `applicationString` (HTML) when `Accept: text/html`, JSON when `Accept: application/json`.
 - `GET /settings` — List all settings; includes `{ configured, needsSetup }` for first-time setup status.
 - `POST /settings` — Bootstrap when not configured: creates signed admin token (client-only) and initial config; returns `{ token, configured, expiresAt }`. Returns 403 when already configured.
+- `GET /services/binaries` — Bitcoin Core / Core Lightning install status for this platform (`binaries/`).
+- `POST /services/binaries` — Download and extract pinned binaries (allowed during first-time setup, or with admin token). Body `{ bitcoin, lightning, setupUiSecret? }`.
+- `POST /services/binaries/check` — Fetch bitcoincore.org + GitHub latest, compare to Hub pins and local `bitcoind`/`lightningd`; download the pin only if missing. Does not install a newer remote release.
 - `POST /settings/refresh` — Refresh admin token (requires current token in `Authorization: Bearer` or body `{ token }`); returns `{ token, expiresAt }`.
 - `GET /settings/:name` — Get a specific setting.
 - `PUT /settings/:name` — Update a specific setting (requires `Authorization: Bearer <admin-token>`).
@@ -184,7 +192,7 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 - `JSONCall` / `JSONCallResult` — RPC request/response
 
 ### Hub ↔ browser (Fabric frames)
-- **SPA refresh:** `spaFallback` (default on) + **`res.format`** on **`GET /settings`** / **`GET /settings/:name`** (HTML vs JSON). In-app: **`/settings`**, **`/settings/security`**; **`/sessions`** and **`/security`** redirect to **`/settings/security`**; **`/sessions/:id`** is session detail (same path as REST `GET /sessions/:id` when not HTML). **`/services/bitcoin/…`** etc. rely on the same pattern so refresh returns the shell. Hub UI routes prefer **plural** resource paths (**`/activities`**, **`/peers`**, **`/documents`**, **`/contracts`**, **`/sidechains`**); **`/activity`** → **`/activities`**, **`/home`** → **`/`**, and legacy singular **`/document/…`** / **`/peer/…`** redirect to **`/documents/…`** / **`/peers/…`**. Short bookmarks (**`/payments`**, **`/invoices`**, **`/resources`**, **`/bitcoin`**, **`/wallet`**, **`/tx/:txid`**, **`/block/:hash`**) **redirect** to the canonical **`/services/bitcoin/…`** paths. Unknown paths show an in-app **not found** segment instead of a blank shell.
+- **SPA refresh:** `spaFallback` (default on) + **`res.format`** on **`GET /settings`** / **`GET /settings/:name`** (HTML vs JSON). In-app: **`/settings`**, **`/settings/security`**; **`/sessions`** and **`/security`** redirect to **`/settings/security`**; **`/sessions/:id`** is session detail (same path as REST `GET /sessions/:id` when not HTML). **`/services/bitcoin/…`** etc. rely on the same pattern so refresh returns the shell. Hub UI routes prefer **plural** resource paths (**`/activities`**, **`/peers`**, **`/documents`**, **`/contracts`**, **`/sidechains`**); **`/activity`** → **`/activities`**, **`/home`** → **`/`**, and legacy singular **`/document/…`** / **`/peer/…`** redirect to **`/documents/…`** / **`/peers/…`**. **`/downloads`** is the FileBrowser (`assets/downloads/index.json`); paths **with a file extension** (`/downloads/index.json`, `/downloads/mac/Hub.dmg`) are static files. Short bookmarks (**`/payments`**, **`/invoices`**, **`/resources`**, **`/bitcoin`**, **`/wallet`**, **`/tx/:txid`**, **`/block/:hash`**) **redirect** to the canonical **`/services/bitcoin/…`** paths. Unknown paths show an in-app **not found** segment instead of a blank shell.
 - WebSocket carries **binary** `Message` buffers (see `@fabric/http` `HTTPServer`). Bridge parses with `Message.fromBuffer`; JSON-RPC uses outer type `JSONCall`. The same RPC surface is available over **HTTP** as JSON-RPC 2.0 **`POST /services/rpc`** only (enabled on the Hub via `jsonRpc` in the `HTTPServer` constructor; implemented in `@fabric/http`).
 - **L1 invoice verify (HTTP):** `GET /services/bitcoin/transactions/:txid?address=&amountSats=` — same resource as the raw transaction; with both query params the response is the payment proof (`verified`, `confirmations`, `inMempool`, `matchedSats`). Alternate: JSON-RPC `verifyl1payment` on `POST /services/bitcoin`. Client: [`functions/bitcoinClient.js`](functions/bitcoinClient.js) `verifyL1Payment`. UI: `/services/bitcoin/resources`.
 - **Standard types** — Cohesive outer-type list, opcodes, and inner types pending promotion: [`functions/fabricMessageRegistry.js`](functions/fabricMessageRegistry.js); **`GenericMessage` is transitional** (see [MESSAGE_TRANSPORT.md](MESSAGE_TRANSPORT.md)). Core AMP bodies are typed fields (`@fabric/core` `docs/MESSAGE_BODY.md`); HTTP maps JSON. Application GroupOffer / federation invites may also arrive as opaque `fabric:<hex>` `CONTRACT_MESSAGE`s.
@@ -198,9 +206,12 @@ The Hub registers these methods on `this.http._registerMethod(...)`:
 - **`npm run build:extension`** — produces `extension/popup.bundle.js` and copies Semantic + jQuery into `extension/vendor/`. Load **unpacked** from the `extension/` directory. Identity storage matches the web app (`localStorage` / `sessionStorage`); see **[EXTENSION.md](EXTENSION.md)**.
 
 ### Desktop (Electron)
-- **`npm run desktop`** — builds browser assets and launches Electron; `scripts/desktop.js` spawns the Hub with `ELECTRON_RUN_AS_NODE`, sets **`FABRIC_HUB_APP_ROOT`** (packaged: `app.getAppPath()`; dev: repo root — `app.getAppPath()` would wrongly be `scripts/`) and **`FABRIC_HUB_USER_DATA`** (writable `stores/`, Bitcoin datadir, etc.). HTTP bind: **loopback by default** when `HTTP_SHARED_MODE` is unset; **Admin → HTTP shared mode** persists `HTTP_SHARED_MODE` so the hub binds `0.0.0.0` for LAN access (same as CLI; no `FABRIC_HUB_INTERFACE` override from Electron). The shell still loads the UI at `127.0.0.1`. See **[docs/DESKTOP.md](docs/DESKTOP.md)**.
+- **`npm run desktop`** — builds browser assets and launches Electron; `scripts/desktop.js` spawns the Hub with `ELECTRON_RUN_AS_NODE`, sets **`FABRIC_HUB_APP_ROOT`** (packaged: `app.getAppPath()`; dev: repo root — `app.getAppPath()` would wrongly be `scripts/`) and **`FABRIC_HUB_USER_DATA`** (writable `stores/`, Bitcoin datadir, etc.). HTTP bind: **loopback by default** when `HTTP_SHARED_MODE` is unset; **Admin → HTTP shared mode** persists `HTTP_SHARED_MODE` so the hub binds `0.0.0.0` for LAN access (same as CLI; no `FABRIC_HUB_INTERFACE` override from Electron). The shell still loads the UI at `127.0.0.1`. Window / installer icons are the suite lettermark (`build/icon.{icns,ico,png}`); browser tabs use `assets/favicon.*`. Canonical generator: `@fabric/http` `npm run make:icons`. Packaged builds expose a **tray** with **Run at startup** (OS login item / Linux XDG autostart; `--hidden` so Bitcoin + Fabric + Lightning stay up). See **[docs/DESKTOP.md](docs/DESKTOP.md)**.
 - **`fabric:` protocol** — Opaque **`fabric:<hex>`** (wire **`Message`** only); legacy **`fabric://login?…`**, **`fabric://message?…`**; envelope JSON **`docs/FABRIC_MESSAGE_ENVELOPE.md`**. **`DelegationSigningModal`** + **`fabric:delegationSignRequest`** (e.g. **`RunExecutionContract`**). **`functions/fabricProtocolUrl.js`**, **`functions/fabricMessageEnvelope.js`**, **`scripts/desktop.js`**, **`functions/fabricDesktopAuth.js`**, **`services/hub.js`**.
-- **`npm run build:desktop`** — **electron-builder** installers for the current OS (macOS dmg/zip, Windows NSIS, Linux AppImage/deb). Build each platform on its native runner in CI for all three.
+- **`npm run binaries:fetch`** — download pinned bitcoind (and lightningd when the platform has an official artifact) into `binaries/<platform>-<arch>/`.
+- **`npm run binaries:fetch:all`** — same for every installer platform (darwin/linux/win).
+- **`npm run build:desktop`** — **electron-builder** installers for the current OS (macOS dmg/zip, Windows NSIS, Linux AppImage/deb). Packs `binaries/` for that OS via `extraResources` when present. Then copies those artifacts into **`assets/downloads/`** for the **`/downloads`** FileBrowser. `build.files` must include **`contracts/`** and root **`constants.js`** (Node boot from `settings/local.js` / `services/hub.js`).
+- **`npm run build:installers`** — browser bundle + `binaries:fetch:all` + electron-builder **mac / win / linux**. Cross-builds are best-effort; CI should still run native builders for codesign. After a successful pack, copies installers into **`assets/downloads/`** and writes **`index.json`** for the public **`/downloads`** FileBrowser.
 - **`npm run build:desktop:dir`** — unpacked app under `dist/` for quick checks (no installer).
 
 ### Quick Start
@@ -314,6 +325,7 @@ Common methods include:
 - `tests/browser.interface.test.js` — Puppeteer browser tests (page load, nav, routes). Requires Chrome: `npx puppeteer browsers install chrome`. Use `HUB_E2E=1` for full E2E with hub startup.
 - `tests/hubSettingsMerge.test.js` — `hubSettingsMerge` vs `lodash.merge` for **`peers`**
 - `tests/hub.document.network.e2e.test.js` / `tests/hub.fabric.epic.e2e.test.js` — multi-hub Fabric mesh RPC E2E (`npm run test:document-network`, `npm run test:fabric-epic`)
+- `tests/hubDownloadsIndex.test.js` / `tests/fileBrowser.test.js` — `/downloads` index + FileBrowser listing
 
 ## Conventions
 - CommonJS only (`require`, `module.exports`)
@@ -325,6 +337,8 @@ Common methods include:
 ## Verification Commands
 ```bash
 npm run ci              # release gate: build + unit tests (needs @fabric/core with publishedDocumentEnvelope, or sibling ../fabric checkout)
+npm run binaries:fetch  # pinned bitcoind (+ lightningd when official) for this OS into binaries/
+npm run build:installers  # SPA + installers, then assets/downloads for /downloads
 npm run build
 npm test
 npm run test:unit          # Excludes browser tests
@@ -346,6 +360,7 @@ FABRIC_MAINNET_RPC_SMOKE=1 BITCOIN_RPC_USER=… BITCOIN_RPC_PASSWORD=… npm run
 ```text
 hub.fabric.pub/
 ├── assets/           # Static files (HTML, CSS, bundles)
+├── binaries/         # Pinned bitcoind / lightningd (gitignored blobs; README tracked)
 ├── build/            # electron-builder icons (see build/README.md)
 ├── types/            # Hub extensions of Fabric types (e.g. LightningChannel)
 ├── components/       # React UI components

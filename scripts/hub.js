@@ -13,6 +13,10 @@ try {
 }
 if (typeof loadFabricHomeEnv === 'function') loadFabricHomeEnv();
 
+try {
+  require('../functions/hubManagedBinaries').applyManagedNodeBinariesToProcessEnv();
+} catch (_) {}
+
 // Settings
 let settings = require('../settings/local');
 
@@ -30,6 +34,7 @@ const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
 const { isHttpSharedModeEnabled, applySharedModeWebsocketGate } = require('../functions/httpSharedMode');
+const { applyHubBitcoinRuntimeFromSetup } = require('../functions/hubBitcoinSetup');
 const { spawnedBitcoindPid } = require('../functions/bitcoinManagedAttach');
 let resolveFabricPeerInterface;
 try {
@@ -87,8 +92,9 @@ try {
       }
       return v;
     };
-    if (setup.BITCOIN_NETWORK) {
-      settings = { ...settings, bitcoin: { ...settings.bitcoin, network: parseVal(setup.BITCOIN_NETWORK) || setup.BITCOIN_NETWORK } };
+    if (setup.BITCOIN_NETWORK || setup.BITCOIN_MANAGED !== undefined || setup.BITCOIN_PRESET || setup.BITCOIN_PRUNE != null) {
+      settings = { ...settings };
+      applyHubBitcoinRuntimeFromSetup(settings, setup);
     }
     if (setup.BITCOIN_MANAGED !== undefined) {
       const managed = parseVal(setup.BITCOIN_MANAGED);

@@ -32,6 +32,11 @@ const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags')
 const HubPagination = require('./HubPagination');
 const { useHubListPagination } = require('../functions/hubListPagination');
 const { compareDocumentsByHostOfferThenPurchasePrice } = require('../functions/sortDocumentsByHostOfferThenPrice');
+const {
+  collectInventoryDocuments,
+  mergeInventoryDocumentsIntoMap
+} = require('../functions/documentInventoryList');
+const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
 
 function shortHexId (value) {
   const s = String(value || '');
@@ -84,7 +89,11 @@ function DocumentsPage (props) {
   const [, setNetworkStatusTick] = React.useState(0);
   const [catalogHttpFallbackError, setCatalogHttpFallbackError] = React.useState(null);
   const [docsState, setDocsState] = React.useState({});
+  const [peersState, setPeersState] = React.useState({});
   const [distributeProposalsState, setDistributeProposalsState] = React.useState({});
+  const hubHttpAvailable = useHubHttpAvailable();
+  const meshAvailable = useHubMeshAvailable();
+  const inventoryCatalog = !!(props.inventoryCatalog || (meshAvailable && !hubHttpAvailable));
 
   const navigate = useNavigate();
 
@@ -119,12 +128,15 @@ function DocumentsPage (props) {
 
   const documentsLoadingSubtext = !current
     ? 'Connecting to the hub (WebSocket bridge)…'
-    : (bridgeWebSocketLoadingHint(current) || 'Waiting for network status from the hub (published catalog).');
+    : (inventoryCatalog
+      ? 'Waiting for document inventories from seed WebRTC peers…'
+      : (bridgeWebSocketLoadingHint(current) || 'Waiting for network status from the hub (published catalog).'));
 
   React.useEffect(() => {
     const handler = (event) => {
       const gs = event && event.detail && event.detail.globalState;
       if (gs && gs.documents) setDocsState(gs.documents);
+      if (gs && gs.peers) setPeersState(gs.peers);
     };
     window.addEventListener('globalStateUpdate', handler);
     return () => window.removeEventListener('globalStateUpdate', handler);
@@ -134,6 +146,9 @@ function DocumentsPage (props) {
     const bridgeInstance = bridgeRef && bridgeRef.current;
     if (bridgeInstance && bridgeInstance.globalState && bridgeInstance.globalState.documents) {
       setDocsState(bridgeInstance.globalState.documents);
+    }
+    if (bridgeInstance && bridgeInstance.globalState && bridgeInstance.globalState.peers) {
+      setPeersState(bridgeInstance.globalState.peers);
     }
   }, [bridgeRef]);
 
@@ -154,9 +169,9 @@ function DocumentsPage (props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When WebSocket snapshots are slow, hydrate catalog + hub document index via HTTP (same origin).
+  // When WebSocket snapshots are slow, hydrate catalog + hub document index via HTTP.
   React.useEffect(() => {
-    if (hasNetworkSnapshot) return undefined;
+    if (hasNetworkSnapshot || inventoryCatalog) return undefined;
     let cancelled = false;
     const t = setTimeout(() => {
       if (cancelled) return;
@@ -220,7 +235,7 @@ function DocumentsPage (props) {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [hasNetworkSnapshot, props.bridgeRef]);
+  }, [hasNetworkSnapshot, inventoryCatalog, props.bridgeRef]);
 
   // Unified model: all docs in documents store; hub index = published refs
   const allDocs = Object.values(docsState || {}).filter((d) => d && d.id);
@@ -258,6 +273,8 @@ function DocumentsPage (props) {
       docsById[targetId] = { ...existing, ...value, id: targetId, isPublished: true };
     }
   }
+
+  mergeInventoryDocumentsIntoMap(docsById, collectInventoryDocuments(peersState));
 
   const docs = Object.values(docsById)
     .filter((d) => d && d.id)
@@ -557,7 +574,7 @@ function DocumentsPage (props) {
             <Icon name="refresh" />
             Refresh
           </Button>
-          {documentMarketAccumulate && (
+          {(documentMarketAccumulate || inventoryCatalog || meshAvailable) && (
             <Button
               type="button"
               size="small"
@@ -569,13 +586,25 @@ function DocumentsPage (props) {
                 if (bridge && typeof bridge.sendRefreshDocumentMarketRequest === 'function') {
                   bridge.sendRefreshDocumentMarketRequest();
                 }
+                if (bridge && typeof bridge.requestConnectedPeerInventories === 'function') {
+                  bridge.requestConnectedPeerInventories();
+                }
               }}
               disabled={busy}
-              title="Request document inventories from connected Fabric peers"
+              title="Request document inventories from connected Fabric and WebRTC peers"
             >
               <Icon name="exchange" />
               Query peer inventories
             </Button>
+          )}
+          {inventoryCatalog && (
+            <Message info size="small" style={{ marginTop: '1em' }} data-testid="hub-inventory-catalog">
+              <Message.Header>Peer inventories</Message.Header>
+              <p style={{ margin: '0.35em 0 0' }}>
+                This client lists files advertised by seed and mesh peers. Publish and Hub catalog
+                tools stay on a live Hub origin.
+              </p>
+            </Message>
           )}
           {documentMarketAccumulate && (
             <Message info size="small" style={{ marginTop: '1em' }}>
@@ -592,7 +621,7 @@ function DocumentsPage (props) {
               </p>
             </Message>
           )}
-          {(!hasNetworkSnapshot && allDocs.length === 0) ? (
+          {(!hasNetworkSnapshot && !inventoryCatalog && allDocs.length === 0 && docs.length === 0) ? (
             <Segment
               placeholder
               style={{ marginTop: '1em', minHeight: '20vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -636,6 +665,19 @@ function DocumentsPage (props) {
                     >
                       <Icon name="lock" />
                       Private
+                    </Label>
+                  );
+                } else if (doc.isInventory) {
+                  labels.push(
+                    <Label
+                      key="inventory"
+                      size="mini"
+                      color="teal"
+                      style={{ marginLeft: '0.5em' }}
+                      title="Advertised on a peer document inventory"
+                    >
+                      <Icon name="exchange" />
+                      Inventory
                     </Label>
                   );
                 }

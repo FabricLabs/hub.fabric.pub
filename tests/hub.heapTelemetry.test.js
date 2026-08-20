@@ -51,7 +51,12 @@ describe('Hub heap telemetry', function () {
         documents: { d1: {}, d2: {} }
       },
       fs: { _state: { documents: {}, actors: {} } },
-      agent: { connections: { p1: {}, p2: {} } },
+      agent: {
+        connections: { p1: {}, p2: {} },
+        countNoiseHandshakeListeners () {
+          return { write: 6, read: 6, split: 6 };
+        }
+      },
       http: { webrtcPeers: new Set(['w1']) },
       _bitcoinBlockTips: new Set(['aa']),
       _workQueue: [],
@@ -67,6 +72,7 @@ describe('Hub heap telemetry', function () {
     assert.strictEqual(snap.retainers.documentsIndex, 2);
     assert.strictEqual(snap.retainers.documentsPublished, 1);
     assert.strictEqual(snap.retainers.peerConnections, 2);
+    assert.deepStrictEqual(snap.retainers.noiseHandshakeListeners, { write: 6, read: 6, split: 6 });
     assert.strictEqual(snap.retainers.webrtcPeers, 1);
     assert.strictEqual(snap.retainers.sidechainClock, 7);
     assert.strictEqual(snap.retainers.stateContentBytes, 12345);

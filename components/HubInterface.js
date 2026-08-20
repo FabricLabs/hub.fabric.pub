@@ -28,6 +28,17 @@ const {
   fetchPersistedHubUiFeatureFlags,
   installHubUiFeatureFlagsWindowApi
 } = require('../functions/hubUiFeatureFlags');
+const {
+  classifyHubHttpProbe,
+  HUB_UI_RUNTIME_CLIENT,
+  HUB_UI_RUNTIME_HUB
+} = require('../functions/hubClientEnvironment');
+const {
+  collectFabricHubSeeds,
+  pickPrimarySignalingSeed,
+  recommendedMaxWebrtcPeers
+} = require('../functions/fabricHubSeeds');
+const { probeFabricHubSeeds } = require('../functions/fabricHubSeedProbe');
 // Dependencies
 const React = require('react');
 const ReactDOMServer = require('react-dom/server');
@@ -267,6 +278,8 @@ function NavigateLegacyBitcoinBlockAlias () {
   return <Navigate to={`/services/bitcoin/blocks/${encodeURIComponent(raw)}`} replace />;
 }
 
+const { HubUiRuntimeContext, HubMeshContext, HubHttpRoute, HubMeshRoute, useHubHttpAvailable } = require('./hubUiRuntime');
+
 function UnknownRouteShell () {
   const { pathname, search } = useLocation();
   const full = `${pathname || ''}${search || ''}` || '/';
@@ -274,6 +287,7 @@ function UnknownRouteShell () {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
+  const hubHttpAvailable = useHubHttpAvailable();
   return (
     <Segment style={{ marginTop: '2em' }}>
       <Header as="h3">Page not found</Header>
@@ -283,14 +297,24 @@ function UnknownRouteShell () {
         .
       </p>
       <p style={{ color: '#666', marginBottom: '0.5em', lineHeight: 1.45 }}>
-        Use the <strong>top navigation</strong> (Home, Documents, Contracts, and <strong>More</strong>) — it lists the same places without duplicating them here.
-        {uf.activities ? ' The bell opens Notifications (toasts); the activity log is under More → Activity log.' : ''}
+        {hubHttpAvailable
+          ? (
+            <>
+              Use the <strong>top navigation</strong> (Home, Documents, Contracts, and <strong>More</strong>) — it lists the same places without duplicating them here.
+              {uf.activities ? ' The bell opens Notifications (toasts); the activity log is under More → Activity log.' : ''}
+            </>
+            )
+          : (
+            <>
+              This origin is the HTML client. Use <strong>Home</strong> and <strong>Settings</strong> for identity and local wallet tools.
+            </>
+            )}
       </p>
       <p style={{ color: '#666', lineHeight: 1.45 }}>
         <Link to="/">Go to Home</Link>
         {' · '}
         <Link to="/settings">Settings</Link>
-        {(uf.bitcoinPayments || uf.bitcoinLightning) ? (
+        {hubHttpAvailable && (uf.bitcoinPayments || uf.bitcoinLightning) ? (
           <>
             {' · '}
             <Link
@@ -303,7 +327,7 @@ function UnknownRouteShell () {
             </Link>
           </>
         ) : null}
-        {uf.sidechain ? (
+        {hubHttpAvailable && uf.sidechain ? (
           <>
             {' · '}
             <Link to="/sidechains">Statechain</Link>
@@ -338,6 +362,7 @@ const ContractView = require('./ContractView');
 const DocumentList = require('./DocumentList');
 const DocumentView = require('./DocumentView');
 const Home = require('./Home');
+const DownloadsHome = require('./DownloadsHome');
 const ActivitiesHome = require('./ActivitiesHome');
 const NotificationsHome = require('./NotificationsHome');
 const IdentityManager = require('./IdentityManager');
@@ -505,6 +530,13 @@ class HubInterface extends React.Component {
     } catch (e) {}
     if (!initialHubAddress) {
       try {
+        if (typeof window !== 'undefined' && window.FABRIC_EDGE_AUTHORITY) {
+          initialHubAddress = String(window.FABRIC_EDGE_AUTHORITY).trim();
+        }
+      } catch (e) {}
+    }
+    if (!initialHubAddress) {
+      try {
         if (typeof window !== 'undefined' && window.location) {
           const host = window.location.hostname;
           const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
@@ -584,6 +616,9 @@ class HubInterface extends React.Component {
       isLoading: true,
       needsSetup: false,
       setupChecked: false,
+      hubRuntime: null,
+      meshAvailable: false,
+      hubSeedProbes: [],
       adminToken: initialAdminToken,
       adminTokenExpiresAt: initialAdminTokenExpiresAt,
       modalLogOut: false,
@@ -674,34 +709,119 @@ class HubInterface extends React.Component {
         cache: 'no-store',
         signal: controller ? controller.signal : undefined
       });
-      if (res.ok) {
-        const text = await res.text();
-        if (text.trim().startsWith('<')) {
-          this.setState({ setupChecked: true, setupStatusTimedOut: false });
-          return;
-        }
-        const data = JSON.parse(text);
-        let setupUiVerified = false;
+      const text = await res.text();
+      let json = null;
+      if (text && !String(text).trim().startsWith('<')) {
         try {
-          if (data.requiresSetupUiSecret && typeof window !== 'undefined' && window.sessionStorage) {
-            setupUiVerified = window.sessionStorage.getItem('fabric.hub.setupUiVerified') === '1';
-          }
-        } catch (eVer) {}
+          json = JSON.parse(text);
+        } catch (_) { json = null; }
+      }
+      const contentType = (res.headers && typeof res.headers.get === 'function')
+        ? (res.headers.get('content-type') || '')
+        : '';
+      const classified = classifyHubHttpProbe({
+        status: res.status,
+        contentType,
+        bodyText: text,
+        json
+      });
+      if (classified.runtime === HUB_UI_RUNTIME_CLIENT) {
         this.setState({
-          needsSetup: !!data.needsSetup,
           setupChecked: true,
           setupStatusTimedOut: false,
-          requiresSetupUiSecret: !!data.requiresSetupUiSecret,
-          setupUiVerified
+          needsSetup: false,
+          hubRuntime: HUB_UI_RUNTIME_CLIENT,
+          requiresSetupUiSecret: false
         });
-      } else {
-        this.setState({ setupChecked: true, setupStatusTimedOut: false });
+        void this._applyHubSeeds({ originIsHub: false });
+        return;
       }
+      let setupUiVerified = false;
+      try {
+        if (classified.requiresSetupUiSecret && typeof window !== 'undefined' && window.sessionStorage) {
+          setupUiVerified = window.sessionStorage.getItem('fabric.hub.setupUiVerified') === '1';
+        }
+      } catch (eVer) {}
+      this.setState({
+        needsSetup: !!classified.needsSetup,
+        setupChecked: true,
+        setupStatusTimedOut: false,
+        requiresSetupUiSecret: !!classified.requiresSetupUiSecret,
+        setupUiVerified,
+        hubRuntime: HUB_UI_RUNTIME_HUB
+      });
+      fetchPersistedHubUiFeatureFlags().then(() => this.forceUpdate()).catch(() => {});
+      void this._applyHubSeeds({ originIsHub: true });
     } catch (e) {
-      this.setState({ setupChecked: true });
+      const aborted = !!(e && (e.name === 'AbortError' || e.name === 'TimeoutError'));
+      if (aborted) return;
+      this.setState({
+        setupChecked: true,
+        needsSetup: false,
+        hubRuntime: HUB_UI_RUNTIME_CLIENT
+      });
+      void this._applyHubSeeds({ originIsHub: false });
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  /**
+   * OPTIONS + peering probes for build-time seed Hubs. CDN origins use the first
+   * reachable seed as WebSocket / WebRTC signaling. Local Hub JSON keeps this origin.
+   * @param {object} [opts]
+   * @param {boolean} [opts.originIsHub]
+   * @returns {Promise<void>}
+   */
+  async _applyHubSeeds (opts = {}) {
+    const originIsHub = !!opts.originIsHub;
+    const seeds = collectFabricHubSeeds();
+    let pageProtocol = '';
+    try {
+      if (typeof window !== 'undefined' && window.location) {
+        pageProtocol = window.location.protocol;
+      }
+    } catch (_) {}
+    let probes = [];
+    try {
+      if (seeds.length) {
+        probes = await probeFabricHubSeeds(seeds, { pageProtocol });
+      }
+    } catch (e) {
+      probes = [];
+    }
+    const meshFromSeeds = probes.some((p) => p && p.hubLike);
+    const meshAvailable = originIsHub || meshFromSeeds;
+    const patch = { hubSeedProbes: probes, meshAvailable };
+    let signalingHttp = '';
+    if (!originIsHub) {
+      const primary = pickPrimarySignalingSeed(probes, { pageProtocol });
+      if (primary && primary.http) {
+        signalingHttp = primary.http;
+        patch.uiHubAddress = primary.http;
+        try {
+          writeStorageString('fabric.hub.address', primary.http);
+        } catch (_) {}
+      }
+    }
+    this.setState(patch, () => {
+      const b = this.bridgeRef && this.bridgeRef.current;
+      if (!b) return;
+      const maxPeers = recommendedMaxWebrtcPeers(seeds.length);
+      if (b.settings) {
+        b.settings.maxWebrtcPeers = Math.max(Number(b.settings.maxWebrtcPeers) || 5, maxPeers);
+      }
+      if (signalingHttp && typeof b.setHubAddress === 'function') {
+        b.setHubAddress(signalingHttp);
+      }
+      if (meshAvailable && typeof b.requestConnectedPeerInventories === 'function') {
+        setTimeout(() => {
+          try {
+            b.requestConnectedPeerInventories();
+          } catch (_) {}
+        }, 1500);
+      }
+    });
   }
 
   async _verifySetupUiSecret () {
@@ -1278,7 +1398,6 @@ class HubInterface extends React.Component {
     if (typeof window !== 'undefined') {
       installHubUiFeatureFlagsWindowApi();
       this._hubUiUnsub = subscribeHubUiFeatureFlags(() => this.forceUpdate());
-      fetchPersistedHubUiFeatureFlags().then(() => this.forceUpdate()).catch(() => {});
     }
   }
 
@@ -1625,6 +1744,12 @@ class HubInterface extends React.Component {
     });
     const openIdentityForGate = () => this._openIdentityModalForUser();
     const pv = (el) => wrapPublicVisitorGate(publicHubVisitor, openIdentityForGate, el);
+    const hubPv = (el) => (
+      <HubHttpRoute>{pv(el)}</HubHttpRoute>
+    );
+    const hubRuntime = this.state.hubRuntime === HUB_UI_RUNTIME_CLIENT
+      ? HUB_UI_RUNTIME_CLIENT
+      : HUB_UI_RUNTIME_HUB;
 
     return (
       <fabric-interface id={this.id} class="fabric-site">
@@ -1694,13 +1819,13 @@ class HubInterface extends React.Component {
                 <Loader active={!this.state.setupStatusTimedOut} inline="centered" size='large' />
                 <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>
                   {this.state.setupStatusTimedOut
-                    ? 'Could not confirm hub setup status.'
-                    : 'Checking hub configuration…'}
+                    ? 'Could not confirm whether this origin is a live Hub.'
+                    : 'Checking this origin…'}
                 </p>
                 <p style={{ color: '#888', margin: 0, fontSize: '0.9em', textAlign: 'center', maxWidth: '24rem', lineHeight: 1.45 }}>
                   {this.state.setupStatusTimedOut
-                    ? 'Still waiting on /settings — retry when the hub is reachable. Onboarding is not skipped on timeout.'
-                    : 'Fetching setup status from this hub (not the WebSocket path).'}
+                    ? 'Still waiting on /settings JSON — retry when a Hub is reachable. Onboarding is not skipped on timeout.'
+                    : 'Probing GET /settings (JSON vs HTML client / CDN). This is not the WebSocket path.'}
                 </p>
                 {this.state.setupStatusTimedOut ? (
                   <Button
@@ -1828,6 +1953,8 @@ class HubInterface extends React.Component {
                 }}
               />
             ) : (
+              <HubUiRuntimeContext.Provider value={hubRuntime}>
+              <HubMeshContext.Provider value={!!this.state.meshAvailable}>
               <BrowserRouter useTransitions>
                 <ToastContainer
                   position="bottom-center"
@@ -1951,7 +2078,7 @@ class HubInterface extends React.Component {
                           onChange={(e, data) => this.setState({ uiAdvancedModeDraft: !!(data && data.checked) })}
                         />
                         <div style={{ marginTop: '0.5em', color: '#666' }}>
-                          Shows advanced hub surfaces (Peers, Contracts, More tools, activity/nav extras).
+                          Shows advanced Hub surfaces (Peers, Contracts, More tools, activity/nav extras) when this origin has Hub HTTP. On an HTML-only host those extras stay hidden until you point at a live Hub.
                         </div>
                       </Form.Field>
                       <Form.Field>
@@ -2321,8 +2448,16 @@ class HubInterface extends React.Component {
                     )}
                   />
                   <Route
+                    path="/downloads"
+                    element={<DownloadsHome />}
+                  />
+                  <Route
+                    path="/downloads/*"
+                    element={<DownloadsHome />}
+                  />
+                  <Route
                     path="/activities"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="activities">
                         <ActivitiesHome
                           bridge={this.props.bridge}
@@ -2336,7 +2471,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/notifications"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="activities">
                         <NotificationsHome />
                       </UiFlagRoute>
@@ -2344,7 +2479,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin"
-                    element={pv((
+                    element={hubPv((
                       <BitcoinHomeWithNav
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -2359,7 +2494,7 @@ class HubInterface extends React.Component {
                   <Route path="/services/payjoin" element={<NavigatePayjoinSpaAlias />} />
                   <Route
                     path="/services/bitcoin/blocks"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinExplorer">
                         <BitcoinBlockList
                           auth={effectiveAuth}
@@ -2375,7 +2510,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/faucet"
-                    element={pv((
+                    element={hubPv((
                       <FaucetHome
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -2389,7 +2524,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/transactions"
-                    element={pv((
+                    element={hubPv((
                       <BitcoinTransactionsHome
                         auth={effectiveAuth}
                         identity={local || effectiveAuth}
@@ -2403,7 +2538,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/blocks/:blockhash"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinExplorer">
                         <BitcoinBlockView
                           auth={effectiveAuth}
@@ -2417,7 +2552,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/resources"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinResources">
                         <BitcoinResourcesHome
                           auth={effectiveAuth}
@@ -2436,7 +2571,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/payments"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinPayments">
                         <BitcoinPaymentsHomeRoute
                           auth={effectiveAuth}
@@ -2452,7 +2587,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/crowdfunds"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinCrowdfund">
                         <CrowdfundingHome
                           auth={effectiveAuth}
@@ -2469,7 +2604,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/invoices"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinInvoices">
                         <InvoiceListHomeRoute
                           auth={effectiveAuth}
@@ -2485,7 +2620,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/lightning"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinLightning">
                         <LightningHome
                           auth={effectiveAuth}
@@ -2501,7 +2636,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/lightning"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinLightning">
                         <LightningHome
                           auth={effectiveAuth}
@@ -2517,7 +2652,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/transactions/:txhash"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinExplorer">
                         <BitcoinTransactionView
                           auth={effectiveAuth}
@@ -2531,7 +2666,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/services/bitcoin/channels/:id"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="bitcoinLightning">
                         <ChannelView
                           auth={effectiveAuth}
@@ -2559,7 +2694,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/sidechains"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="sidechain">
                         <SidechainHome
                           auth={effectiveAuth}
@@ -2574,7 +2709,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/peers"
-                    element={pv((
+                    element={hubPv((
                       <PeersFeatureRoute>
                         <PeerList
                         auth={effectiveAuth}
@@ -2694,7 +2829,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/peers/:id"
-                    element={pv((
+                    element={hubPv((
                       <PeersFeatureRoute>
                         {this._hubPeerView(effectiveAuth, local || effectiveAuth, undefined)}
                       </PeersFeatureRoute>
@@ -2702,7 +2837,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/admin/peers/:id"
-                    element={pv((
+                    element={hubPv((
                       <PeersFeatureRoute>
                         {this._hubPeerView(effectiveAuth, local || effectiveAuth, this.state.adminToken)}
                       </PeersFeatureRoute>
@@ -2711,15 +2846,23 @@ class HubInterface extends React.Component {
                   <Route
                     path="/documents"
                     element={(
+                      <HubMeshRoute>
                       <DocumentList
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
                         identity={local || effectiveAuth}
+                        inventoryCatalog={this.state.hubRuntime === HUB_UI_RUNTIME_CLIENT}
                         onListDocuments={() => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
                           const bridgeInstance = this.bridgeRef.current;
                           if (typeof bridgeInstance.sendListDocumentsRequest === 'function') {
                             bridgeInstance.sendListDocumentsRequest();
+                          }
+                          if (typeof bridgeInstance.sendRefreshDocumentMarketRequest === 'function') {
+                            bridgeInstance.sendRefreshDocumentMarketRequest();
+                          }
+                          if (typeof bridgeInstance.requestConnectedPeerInventories === 'function') {
+                            bridgeInstance.requestConnectedPeerInventories();
                           }
                         }}
                         onAddLocalDocument={(doc) => {
@@ -2745,11 +2888,13 @@ class HubInterface extends React.Component {
                         }}
                         {...this.props}
                       />
+                      </HubMeshRoute>
                     )}
                   />
                   <Route
                     path="/documents/:id"
                     element={(
+                      <HubMeshRoute>
                       <DocumentView
                         bridge={this.props.bridge}
                         bridgeRef={this.bridgeRef}
@@ -2831,19 +2976,26 @@ class HubInterface extends React.Component {
                         {...this.props}
                         adminToken={this.state.adminToken}
                       />
+                      </HubMeshRoute>
                     )}
                   />
                   <Route
                     path="/settings/admin/beacon-federation"
                     element={(
+                      <HubHttpRoute>
                       <UiFlagRoute flag="sidechain">
                         <BeaconFederationHome />
                       </UiFlagRoute>
+                      </HubHttpRoute>
                     )}
                   />
                   <Route
                     path="/settings/admin"
-                    element={<AdminHome adminToken={this.state.adminToken} />}
+                    element={(
+                      <HubHttpRoute>
+                        <AdminHome adminToken={this.state.adminToken} />
+                      </HubHttpRoute>
+                    )}
                   />
                   <Route
                     path="/federation"
@@ -2855,7 +3007,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/federations"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="sidechain">
                         <FederationsHome adminToken={this.state.adminToken} bridgeRef={this.bridgeRef} />
                       </UiFlagRoute>
@@ -2863,7 +3015,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/federation"
-                    element={pv((
+                    element={hubPv((
                       <UiFlagRoute flag="sidechain">
                         <SettingsFederationHome adminToken={this.state.adminToken} bridgeRef={this.bridgeRef} />
                       </UiFlagRoute>
@@ -2875,7 +3027,11 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/security"
-                    element={<SecurityHome />}
+                    element={(
+                      <HubHttpRoute>
+                        <SecurityHome />
+                      </HubHttpRoute>
+                    )}
                   />
                   <Route
                     path="/admin/beacon-federation"
@@ -2892,16 +3048,16 @@ class HubInterface extends React.Component {
                   <Route
                     path="/settings/collaboration"
                     element={(
-                      readHubAdminTokenFromBrowser(this.state.adminToken)
+                      <HubHttpRoute>
+                      {readHubAdminTokenFromBrowser(this.state.adminToken)
                         ? pv((
                           <CollaborationHome
                             bridgeRef={this.bridgeRef}
                             adminToken={this.state.adminToken}
                           />
                         ))
-                        // Redirect must not sit inside PublicVisitorGate — the gate replaces
-                        // children with a sign-in panel and would leave the URL on /collaboration.
-                        : (<Navigate to="/settings" replace />)
+                        : (<Navigate to="/settings" replace />)}
+                      </HubHttpRoute>
                     )}
                   />
                   <Route
@@ -2910,15 +3066,27 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/sessions/:sessionId"
-                    element={<SecuritySessionHome />}
+                    element={(
+                      <HubHttpRoute>
+                        <SecuritySessionHome />
+                      </HubHttpRoute>
+                    )}
                   />
                   <Route
                     path="/sessions"
-                    element={<Navigate to="/settings/security" replace />}
+                    element={(
+                      <HubHttpRoute>
+                        <Navigate to="/settings/security" replace />
+                      </HubHttpRoute>
+                    )}
                   />
                   <Route
                     path="/security"
-                    element={<Navigate to="/settings/security" replace />}
+                    element={(
+                      <HubHttpRoute>
+                        <Navigate to="/settings/security" replace />
+                      </HubHttpRoute>
+                    )}
                   />
                   <Route
                     path="/activity"
@@ -2986,11 +3154,11 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/contracts"
-                    element={pv(<ContractsHome {...this.props} />)}
+                    element={hubPv(<ContractsHome {...this.props} />)}
                   />
                   <Route
                     path="/contracts/:id"
-                    element={pv(<ContractView {...this.props} adminToken={this.state.adminToken} />)}
+                    element={hubPv(<ContractView {...this.props} adminToken={this.state.adminToken} />)}
                   />
                   <Route path="*" element={<UnknownRouteShell />} />
                 </Routes>
@@ -3000,6 +3168,8 @@ class HubInterface extends React.Component {
                   publicHubVisitor={publicHubVisitor}
                 />
               </BrowserRouter>
+              </HubMeshContext.Provider>
+              </HubUiRuntimeContext.Provider>
             )}
           </fabric-react-component>
         </fabric-container>

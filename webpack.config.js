@@ -205,7 +205,8 @@ module.exports = (env, argv) => {
   plugins: [
     new webpack.DefinePlugin({
       // Must match `mode` or webpack reports conflicting process.env.NODE_ENV
-      'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development')
+      'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development'),
+      'process.env.FABRIC_HUB_SEEDS': JSON.stringify(process.env.FABRIC_HUB_SEEDS || '')
     }),
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],

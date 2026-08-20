@@ -28,6 +28,7 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
 const { buildLocalFabricIdentityPayload } = require('../functions/fabricHubLocalIdentity');
+const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
 
 function TopPanel (props) {
   const location = useLocation();
@@ -142,6 +143,10 @@ function TopPanel (props) {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
   const uiFlags = loadHubUiFeatureFlags();
   const isAdvancedMode = !!uiFlags.advancedMode;
+  const hubHttpAvailable = useHubHttpAvailable();
+  const meshAvailable = useHubMeshAvailable();
+  const showHubNav = hubHttpAvailable;
+  const showDocumentsNav = hubHttpAvailable || meshAvailable;
   void uiTick;
   const balanceChipHref = '/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel';
   const depositFlowHref = uiFlags.bitcoinPayments
@@ -240,24 +245,32 @@ function TopPanel (props) {
             <Icon name="home" />
             Home
           </Button>
-          {isAdvancedMode && uiFlags.peers && !publicHubVisitor ? (
+          {showHubNav && isAdvancedMode && uiFlags.peers && !publicHubVisitor ? (
             <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')} aria-current={active('/peers') ? 'page' : undefined}>
               <Icon name="sitemap" />
               Peers
             </Button>
           ) : null}
-          <Button as={Link} to="/documents" basic={!active('/documents')} primary={active('/documents')} aria-current={active('/documents') ? 'page' : undefined}>
+          {showDocumentsNav ? (
+          <Button as={Link} to="/documents" data-testid="hub-nav-documents" basic={!active('/documents')} primary={active('/documents')} aria-current={active('/documents') ? 'page' : undefined}>
             <Icon name="file outline" />
             Documents
           </Button>
-          {!publicHubVisitor && isAdvancedMode ? (
+          ) : null}
+          {!showHubNav ? (
+          <Button as={Link} to="/settings" data-testid="hub-nav-settings" basic={!active('/settings')} primary={active('/settings')} aria-current={active('/settings') ? 'page' : undefined}>
+            <Icon name="setting" />
+            Settings
+          </Button>
+          ) : null}
+          {showHubNav && !publicHubVisitor && isAdvancedMode ? (
             <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')} aria-current={active('/contracts') ? 'page' : undefined}>
               <Icon name="file code" />
               Contracts
             </Button>
           ) : null}
         </Button.Group>
-        {!publicHubVisitor && isAdvancedMode ? (
+        {showHubNav && !publicHubVisitor && isAdvancedMode ? (
         <Dropdown
           item
           trigger={
@@ -406,7 +419,7 @@ function TopPanel (props) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        {showSignedInControls && isAdvancedMode ? (
+        {showSignedInControls && isAdvancedMode && showHubNav ? (
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <Button
               as={Link}
@@ -444,7 +457,7 @@ function TopPanel (props) {
             )}
           </div>
         ) : null}
-        {(showSignedInControls || isLockedState) ? (
+        {(showHubNav && (showSignedInControls || isLockedState)) ? (
           <Popup
             on="hover"
             hoverable
@@ -501,7 +514,7 @@ function TopPanel (props) {
             content={walletChipMenu}
           />
         ) : null}
-        {!publicHubVisitor && isAdvancedMode && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
+        {(!publicHubVisitor && showHubNav && isAdvancedMode && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0) && (
           <Label
             as={Link}
             to="/services/bitcoin"

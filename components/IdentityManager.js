@@ -512,6 +512,7 @@ function IdentityManager (props) {
         throw new Error((data && data.error) || 'Could not start desktop login session');
       }
       sessionId = data.sessionId;
+      const pollSecret = typeof data.pollSecret === 'string' ? data.pollSecret : '';
       const protocolUrl = data.protocolUrl || (`fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`);
 
       desktopPollIntervalRef.current = setInterval(() => {
@@ -525,8 +526,10 @@ function IdentityManager (props) {
         }
         void (async () => {
           try {
+            const pollHeaders = { Accept: 'application/json' };
+            if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
             const r = await fetch(`${origin}/sessions/${encodeURIComponent(sessionId)}`, {
-              headers: { Accept: 'application/json' },
+              headers: pollHeaders,
               cache: 'no-store'
             });
             const j = await r.json().catch(() => ({}));
@@ -678,6 +681,7 @@ function IdentityManager (props) {
       setDeviceLinkOffer({
         sessionId: created.sessionId,
         protocolUrl: created.protocolUrl,
+        pollSecret: created.pollSecret,
         label
       });
       let attempts = 0;
@@ -691,7 +695,10 @@ function IdentityManager (props) {
         }
         void (async () => {
           try {
-            const st = await fetchDeviceLinkSession(origin, created.sessionId, { origin });
+            const st = await fetchDeviceLinkSession(origin, created.sessionId, {
+              origin,
+              pollSecret: created.pollSecret
+            });
             if (!st.ok) return;
             if (st.status === 'accepted' && st.linkMessage) {
               const countersigned = buildFabricIdentitySignedPayload(key, st.linkMessage);

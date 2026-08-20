@@ -97,6 +97,22 @@ function collectHubHeapTelemetry (hub, opts = {}) {
     ? hub._bitcoinBlockTips.size
     : 0;
 
+  let noiseHandshakeListeners = null;
+  if (agent && typeof agent.countNoiseHandshakeListeners === 'function') {
+    try {
+      const counts = agent.countNoiseHandshakeListeners();
+      if (counts && typeof counts === 'object') {
+        noiseHandshakeListeners = {
+          write: Number(counts.write || 0),
+          read: Number(counts.read || 0),
+          split: Number(counts.split || 0)
+        };
+      }
+    } catch (_) {
+      noiseHandshakeListeners = null;
+    }
+  }
+
   const sidechain = hub && hub._sidechainState;
   const sidechainClock = sidechain && Number.isFinite(Number(sidechain.clock))
     ? Number(sidechain.clock)
@@ -139,6 +155,7 @@ function collectHubHeapTelemetry (hub, opts = {}) {
       filesystemActors: mapSize(fsState && fsState.actors),
       bitcoinBlockTips: bitcoinTips,
       peerConnections,
+      noiseHandshakeListeners,
       webrtcPeers,
       workQueue: Array.isArray(hub && hub._workQueue) ? hub._workQueue.length : 0,
       inventoryHtlc: hub && hub._inventoryHtlcById && typeof hub._inventoryHtlcById.size === 'number'

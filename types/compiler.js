@@ -58,6 +58,7 @@ const HTTPComponent = require('@fabric/http/types/component');
 
 // Types
 const HTTPSite = require('./site');
+const { compilerActorSettings } = require('../functions/compilerActorSettings');
 
 /**
  * Builder for {@link Fabric}-based applications.
@@ -67,20 +68,28 @@ class Compiler extends HTTPCompiler {
    * Create an instance of the compiler.
    * @param {Object} [settings] Map of settings.
    * @param {HTTPComponent} [settings.document] Document to use.
+   * @param {boolean} [settings.skipWebpack] When true, do not construct a
+   *     webpack Compiler (SPA bundle already built). Required after
+   *     `webpack(config).run()` because plugins retain circular `compiler.root`.
    */
   constructor (settings = {}) {
-    super(settings);
+    const actorSettings = compilerActorSettings(settings);
+    const document = settings.document || null;
+    const skipWebpack = settings.skipWebpack === true;
+    super(actorSettings);
 
     this.settings = merge({
-      document: settings.document || new HTTPComponent(settings),
+      document: document || new HTTPComponent(actorSettings),
       site: {
-        name: 'Default Fabric Application'
+        name: actorSettings.site.name
       },
       state: {
-        title: settings.title || 'Fabric HTTP Document'
+        title: actorSettings.state.title
       },
       // Use provided webpack config if present, otherwise use default
-      webpack: settings.webpack || {
+      webpack: skipWebpack
+        ? { mode: settings.mode || 'production', watch: false }
+        : (settings.webpack || {
         mode: settings.mode || 'production',
         entry: path.resolve('./scripts/browser.js'),
         experiments: {
@@ -131,11 +140,11 @@ class Compiler extends HTTPCompiler {
           })
         ],
         watch: false
-      }
-    }, settings);
+      })
+    }, actorSettings);
 
-    this.component = this.settings.document || null;
-    const resolvedTitle = this.settings.title || (this.settings.state && this.settings.state.title) || 'hub.fabric.pub';
+    this.component = document || this.settings.document || null;
+    const resolvedTitle = actorSettings.title;
     this.site = new HTTPSite(merge({}, this.settings.site, {
       title: resolvedTitle,
       state: {
@@ -147,7 +156,15 @@ class Compiler extends HTTPCompiler {
       content: this.settings.state
     };
 
-    this.packer = webpack(this.settings.webpack);
+    if (skipWebpack) {
+      this.packer = {
+        run (cb) {
+          if (typeof cb === 'function') cb(null, { fullhash: 'prebuilt' });
+        }
+      };
+    } else {
+      this.packer = webpack(this.settings.webpack);
+    }
 
     return this;
   }

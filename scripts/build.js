@@ -114,16 +114,30 @@ async function main (input = {}) {
   const buildWebpackConfig = Object.assign({}, resolveWebpackConfig(), { watch: false });
   await runWebpack(buildWebpackConfig);
 
+  try {
+    const { syncDownloadsAssets } = require('../functions/hubDownloadsIndex');
+    const dl = syncDownloadsAssets({ copyDist: false });
+    console.log('[BUILD:SITE] downloads index files=' + dl.fileCount);
+  } catch (dlErr) {
+    console.warn(
+      '[BUILD:SITE] downloads index skipped:',
+      dlErr && dlErr.message ? dlErr.message : dlErr
+    );
+  }
+
   // HubInterface pulls bitcoinjs-lib at load (Payjoin / Sidechain). Node 24
   // enforces bip174 package exports, so SSR can fail even when webpack succeeds.
   let site = null;
   try {
     const HubInterface = require('../components/HubInterface');
     site = new HubInterface(input);
+    // Do not pass the webpack config that just ran: plugins retain circular
+    // `compiler.root`, and Fabric Actor JSON-patch observe cannot clone it.
+    // Do not spread Hub `settings/local.js` into Compiler for the same reason.
     const compiler = new Compiler({
       document: site,
-      webpack: buildWebpackConfig,
-      ...input
+      title: (input && (input.title || input.name)) || 'hub.fabric.pub',
+      skipWebpack: true
     });
     compiler.compileBundle = async () => ({ fullhash: 'prebuilt' });
     await compiler.compileTo('assets/index.html');

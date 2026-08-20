@@ -49,7 +49,7 @@ For quick iteration when assets are already built:
 npm run start:fast
 ```
 
-**First-time setup:** The UI onboarding flow sets the node name and related options. An **admin token** is issued to the **browser only** (not stored server-side) and gates privileged actions (e.g. **Generate Block** on regtest).
+**First-time setup:** The UI onboarding flow sets the node name, downloads **Bitcoin Core** (and **Core Lightning** when the platform has an official binary) into `binaries/`, and issues an **admin token** to the **browser only** (not stored server-side). That token gates privileged actions (e.g. **Generate Block** on regtest). Desktop installers: `npm run build:installers`, then browse them at **`/downloads`**.
 
 ### 4. Sanity checks (optional)
 

@@ -118,11 +118,18 @@ function enrichArcFields (definition, opts = {}) {
         bitcoinHeight: bitcoinAnchor && bitcoinAnchor.height,
         bitcoinAnchor
       };
+      const overrides = opts.network ? { network: opts.network } : {};
+      const mode = opts.internalKeyMode ? String(opts.internalKeyMode).trim().toLowerCase() : '';
+      const beaconId = opts.beaconContractId ? String(opts.beaconContractId) : '';
+      const applyMode = mode && (!beaconId || String(opts.contractId || '') === beaconId);
+      if (applyMode) {
+        overrides.spendPolicy = { internalKeyMode: mode };
+      }
       const spend = cs.resolveSpend({
         genesis: arc,
         tip,
         contractId: opts.contractId,
-        overrides: opts.network ? { network: opts.network } : undefined
+        overrides: Object.keys(overrides).length ? overrides : undefined
       });
       spendAddress = spend.spendAddress || spend.address || null;
       if (spend.bitcoinAnchor) bitcoinAnchor = spend.bitcoinAnchor;
@@ -201,7 +208,9 @@ function recordPublish (state, {
   origin = null,
   bitcoinBlockHash = null,
   bitcoinHeight = null,
-  network = null
+  network = null,
+  internalKeyMode = null,
+  beaconContractId = null
 } = {}) {
   const id = assertSafeContractId(contractId);
   if (Object.prototype.hasOwnProperty.call(state.accepted, id) && state.accepted[id]) {
@@ -230,7 +239,9 @@ function recordPublish (state, {
     contractId: id,
     bitcoinBlockHash,
     bitcoinHeight,
-    network: network || undefined
+    network: network || undefined,
+    internalKeyMode: internalKeyMode || undefined,
+    beaconContractId: beaconContractId || undefined
   });
   const entry = {
     contractId: id,
@@ -262,7 +273,9 @@ function acceptContract (state, contractId, {
   acceptedBy = null,
   bitcoinBlockHash = null,
   bitcoinHeight = null,
-  network = null
+  network = null,
+  internalKeyMode = null,
+  beaconContractId = null
 } = {}) {
   const id = assertSafeContractId(contractId);
   const pending = Object.prototype.hasOwnProperty.call(state.pending, id) ? state.pending[id] : null;
@@ -280,7 +293,9 @@ function acceptContract (state, contractId, {
     bitcoinHeight: bitcoinHeight != null
       ? bitcoinHeight
       : (base.bitcoinAnchor && base.bitcoinAnchor.height),
-    network: network || undefined
+    network: network || undefined,
+    internalKeyMode: internalKeyMode || undefined,
+    beaconContractId: beaconContractId || undefined
   });
 
   const entry = Object.assign({}, base, {
@@ -411,7 +426,9 @@ function reEnrichAccepted (state, opts = {}) {
       bitcoinHeight: opts.bitcoinHeight != null
         ? opts.bitcoinHeight
         : (entry.bitcoinAnchor && entry.bitcoinAnchor.height),
-      network: opts.network || undefined
+      network: opts.network || undefined,
+      internalKeyMode: opts.internalKeyMode || undefined,
+      beaconContractId: opts.beaconContractId || undefined
     });
     const prevSpend = entry.spendAddress || null;
     const prevAnchor = entry.bitcoinAnchor && entry.bitcoinAnchor.blockHash

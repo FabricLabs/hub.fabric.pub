@@ -4,13 +4,27 @@ The desktop shell runs the same Hub **Node** process as `npm start` and opens a 
 ## Layout
 | Path | Role |
 |------|------|
-| `scripts/desktop.js` | Electron main: spawns Hub with `ELECTRON_RUN_AS_NODE`, sets `FABRIC_HUB_APP_ROOT` / `FABRIC_HUB_USER_DATA`, waits for HTTP, loads the UI |
+| `scripts/desktop.js` | Electron main: tray, **Run at startup**, spawns Hub with `ELECTRON_RUN_AS_NODE`, sets `FABRIC_HUB_APP_ROOT` / `FABRIC_HUB_USER_DATA`, waits for HTTP, loads the UI |
+| `scripts/startup/` | OS launchers packed as `resources/startup/` (macOS command + LaunchAgent, Windows cmd/vbs, Linux sh + XDG desktop) |
+| `functions/desktopOpenAtLogin.js` | Login-item payload, XDG autostart, `desktop-shell.json` |
 | `scripts/desktop-preload.js` | Exposes `window.fabricDesktop` (`isDesktopShell`, platform, versions, `onLoginPrompt`, `pullPendingLoginPrompt`) |
 | `scripts/desktopHubProbe.js` | Startup HTTP/P2P probes (whether to use an existing loopback Hub) |
 | `components/DelegationSigningModal.js` | In-app Semantic UI modals for **fabric://login** approval and **delegation** signature queue (replaces native OS dialogs) |
 | `dist/` | **electron-builder** output (gitignored): installers / unpacked apps |
 
-Writable state (LevelDB, Bitcoin regtest data, setup JSON) lives under the OS **userData** directory when env `FABRIC_HUB_USER_DATA` is set (Electron does this automatically). Static assets are read from **`FABRIC_HUB_APP_ROOT`** (the app bundle / `app.asar` when packaged), so the Hub does not rely on `process.cwd()` for `./assets` in packaged builds.
+Writable state (LevelDB, Bitcoin regtest data, Hub `STATE`) lives under the OS **userData** directory when env `FABRIC_HUB_USER_DATA` is set (the desktop shell always sets this).
+
+**Reset first-time setup (desktop is not the git checkout):**
+
+1. Quit Fabric Hub (and any other process on the Hub HTTP port, default **8080**).
+2. From the repo: **`npm run reset:stores`** — wipes CLI `stores/hub`, desktop **Fabric Hub** userData `stores/hub`, the legacy **Electron** profile copy, and (default) Bitcoin/Lightning datadirs + logs beside those roots. **`npm run reset:stores -- --setup-only`** leaves chain data. **`--dry-run`** prints paths. Tray **Reveal Hub data folder** still shows the live desktop root:
+   - macOS packaged / current desktop: `~/Library/Application Support/Fabric Hub/stores/hub`
+   - unpackaged `electron scripts/desktop.js` **before** the userData pin: `~/Library/Application Support/Electron/stores/hub`
+   - Linux: `~/.config/Fabric Hub/stores/hub`
+   - Windows: `%APPDATA%\Fabric Hub\stores\hub`
+3. Relaunch. `rm -rf stores/hub` in the repo only resets **`npm start`** (cwd). Admin → **Self-destruct** wipes the live process’s data directory.
+
+Unpackaged Electron used to store Hub `STATE` in the generic **Electron** profile. The shell now pins userData to **Fabric Hub** (same as a packaged build) and copies `stores/`, `desktop-shell.json`, and `logs/` from the Electron profile when Fabric Hub is empty. `FABRIC_DESKTOP_SKIP_ELECTRON_MIGRATE=1` skips that copy. Static assets are read from **`FABRIC_HUB_APP_ROOT`** (the app bundle / `app.asar` when packaged), so the Hub does not rely on `process.cwd()` for `./assets` in packaged builds.
 
 ### External Hub on loopback (no duplicate embedded node)
 On startup the shell probes **`http://127.0.0.1:<FABRIC_HUB_PORT>/`** with **HTTP `OPTIONS`** (same discovery shape as `@fabric/http` — JSON `name`, `description`, `resources`). If the response matches a Fabric Hub (`hub.fabric.pub` server name or `/services/` routes in `resources`), the desktop **does not** spawn `scripts/hub.js` and only opens the BrowserWindow (embedded Hub is skipped; quit does not stop your external Hub). It also probes **Fabric P2P** on **`127.0.0.1:7777`** (configurable) with a short-lived `@fabric/core` `Peer` client so logs can show whether a Fabric listener is present; **attachment** is still decided from the HTTP OPTIONS Hub metadata.
@@ -97,8 +111,14 @@ npm run desktop:debug
 # If your environment sets ELECTRON_RUN_AS_NODE for other tools, the desktop entry still clears it for the main process only;
 # the embedded `scripts/hub.js` child continues to set it as before.
 
-# Produce platform installers (current OS / arch; run per OS on CI for all three)
+# Produce platform installers (current OS / arch)
 npm run build:desktop
+
+# Prefetch bitcoind/lightningd for every OS, then mac + Windows + Linux installers
+npm run build:installers
+
+# Public `/downloads` FileBrowser reads `assets/downloads/index.json` (written by the
+# browser build; installer files are copied here after electron-builder).
 
 # Unpacked app only (faster sanity check; output under dist/)
 npm run build:desktop:dir
@@ -108,20 +128,48 @@ npm run build:desktop:dir
 
 - **macOS:** `.dmg` and `.zip` (see `package.json` → `build.mac.target`)
 - **Windows:** NSIS installer (`build.win.target`)
-- **Linux:** AppImage and `.deb` (`build.linux.target`)
+- **Linux:** AppImage and `.deb` (`build.linux.target`). Root `desktopName` (`pub.fabric.hub`) plus `linux.syncDesktopName` keep `WM_CLASS` aligned with the installed `.desktop` file.
 
 Code signing / notarization for macOS and Windows Authenticode are **not** configured here; add certificates and `electron-builder` env in CI as needed.
 
+## Tray & run at startup
+
+The desktop app is meant as an **easy node**: Bitcoin Core, Fabric peer, and Lightning stay running from the tray. Closing the window **hides** to the tray (does not stop Hub). **Quit Fabric Hub** on the tray (or the OS app-quit command) stops the node.
+
+Packaged installers copy `scripts/startup/` to **`resources/startup/`** beside `app.asar`. Those scripts start the app with `--hidden`. The tray checkbox is the supported control:
+
+| Control | How |
+|---------|-----|
+| Tray → **Run at startup** | Toggle OS login item (macOS / Windows) and Linux `~/.config/autostart/pub.fabric.hub.desktop` |
+| `FABRIC_OPEN_AT_LOGIN=0` / `=1` | Force off / on (wins over the tray persist file) |
+| `settings/local.js` → `openAtLogin` | Optional boolean if you add it; tray persist still wins after first launch |
+| userData `desktop-shell.json` | Remembers the tray choice (`openAtLogin`) |
+
+Installed builds default **on** so a first-run user gets a node that comes back after reboot. `npm run desktop` (unpackaged) defaults **off** so developers do not register the Electron binary as a login item.
+
+Login launches use `--hidden` (and macOS `openAsHidden`): Hub still starts Bitcoin / Fabric / Lightning; the window stays in the tray until **Show Fabric Hub**.
+
+Manual wiring (same `--hidden` flag):
+
+- **macOS:** `resources/startup/macos/FabricHub.command` or copy `com.pub.fabric.hub.plist` to `~/Library/LaunchAgents/`
+- **Windows:** `resources/startup/windows/FabricHub-startup.cmd` (or `.vbs` for no console) in the Startup folder / Task Scheduler
+- **Linux:** `resources/startup/linux/fabrichub-startup.sh` or the sample `.desktop` under `~/.config/autostart/`
+
+
 ## Icons
-Place branding assets under **`build/`** (see `package.json` → `build.directories.buildResources`). electron-builder picks up:
+The suite mark is a serif lowercase **f** (Arvo) in white on royal purple `#4C1D95`. Canonical generator: `@fabric/http` `npm run make:icons` (copies into this `build/` and `assets/`).
+
+electron-builder reads:
 
 - `build/icon.icns` (macOS)
 - `build/icon.ico` (Windows)
 - `build/icon.png` (Linux; 512×512 or larger)
 
-Until these exist, the default Electron icon is used.
+Browser favicons are `assets/favicon.svg`, `assets/favicon.ico`, and `assets/apple-touch-icon.png`.
 
 Semantic UI font/icon fixes for the **browser extension** are tracked separately (e.g. `fabric-browser-extension`); the desktop shell loads the same bundled `assets/` as the site.
 
 ## Desktop build notes
+`package.json` → `build.files` is an explicit allowlist (not the whole repo). It must include every Node boot path: `scripts/desktop.js` / `scripts/hub.js`, `settings/`, **`contracts/`** (`settings/local.js` loads Beacon / Liquid catalog entries), root **`constants.js`**, plus `services/`, `functions/`, `types/`, `routes/`, and `assets/`. `tests/electronPackFiles.test.js` walks those requires. After changing that list, rebuild (`npm run build:desktop`) and replace the installed app — an old asar will still crash.
+
 `@fabric/http` no longer depends on the npm **`peer`** package (legacy Express PeerJS signaling server). WebRTC uses **native `RTCPeerConnection`** in the Bridge and Hub WebSocket / JSON-RPC signaling (`RegisterWebRTCPeer`, etc.).

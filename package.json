@@ -2,6 +2,7 @@
   "name": "@fabric/hub",
   "version": "0.1.0-RC1",
   "description": "Peer rendezvous for Fabric.",
+  "desktopName": "pub.fabric.hub",
   "main": "services/hub.js",
   "exports": {
     ".": "./services/hub.js",
@@ -48,8 +49,11 @@
   "scripts": {
     "build": "npm run build:browser",
     "build:browser": "node scripts/build.js",
-    "build:desktop": "npm run build:browser && electron-builder build",
+    "build:desktop": "npm run build:browser && electron-builder build && node scripts/sync-downloads-assets.js",
     "build:desktop:dir": "npm run build:browser && electron-builder --dir",
+    "binaries:fetch": "node scripts/download-managed-binaries.js",
+    "binaries:fetch:all": "node scripts/download-managed-binaries.js --all",
+    "build:installers": "npm run build:browser && node scripts/download-managed-binaries.js --all && node scripts/build-installers.js",
     "link:fabric": "bash scripts/link-fabric.sh",
     "predesktop": "node scripts/ensure-fabric-linked.js && node scripts/prepare-hub-dev-port.js",
     "desktop": "npm run build:browser && env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron scripts/desktop.js",
@@ -74,6 +78,7 @@
     "prestart": "node scripts/prepare-hub-dev-port.js",
     "start": "npm run build && node scripts/hub.js",
     "start:fast": "node scripts/prepare-hub-dev-port.js && node scripts/hub.js",
+    "reset:stores": "node scripts/reset-hub-stores.js",
     "hub-ui:test-secrets": "node scripts/hub-ui-write-test-secrets.js",
     "hub-ui:test-secrets:inject": "node scripts/hub-ui-write-test-secrets.js --print-inject",
     "operator-identity:init": "node scripts/fabric-operator-identity.js init",
@@ -231,11 +236,38 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "beforePack": "./scripts/electron-builder-before-pack.js",
+    "extraResources": [
+      {
+        "from": "build/.installer-binaries",
+        "to": "binaries",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "scripts/startup",
+        "to": "startup",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "npmRebuild": false,
     "compression": "maximum",
     "executableName": "FabricHub",
     "files": [
       "assets/**/*",
+      "!assets/downloads/**/*.dmg",
+      "!assets/downloads/**/*.pkg",
+      "!assets/downloads/**/*.zip",
+      "!assets/downloads/**/*.exe",
+      "!assets/downloads/**/*.msi",
+      "!assets/downloads/**/*.AppImage",
+      "!assets/downloads/**/*.deb",
+      "!assets/downloads/**/*.rpm",
+      "!assets/downloads/**/*.snap",
+      "!assets/downloads/**/*.blockmap",
       "scripts/desktop.js",
       "scripts/desktop-preload.js",
       "scripts/desktopHubProbe.js",
@@ -245,6 +277,8 @@
       "types/**/*",
       "routes/**/*",
       "settings/**/*",
+      "contracts/**/*",
+      "constants.js",
       "shims/**/*",
       "package.json",
       "!**/.git/**",
@@ -304,6 +338,8 @@
       "!assets/scripts/semantic.js",
       "!assets/scripts/jquery-3.4.1.js",
       "!stores/**",
+      "!binaries/**",
+      "!build/.installer-binaries/**",
       "!tests/**",
       "!docs/**",
       "!coverage/**",
@@ -329,6 +365,7 @@
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.utilities",
       "target": [
         "dmg",
@@ -336,6 +373,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -346,6 +384,14 @@
       ]
     },
     "linux": {
+      "syncDesktopName": true,
+      "icon": "build/icon.png",
+      "desktop": {
+        "entry": {
+          "Name": "Fabric Hub",
+          "Comment": "Easy Bitcoin, Fabric, and Lightning node. Tray: Run at startup."
+        }
+      },
       "target": [
         {
           "target": "AppImage",
@@ -364,6 +410,14 @@
       "executableName": "FabricHub",
       "artifactName": "fabrichub_${version}_${arch}.${ext}",
       "maintainer": "Fabric Labs <support@fabric.pub>"
+    },
+    "nsis": {
+      "shortcutName": "Fabric Hub",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
     },
     "deb": {
       "packageName": "fabrichub"

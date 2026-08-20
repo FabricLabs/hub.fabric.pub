@@ -73,7 +73,7 @@ Living plan for shipping core product themes: **browser Bitcoin wallet**, **crow
 ---
 
 ## Feature flags (production)
-Defaults are conservative (`functions/hubUiFeatureFlags.js`). The SPA caches flags in `localStorage` and hydrates from Hub setting `HUB_UI_FEATURE_FLAGS` at startup (disk-backed in `stores/hub/settings.json`; writes require admin token). For a **full Bitcoin operator** UI in one browser profile, set:
+Defaults are conservative (`functions/hubUiFeatureFlags.js`). The SPA caches flags in `localStorage` and hydrates from Hub setting `HUB_UI_FEATURE_FLAGS` at startup (disk-backed in `stores/hub/STATE` `.settings`; writes require admin token). For a **full Bitcoin operator** UI in one browser profile, set:
 
 ```json
 {

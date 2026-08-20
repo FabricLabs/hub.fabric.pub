@@ -23,6 +23,7 @@ const { pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const {
   isDocumentInventoryDocumentsOfferResponse,
+  isDocumentInventoryRequestType,
   isDocumentInventoryResponseType
 } = require('../functions/fabricDocumentOfferEnvelope');
 const { formatSatsDisplay } = require('../functions/formatSats');
@@ -33,6 +34,16 @@ const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput } = require(
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const {
+  fabricTcpInventoryTarget,
+  isFabricTcpConnectedPeer,
+  shouldToastHubJsonCallError,
+  webrtcSignalingIdFromPeerHop
+} = require('../functions/hubJsonCallToast');
+const {
+  collectFabricHubSeeds,
+  recommendedMaxWebrtcPeers
+} = require('../functions/fabricHubSeeds');
 const {
   needsCreateDocumentBeforePublish,
   mergePublishedDocumentsFromHubStatus
@@ -111,6 +122,13 @@ class Bridge extends React.Component {
       webrtcConnectTimeoutMs: 15000, // Abort stale outbound connect attempts
       webrtcCandidateMaxAgeMs: 120000 // Ignore stale peer registrations when discovering candidates
     }, props);
+
+    try {
+      const seedCount = collectFabricHubSeeds().length;
+      if (seedCount > 0 && !(props && props.maxWebrtcPeers)) {
+        this.settings.maxWebrtcPeers = recommendedMaxWebrtcPeers(seedCount);
+      }
+    } catch (_) {}
 
     // Optional override via a single hub address string.
     // Accepts: "host:port", "http(s)://host:port", "ws(s)://host:port"
@@ -535,6 +553,10 @@ class Bridge extends React.Component {
       this._hubReportWebRTCPeerConnected(peerId, (entry && entry.initiator) ? 'outbound' : 'inbound');
       // Gossip our peer list to the new peer so cross-cluster discovery can begin
       setTimeout(() => this._sendWebRTCPeerGossip(peerId), 500);
+      setTimeout(() => {
+        this._sendWebRTCDocumentInventory(peerId);
+        this._requestWebRTCDocumentInventory(peerId);
+      }, 700);
     };
 
     dc.onmessage = (ev) => {
@@ -2040,6 +2062,26 @@ class Bridge extends React.Component {
     window.removeEventListener('popstate', this.handlePathChange);
   }
 
+  /**
+   * HTTP origin for JSON-RPC (`/services/rpc`). Seed / cog hub-address wins over the page origin
+   * so CDN HTML clients talk to a live Hub.
+   * @returns {string}
+   */
+  _hubHttpOrigin () {
+    try {
+      const host = this.settings && this.settings.host;
+      if (host) {
+        const secure = !!(this.settings && this.settings.secure);
+        const port = Number(this.settings && this.settings.port);
+        const def = secure ? 443 : 80;
+        const portPart = Number.isFinite(port) && port > 0 && port !== def ? `:${port}` : '';
+        return `${secure ? 'https' : 'http'}://${host}${portPart}`;
+      }
+    } catch (_) {}
+    if (typeof window !== 'undefined' && window.location) return window.location.origin;
+    return '';
+  }
+
   _parseHubAddressString (input) {
     try {
       const raw = input == null ? '' : String(input).trim();
@@ -3021,6 +3063,19 @@ class Bridge extends React.Component {
             break;
           }
           default:
+            if (isDocumentInventoryRequestType(payload.type)) {
+              const kind = String((payload.object && payload.object.kind) || '').trim().toLowerCase();
+              if (!kind || kind === 'documents') this._sendWebRTCDocumentInventory(peerId);
+              break;
+            }
+            if (isDocumentInventoryDocumentsOfferResponse(payload) || isDocumentInventoryResponseType(payload.type)) {
+              const parsed = {
+                ...payload,
+                actor: (payload.actor && payload.actor.id) ? payload.actor : { id: peerId }
+              };
+              this._applyDocumentInventoryResponse(parsed, peerId);
+              break;
+            }
             // Pass through to the general WebRTC message handler
             this.handleWebRTCMessage(payload, peerId);
         }
@@ -3330,7 +3385,8 @@ class Bridge extends React.Component {
    */
   async callHubJsonRpc (method, params = {}) {
     if (typeof window === 'undefined') return { error: 'callHubJsonRpc requires window' };
-    const origin = window.location.origin;
+    const origin = this._hubHttpOrigin() || window.location.origin;
+    const sameOrigin = typeof window !== 'undefined' && origin === window.location.origin;
     this._hubJsonRpcSeq = (this._hubJsonRpcSeq || 0) + 1;
     const id = this._hubJsonRpcSeq;
     let res;
@@ -3344,7 +3400,7 @@ class Bridge extends React.Component {
           method: String(method || ''),
           params: [params && typeof params === 'object' ? params : {}]
         }),
-        credentials: 'same-origin',
+        credentials: sameOrigin ? 'same-origin' : 'omit',
         cache: 'no-store'
       });
     } catch (e) {
@@ -4063,9 +4119,10 @@ class Bridge extends React.Component {
                 ? jsonCall.params[jsonCall.params.length - 1]
                 : (jsonCall.result || null);
 
-              if (result && typeof result === 'object' && result.status === 'error' && typeof result.message === 'string' && result.message &&
-                !result.type && result.documentId == null && result.contractId == null) {
+              if (shouldToastHubJsonCallError(result)) {
                 toast.error(String(result.message), { header: 'Hub', duration: 6000 });
+              } else if (result && result.status === 'error' && this.settings && this.settings.debug) {
+                console.debug('[BRIDGE]', 'Hub RPC error (quiet):', result.message);
               }
 
               // Full GetNetworkStatus / ListPeers payloads (and hub pushes). Match {@link isHubNetworkStatusShape}
@@ -4481,34 +4538,7 @@ class Bridge extends React.Component {
 
             // Inventory responses from peers for documents, stored under globalState.peers[peerId].inventory.documents.
             if (isDocumentInventoryDocumentsOfferResponse(parsed)) {
-              const peerId = parsed.actor && parsed.actor.id;
-              const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
-              if (peerId) {
-                this.globalState.peers = this.globalState.peers || {};
-                const keysToTouch = new Set([peerId]);
-                for (const k of Object.keys(this.globalState.peers)) {
-                  const ex = this.globalState.peers[k];
-                  if (ex && ex.id === peerId) keysToTouch.add(k);
-                }
-                for (const k of keysToTouch) {
-                  const existing = this.globalState.peers[k] || {};
-                  const inventory = existing.inventory || {};
-                  const next = {
-                    ...existing,
-                    inventory: {
-                      ...inventory,
-                      documents: items
-                    }
-                  };
-                  this.globalState.peers[k] = next;
-                }
-                window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                  detail: {
-                    operation: { op: 'add', path: `/peers/${peerId}`, value: this.globalState.peers[peerId] },
-                    globalState: this.globalState
-                  }
-                }));
-              }
+              this._applyDocumentInventoryResponse(parsed, parsed.actor && parsed.actor.id);
               break;
             }
           } catch (e) { /* not JSON or not file message */ }
@@ -4586,30 +4616,7 @@ class Bridge extends React.Component {
             if (isDocumentInventoryResponseType(originalType)) {
               const parsed = typeof original === 'string' ? JSON.parse(original) : original;
               if (isDocumentInventoryDocumentsOfferResponse(parsed)) {
-                const peerId = parsed.actor && parsed.actor.id;
-                const items = Array.isArray(parsed.object.items) ? parsed.object.items : [];
-                if (peerId) {
-                  this.globalState.peers = this.globalState.peers || {};
-                  const keysToTouch = new Set([peerId]);
-                  for (const k of Object.keys(this.globalState.peers)) {
-                    const ex = this.globalState.peers[k];
-                    if (ex && ex.id === peerId) keysToTouch.add(k);
-                  }
-                  for (const k of keysToTouch) {
-                    const existing = this.globalState.peers[k] || {};
-                    const inventory = existing.inventory || {};
-                    this.globalState.peers[k] = {
-                      ...existing,
-                      inventory: { ...inventory, documents: items }
-                    };
-                  }
-                  window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-                    detail: {
-                      operation: { op: 'add', path: `/peers/${peerId}`, value: this.globalState.peers[peerId] },
-                      globalState: this.globalState
-                    }
-                  }));
-                }
+                this._applyDocumentInventoryResponse(parsed, parsed.actor && parsed.actor.id);
               }
               break;
             }
@@ -5380,7 +5387,7 @@ class Bridge extends React.Component {
 
     for (const job of this.peerMessageQueue) {
       if (!job || !job.address || !job.text) continue;
-      const isConnected = peers.some((p) => p && p.status === 'connected' && (p.id === job.address || p.address === job.address));
+      const isConnected = peers.some((p) => isFabricTcpConnectedPeer(p) && (p.id === job.address || p.address === job.address));
 
       if (!isConnected) {
         remaining.push(job);
@@ -6443,7 +6450,8 @@ class Bridge extends React.Component {
    */
   async _invokeHubRpcWithArrayParams (method, positionalParams) {
     if (typeof window === 'undefined') return { ok: false, error: 'no window' };
-    const origin = window.location.origin;
+    const origin = this._hubHttpOrigin() || window.location.origin;
+    const sameOrigin = origin === window.location.origin;
     this._hubJsonRpcSeq = (this._hubJsonRpcSeq || 0) + 1;
     const id = this._hubJsonRpcSeq;
     let res;
@@ -6457,7 +6465,7 @@ class Bridge extends React.Component {
           method: String(method || ''),
           params: Array.isArray(positionalParams) ? positionalParams : []
         }),
-        credentials: 'same-origin',
+        credentials: sameOrigin ? 'same-origin' : 'omit',
         cache: 'no-store'
       });
     } catch (e) {
@@ -6517,7 +6525,110 @@ class Bridge extends React.Component {
   }
 
   /**
+   * Merge a documents `INVENTORY_RESPONSE` into `globalState.peers`.
+   * @param {object} parsed
+   * @param {string} [fallbackPeerId]
+   * @returns {boolean}
+   */
+  _applyDocumentInventoryResponse (parsed, fallbackPeerId) {
+    const items = parsed && parsed.object && Array.isArray(parsed.object.items)
+      ? parsed.object.items
+      : [];
+    const peerId = (parsed && parsed.actor && parsed.actor.id) || fallbackPeerId;
+    if (!peerId) return false;
+    this.globalState.peers = this.globalState.peers || {};
+    const keysToTouch = new Set([String(peerId)]);
+    for (const k of Object.keys(this.globalState.peers)) {
+      const ex = this.globalState.peers[k];
+      if (ex && String(ex.id || '') === String(peerId)) keysToTouch.add(k);
+    }
+    for (const k of keysToTouch) {
+      const existing = this.globalState.peers[k] || { id: peerId };
+      const inventory = existing.inventory || {};
+      this.globalState.peers[k] = {
+        ...existing,
+        id: existing.id || peerId,
+        inventory: { ...inventory, documents: items }
+      };
+    }
+    try {
+      window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+        detail: {
+          operation: { op: 'add', path: `/peers/${peerId}`, value: this.globalState.peers[peerId] },
+          globalState: this.globalState
+        }
+      }));
+    } catch (_) {}
+    return true;
+  }
+
+  _localDocumentInventoryItems () {
+    const docs = this.globalState && this.globalState.documents;
+    if (!docs || typeof docs !== 'object') return [];
+    const out = [];
+    for (const d of Object.values(docs)) {
+      if (!d || !d.id) continue;
+      out.push({
+        id: d.id,
+        name: d.name,
+        mime: d.mime,
+        size: d.size,
+        sha256: d.sha256,
+        purchasePriceSats: d.purchasePriceSats
+      });
+    }
+    return out;
+  }
+
+  _sendWebRTCDocumentInventory (toPeerId) {
+    if (!toPeerId || !this.peerId) return false;
+    return this.sendToWebRTCPeer(toPeerId, {
+      type: 'INVENTORY_RESPONSE',
+      actor: { id: this.peerId },
+      object: { kind: 'documents', items: this._localDocumentInventoryItems() }
+    });
+  }
+
+  _requestWebRTCDocumentInventory (toPeerId) {
+    if (!toPeerId || !this.peerId) return false;
+    return this.sendToWebRTCPeer(toPeerId, {
+      type: 'INVENTORY_REQUEST',
+      actor: { id: this.peerId },
+      object: { kind: 'documents' }
+    });
+  }
+
+  /**
+   * Ask connected WebRTC peers for document inventories over the data channel, and
+   * live Fabric TCP peers via Hub {@code RequestPeerInventory}. Skip disconnected
+   * known-peer rows and WebRTC signaling ids — those return {@code peer not connected}.
+   */
+  requestConnectedPeerInventories () {
+    try {
+      if (this.webrtcPeers && typeof this.webrtcPeers.forEach === 'function') {
+        this.webrtcPeers.forEach((info, peerId) => {
+          if (info && info.status === 'connected') {
+            this._requestWebRTCDocumentInventory(peerId);
+          }
+        });
+      }
+      const ns = this.state && (this.state.networkStatus || this.state.lastNetworkStatus);
+      const peers = ns && Array.isArray(ns.peers) ? ns.peers : [];
+      const seen = new Set();
+      for (const p of peers) {
+        const id = fabricTcpInventoryTarget(p);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        this.sendPeerInventoryRequest(id, 'documents');
+      }
+    } catch (error) {
+      console.error('[BRIDGE]', 'requestConnectedPeerInventories:', safeIdentityErr(error));
+    }
+  }
+
+  /**
    * Request a peer's inventory (e.g., list of documents) via the hub JSON-RPC.
+   * {@code webrtc:<signalingId>} hops use the data channel instead of TCP RPC.
    * @param {string|{id,address}} idOrAddress - Direct Fabric connection (next hop); use with `options.inventoryTarget` when that hop is a relay.
    * @param {string} kind - Inventory kind, defaults to 'documents'.
    * @param {Object} [options] - Optional `{ buyerRefundPublicKey, htlcLocktimeBlocks?, htlcAmountSats?, inventoryTarget?, inventoryRelayTtl? }`.
@@ -6525,6 +6636,11 @@ class Bridge extends React.Component {
    */
   sendPeerInventoryRequest (idOrAddress, kind = 'documents', options = {}) {
     try {
+      const signalingId = webrtcSignalingIdFromPeerHop(idOrAddress);
+      if (signalingId) {
+        this._requestWebRTCDocumentInventory(signalingId);
+        return;
+      }
       const params = (options && typeof options === 'object' && Object.keys(options).length > 0)
         ? [idOrAddress, kind, options]
         : [idOrAddress, kind];

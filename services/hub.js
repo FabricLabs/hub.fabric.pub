@@ -69,6 +69,14 @@ const {
   lightningdOnPath
 } = require('../functions/hubLightningGate');
 const {
+  applyManagedNodeBinariesToProcessEnv,
+  bitcoindAvailable,
+  lightningdAvailable,
+  getManagedBinariesStatus,
+  installManagedBinaries
+} = require('../functions/hubManagedBinaries');
+const { checkManagedBinariesRemote } = require('../functions/hubManagedBinariesRemoteCheck');
+const {
   isManagedBitcoinSpawnEarlyExit,
   wrapBitcoinRpcProbeCandidatesForPort
 } = require('../functions/bitcoinManagedAttach');
@@ -185,6 +193,12 @@ const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 // Hub Services
 const Fabric = require('../services/fabric');
 const SetupService = require('../services/setup');
+const {
+  applyHubBitcoinRuntimeFromSetup,
+  buildHubSetupInitialConfig,
+  isExplicitFalse
+} = require('../functions/hubBitcoinSetup');
+const { seedHubStoresAfterSetup } = require('../functions/hubSetupStores');
 const { mountFabricDesktopAuthHttp } = require('../functions/fabricDesktopAuth');
 const { mountFabricDeviceLinkHttp } = require('../functions/fabricDeviceLink');
 const {
@@ -1941,6 +1955,7 @@ class Hub extends Service {
   commit () {
     this._capHeapCollections();
     if (!this.fs) return;
+    this._mergeSetupSettingsIntoStateContent();
     const body = JSON.stringify(this._state.content || {});
     this._lastStateWriteBytes = Buffer.byteLength(body, 'utf8');
     if (typeof this.fs.writeFile === 'function') {
@@ -2694,7 +2709,7 @@ class Hub extends Service {
   }
 
   /**
-   * Persisted federation policy from `stores/hub/settings.json` key `DISTRIBUTED_FEDERATION`, when present.
+   * Persisted federation policy from `stores/hub/STATE` `.settings.DISTRIBUTED_FEDERATION`, when present.
    * @returns {{ validators: string[], threshold: (number|undefined)}|undefined}
    */
   _distributedFederationPersisted () {
@@ -2920,7 +2935,8 @@ class Hub extends Service {
           validators: fp.validators,
           threshold: fp.threshold,
           csvBlocks: softPolicy.csvBlocks,
-          softMode: softPolicy.softMode
+          softMode: softPolicy.softMode,
+          internalKeyMode: this._federationInternalKeyMode()
         }
       };
     }
@@ -2951,6 +2967,8 @@ class Hub extends Service {
             || (vs.spendPolicy && vs.spendPolicy.csvBlocks),
           softMode: vs.spendPolicy && vs.spendPolicy.softMode,
           publisher: vs.spendPolicy && vs.spendPolicy.publisher,
+          internalKeyMode: (vs.spendPolicy && vs.spendPolicy.internalKeyMode)
+            || this._federationInternalKeyMode(),
           scheme: vs.policy && vs.policy.scheme,
           spendPolicy: vs.spendPolicy || null,
           leaves: Array.isArray(vs.leaves) ? vs.leaves : [],
@@ -3265,7 +3283,9 @@ class Hub extends Service {
       const result = trackedApplicationContracts.reEnrichAccepted(state, {
         bitcoinBlockHash: tip.blockHash,
         bitcoinHeight: tip.height,
-        network
+        network,
+        internalKeyMode: this._federationInternalKeyMode(),
+        beaconContractId: this._beaconContractId || undefined
       });
       if (result.changed > 0) {
         await this._persistTrackedContracts();
@@ -3343,7 +3363,9 @@ class Hub extends Service {
       trackedApplicationContracts.reEnrichAccepted(state, {
         bitcoinBlockHash: tip.blockHash,
         bitcoinHeight: tip.height,
-        network
+        network,
+        internalKeyMode: this._federationInternalKeyMode(),
+        beaconContractId: this._beaconContractId || contractId
       });
       await this._persistTrackedContracts();
       return {
@@ -3363,7 +3385,9 @@ class Hub extends Service {
       origin: 'hub-beacon',
       bitcoinBlockHash: tip.blockHash,
       bitcoinHeight: tip.height,
-      network
+      network,
+      internalKeyMode: this._federationInternalKeyMode(),
+      beaconContractId: contractId
     });
     if (recorded.status === 'pending') {
       this._broadcastTrackedContractsEvent('TrackedApplicationContractPublish', recorded.entry);
@@ -3373,7 +3397,9 @@ class Hub extends Service {
       acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || publisher || 'hub',
       bitcoinBlockHash: tip.blockHash,
       bitcoinHeight: tip.height,
-      network
+      network,
+      internalKeyMode: this._federationInternalKeyMode(),
+      beaconContractId: contractId
     });
 
     if (!this._sidechainState) {
@@ -4236,6 +4262,30 @@ class Hub extends Service {
   }
 
   /**
+   * Taproot internal key for federation vault + native Beacon overlay.
+   * Defaults to `nums` so historical NUMS UTXOs stay on the displayed address.
+   * @returns {string} `nums` | `musig2`
+   */
+  _federationInternalKeyMode () {
+    return federationVault.resolveFederationInternalKeyMode(this.settings || {}, process.env);
+  }
+
+  /**
+   * Shared vault-builder knobs (CSV / publisher / internal key).
+   * @param {string[]} validators
+   * @returns {object}
+   */
+  _federationVaultBuildOpts (validators = []) {
+    const softPolicy = this._federationAuthoritySoftPolicy();
+    return {
+      publisher: this._federationAuthorityPublisher(validators) || validators[0],
+      csvBlocks: softPolicy.csvBlocks,
+      softMode: softPolicy.softMode,
+      internalKeyMode: this._federationInternalKeyMode()
+    };
+  }
+
+  /**
    * Assert Hub federation vault address matches accepted fabric-beacon ARC spendAddress.
    * @returns {{ ok: boolean, vault: (string|null|undefined), beacon: (string|null|undefined), contractId: (string|null|undefined), code: (string|undefined), message: (string|undefined)}}
    */
@@ -4325,24 +4375,25 @@ class Hub extends Service {
     }
     const threshold = Math.max(1, Math.min(Number(fp.threshold) || 1, validators.length));
     try {
-      const softPolicy = this._federationAuthoritySoftPolicy();
-      const publisher = this._federationAuthorityPublisher(validators) || validators[0];
+      const vaultOpts = this._federationVaultBuildOpts(validators);
       const built = federationVault.buildFederationVaultFromPolicy({
         validators,
         threshold,
         networkName,
-        publisher,
-        csvBlocks: softPolicy.csvBlocks,
-        softMode: softPolicy.softMode
+        publisher: vaultOpts.publisher,
+        csvBlocks: vaultOpts.csvBlocks,
+        softMode: vaultOpts.softMode,
+        internalKeyMode: vaultOpts.internalKeyMode
       });
       const soft = built.softTier || null;
       const spendPolicy = built.spendPolicy || {
-        publisher,
+        publisher: vaultOpts.publisher,
         validators: built.validators || built.validatorsSortedHex || validators,
         threshold: built.threshold,
-        csvBlocks: built.csvBlocks != null ? built.csvBlocks : softPolicy.csvBlocks,
-        softMode: softPolicy.softMode,
-        network: networkName
+        csvBlocks: built.csvBlocks != null ? built.csvBlocks : vaultOpts.csvBlocks,
+        softMode: vaultOpts.softMode,
+        network: networkName,
+        internalKeyMode: vaultOpts.internalKeyMode
       };
       return {
         type: 'FederationVaultSummary',
@@ -4374,11 +4425,13 @@ class Hub extends Service {
             }
             : null,
           internalKeyHex: built.internalPubkeyHex,
+          internalKeyMode: spendPolicy.internalKeyMode || vaultOpts.internalKeyMode,
           scheme: built.scheme || 'taproot-authority-ladder-v1',
           leaves: Array.isArray(built.leaves) ? built.leaves : [],
           notes: 't0-authority: k-of-n validators sign main-chain withdrawals; '
             + `t1-soft unlocks after ~${spendPolicy.csvBlocks} blocks CSV (softer rule). `
             + 'Same address as the accepted fabric-beacon ARC spendAddress when overlays match. '
+            + 'internalKeyMode nums keeps historical NUMS UTXOs; musig2 is a new address. '
             + 'Optional hashlock / script leaves change the address when present on policy.'
         },
         endpoints: {
@@ -4485,17 +4538,17 @@ class Hub extends Service {
       return { status: 'error', message: 'No federation validators configured' };
     }
     const threshold = this._distributedFederationThresholdEffective();
-    const softPolicy = this._federationAuthoritySoftPolicy();
-    const publisher = this._federationAuthorityPublisher(validators) || validators[0];
+    const vaultOpts = this._federationVaultBuildOpts(validators);
     let built;
     try {
       built = federationVault.buildFederationVaultFromPolicy({
         validators,
         threshold,
         networkName: bitcoin.network || 'mainnet',
-        publisher,
-        csvBlocks: softPolicy.csvBlocks,
-        softMode: softPolicy.softMode
+        publisher: vaultOpts.publisher,
+        csvBlocks: vaultOpts.csvBlocks,
+        softMode: vaultOpts.softMode,
+        internalKeyMode: vaultOpts.internalKeyMode
       });
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : String(e) };
@@ -6882,6 +6935,38 @@ class Hub extends Service {
     });
   }
 
+  _mergeSetupSettingsIntoStateContent () {
+    if (!this._state) return;
+    this._state.content = this._state.content || {};
+    if (!this.setup || typeof this.setup.listSettings !== 'function') return;
+    const fromSetup = this.setup.listSettings();
+    if (!fromSetup || typeof fromSetup !== 'object' || !Object.keys(fromSetup).length) return;
+    this._state.content.settings = Object.assign({}, this._state.content.settings || {}, fromSetup);
+  }
+
+  /**
+   * Persist first-time setup onto runtime Bitcoin settings and Hub STATE so the
+   * next process boot (and this process's commit()) keep IS_CONFIGURED.
+   * @param {Object} initialConfig
+   * @returns {{ ok: boolean, configured: boolean, peersDir: string|null, settingsPath: string|null }}
+   */
+  _applyFirstTimeSetupStores (initialConfig = {}) {
+    applyHubBitcoinRuntimeFromSetup(this.settings, initialConfig);
+    if (this.bitcoin && this.bitcoin.settings) {
+      applyHubBitcoinRuntimeFromSetup({ bitcoin: this.bitcoin.settings, lightning: this.settings.lightning }, initialConfig);
+    }
+    const seeded = seedHubStoresAfterSetup(this);
+    if (initialConfig.HTTP_SHARED_MODE === true) {
+      if (!this._httpRebindLock) this._httpRebindLock = Promise.resolve();
+      this._httpRebindLock = this._httpRebindLock
+        .then(() => this._rebindHttpForSharedModeIfChanged())
+        .catch((err) => {
+          console.warn('[HUB] HTTP_SHARED_MODE apply after setup failed:', err && err.message ? err.message : err);
+        });
+    }
+    return seeded;
+  }
+
   _handleSettingsBootstrapRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const status = this.setup.getSetupStatus();
@@ -6896,29 +6981,203 @@ class Hub extends Service {
           return res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
         }
       }
-      const initialConfig = {
-        NODE_NAME: body.NODE_NAME || body.nodeName || 'Hub',
-        NODE_PERSONALITY: body.NODE_PERSONALITY || body.nodePersonality || JSON.stringify(['helpful']),
-        NODE_TEMPERATURE: body.NODE_TEMPERATURE ?? body.nodeTemperature ?? 0,
-        NODE_GOALS: body.NODE_GOALS || body.nodeGoals || JSON.stringify([]),
-        BITCOIN_NETWORK: body.BITCOIN_NETWORK || body.bitcoinNetwork || 'regtest',
-        BITCOIN_MANAGED: body.BITCOIN_MANAGED !== false && body.bitcoinManaged !== false,
-        ...(body.BITCOIN_MANAGED === false || body.bitcoinManaged === false ? {
-          BITCOIN_HOST: body.BITCOIN_HOST || body.bitcoinHost || '127.0.0.1',
-          BITCOIN_RPC_PORT: body.BITCOIN_RPC_PORT || body.bitcoinRpcPort || '8332',
-          BITCOIN_USERNAME: body.BITCOIN_USERNAME || body.bitcoinUsername || '',
-          BITCOIN_PASSWORD: body.BITCOIN_PASSWORD || body.bitcoinPassword || ''
-        } : {}),
-        LIGHTNING_MANAGED: body.LIGHTNING_MANAGED !== false && body.lightningManaged !== false,
-        ...(body.LIGHTNING_MANAGED === false || body.lightningManaged === false ? {
-          LIGHTNING_SOCKET: body.LIGHTNING_SOCKET || body.lightningSocket || ''
-        } : {}),
-        DISK_ALLOCATION_MB: body.DISK_ALLOCATION_MB ?? body.diskAllocationMb ?? 1024,
-        COST_PER_BYTE_SATS: body.COST_PER_BYTE_SATS ?? body.costPerByteSats ?? 0.01
-      };
+      const initialConfig = buildHubSetupInitialConfig(body);
       const result = await this.setup.createAdminToken(initialConfig);
-      return res.status(200).json(result);
+      const stores = this._applyFirstTimeSetupStores(initialConfig);
+      setImmediate(() => {
+        this._startManagedChainsAfterSetup(initialConfig).catch((err) => {
+          console.warn(
+            '[HUB] Post-setup Bitcoin/Lightning start failed:',
+            err && err.message ? err.message : err
+          );
+        });
+      });
+      return res.status(200).json(Object.assign({}, result, { stores }));
     });
+  }
+
+  _authorizeManagedBinariesWrite (req, res) {
+    const status = this.setup && typeof this.setup.getSetupStatus === 'function'
+      ? this.setup.getSetupStatus()
+      : { configured: true, needsSetup: false };
+    if (status.needsSetup && !status.configured) {
+      const hubSetupSecret = getHubSetupUiSecretTrimmed();
+      if (hubSetupSecret.length) {
+        const body = req.body || {};
+        const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
+        if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
+          res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
+          return false;
+        }
+      }
+      return true;
+    }
+    if (!this._isSetupAdminRequest(req)) {
+      res.status(403).json({ error: 'Forbidden', message: 'Admin token required to install node binaries.' });
+      return false;
+    }
+    return true;
+  }
+
+  _handleManagedBinariesGetRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const status = getManagedBinariesStatus();
+      return res.status(200).json({
+        success: true,
+        ...status,
+        job: this._managedBinariesJob || null,
+        lastCheck: this._managedBinariesLastCheck || null
+      });
+    });
+  }
+
+  _handleManagedBinariesInstallRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      if (!this._authorizeManagedBinariesWrite(req, res)) return;
+      if (this._managedBinariesJob && this._managedBinariesJob.running) {
+        return res.status(409).json({
+          error: 'Install in progress',
+          job: this._managedBinariesJob
+        });
+      }
+      const body = req.body || {};
+      const wantBitcoin = body.bitcoin !== false;
+      const wantLightning = body.lightning === true;
+      this._managedBinariesJob = {
+        kind: 'install',
+        running: true,
+        error: null,
+        result: null,
+        progress: { phase: 'starting' },
+        startedAt: new Date().toISOString()
+      };
+      try {
+        const result = await installManagedBinaries({
+          bitcoin: wantBitcoin,
+          lightning: wantLightning,
+          onProgress: (ev) => {
+            this._managedBinariesJob.progress = ev || {};
+          }
+        });
+        this._managedBinariesJob.running = false;
+        this._managedBinariesJob.result = result;
+        this._managedBinariesJob.finishedAt = new Date().toISOString();
+        applyManagedNodeBinariesToProcessEnv();
+        const configured = this.setup && this.setup.getSetupStatus && this.setup.getSetupStatus().configured;
+        if (configured || this._bitcoinDeferred) {
+          setImmediate(() => {
+            this._startManagedChainsAfterSetup({
+              BITCOIN_MANAGED: wantBitcoin,
+              LIGHTNING_MANAGED: wantLightning
+            }).catch((err) => {
+              console.warn(
+                '[HUB] Bitcoin/Lightning start after binary install failed:',
+                err && err.message ? err.message : err
+              );
+            });
+          });
+        }
+        return res.status(200).json({ success: true, ...result, job: this._managedBinariesJob });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        this._managedBinariesJob.running = false;
+        this._managedBinariesJob.error = message;
+        this._managedBinariesJob.finishedAt = new Date().toISOString();
+        return res.status(500).json({ error: 'Install failed', message, job: this._managedBinariesJob });
+      }
+    });
+  }
+
+  _handleManagedBinariesCheckRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      if (!this._authorizeManagedBinariesWrite(req, res)) return;
+      if (this._managedBinariesJob && this._managedBinariesJob.running) {
+        return res.status(409).json({
+          error: 'Binaries job in progress',
+          job: this._managedBinariesJob
+        });
+      }
+      const body = req.body || {};
+      const wantBitcoin = body.bitcoin !== false;
+      const wantLightning = body.lightning === true;
+      this._managedBinariesJob = {
+        kind: 'check',
+        running: true,
+        error: null,
+        result: null,
+        progress: { phase: 'starting', message: 'Checking publishers…' },
+        startedAt: new Date().toISOString()
+      };
+      try {
+        const result = await checkManagedBinariesRemote({
+          bitcoin: wantBitcoin,
+          lightning: wantLightning,
+          onProgress: (ev) => {
+            this._managedBinariesJob.progress = ev || {};
+          }
+        });
+        this._managedBinariesJob.running = false;
+        this._managedBinariesJob.result = result;
+        this._managedBinariesJob.finishedAt = new Date().toISOString();
+        this._managedBinariesLastCheck = result;
+        applyManagedNodeBinariesToProcessEnv();
+        return res.status(200).json({
+          success: true,
+          ...result,
+          job: this._managedBinariesJob,
+          lastCheck: result
+        });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        this._managedBinariesJob.running = false;
+        this._managedBinariesJob.error = message;
+        this._managedBinariesJob.finishedAt = new Date().toISOString();
+        return res.status(500).json({ error: 'Check failed', message, job: this._managedBinariesJob });
+      }
+    });
+  }
+
+  /**
+   * After first-time setup or a binaries install, start deferred managed bitcoind / lightningd.
+   * @param {object} [initialConfig]
+   * @returns {Promise<void>}
+   */
+  async _startManagedChainsAfterSetup (initialConfig = {}) {
+    applyManagedNodeBinariesToProcessEnv();
+    const bitcoinManaged = !isExplicitFalse(initialConfig.BITCOIN_MANAGED) && !isExplicitFalse(initialConfig.bitcoinManaged);
+    const lightningManaged = !isExplicitFalse(initialConfig.LIGHTNING_MANAGED) && !isExplicitFalse(initialConfig.lightningManaged);
+    applyHubBitcoinRuntimeFromSetup(this.settings, initialConfig);
+    if (this.bitcoin && this.bitcoin.settings) {
+      applyHubBitcoinRuntimeFromSetup({ bitcoin: this.bitcoin.settings, lightning: this.settings.lightning }, initialConfig);
+    }
+    if (this.settings.bitcoin) this.settings.bitcoin.managed = bitcoinManaged;
+    if (!this.settings.lightning) this.settings.lightning = {};
+    this.settings.lightning.managed = lightningManaged;
+
+    if (!this.bitcoin || !bitcoinManaged) return;
+    if (!bitcoindAvailable()) {
+      console.warn('[HUB] Post-setup Bitcoin start skipped: bitcoind still missing.');
+      return;
+    }
+
+    const publicStatus = this._state.content.services && this._state.content.services.bitcoin
+      && this._state.content.services.bitcoin.status;
+    const alreadyUp = !!(this.bitcoin._nodeProcess || (publicStatus && publicStatus.available === true));
+    if (alreadyUp) {
+      if (lightningManaged) await this._startLightningServiceIfEnabled();
+      return;
+    }
+
+    this._bitcoinDeferred = false;
+    const result = await this._startBitcoinServiceWithTimeout();
+    if (result && result.started) {
+      console.log('[HUB] Bitcoin service ready (post-setup).');
+      await this.startBeacon();
+      if (lightningManaged) await this._startLightningServiceIfEnabled();
+    } else {
+      const msg = result && result.reason ? result.reason : 'Bitcoin failed to start after binary install.';
+      console.warn('[HUB]', msg);
+    }
   }
 
   _handleSettingsGetRequest (req, res) {
@@ -10148,8 +10407,9 @@ class Hub extends Service {
 
     try {
       if (lightningManaged) {
-        if (!lightningdOnPath()) {
-          console.warn('[HUB:LIGHTNING] lightningd not on PATH; managed Lightning not started.');
+        applyManagedNodeBinariesToProcessEnv();
+        if (!lightningdAvailable() && !lightningdOnPath()) {
+          console.warn('[HUB:LIGHTNING] lightningd not installed; managed Lightning not started.');
           return;
         }
         const btcSettings = bitcoin.settings || {};
@@ -10277,7 +10537,35 @@ class Hub extends Service {
   }
 
   async _startPhase_bitcoin () {
+      applyManagedNodeBinariesToProcessEnv();
       if (this.bitcoin) {
+        const setupStatus = this.setup && typeof this.setup.getSetupStatus === 'function'
+          ? this.setup.getSetupStatus()
+          : { configured: true, needsSetup: false };
+        if (setupStatus.needsSetup && !setupStatus.configured) {
+          console.warn('[HUB] First-time setup is pending; deferring Bitcoin until onboarding writes stores/hub.');
+          this._bitcoinDeferred = true;
+          this._state.content.services = this._state.content.services || {};
+          this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
+          this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({
+            available: false,
+            status: 'DEFERRED',
+            message: 'Waiting for first-time setup. Wiping stores/hub restarts that flow; Bitcoin starts after Complete Setup.'
+          });
+          return;
+        }
+        const managed = this.settings.bitcoin && this.settings.bitcoin.managed !== false;
+        if (managed && !bitcoindAvailable()) {
+          console.warn('[HUB] bitcoind not installed; deferring Bitcoin until first-time setup downloads binaries.');
+          this._bitcoinDeferred = true;
+          this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
+          this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({
+            available: false,
+            status: 'DEFERRED',
+            message: 'Bitcoin Core is not installed yet. First-time setup downloads bitcoind for this platform into binaries/.'
+          });
+          return;
+        }
         if (this.settings.debug) {
           this.bitcoin.on('debug', (...args) => {
             const text = args.map((a) => (a && a.stack) ? a.stack : String(a)).join(' ');
@@ -10686,6 +10974,9 @@ class Hub extends Service {
       this.http._addRoute('POST', '/settings/self-destruct', this._handleSettingsSelfDestructRequest.bind(this));
       this.http._addRoute('GET', '/settings/:name', this._handleSettingsGetRequest.bind(this));
       this.http._addRoute('PUT', '/settings/:name', this._handleSettingsPutRequest.bind(this));
+      this.http._addRoute('GET', '/services/binaries', this._handleManagedBinariesGetRequest.bind(this));
+      this.http._addRoute('POST', '/services/binaries', this._handleManagedBinariesInstallRequest.bind(this));
+      this.http._addRoute('POST', '/services/binaries/check', this._handleManagedBinariesCheckRequest.bind(this));
 
       mountFabricDelegationHttp(this);
       mountFabricDesktopAuthHttp(this);
@@ -14215,6 +14506,7 @@ class Hub extends Service {
 
   async start () {
     try {
+      applyManagedNodeBinariesToProcessEnv();
       const phases = resolveStartPhases(this);
       for (const phase of phases) {
         const fn = this[`_startPhase_${phase}`];

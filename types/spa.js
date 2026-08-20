@@ -32,15 +32,18 @@ class SPA extends FabricSPA {
     <meta property="og:type" content="website">
     <meta property="og:title" content="hub.fabric.pub · fabric edge node">
     <meta property="og:description" content="Fabric Edge node.">
-    <meta property="og:image" content="https://fabric.pub/images/fabric-labs.png">
+    <meta property="og:image" content="https://hub.fabric.pub/icons/icon-512.png">
     <title>${pageTitle}</title>
+    <link rel="icon" href="/favicon.ico" sizes="48x48">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <meta name="theme-color" content="#4C1D95">
     <!-- <link rel="manifest" href="/manifest.json"> -->
     <link rel="stylesheet" type="text/css" href="/semantic.min.css" />
     <!-- <link rel="stylesheet" type="text/css" href="/styles/screen.css" /> -->
     <!-- <link rel="stylesheet" type="text/css" href="/styles/ReactToastify.css"> -->
     <script src="/scripts/jquery-3.4.1.js"></script>
     <script src="/semantic.min.js"></script>
-    <!-- <link rel="icon" href="/images/hub-icon.png" /> -->
     <style>
       html {
         scroll-padding-top: 6.5rem;
