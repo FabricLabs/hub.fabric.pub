@@ -254,7 +254,11 @@ function applyBitcoinSetupToSettings (hubSettings, setup) {
   btc.dbcache = parsed.dbcache;
   btc.maxconnections = parsed.maxconnections;
   btc.maxuploadtarget = parsed.maxuploadtarget;
-  btc.bitcoinExtraParams = mergeBitcoinExtraParams(parsed.network, buildBitcoinExtraParams(parsed), []);
+  btc.bitcoinExtraParams = mergeBitcoinExtraParams(
+    parsed.network,
+    buildBitcoinExtraParams(parsed),
+    Array.isArray(btc.bitcoinExtraParams) ? btc.bitcoinExtraParams : []
+  );
   return btc;
 }
 

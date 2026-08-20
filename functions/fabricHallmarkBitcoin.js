@@ -50,9 +50,10 @@ async function publishFabricHallmarkOpReturn (bitcoin, payload) {
   }
 
   const outputs = [{ data: payloadHex }];
+  // Pin sat/vB so empty-mempool regtest estimates cannot exceed -maxtxfee / maxfeerate.
   const funded = await bitcoin._makeWalletRequest(
     'walletcreatefundedpsbt',
-    [[], outputs, 0, {}, true],
+    [[], outputs, 0, { fee_rate: 1 }, true],
     walletName
   );
   if (!funded || typeof funded.psbt !== 'string' || !funded.psbt) {

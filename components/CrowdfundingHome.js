@@ -616,7 +616,7 @@ class CrowdfundingHome extends React.Component {
           </div>
           <p style={{ color: '#666' }}>Taproot campaign vaults on this Hub. Campaigns are stored locally on this node (not synced to other hubs).</p>
         </Segment>
-        <Segment id="fabric-bitcoin-crowdfunding">
+        <Segment id="fabric-bitcoin-crowdfunding" data-testid="hub-crowdfund-page">
           <Header as='h3'>Crowdfund · ACP · Payjoin to vault</Header>
           <p style={{ color: '#666', marginBottom: '0.75em' }}>
             <strong>Step A — ACP:</strong> outputs-only PSBT paying the campaign vault; donors add UTXOs and sign with{' '}

@@ -757,9 +757,10 @@ describe('Browser Interface', function () {
       if (await skipLiveHubPageIfClientOrigin(sandbox.browser)) return;
       const hasHeading = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
-        return body.includes('Crowdfunds');
+        const hook = !!document.querySelector('[data-testid="hub-crowdfund-page"]');
+        return body.includes('Crowdfunds') && hook;
       });
-      assert.ok(hasHeading, 'Crowdfunds page should show Crowdfunds heading');
+      assert.ok(hasHeading, 'Crowdfunds page should show Crowdfunds heading and [data-testid="hub-crowdfund-page"]');
     });
 
     it('should render Settings home at /settings without crashing', async function () {
@@ -934,7 +935,8 @@ describe('Browser Interface', function () {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
         const hasMakePayment = !!document.getElementById('fabric-btc-make-payment-h4');
         const hasPaymentsHeader = !!document.getElementById('fabric-bitcoin-payments-h2');
-        const hasPayjoinBoard = !!document.getElementById('wealth-payjoin-board');
+        const hasPayjoinBoard = !!document.getElementById('wealth-payjoin-board')
+          || !!document.querySelector('[data-testid="hub-payjoin-board"]');
         const mentionsPayjoin = /payjoin|BIP78|fabricProtocol/i.test(body);
         const fallbackText =
           body.includes('Payment') && (body.includes('Bitcoin') || body.includes('sats'));
@@ -976,6 +978,7 @@ describe('Browser Interface', function () {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
         return (
           !!document.getElementById('fabric-bitcoin-crowdfunding') &&
+          !!document.querySelector('[data-testid="hub-crowdfund-page"]') &&
           /Crowdfunds/i.test(body) &&
           body.includes('Taproot')
         );

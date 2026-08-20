@@ -58,9 +58,19 @@ describe('Hub Accept/Reject operator tokens', function () {
     assert.strictEqual(out.message, 'unknown contract publish');
   });
 
-  it('lets an agent.key token through when setup.verifyAdminToken is false', async function () {
+  it('lets an agent.key token through Reject when setup.verifyAdminToken is false', async function () {
     const hub = stubHub();
     const out = await hub._rejectTrackedApplicationContract({
+      adminToken: mintAdmin(hub.agent.key),
+      contractId: 'missing'
+    });
+    assert.strictEqual(out.status, 'error');
+    assert.strictEqual(out.message, 'unknown contract publish');
+  });
+
+  it('lets an agent.key token through Accept when setup.verifyAdminToken is false', async function () {
+    const hub = stubHub();
+    const out = await hub._acceptTrackedApplicationContract({
       adminToken: mintAdmin(hub.agent.key),
       contractId: 'missing'
     });

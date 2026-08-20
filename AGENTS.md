@@ -346,6 +346,9 @@ npm run test:browser       # Browser tests (static server; needs Chrome)
 npm run test:e2e-browser   # Full E2E: starts hub, runs browser tests
 npm run test:e2e-webrtc
 npm run test:e2e-payjoin
+npm run test:e2e-payjoin-l1      # managed regtest: fund deposit address + BIP78 proposal (opt-in; needs bitcoind)
+npm run test:e2e-inventory-htlc  # two-hub P2TR inventory HTLC (opt-in; needs bitcoind)
+npm run test:e2e-core-features-l1  # three-hub registry + app contract + document market + WebRTC spokes on L1 (opt-in; needs bitcoind)
 npm run test:e2e-all-browser   # Chained: HUB_E2E browser + payjoin + webrtc + L1 contracts suite (`test:e2e-contracts-l1`; needs Hub w/ Bitcoin + admin token unless blocked)
 npm run test:stack             # Full stack: `ci` + `test:lightning` + `test:webrtc` + `test:e2e-all-browser`
 npm run test:stack:no-l1       # Same as test:stack but skips on-chain L1 JSON-RPC suite (FABRIC_STACK_SKIP_L1_CONTRACTS)

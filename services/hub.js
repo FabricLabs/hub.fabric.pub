@@ -89,6 +89,19 @@ const Filesystem = require('@fabric/core/types/filesystem');
 const Key = require('@fabric/core/types/key'); // fabric keys
 const Logger = require('@fabric/core/types/logger');
 const Message = require('@fabric/core/types/message');
+let fabricMessageParent = null;
+try {
+  fabricMessageParent = require('@fabric/core/functions/fabricMessageParent');
+} catch (err) {
+  if (!err || err.code !== 'MODULE_NOT_FOUND') throw err;
+}
+/** Ping/pong keep genesis parent. Durable Hub log frames (including GENESIS_MESSAGE) chain AMP `parent`. */
+const HUB_PARENT_CHAIN_SKIP = new Set([
+  'Ping',
+  'Pong',
+  'P2P_PING',
+  'P2P_PONG'
+]);
 const Peer = require('@fabric/core/types/peer');
 const Service = require('@fabric/core/types/service');
 const Token = require('@fabric/core/types/token'); // fabric tokens
@@ -163,7 +176,8 @@ const inventoryRelay = require('../functions/inventoryRelay');
 const {
   FABRIC_DOCUMENT_OFFER,
   FABRIC_DOCUMENT_OFFER_RESPONSE,
-  isDocumentInventoryResponseType
+  isDocumentInventoryResponseType,
+  firstClassInventoryWireType
 } = require('../functions/fabricDocumentOfferEnvelope');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
 const documentPaymentHash = require('../functions/documentPaymentHash');
@@ -694,6 +708,8 @@ class Hub extends Service {
     this._delegationSignatureMessages = new Map();
     /** Set during `POST /services/rpc` dispatch from `req.socket.remoteAddress` (loopback vs LAN). Reserved for policy; not currently read. */
     this._rpcHttpIsLocal = false;
+    /** Previous signed AMP `Message.id` for `_appendFabricMessage` (D-020). */
+    this._outboundMessageTip = null;
     this.changes = new Logger({
       name: 'hub.fabric.pub',
       path: path.join(hubStoreRoot(), 'stores')
@@ -967,8 +983,10 @@ class Hub extends Service {
   }
 
   /**
-   * Send a JSON envelope that {@link Peer} delivers as {@link GenericMessage} so `_handleGenericMessage`
-   * runs (required for `INVENTORY_REQUEST` / `INVENTORY_RESPONSE`; bare vector labels are not switched).
+   * Send a JSON envelope to a peer. Document inventory request/response types use
+   * first-class `P2P_INVENTORY_REQUEST` / `P2P_INVENTORY_RESPONSE` AMP opcodes —
+   * Core Peer drops those types when they arrive on GenericMessage.
+   * Other envelopes still use GenericMessage so `_handleGenericMessage` runs.
    * @param {string} addressInput
    * @param {object|string} envelope Parsed object or JSON string (must include `type` when object).
    */
@@ -979,8 +997,14 @@ class Hub extends Service {
     if (!sock || typeof sock._writeFabric !== 'function') {
       throw new Error('peer not connected');
     }
+    let parsed = envelope;
+    if (typeof envelope === 'string') {
+      try { parsed = JSON.parse(envelope); } catch (_) { parsed = null; }
+    }
+    const jsonType = parsed && typeof parsed === 'object' ? parsed.type : null;
+    const wireType = firstClassInventoryWireType(jsonType) || 'GenericMessage';
     const body = typeof envelope === 'string' ? envelope : JSON.stringify(envelope);
-    const msg = Message.fromVector(['GenericMessage', body]).signWithKey(this.agent.key);
+    const msg = Message.fromVector([wireType, body]).signWithKey(this.agent.key);
     sock._writeFabric(msg.toBuffer());
   }
 
@@ -1827,15 +1851,33 @@ class Hub extends Service {
     const now = new Date().toISOString();
     const base = { seq: nextSeq, type: String(type), payload, created: now };
     const id = new Actor({ content: base }).id;
+    const entry = Object.assign({ id }, base);
 
-    map[id] = Object.assign({ id }, base);
+    let chainMessage = null;
+    if (this.fs && typeof this.fs.addToChain === 'function') {
+      chainMessage = Message.fromVector(['FABRIC_MESSAGE', JSON.stringify(entry)]);
+      if (fabricMessageParent && typeof fabricMessageParent.setMessageParent === 'function') {
+        const skip = HUB_PARENT_CHAIN_SKIP.has(String(type));
+        const parent = skip
+          ? fabricMessageParent.ZERO_PARENT
+          : (this._outboundMessageTip || fabricMessageParent.ZERO_PARENT);
+        fabricMessageParent.setMessageParent(chainMessage, parent);
+        entry.parent = fabricMessageParent.parentHexOf(chainMessage);
+      }
+      if (this._rootKey && this._rootKey.private) chainMessage.signWithKey(this._rootKey);
+      if (fabricMessageParent && !HUB_PARENT_CHAIN_SKIP.has(String(type)) && chainMessage.id) {
+        this._outboundMessageTip = chainMessage.id;
+        entry.frameId = chainMessage.id;
+      }
+    }
+
+    map[id] = entry;
     this._state.content.counts.messages = nextSeq;
     if (String(type) === 'BitcoinBlock' && payload && payload.tip) {
       this._rememberBitcoinBlockTip(payload.tip);
     }
     this._capHeapCollections();
     this._buildMessageTreeFromLog();
-    const entry = map[id];
 
     // Capture major state transitions in the Fabric Chain for deterministic replay.
     try {
@@ -1863,11 +1905,8 @@ class Hub extends Service {
     }
 
     // Also update CHAIN tip through Filesystem's native chain hook.
-    if (this.fs && typeof this.fs.addToChain === 'function') {
-      const vector = ['FABRIC_MESSAGE', JSON.stringify(entry)];
-      const message = Message.fromVector(vector);
-      if (this._rootKey && this._rootKey.private) message.signWithKey(this._rootKey);
-      await this.fs.addToChain(message);
+    if (chainMessage) {
+      await this.fs.addToChain(chainMessage);
     }
 
     return entry;
@@ -4606,13 +4645,46 @@ class Hub extends Service {
   }
 
   /**
+   * Load a decoded tx for L1 payment checks.
+   * Confirmed wallet sends leave the mempool; without a ready txindex,
+   * `getrawtransaction` fails and Core tells you to use `gettransaction`.
+   * @param {Object} bitcoin Bitcoin service
+   * @param {string} txid
+   * @returns {Promise<Object|null>} decoded tx with `vout` and `confirmations`
+   */
+  async _loadL1TxForVerification (bitcoin, txid) {
+    const id = String(txid || '').trim();
+    if (!bitcoin || !id) return null;
+    try {
+      const tx = await bitcoin._makeRPCRequest('getrawtransaction', [id, true]);
+      if (tx && Array.isArray(tx.vout)) return tx;
+    } catch (_) {}
+    let walletTx = null;
+    try {
+      if (bitcoin.walletName && typeof bitcoin._makeWalletRequest === 'function') {
+        walletTx = await bitcoin._makeWalletRequest('gettransaction', [id], bitcoin.walletName);
+      } else if (typeof bitcoin._makeRPCRequest === 'function') {
+        walletTx = await bitcoin._makeRPCRequest('gettransaction', [id]);
+      }
+    } catch (_) {
+      walletTx = null;
+    }
+    const hex = walletTx && typeof walletTx.hex === 'string' ? walletTx.hex : '';
+    if (!hex) return null;
+    const decoded = await bitcoin._makeRPCRequest('decoderawtransaction', [hex]);
+    if (!decoded || !Array.isArray(decoded.vout)) return null;
+    decoded.confirmations = Number(walletTx.confirmations != null ? walletTx.confirmations : 0);
+    return decoded;
+  }
+
+  /**
    * Inspect whether a tx pays `address` at least `amountSats`, and return confirmation depth.
    * @returns {{ verified: boolean, confirmations: number, inMempool: boolean, matchedSats: number }}
    */
   async _l1PaymentVerificationDetail (bitcoin, txid, address, amountSats) {
     const empty = { verified: false, confirmations: 0, inMempool: false, matchedSats: 0 };
     try {
-      const tx = await bitcoin._makeRPCRequest('getrawtransaction', [txid, true]);
+      const tx = await this._loadL1TxForVerification(bitcoin, txid);
       if (!tx || !Array.isArray(tx.vout)) return empty;
       const amountBTC = amountSats / 100000000;
       let received = 0;
@@ -8927,7 +8999,8 @@ class Hub extends Service {
         expiresInSeconds,
         address,
         receiveTemplate,
-        federationXOnlyHex: federationXOnlyHex || undefined
+        federationXOnlyHex: federationXOnlyHex || undefined,
+        autoAcpBoost: body.autoAcpBoost != null ? !!body.autoAcpBoost : undefined
       });
 
       this._state.content.services.payjoin = this._state.content.services.payjoin || {};
@@ -11143,7 +11216,8 @@ class Hub extends Service {
           expiresInSeconds: Number(body.expiresInSeconds || 0) || undefined,
           address,
           receiveTemplate,
-          federationXOnlyHex: federationXOnlyHex || undefined
+          federationXOnlyHex: federationXOnlyHex || undefined,
+          autoAcpBoost: body.autoAcpBoost != null ? !!body.autoAcpBoost : undefined
         });
       });
 

@@ -125,8 +125,8 @@ function TopPanel (props) {
   const identityLabel = (() => {
     if (!identitySource) return 'Login';
     if (identitySource.username) return identitySource.username;
-    if (identitySource.xpub) return formatIdentityValue(identitySource.xpub);
     if (identitySource.id) return formatIdentityValue(identitySource.id);
+    if (identitySource.xpub) return formatIdentityValue(identitySource.xpub);
     if (identitySource.address) return formatIdentityValue(identitySource.address);
     return 'Identity';
   })();
@@ -533,7 +533,7 @@ function TopPanel (props) {
                 <Button size="small" primary title="Identity — menu or lock">
                   <Icon name="unlock" style={{ marginRight: '0.15em' }} />
                   <Icon name="user circle" />
-                  {identityLabel}
+                  <span data-testid="hub-identity-chip-label">{identityLabel}</span>
                   <Icon name="dropdown" />
                 </Button>
               }
@@ -592,7 +592,9 @@ function TopPanel (props) {
             }
           >
             <Icon name={isPasswordLocked ? 'lock' : isWatchOnlyIdentity ? 'eye' : 'user circle'} aria-hidden="true" />
-            {isPasswordLocked ? 'Locked' : isWatchOnlyIdentity ? 'Watch-only' : identityLabel}
+            {isPasswordLocked ? 'Locked' : isWatchOnlyIdentity ? 'Watch-only' : (
+              <span data-testid="hub-identity-chip-label">{identityLabel}</span>
+            )}
           </Button>
         )}
         {onOpenSettings ? (

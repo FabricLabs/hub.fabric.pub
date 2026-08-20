@@ -17,12 +17,14 @@
  */
 
 const assert = require('assert');
+const { execSync } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
 const url = require('url');
-const merge = require('lodash.merge');
+
+const { hubSettingsMerge } = require('../functions/hubSettingsMerge');
 
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('@fabric/core/types/ecc');
@@ -44,6 +46,15 @@ const MNEMONIC_B =
   'legal winner thank year wave sausage worth useful legal winner thank yellow';
 
 const extraBtcParams = ['-maxtxfee=10', '-incrementalrelayfee=0'];
+
+function bitcoindOnPath () {
+  try {
+    execSync('command -v bitcoind', { stdio: 'ignore' });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 function sleep (ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -144,7 +155,17 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
       const tx = await btc._makeRPCRequest('getrawtransaction', [h, true]);
       const c = tx && tx.confirmations != null ? Number(tx.confirmations) : 0;
       if (c >= minConf) return c;
-    } catch (_) { /* mempool */ }
+    } catch (_) { /* mempool / no txindex */ }
+    try {
+      let walletTx = null;
+      if (btc.walletName && typeof btc._makeWalletRequest === 'function') {
+        walletTx = await btc._makeWalletRequest('gettransaction', [h], btc.walletName);
+      } else {
+        walletTx = await btc._makeRPCRequest('gettransaction', [h]);
+      }
+      const c = walletTx && walletTx.confirmations != null ? Number(walletTx.confirmations) : 0;
+      if (c >= minConf) return c;
+    } catch (_) {}
     await sleep(200);
   }
   throw new Error(`tx ${h.slice(0, 12)}… did not reach ${minConf} conf`);
@@ -163,6 +184,11 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
   let btc0 = null;
 
   before(async function () {
+    if (!bitcoindOnPath()) {
+      this.skip();
+      return;
+    }
+
     process.env.FABRIC_BITCOIN_SKIP_PLAYNET_PEER = '1';
 
     const n = 2;
@@ -182,7 +208,7 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
     const makeBase = (i, root) => {
       if (i === 0) {
         const extra = ['-dnsseed=0'].concat(extraBtcParams);
-        return merge({}, settings, {
+        return hubSettingsMerge(settings, {
           port: fabricPorts[i],
           peers: [],
           fs: { path: root },
@@ -192,6 +218,7 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
             network: 'regtest',
             managed: true,
             listen: false,
+            enforceIsolatedRegtest: true,
             port: btcP2p0,
             rpcport: btcRpc0,
             zmqPort: zmq0,
@@ -207,7 +234,7 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
           debug: false
         });
       }
-      return merge({}, settings, {
+      return hubSettingsMerge(settings, {
         port: fabricPorts[i],
         peers: [],
         fs: { path: root },
@@ -231,6 +258,24 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
       await sleep(i === 0 ? 800 : 400);
     }
 
+    // Fresh stores defer managed bitcoind until POST /settings.
+    for (let i = 0; i < n; i++) {
+      const boot = await httpJson(httpBases[i], 'POST', '/settings', {
+        NODE_NAME: `CrowdfundRegtest-${i}`,
+        LIGHTNING_MANAGED: false,
+        bitcoinManaged: i === 0,
+        BITCOIN_NETWORK: 'regtest',
+        BITCOIN_LISTEN: false,
+        BITCOIN_TXINDEX: true,
+        BITCOIN_TXRELAY: true
+      });
+      assert.strictEqual(boot.status, 200, boot.raw);
+      const tok = boot.body && boot.body.token ? String(boot.body.token) : '';
+      assert.ok(tok, `admin token hub ${i}`);
+      if (i === 0) admin0 = tok;
+      else admin1 = tok;
+    }
+
     await waitBitcoinHttp(httpBases[0], 120000);
     btc0 = hubs[0]._getBitcoinService();
     assert.ok(btc0);
@@ -238,19 +283,6 @@ async function awaitTxConf (btc, txid, minConf, timeoutMs = 60000) {
     const miningAddr = await btc0.getUnusedAddress();
     for (let g = 0; g < 12; g++) {
       await btc0._makeRPCRequest('generatetoaddress', [10, miningAddr]);
-    }
-
-    for (let i = 0; i < n; i++) {
-      const boot = await httpJson(httpBases[i], 'POST', '/settings', {
-        NODE_NAME: `CrowdfundRegtest-${i}`,
-        LIGHTNING_MANAGED: false,
-        bitcoinManaged: true
-      });
-      assert.strictEqual(boot.status, 200, boot.raw);
-      const tok = boot.body && boot.body.token ? String(boot.body.token) : '';
-      assert.ok(tok, `admin token hub ${i}`);
-      if (i === 0) admin0 = tok;
-      else admin1 = tok;
     }
 
     for (let i = 0; i < n; i++) {

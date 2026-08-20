@@ -364,6 +364,38 @@ describe('documentInventoryMarket', function () {
     assert.strictEqual(market.peerLabel({ peerAddress: '10.0.0.1:9' }), '10.0.0.1:9');
   });
 
+  it('keeps compact inventory HTLC quotes and drops seller preimage', function () {
+    const fileId = 'cd'.repeat(32);
+    const row = market.normalizeInventoryItem({
+      id: fileId,
+      name: 'priced.txt',
+      purchasePriceSats: 2500,
+      published: true,
+      htlc: {
+        kind: 'P2TR_SCRIPT_PATH',
+        settlementId: 'ab'.repeat(16),
+        paymentAddress: 'bcrt1pxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        paymentHashHex: 'ef'.repeat(32),
+        amountSats: 2500,
+        amountBtc: '0.00002500',
+        bitcoinUri: 'bitcoin:bcrt1pxx?amount=0.00002500',
+        refundLockHeight: 200,
+        locktimeDeltaBlocks: 144,
+        sellerPublicKeyHex: '02' + 'aa'.repeat(32),
+        preimageHex: 'ff'.repeat(32),
+        note: 'should not be required on the offer book'
+      }
+    }, { peerPubkey: '02' + 'bb'.repeat(32) });
+    assert.ok(row && row.htlc);
+    assert.strictEqual(row.htlc.settlementId, 'ab'.repeat(16));
+    assert.strictEqual(row.htlc.amountSats, 2500);
+    assert.strictEqual(row.htlc.kind, 'P2TR_SCRIPT_PATH');
+    assert.ok(!Object.prototype.hasOwnProperty.call(row.htlc, 'preimageHex'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(row.htlc, 'note'));
+    const compact = market.compactInventoryHtlc({ settlementId: 'x', paymentAddress: '' });
+    assert.strictEqual(compact, undefined);
+  });
+
   it('requestConnectedInventories skips throws and missing writers', function () {
     assert.deepStrictEqual(market.requestConnectedInventories(null), { requested: 0, peers: [] });
     const asked = [];

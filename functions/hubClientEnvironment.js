@@ -65,6 +65,14 @@ function classifyHubHttpProbe (probe = {}) {
     return { runtime: HUB_UI_RUNTIME_CLIENT, reason: 'cdn-protection' };
   }
 
+  if (json && json.error === 'hub-unreachable') {
+    return { runtime: HUB_UI_RUNTIME_CLIENT, reason: 'unreachable' };
+  }
+
+  if (status === 502 || status === 503 || status === 504) {
+    return { runtime: HUB_UI_RUNTIME_CLIENT, reason: 'unreachable' };
+  }
+
   if (json && isFabricHubSettingsJson(json)) {
     return {
       runtime: HUB_UI_RUNTIME_HUB,

@@ -38,6 +38,19 @@ describe('hubBitcoinSetup', function () {
     assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-dnsseed=0'));
   });
 
+  it('keeps constructor bitcoinExtraParams across first-time setup apply', function () {
+    const parsed = parseBitcoinSetupFromBody({ BITCOIN_PRESET: 'local-dev' });
+    const settings = {
+      bitcoin: {
+        bitcoinExtraParams: ['-dnsseed=0', '-maxtxfee=10', '-incrementalrelayfee=0']
+      }
+    };
+    applyBitcoinSetupToSettings(settings, parsed);
+    assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-maxtxfee=10'));
+    assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-incrementalrelayfee=0'));
+    assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-blocksonly=1'));
+  });
+
   it('omits -blocksonly when transaction relay is on', function () {
     const parsed = parseBitcoinSetupFromBody({
       BITCOIN_PRESET: 'local-dev',

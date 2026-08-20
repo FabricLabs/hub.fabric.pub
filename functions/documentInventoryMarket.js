@@ -147,6 +147,38 @@ function itemsFromInventoryMessage (message) {
   return Array.isArray(items) ? items : [];
 }
 
+/**
+ * Compact buyer-facing HTLC quote from an inventory item. Drops seller secrets
+ * (`preimageHex`, content keys) so the offer book never stores unlock material.
+ *
+ * @param {Object} [htlc]
+ * @returns {Object|undefined}
+ */
+function compactInventoryHtlc (htlc) {
+  if (!htlc || typeof htlc !== 'object') return undefined;
+  const settlementId = String(htlc.settlementId || '').trim();
+  const paymentAddress = String(htlc.paymentAddress || '').trim();
+  if (!settlementId || !paymentAddress) return undefined;
+  const out = {
+    kind: htlc.kind ? String(htlc.kind).slice(0, 64) : 'P2TR_SCRIPT_PATH',
+    settlementId: settlementId.slice(0, 64),
+    paymentAddress: paymentAddress.slice(0, 128)
+  };
+  if (htlc.paymentHashHex) out.paymentHashHex = String(htlc.paymentHashHex).trim().toLowerCase().slice(0, 64);
+  const amt = Number(htlc.amountSats);
+  if (Number.isFinite(amt) && amt > 0) out.amountSats = Math.round(amt);
+  if (htlc.amountBtc) out.amountBtc = String(htlc.amountBtc).slice(0, 32);
+  if (htlc.bitcoinUri) out.bitcoinUri = String(htlc.bitcoinUri).slice(0, 512);
+  const rh = Number(htlc.refundLockHeight);
+  if (Number.isFinite(rh) && rh > 0) out.refundLockHeight = Math.round(rh);
+  const lb = Number(htlc.locktimeDeltaBlocks);
+  if (Number.isFinite(lb) && lb > 0) out.locktimeDeltaBlocks = Math.round(lb);
+  if (htlc.sellerPublicKeyHex) {
+    out.sellerPublicKeyHex = String(htlc.sellerPublicKeyHex).trim().slice(0, 66);
+  }
+  return out;
+}
+
 function normalizeInventoryItem (item, peer) {
   if (!item || typeof item !== 'object') return null;
   const documentId = normalizeDocumentId(
@@ -163,6 +195,7 @@ function normalizeInventoryItem (item, peer) {
     : (item.id ? String(item.id).slice(0, 64) : 'document');
   const published = item.published === true
     || (typeof item.published === 'string' && item.published.length > 0);
+  const htlc = compactInventoryHtlc(item.htlc);
   return {
     id: offerRecordId(documentId, key),
     documentId,
@@ -176,7 +209,8 @@ function normalizeInventoryItem (item, peer) {
     peerAddress: peer && peer.peerAddress ? String(peer.peerAddress) : null,
     peerAlias: peer && peer.peerAlias ? String(peer.peerAlias) : null,
     receivedAt: new Date().toISOString(),
-    local: false
+    local: false,
+    ...(htlc ? { htlc } : {})
   };
 }
 
@@ -468,6 +502,7 @@ module.exports = {
   normalizeMarketPolicy,
   markupListPrice,
   itemsFromInventoryMessage,
+  compactInventoryHtlc,
   normalizeInventoryItem,
   listOffers,
   replacePeerOffers,

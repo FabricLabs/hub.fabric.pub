@@ -1556,7 +1556,7 @@ class BitcoinHome extends React.Component {
         ) : null}
 
         {hubUi.bitcoinPayments ? (
-        <Segment id="fabric-bitcoin-payjoin">
+        <Segment id="fabric-bitcoin-payjoin" data-testid="hub-payjoin-deposit">
           <Header as='h3'>Payjoin deposit</Header>
           {this.state.payjoinSessionsSnapshot ? (
             <Message

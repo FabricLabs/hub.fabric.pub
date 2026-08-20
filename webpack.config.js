@@ -36,6 +36,7 @@ function resolveFabricHttpAssetsDir () {
 
 const TerserPlugin = require('terser-webpack-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
+const { hubDevProxyOnError } = require('./functions/hubDevProxyOnError');
 
 module.exports = (env, argv) => {
   const mode = (argv && argv.mode) || 'production';
@@ -172,9 +173,9 @@ module.exports = (env, argv) => {
     // Proxy backend services when running via webpack-dev-server
     // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
     proxy: [
-      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true },
-      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true },
-      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true }
+      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true, onError: hubDevProxyOnError },
+      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true, onError: hubDevProxyOnError },
+      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true, onError: hubDevProxyOnError }
     ],
     // Watch source directories for changes to rebuild
     watchFiles: [
@@ -191,7 +192,7 @@ module.exports = (env, argv) => {
     // Compress output for faster loading
     compress: true,
     client: {
-      overlay: true,
+      overlay: { errors: true, warnings: false },
       progress: true,
       logging: 'info'
     }

@@ -4,6 +4,7 @@ const assert = require('assert');
 const {
   FABRIC_DOCUMENT_OFFER,
   FABRIC_DOCUMENT_OFFER_RESPONSE,
+  firstClassInventoryWireType,
   isDocumentInventoryDocumentsOfferResponse,
   isDocumentInventoryRequestType,
   isDocumentInventoryResponseType,
@@ -49,5 +50,13 @@ describe('fabricDocumentOfferEnvelope', function () {
     assert.strictEqual(nres.type, 'INVENTORY_RESPONSE');
 
     assert.strictEqual(normalizeFabricDocumentOfferEnvelopeForHandlers({ type: 'INVENTORY_REQUEST' }).type, 'INVENTORY_REQUEST');
+  });
+
+  it('maps inventory JSON types to first-class AMP opcodes', function () {
+    assert.strictEqual(firstClassInventoryWireType('INVENTORY_REQUEST'), 'P2P_INVENTORY_REQUEST');
+    assert.strictEqual(firstClassInventoryWireType(FABRIC_DOCUMENT_OFFER), 'P2P_INVENTORY_REQUEST');
+    assert.strictEqual(firstClassInventoryWireType('INVENTORY_RESPONSE'), 'P2P_INVENTORY_RESPONSE');
+    assert.strictEqual(firstClassInventoryWireType(FABRIC_DOCUMENT_OFFER_RESPONSE), 'P2P_INVENTORY_RESPONSE');
+    assert.strictEqual(firstClassInventoryWireType('P2P_CHAT_MESSAGE'), null);
   });
 });

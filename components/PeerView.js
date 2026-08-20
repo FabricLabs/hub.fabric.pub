@@ -1169,7 +1169,11 @@ function PeerDetail (props) {
                         {doc && doc.purchasePriceSats != null && <> — <strong>{formatSatsDisplay(doc.purchasePriceSats)} sats</strong></>}
                       </List.Description>
                       {doc && doc.htlc && doc.htlc.settlementId && (
-                        <div style={{ marginTop: '0.75em', fontSize: '0.85em', textAlign: 'left' }}>
+                        <div
+                          data-testid="peer-inventory-htlc"
+                          data-settlement-id={doc.htlc.settlementId}
+                          style={{ marginTop: '0.75em', fontSize: '0.85em', textAlign: 'left' }}
+                        >
                           <Label color="orange" size="small">P2TR HTLC</Label>
                           <div style={{ marginTop: '0.35em' }}>
                             <strong>{formatSatsDisplay(doc.htlc.amountSats || 0)} sats</strong>

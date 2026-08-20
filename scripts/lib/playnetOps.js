@@ -13,11 +13,13 @@ const { URL } = require('url');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
+let loadFabricHomeEnv;
 try {
-  require('@fabric/core/functions/fabricHomeEnv').loadFabricHomeEnv();
+  ({ loadFabricHomeEnv } = require('@fabric/core/functions/fabricHomeEnv'));
 } catch (err) {
   if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
 }
+if (typeof loadFabricHomeEnv === 'function') loadFabricHomeEnv();
 
 /**
  * Optional local operator identity (gitignored). Prefer FABRIC_XPRV in the environment.
