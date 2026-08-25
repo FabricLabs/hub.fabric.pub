@@ -6,6 +6,8 @@ const {
   buildWebrtcCombinedRows,
   extractPeerXpub,
   fabricPeerPrimaryLabel,
+  fabricPeerRecencyMs,
+  sortFabricPeersMostRecentFirst,
   normalizePeerAddressInput
 } = require('../functions/peerIdentity');
 
@@ -61,11 +63,29 @@ describe('peerIdentity', () => {
     assert.strictEqual(l, 'alice');
   });
 
-  it('normalizePeerAddressInput strips URL prefix and path', () => {
+  it('normalizePeerAddressInput strips URL prefix and path', function () {
     assert.strictEqual(
       normalizePeerAddressInput('https://hub.fabric.pub:7777/path'),
       'hub.fabric.pub:7777'
     );
     assert.strictEqual(normalizePeerAddressInput('  hub.example.com  '), 'hub.example.com:7777');
+  });
+
+  it('fabricPeerRecencyMs prefers the latest lastSeen or lastMessage', function () {
+    assert.strictEqual(fabricPeerRecencyMs({
+      lastSeen: '2020-01-01T00:00:00.000Z',
+      lastMessage: Date.parse('2024-06-01T00:00:00.000Z')
+    }), Date.parse('2024-06-01T00:00:00.000Z'));
+    assert.ok(fabricPeerRecencyMs({ lastSeen: '2026-08-21T12:00:00.000Z' }) >
+      fabricPeerRecencyMs({ lastSeen: 1000 }));
+  });
+
+  it('sortFabricPeersMostRecentFirst orders by recency then connected status', function () {
+    const sorted = sortFabricPeersMostRecentFirst([
+      { id: 'old', address: 'a:7777', lastSeen: '2020-01-01T00:00:00.000Z' },
+      { id: 'new', address: 'b:7777', lastSeen: '2026-08-21T00:00:00.000Z' },
+      { id: 'mid', address: 'c:7777', lastMessage: Date.parse('2024-06-01T00:00:00.000Z') }
+    ]);
+    assert.deepStrictEqual(sorted.map((p) => p.id), ['new', 'mid', 'old']);
   });
 });

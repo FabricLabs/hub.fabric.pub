@@ -36,7 +36,8 @@ const {
   buildWebrtcCombinedRows,
   webrtcCombinedToFabricPeerRows,
   mergeTcpAndWebrtcPeerRows,
-  isWebrtcTransportPeerRow
+  isWebrtcTransportPeerRow,
+  sortFabricPeersMostRecentFirst
 } = require('../functions/peerIdentity');
 const {
   loadHubUiFeatureFlags,
@@ -305,25 +306,6 @@ function UnifiedPeersPaginatedList ({
   );
 }
 
-function sortFabricPeersForAuthority (peers, primaryNorm) {
-  const arr = [...(peers || [])];
-  const pn = String(primaryNorm || '').trim();
-  arr.sort((a, b) => {
-    const aa = normalizeFabricPeerAddress(a && a.address);
-    const ba = normalizeFabricPeerAddress(b && b.address);
-    const ap = pn && (aa === pn || String(a && a.address) === pn);
-    const bp = pn && (ba === pn || String(b && b.address) === pn);
-    if (ap !== bp) return ap ? -1 : 1;
-    const sa = Number(a && a.score);
-    const sb = Number(b && b.score);
-    if (Number.isFinite(sa) && Number.isFinite(sb) && sa !== sb) return sb - sa;
-    if (Number.isFinite(sa) && !Number.isFinite(sb)) return -1;
-    if (!Number.isFinite(sa) && Number.isFinite(sb)) return 1;
-    return String(aa).localeCompare(String(ba));
-  });
-  return arr;
-}
-
 class PeersPage extends React.Component {
   constructor (props) {
     super(props);
@@ -480,7 +462,7 @@ class PeersPage extends React.Component {
     });
 
     const primaryPeerNorm = normalizeFabricPeerAddress(readPrimaryPeerAddress());
-    const fabricPeersSorted = sortFabricPeersForAuthority(dedupeFabricPeers(fabricPeers), primaryPeerNorm);
+    const fabricPeersSorted = sortFabricPeersMostRecentFirst(dedupeFabricPeers(fabricPeers));
 
     const localWebrtcPeers = (current && typeof current.localWebrtcPeers !== 'undefined')
       ? current.localWebrtcPeers
@@ -538,8 +520,10 @@ class PeersPage extends React.Component {
       repLookup
     );
 
-    const unifiedPeers = consolidateUnifiedPeersByFabricId(
-      mergeTcpAndWebrtcPeerRows(fabricPeersWithRep, webrtcExtraRows, primaryPeerNorm)
+    const unifiedPeers = sortFabricPeersMostRecentFirst(
+      consolidateUnifiedPeersByFabricId(
+        mergeTcpAndWebrtcPeerRows(fabricPeersWithRep, webrtcExtraRows, primaryPeerNorm)
+      )
     );
 
     const signalingHostPort = typeof window !== 'undefined' ? window.location.host : '';
@@ -858,7 +842,7 @@ class PeersPage extends React.Component {
                           Add primary hub ({DEFAULT_PRIMARY_FABRIC_HUB})
                         </Button>
                         <span style={{ color: '#666', fontSize: '0.88em' }}>
-                          Saved primary: <code>{readPrimaryPeerAddress()}</code> — sorted first when connected.
+                          Saved primary: <code>{readPrimaryPeerAddress()}</code> — starred in the list (peers are shown most recently seen first).
                         </span>
                       </div>
                     ) : null}

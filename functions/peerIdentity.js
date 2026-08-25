@@ -83,6 +83,92 @@ function sameLogicalFabricPeer (a, b) {
   return false;
 }
 
+/**
+ * Coerce a peer timestamp (epoch ms, numeric string, or ISO date) to milliseconds.
+ * @param {*} value
+ * @returns {number}
+ * @private
+ */
+function coercePeerTimestampMs (value) {
+  if (value == null || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isFinite(t) && t > 0 ? t : 0;
+  }
+  const s = String(value).trim();
+  if (!s) return 0;
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  const parsed = Date.parse(s);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/**
+ * Latest known activity time for a Fabric peer row (TCP registry, live socket, or mesh).
+ * @param {object|null|undefined} peer
+ * @returns {number}
+ */
+function fabricPeerRecencyMs (peer) {
+  if (!peer || typeof peer !== 'object') return 0;
+  const meta = peer.metadata && typeof peer.metadata === 'object' ? peer.metadata : {};
+  const conn = peer.connection && typeof peer.connection === 'object' ? peer.connection : {};
+  const values = [
+    peer.lastSeen,
+    peer.lastMessage,
+    peer.connectedAt,
+    peer.registeredAt,
+    peer.firstSeen,
+    peer.meshLastAt,
+    meta.meshLastAt,
+    conn.lastMessage,
+    conn.lastSeen
+  ];
+  let best = 0;
+  for (let i = 0; i < values.length; i++) {
+    const n = coercePeerTimestampMs(values[i]);
+    if (n > best) best = n;
+  }
+  return best;
+}
+
+/**
+ * Sort Fabric peer rows with the most recently seen / messaged first.
+ * @param {object[]} peers
+ * @returns {object[]}
+ */
+function sortFabricPeersMostRecentFirst (peers) {
+  const arr = Array.isArray(peers) ? peers.slice() : [];
+  arr.sort((a, b) => {
+    const rb = fabricPeerRecencyMs(b);
+    const ra = fabricPeerRecencyMs(a);
+    if (rb !== ra) return rb - ra;
+    const ac = (a && a.status) === 'connected' ? 1 : 0;
+    const bc = (b && b.status) === 'connected' ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return fabricPeerPrimaryLabel(a).localeCompare(fabricPeerPrimaryLabel(b));
+  });
+  return arr;
+}
+
+/**
+ * Prefer the later of two timestamp fields (ISO string or epoch).
+ * @param {*} a
+ * @param {*} b
+ * @returns {*}
+ * @private
+ */
+function laterTimestampValue (a, b) {
+  const am = coercePeerTimestampMs(a);
+  const bm = coercePeerTimestampMs(b);
+  if (!am && !bm) return a != null ? a : b;
+  return bm > am ? b : a;
+}
+
 function mergeFabricPeerRows (a, b) {
   const connected = (a && a.status) === 'connected' || (b && b.status) === 'connected';
   const status = connected ? 'connected' : ((a && a.status) || (b && b.status) || 'unknown');
@@ -104,6 +190,8 @@ function mergeFabricPeerRows (a, b) {
   const metaA = a && a.metadata && typeof a.metadata === 'object' ? a.metadata : {};
   const metaB = b && b.metadata && typeof b.metadata === 'object' ? b.metadata : {};
   const metadata = { ...metaB, ...metaA };
+  const lastSeen = laterTimestampValue(a && a.lastSeen, b && b.lastSeen);
+  const lastMessage = laterTimestampValue(a && a.lastMessage, b && b.lastMessage);
   return {
     ...b,
     ...a,
@@ -113,6 +201,8 @@ function mergeFabricPeerRows (a, b) {
     score,
     misbehavior,
     nickname: nickname || a.nickname || b.nickname,
+    lastSeen,
+    lastMessage,
     metadata
   };
 }
@@ -335,39 +425,16 @@ function webrtcCombinedToFabricPeerRows (combined, repLookup) {
 }
 
 /**
- * Sort TCP Fabric peers (primary first) then merge with WebRTC mesh rows by score / connection.
- * @param {object[]} tcpPeersSorted - already deduped + authority-sorted TCP rows
+ * Concatenate TCP Fabric peers with WebRTC mesh rows and sort most recently seen first.
+ * @param {object[]} tcpPeersSorted - already deduped TCP rows
  * @param {object[]} webrtcAsFabric - {@link webrtcCombinedToFabricPeerRows}
- * @param {string} primaryNorm - normalized primary TCP address (optional)
+ * @param {string} [_primaryNorm] - unused; kept so callers can still pass the saved primary address
  * @returns {object[]}
  */
-function mergeTcpAndWebrtcPeerRows (tcpPeersSorted, webrtcAsFabric, primaryNorm) {
+function mergeTcpAndWebrtcPeerRows (tcpPeersSorted, webrtcAsFabric, _primaryNorm) {
   const tcp = Array.isArray(tcpPeersSorted) ? tcpPeersSorted : [];
   const w = Array.isArray(webrtcAsFabric) ? webrtcAsFabric : [];
-  const pn = String(primaryNorm || '').trim();
-  const isMesh = (p) => !!(p && p.metadata && p.metadata.transport === WEBRTC_TRANSPORT);
-  const scoreOf = (p) => {
-    const s = Number(p && p.score);
-    return Number.isFinite(s) ? s : 0;
-  };
-  const connectedRank = (p) => ((p && p.status) === 'connected' ? 1 : 0);
-  const isPrimaryTcp = (p) => {
-    if (!p || isMesh(p) || !pn) return false;
-    const addr = normalizeFabricPeerAddress(p.address);
-    return addr === pn || String(p.address || '') === pn;
-  };
-  const all = [...tcp, ...w];
-  all.sort((a, b) => {
-    const ap = isPrimaryTcp(a);
-    const bp = isPrimaryTcp(b);
-    if (ap !== bp) return ap ? -1 : 1;
-    const sc = scoreOf(b) - scoreOf(a);
-    if (sc !== 0) return sc;
-    const cc = connectedRank(b) - connectedRank(a);
-    if (cc !== 0) return cc;
-    return fabricPeerPrimaryLabel(a).localeCompare(fabricPeerPrimaryLabel(b));
-  });
-  return all;
+  return sortFabricPeersMostRecentFirst(tcp.concat(w));
 }
 
 function isWebrtcTransportPeerRow (peer) {
@@ -505,6 +572,8 @@ module.exports = {
   fabricP2PIdentityConfirmed,
   consolidateUnifiedPeersByFabricId,
   dedupeFabricPeers,
+  fabricPeerRecencyMs,
+  sortFabricPeersMostRecentFirst,
   fabricPeerPrimaryLabel,
   buildWebrtcCombinedRows,
   webrtcRowPrimaryLabel,

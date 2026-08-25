@@ -37,6 +37,20 @@ function isHttpSharedModeEnabledLocal (raw) {
   return false;
 }
 
+function listenHostFromNamedEnv (env, keys) {
+  const list = Array.isArray(keys) && keys.length ? keys : DEFAULT_HTTP_LISTEN_ENV_KEYS;
+  for (let i = 0; i < list.length; i++) {
+    const key = list[i];
+    let raw = '';
+    if (key === 'FABRIC_HUB_INTERFACE') raw = env && env.FABRIC_HUB_INTERFACE;
+    else if (key === 'INTERFACE') raw = env && env.INTERFACE;
+    else if (key === 'FABRIC_HTTP_INTERFACE') raw = env && env.FABRIC_HTTP_INTERFACE;
+    const v = String(raw || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
 function resolveHttpListenHostLocal (opts = {}) {
   const env = opts.env || process.env;
   if (opts.envHost != null) {
@@ -45,13 +59,8 @@ function resolveHttpListenHostLocal (opts = {}) {
   }
   const explicit = String(opts.host || '').trim();
   if (explicit) return explicit;
-  const keys = Array.isArray(opts.envHostKeys) && opts.envHostKeys.length
-    ? opts.envHostKeys
-    : DEFAULT_HTTP_LISTEN_ENV_KEYS;
-  for (const key of keys) {
-    const v = String(env[key] || '').trim();
-    if (v) return v;
-  }
+  const fromEnv = listenHostFromNamedEnv(env, opts.envHostKeys);
+  if (fromEnv) return fromEnv;
   if (String(opts.mode || '') === 'server') return '0.0.0.0';
   if (isHttpSharedModeEnabledLocal(opts.httpSharedMode)) return '0.0.0.0';
   return '127.0.0.1';

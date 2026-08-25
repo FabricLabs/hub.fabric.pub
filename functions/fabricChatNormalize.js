@@ -1,8 +1,11 @@
 'use strict';
 
 /**
- * Re-export chat normalize from `@fabric/http`, with a Hub-side guard for
- * `Number(null)` / empty-string coerced timestamps (epoch 0).
+ * Re-export chat normalize from `@fabric/http`.
+ *
+ * The epoch-0 guard (`Number(null)` / `Number('')` coerce to a *finite* 0) is
+ * upstream now, so this file collapses to the bare module on current pins and
+ * keeps the wrapper only for pins predating that fix.
  */
 let base;
 try {
@@ -25,6 +28,15 @@ function normalizeP2pChatMessage (chat, opts = {}) {
   return out;
 }
 
-module.exports = Object.assign({}, base, {
-  normalizeP2pChatMessage
-});
+function pinSanitizesCreated () {
+  try {
+    const probe = base.normalizeP2pChatMessage({ object: { content: 'x', created: null } });
+    return !!(probe && probe.object && probe.object.created > 0);
+  } catch (_) {
+    return false;
+  }
+}
+
+module.exports = pinSanitizesCreated()
+  ? base
+  : Object.assign({}, base, { normalizeP2pChatMessage });

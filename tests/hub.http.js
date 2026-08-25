@@ -50,7 +50,8 @@ describe('@fabric/hub', function () {
           network: 'regtest'
         },
         http: {
-          hostname: 'localhost',
+          hostname: '127.0.0.1',
+          interface: '127.0.0.1',
           listen: true,
           port: httpPort
         },
@@ -61,7 +62,7 @@ describe('@fabric/hub', function () {
 
       // Get the HTTP server instance and base URL
       // The HTTP server might be accessed differently, let's try to get the address from the hub
-      baseUrl = `http://localhost:${httpPort}`;
+      baseUrl = `http://127.0.0.1:${httpPort}`;
 
       // Wait a moment for the server to be ready
       await new Promise(resolve => setTimeout(resolve, 1000));

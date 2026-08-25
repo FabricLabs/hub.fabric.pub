@@ -148,8 +148,10 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     const httpChat = require('@fabric/http/functions/fabricChatNormalize');
     const coreChat = require('@fabric/core/functions/fabricChatText');
     // Hub wraps http normalize to sanitize Number(null)/'' created timestamps (epoch 0).
-    // http `cff2ce66` re-exports core shoutbox helpers (core pin `4a1ff0a57`).
-    assert.strictEqual(httpChat.chatTextOf, coreChat.chatTextOf);
+    // http re-exports core shoutbox helpers. Nested npm copies of @fabric/core can
+    // be distinct function objects even when the source is identical.
+    const sample = { object: { content: 'hello mesh' } };
+    assert.strictEqual(httpChat.chatTextOf(sample), coreChat.chatTextOf(sample));
     assert.strictEqual(hubChat.chatTextOf, httpChat.chatTextOf);
     assert.strictEqual(hubChat.chatActorIdOf, httpChat.chatActorIdOf);
     assert.notStrictEqual(hubChat.normalizeP2pChatMessage, httpChat.normalizeP2pChatMessage);

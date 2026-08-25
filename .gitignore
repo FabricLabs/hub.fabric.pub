@@ -148,3 +148,30 @@ assets/downloads/**
 # Browser extension build artifacts (@fabric/hub)
 extension/vendor/
 extension/popup.bundle.js
+
+# Local scratch / PR dumps (dominate npm pack if left unignored)
+.tmp-*
+.tmp-pr*/
+192.168.50.5
+test-my-assumptions.js
+.archive/
+
+# Accidental LevelDB in assets/
+/assets/CURRENT
+/assets/LOCK
+/assets/LOG
+/assets/LOG.old
+/assets/MANIFEST-*
+
+# Managed Bitcoin / Lightning datadirs (blk00000.dat is ~16 MiB)
+stores/bitcoin-*/
+stores/lightning/
+
+# Leftover schema / lightning test copies
+stores/schemas/
+stores/schemas-backup/
+stores/hub-test-lightning/
+stores/hub-test-lightning-nc/
+
+# Local Fomantic checkout — compiled CSS/JS already lives in assets/
+libraries/fomantic/

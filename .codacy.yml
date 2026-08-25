@@ -11,9 +11,20 @@ engines:
   semgrep:
     exclude_paths:
       - "functions/hubLightningGate.js"
+      # Operator-local path.join / pinned-binary fetch (not HTTP user input).
+      - "functions/desktopOpenAtLogin.js"
+      - "functions/desktopUserData.js"
+      - "functions/hubDownloadsIndex.js"
+      - "functions/hubManagedBinaries.js"
+      - "functions/fabricHubSeedProbe.js"
   opengrep:
     exclude_paths:
       - "functions/hubLightningGate.js"
+      - "functions/desktopOpenAtLogin.js"
+      - "functions/desktopUserData.js"
+      - "functions/hubDownloadsIndex.js"
+      - "functions/hubManagedBinaries.js"
+      - "functions/fabricHubSeedProbe.js"
 exclude_paths:
   - "assets/**"
   - "libraries/**"
@@ -25,3 +36,8 @@ exclude_paths:
   - "coverage/**"
   - "SECURITY.md"
   - "AUDIT.md"
+  - "functions/desktopOpenAtLogin.js"
+  - "functions/desktopUserData.js"
+  - "functions/hubDownloadsIndex.js"
+  - "functions/hubManagedBinaries.js"
+  - "functions/fabricHubSeedProbe.js"

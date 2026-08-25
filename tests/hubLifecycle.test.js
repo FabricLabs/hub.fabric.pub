@@ -87,3 +87,31 @@ describe('Hub start phase methods', function () {
     assert.strictEqual(typeof Hub.prototype.start, 'function');
   });
 });
+
+describe('Hub mocha bind isolation', function () {
+  it('binds HTTP and Peer to loopback even when settings copy a host NIC', function () {
+    const path = require('path');
+    const merge = require('lodash.merge');
+    const Hub = require('../services/hub');
+    const settings = require('../settings/local');
+    const hub = new Hub(merge({}, settings, {
+      bitcoin: { enable: false },
+      fs: { path: path.join(__dirname, '..', 'stores', `hub-bind-iso-${process.pid}`) },
+      http: {
+        hostname: 'localhost',
+        listen: true,
+        port: 18080,
+        interface: '203.0.113.50'
+      },
+      interface: '203.0.113.50',
+      port: 17777,
+      peers: []
+    }));
+    assert.strictEqual(hub.settings.http.interface, '127.0.0.1');
+    assert.strictEqual(hub.settings.interface, '127.0.0.1');
+    assert.strictEqual(hub.http.interface, '127.0.0.1');
+    assert.strictEqual(hub.agent.settings.interface, '127.0.0.1');
+    assert.strictEqual(hub.settings.peersDb, null);
+    assert.deepStrictEqual(hub.settings.peers, []);
+  });
+});

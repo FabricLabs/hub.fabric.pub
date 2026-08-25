@@ -1,8 +1,11 @@
 'use strict';
 
+const { sortFabricPeersMostRecentFirst } = require('./peerIdentity');
+
 /**
  * Merge hub WebRTC signaling registry into {@link GetNetworkStatus} `peers` so browser clients
  * following the Fabric protocol (advertising `metadata.fabricPeerId`) appear beside TCP known peers.
+ * Result is ordered most recently seen first.
  *
  * @param {object[]|undefined} knownPeers - {@link Peer#knownPeers}
  * @param {object[]|undefined} webrtcPeerList - values from hub HTTP `webrtcPeers` map
@@ -36,10 +39,12 @@ function mergeFabricPeersWithWebRtcRegistry (knownPeers, webrtcPeerList) {
       address: `webrtc:${wid}`,
       status: meshUp ? 'connected' : String(w.status || 'registered'),
       score: typeof w.registryScore === 'number' && Number.isFinite(w.registryScore) ? w.registryScore : 0,
+      lastSeen: w.lastSeen || w.registeredAt || w.connectedAt || w.meshLastAt || null,
+      lastMessage: w.meshLastAt || null,
       metadata: meta
     });
   }
-  return out;
+  return sortFabricPeersMostRecentFirst(out);
 }
 
 module.exports = { mergeFabricPeersWithWebRtcRegistry };

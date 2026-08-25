@@ -69,6 +69,23 @@ const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChat
 const COLLAB_INVITE_PREFIX = '[COLLAB_INVITATION] ';
 
 /**
+ * Crypto-backed hex id suffix for optimistic UI / session labels (no Math.random).
+ * @param {number} [byteLen=5]
+ * @returns {string}
+ */
+function randomClientSuffix (byteLen = 5) {
+  const n = Math.max(1, Math.min(32, Number(byteLen) || 5));
+  const bytes = new Uint8Array(n);
+  const c = (typeof globalThis !== 'undefined' && globalThis.crypto) || null;
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < n; i++) bytes[i] = (Date.now() + i * 17) & 0xff;
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * Describe inbound/outbound payloads for debug logs without printing raw bytes or bodies (privacy).
  * @param {*} data
  * @returns {object}
@@ -1729,7 +1746,7 @@ class Bridge extends React.Component {
     const d = Math.round(Number(deltaSats));
     if (!Number.isFinite(d) || d <= 0) return;
 
-    const id = `client-wallet-${phase}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const id = `client-wallet-${phase}-${Date.now()}-${randomClientSuffix(5)}`;
     const created = new Date().toISOString();
     const totalLabel = formatSatsDisplay(balanceSats);
     const confU = `${formatSatsDisplay(confirmedSats)} conf · ${formatSatsDisplay(unconfirmedSats)} unconf`;
@@ -2314,7 +2331,7 @@ class Bridge extends React.Component {
   initializeWebRTC () {
     if (this.peerId) return;
 
-    const sessionId = this.key ? this.key.id.slice(-8) : Math.random().toString(36).substr(2, 8);
+    const sessionId = this.key ? this.key.id.slice(-8) : randomClientSuffix(4);
     this.peerId = `fabric-bridge-${sessionId}`;
     this._webrtcReady = true;
 
@@ -5006,7 +5023,7 @@ class Bridge extends React.Component {
     }
     const identityId = this._getIdentityId();
 
-    const clientId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const clientId = `pending-${Date.now()}-${randomClientSuffix(5)}`;
     const created = Date.now();
     const actorId = identityId;
     const chat = {

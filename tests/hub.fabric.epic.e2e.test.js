@@ -210,6 +210,7 @@ describe('Hub fabric epic E2E (mesh + sidechain + execution + partition)', funct
         payjoin: { enable: false },
         http: {
           hostname: '127.0.0.1',
+          interface: '127.0.0.1',
           listen: true,
           port: httpPorts[i]
         },

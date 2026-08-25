@@ -223,6 +223,7 @@ describe('Hub document network (multi-hop P2P + tombstone)', function () {
         beacon: { enable: false },
         http: {
           hostname: '127.0.0.1',
+          interface: '127.0.0.1',
           listen: true,
           port: httpPorts[i]
         },

@@ -440,12 +440,29 @@ class Hub extends Service {
       distributeFeeSats: DEFAULT_DISTRIBUTE_FEE_SATS,
     }, settings);
 
-    // Test stability: avoid default outbound Fabric dials unless a test explicitly
-    // opts in by passing `settings.peers` or setting FABRIC_TEST_ALLOW_DEFAULT_PEERS=1.
+    // Test stability: do not dial production Hub seeds from mocha. Opt in with
+    // FABRIC_TEST_ALLOW_DEFAULT_PEERS=1. `merge({}, settings/local.js)` otherwise
+    // keeps hub.fabric.pub / relay.goon.vc / sensemaker.io in `peers`.
     const runningUnderMocha = Array.isArray(process.argv) && process.argv.some((arg) => /mocha/i.test(String(arg)));
-    if ((process.env.NODE_ENV === 'test' || runningUnderMocha) && process.env.FABRIC_TEST_ALLOW_DEFAULT_PEERS !== '1') {
-      const hasExplicitPeers = !!(settings && Object.prototype.hasOwnProperty.call(settings, 'peers'));
-      if (!hasExplicitPeers) this.settings.peers = [];
+    const runningUnderTests = process.env.NODE_ENV === 'test' || runningUnderMocha;
+    if (runningUnderTests && process.env.FABRIC_TEST_ALLOW_DEFAULT_PEERS !== '1') {
+      const raw = Array.isArray(this.settings.peers) ? this.settings.peers : [];
+      // `merge({}, settings/local.js, { http: … })` keeps production seed hosts.
+      // Dialing them from mocha on a deploy host is wrong; keep only explicit extras.
+      this.settings.peers = raw.filter((p) => {
+        const s = String(p || '').replace(/^[^@]+@/, '').trim();
+        return s && !/^(hub\.fabric\.pub|relay\.goon\.vc|sensemaker\.io)(?::\d+)?$/i.test(s);
+      });
+    }
+    if (runningUnderTests && process.env.FABRIC_TEST_ALLOW_HOST_HTTP_BIND !== '1') {
+      // `settings/local.js` copies FABRIC_HUB_INTERFACE / INTERFACE / FABRIC_INTERFACE
+      // at require time. Mocha suites connect to 127.0.0.1, so inherit those on a
+      // deploy host and Hub HTTP binds the public NIC → ECONNREFUSED.
+      this.settings.http = Object.assign({}, this.settings.http, { interface: '127.0.0.1' });
+      this.settings.interface = '127.0.0.1';
+    }
+    if (runningUnderTests && process.env.FABRIC_TEST_ALLOW_HOST_PEERS_DB !== '1') {
+      this.settings.peersDb = null;
     }
 
     // Regtest runs in one autonomous mode: managed local bitcoind, unless setup chose external.
@@ -752,6 +769,7 @@ class Hub extends Service {
       // / `themes/` or they would shadow the package.
       hostname: this.settings.http.hostname,
       interface: this.settings.http.interface,
+      host: this.settings.http.interface || this.settings.http.host,
       port: this.settings.http.port,
       // Serve assets/index.html for client-side routes (React Router) on refresh; see @fabric/http _maybeServeSpaShell.
       spaFallback: this.settings.http && this.settings.http.spaFallback !== false,
@@ -849,7 +867,28 @@ class Hub extends Service {
 
     this.buffers = {};
 
+    this._applyTestLoopbackBinds();
+
     return this;
+  }
+
+  /**
+   * Mocha / NODE_ENV=test: Peer constructor re-applies FABRIC_INTERFACE from the
+   * process environment (core `resolveFabricPeerInterface`). Force loopback so
+   * deploy-host env cannot steal test sockets.
+   * @returns {void}
+   */
+  _applyTestLoopbackBinds () {
+    const runningUnderMocha = Array.isArray(process.argv) && process.argv.some((arg) => /mocha/i.test(String(arg)));
+    const runningUnderTests = process.env.NODE_ENV === 'test' || runningUnderMocha;
+    if (!runningUnderTests || process.env.FABRIC_TEST_ALLOW_HOST_HTTP_BIND === '1') return;
+    this.settings.http = Object.assign({}, this.settings.http || {}, { interface: '127.0.0.1' });
+    this.settings.interface = '127.0.0.1';
+    if (this.agent && this.agent.settings) this.agent.settings.interface = '127.0.0.1';
+    if (this.http && this.http.settings) {
+      this.http.settings.interface = '127.0.0.1';
+      this.http.settings.host = '127.0.0.1';
+    }
   }
 
   /**
@@ -14456,6 +14495,12 @@ class Hub extends Service {
   async _startPhase_listen () {
       await this.agent.start();
       await this.http.start();
+      if (this.http && this.http.settings && this.http.settings.listen === false) return;
+      const nodeServer = this.http && this.http.http;
+      if (nodeServer) {
+        const { waitForHttpServerListening } = require('../functions/fabricHttpRebind');
+        await waitForHttpServerListening(nodeServer);
+      }
   }
 
   async _startPhase_runtime () {

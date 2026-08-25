@@ -39,4 +39,19 @@ describe('mergeFabricPeersWithWebRtcRegistry', function () {
     }]);
     assert.strictEqual(merged[0].id, 'webrtc:fabric-bridge-only');
   });
+
+  it('sorts merged peers most recently seen first', function () {
+    const merged = mergeFabricPeersWithWebRtcRegistry([
+      { id: 'old-tcp', address: '1.2.3.4:7777', status: 'connected', lastSeen: 1000 },
+      { id: 'fresh-tcp', address: '5.6.7.8:7777', status: 'disconnected', lastSeen: 9000 }
+    ], [{
+      id: 'fabric-bridge-mid',
+      status: 'registered',
+      lastSeen: 5000,
+      metadata: { fabricPeerId: 'mesh-mid' },
+      meshSessionCount: 1
+    }]);
+    assert.deepStrictEqual(merged.map((p) => p.id), ['fresh-tcp', 'mesh-mid', 'old-tcp']);
+    assert.strictEqual(merged[1].lastSeen, 5000);
+  });
 });
