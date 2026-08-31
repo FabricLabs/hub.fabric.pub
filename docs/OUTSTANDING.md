@@ -1,24 +1,20 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) red-CI revisit: staged lockfile + Actions `@v7` + `report:install` `mkdir -p reports`. Pins: core **`1c3f8d08c`** (on `origin/feature/rsi`) / http **`bbdb72a`** (**local http tip; push http `feature/rsi` before Hub CI can resolve this SHA**). Packaging fix lands at http `a7095e0` (`components/**`) + `c122816` (`contracts/hasRole.js`). Rebuild `assets/bundles/browser.min.js` before deploy.
+**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `87a3ffc`: packaging/`build-test` green; remaining gate is mocha **`Hub mocha bind isolation`** on macOS (`Timeout of 2000ms` under c8 — Hub ctor > default timeout). Fix: `this.timeout(30000)` + Test matrix `fail-fast: false`. Pins: core **`1c3f8d08c`** / http **`bbdb72a`** (both on GitHub). Codacy still `action_required` on excluded paths — do not churn `.codacy.yml`.
 
-## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — root-caused, fix already staged
-`build-test` and `Run tests (macos-latest)` both failed at `c184907f0` with
-`Cannot find module '../components/browser-content'`, thrown from
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — packaging cleared; mocha timeout next
+Earlier `build-test` / macOS failures at `c184907f0` were
+`Cannot find module '../components/browser-content'` (and macOS `hasRole`) from
 `@fabric/http/types/browser.js` under `scripts/build.js`
 (`build.js → types/compiler → http types/compiler → site → spa → app → browser`).
-macOS also surfaced `Cannot find module '../contracts/hasRole'` — same packaging class.
 
-**Not a Hub bug and not a missing file.** The *committed* lockfile at that commit
-pinned http at **`ca27d1472`**, whose `package.json` `files[]` had **no
-`components/**` glob** (and lacked `contracts/hasRole.js`) — so the installed
-package shipped `types/browser.js` without the modules it requires.
-`components/browser-content.js` is tracked in http and packs fine locally, which
-is exactly why this stayed invisible: local `npm test` and local `npm pack`
-were both green. The **staged** Hub lockfile moves to **`bbdb72a`** (includes
-`a7095e0` + `c122816`). **Committing the lockfile clears CI only after
-`FabricLabs/fabric-http` `feature/rsi` is pushed through that tip.**
+**Not a Hub bug.** Lockfile had pinned http at **`ca27d1472`** without
+`components/**` / `contracts/hasRole.js` in `files[]`. Tip **`87a3ffc`** pins
+**`bbdb72a`** — `build-test` is green. Remaining: macOS `Run tests` fails on
+`tests/hubLifecycle.test.js` (“binds HTTP and Peer to loopback…”) because Hub
+construction under coverage exceeds mocha’s default **2s**; ubuntu was cancelled
+via matrix fail-fast.
 
 Guarded upstream so it cannot recur: new http `tests/packageFilesClosure.test.js`
 runs `npm pack --dry-run --json` and asserts every relative `require` of a

@@ -89,6 +89,10 @@ describe('Hub start phase methods', function () {
 });
 
 describe('Hub mocha bind isolation', function () {
+  // Hub construction under c8 on macOS runners routinely exceeds mocha's
+  // default 2s (settings merge + Peer/HTTP wiring). Keep assertions sync.
+  this.timeout(30000);
+
   it('binds HTTP and Peer to loopback even when settings copy a host NIC', function () {
     const path = require('path');
     const merge = require('lodash.merge');
