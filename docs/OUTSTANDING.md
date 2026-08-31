@@ -1,14 +1,70 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-24 — suite audit pass. `npm run test:unit` **821 passing / 0 failing**.
-The repeated `Could not wipe database: ModuleError: Database is not open` lines
-are teardown noise on already-closed LevelDB handles, not failures, and need **no
-Hub patch**: core `088dd9aff` (on `origin/feature/rsi`) added a `status !== 'open'`
-pre-check plus a `LEVEL_DATABASE_NOT_OPEN` guard to `Store#flush`, and
-`node_modules/@fabric/core/types/store.js` here is simply the pre-guard copy.
-Refreshing the core dep silences it — one more item riding the same pin bump as
-the P0 below.
+**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) red-CI revisit: staged lockfile + Actions `@v7` + `report:install` `mkdir -p reports`. Pins: core **`1c3f8d08c`** (on `origin/feature/rsi`) / http **`bbdb72a`** (**local http tip; push http `feature/rsi` before Hub CI can resolve this SHA**). Packaging fix lands at http `a7095e0` (`components/**`) + `c122816` (`contracts/hasRole.js`). Rebuild `assets/bundles/browser.min.js` before deploy.
+
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — root-caused, fix already staged
+`build-test` and `Run tests (macos-latest)` both failed at `c184907f0` with
+`Cannot find module '../components/browser-content'`, thrown from
+`@fabric/http/types/browser.js` under `scripts/build.js`
+(`build.js → types/compiler → http types/compiler → site → spa → app → browser`).
+macOS also surfaced `Cannot find module '../contracts/hasRole'` — same packaging class.
+
+**Not a Hub bug and not a missing file.** The *committed* lockfile at that commit
+pinned http at **`ca27d1472`**, whose `package.json` `files[]` had **no
+`components/**` glob** (and lacked `contracts/hasRole.js`) — so the installed
+package shipped `types/browser.js` without the modules it requires.
+`components/browser-content.js` is tracked in http and packs fine locally, which
+is exactly why this stayed invisible: local `npm test` and local `npm pack`
+were both green. The **staged** Hub lockfile moves to **`bbdb72a`** (includes
+`a7095e0` + `c122816`). **Committing the lockfile clears CI only after
+`FabricLabs/fabric-http` `feature/rsi` is pushed through that tip.**
+
+Guarded upstream so it cannot recur: new http `tests/packageFilesClosure.test.js`
+runs `npm pack --dry-run --json` and asserts every relative `require` of a
+packed module is itself packed. Verified to reproduce this outage, naming
+`types/browser.js -> ../components/browser-content` first, when the
+`components/**` glob is removed.
+
+**CI actions were also on borrowed time.** All four workflows pinned
+`actions/checkout@v4` / `setup-node@v4` (plus `upload-artifact@v4` and
+`codecov/codecov-action@v3.1.1`), which GitHub now force-runs on Node 24.
+Bumped to `@v7` after verifying each input in use is still declared in the
+target `action.yml` and that every `v7` tag resolves; `upload-artifact`'s
+no-merge rule is satisfied because the name is matrix-scoped
+(`fabric-hub-desktop-${{ matrix.os }}`). The codecov step gained
+`continue-on-error: true` to match `@fabric/core` — v4+ prefers a token even on
+public repos, so a tokenless upload can be rate-limited and must not gate CI.
+
+## Codacy on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16): config is not being honoured (do not add more excludes)
+Codacy reported **86 new issues** / 30 annotations and held the check at
+`action_required`. **28 of 30 are on files this repo already excludes** — both
+per-engine (`semgrep`, `opengrep`) *and* globally: `hubDownloadsIndex.js` (11),
+`desktopUserData.js` (7), `hubManagedBinaries.js` (6), `desktopOpenAtLogin.js`
+(2), `fabricHubSeedProbe.js` (2). Those excludes were present in `.codacy.yml`
+**at the analyzed commit `c184907f0`**, so this is not a stale-config problem
+and **adding more paths will not help** — the gate needs a Codacy re-run or a
+UI-side ignore. Do not churn `.codacy.yml` for it.
+
+The findings themselves are the known dynamic-path false-positive class, and the
+containment is real, not nominal — `normalizeRelativePath` was probed directly:
+`../etc/passwd`, `../../secret`, `mac/../../etc/passwd`, and `..` all return
+`null`, `/abs/path` is demoted to `abs/path`, and `....//x` → `..../x` is a
+literal directory name rather than an escape. `tests/hubDownloadsIndex.test.js`
+already pins the traversal cases. The two findings *not* on the exclude list are
+also false positives: `httpSharedMode.js:52` "Generic Object Injection Sink" is
+`list[i]` over a local array of literal env-key names — that function
+deliberately avoids dynamic `env[key]` access with an if/else chain on literals
+— and `fabricHttpRebind.js:62` "inappropriate function body content" is a
+`setTimeout` cleanup inside a listen promise.
+
+~~The repeated `Could not wipe database: ModuleError: Database is not open` lines~~
+**Resolved by the `ff7c05c52` pin.** The installed `@fabric/core/types/store.js`
+now carries the `status !== 'open'` pre-check, the `LEVEL_DATABASE_NOT_OPEN`
+guard, *and* the [#186](https://github.com/FabricLabs/fabric/pull/186) addition
+that lets `flush()` run during `abstract-level`'s deferred `opening` state (that
+state was previously skipped, which silently dropped the wipe). No Hub patch was
+ever needed.
 
 One caveat on trusting this number: across five runs the suite showed a single
 intermittent failure once and 821/0 the other four times. Given the visible
@@ -22,10 +78,12 @@ occurrence is identifiable.
 to patch `@fabric/http` emitting epoch-0 `created` for `Number(null)` /
 `Number('')`. That guard is now in http itself (which also fixes a second bug
 Hub's wrapper never caught: the `object.ts` fallback was being skipped, so a
-message with a valid ISO timestamp still got 1970). The wrapper now probes the
-pin at load and **collapses to the bare http module** once the fix is present,
-so it deletes itself on the same dep refresh. Hub's
-`tests/fabricChatNormalize.test.js` epoch-0 assertion keeps passing either way.
+message with a valid ISO timestamp still got 1970). The wrapper probes the pin at
+load and **collapses to the bare http module** once the fix is present — verified
+on the `5b1c1cf14` pin, where `require('./functions/fabricChatNormalize') === require('@fabric/http/functions/fabricChatNormalize')`.
+The `object.ts` half of that bug was fixed in http on 2026-08-25 (a bad `ts`
+assigned `Date.now()`, which made the outer `chat.created` fallback unreachable).
+Hub's `tests/fabricChatNormalize.test.js` epoch-0 assertion keeps passing either way.
 
 **Invite `expiresAt` went upstream the same way.** `functions/federationContractInvite.js`
 probes the http pin and collapses when builders already stamp `expiresAt`; the
@@ -46,25 +104,60 @@ carries its own [AUDIT.md](https://github.com/FabricLabs/fabric-browser-extensio
 which restates the `assets/passport-privacy.html` deploy as a listing blocker on
 the Hub side.
 
-**Prior review:** 2026-08-20 ([downstream scan](https://relay.goon.vc/downstream.agents.md) **10:39Z**; live Hub **`6bf825d`**, PID **172076**, restarts **542**, FATAL **317 +0**). Named retainers still flat. RSS **~1.7 GiB** tracks **`external`/`arrayBuffers` (~38→984 MiB in ~61 m)**, not V8 heap (~82 MiB). NOISE MaxListeners 65>64 on **4** PIDs including current; `noiseHandshakeListeners` stays **null** (live core **`f63a33f`** has no `Peer#countNoiseHandshakeListeners` — that lands in [@fabric/core #186](https://github.com/FabricLabs/fabric/pull/186) HEAD **`9c6ade0`**, not pinned here). Crash loop remains broken. Do not throw at Hub startup when the shared-mode WS token is unset. Do not drop the advisory-detector Semgrep exclude. Passport privacy HTML deploy is ops.
+**Prior review:** 2026-08-20 ([downstream scan](https://relay.goon.vc/downstream.agents.md) **10:39Z**; live Hub **`6bf825d`**, PID **172076**, restarts **542**, FATAL **317 +0**). Named retainers still flat. RSS **~1.7 GiB** tracks **`external`/`arrayBuffers` (~38→984 MiB in ~61 m)**, not V8 heap (~82 MiB). NOISE MaxListeners 65>64 on **4** PIDs including current; `noiseHandshakeListeners` stays **null** on live core **`f63a33f`**. Crash loop remains broken. Do not throw at Hub startup when the shared-mode WS token is unset. Do not drop the advisory-detector Semgrep exclude. Passport privacy HTML deploy is ops.
 
 ## Blockers before production shared bind
-1. **Inherited login/link redeem** — http now requires create-response `pollSecret` for signed GET and device-link DELETE. Hub SPA sends `X-Fabric-Poll-Secret`. Remaining: bind `sessionId` into device-link attest messages ([`@fabric/http` OUTSTANDING](https://github.com/FabricLabs/fabric-http/blob/feature/rsi/docs/OUTSTANDING.md)). Hub desktop `allowHubSelfSign` defaults on; http **loopback-gates** the sign so public `hub.fabric.pub` cannot remote self-sign.
+1. **Inherited login/link redeem** — http requires create-response `pollSecret` for signed GET and device-link DELETE; Hub SPA sends `X-Fabric-Poll-Secret`. **Device-link v2** (prepare + commit, server nonce) is wired in `IdentityManager` — bump http lockfile to the Wave 3 tip when pushed. Hub desktop `allowHubSelfSign` defaults on; http **loopback-gates** the sign so public `hub.fabric.pub` cannot remote self-sign.
 2. **Identity import** — xprv imports should persist through the encrypted identity path (not watch-only `id`/`xpub`) and restore locked/unlocked per password (heavy lift).
-3. **At-rest identity KDF** — migrate fresh save from current `encryptLocalIdentityAtRest` to the stronger PBKDF2+AES-GCM backup scheme.
+3. **At-rest identity KDF** — fresh saves use PBKDF2+AES-GCM (`fabricLocalIdentityAtRestCrypto.js`); legacy CBC records still decrypt. Passport should align datastore unlock with the same scheme (Wave 6).
 
 ## Next slices
-- [ ] **P0 Hub RSS outside named retainers** ([scan 2026-08-20T10:39Z](https://relay.goon.vc/downstream.agents.md): life **~61 m** on **`6bf825d`**, heap **~82 MiB @ 41%**, RSS **~1.7 GiB**). `[HUB:HEAP]` Filesystem/STATE/docs counters stay **flat**. **Watch `memory.external` / `arrayBuffers`** (38→984 MiB this life) — that is the RSS driver, not `heapUsed` sawtooth. Prior life (`72f2f22`, 02:55Z) was RSS **~0.7 GiB** with tens of MiB external. **NOISE** `MaxListenersExceededWarning` 65>64 on **4** consecutive PIDs; live core **`f63a33f`** still uses npm `noise-protocol-stream` so `retainers.noiseHandshakeListeners` is **null**. [@fabric/core #186](https://github.com/FabricLabs/fabric/pull/186) HEAD **`9c6ade0`** has `functions/noiseProtocolStream.js` + `Peer#countNoiseHandshakeListeners` plus `freeNative` pointer clear / `onready` teardown — **pin, redeploy** before treating this as shipped. Do **not** raise `--max-old-space-size`. Ops: `pm2-logrotate` (~41 GiB logs), drop `sensemaker.io:7778` seed, Lightning stub/off, Hub↔RSI hairpin, Node 24.15.x.
+- [ ] **P0 Hub RSS / NOISE redeploy** ([scan 2026-08-20T10:39Z](https://relay.goon.vc/downstream.agents.md): life **~61 m** on **`6bf825d`**, heap **~82 MiB @ 41%**, RSS **~1.7 GiB**). `[HUB:HEAP]` Filesystem/STATE/docs counters stay **flat**. **Watch `memory.external` / `arrayBuffers`**. Local pin already has [@fabric/core #186](https://github.com/FabricLabs/fabric/pull/186) **`ff7c05c52`** (`functions/noiseProtocolStream.js` + `Peer#countNoiseHandshakeListeners`, plus the `onverify` freed-pointer guard). Live still **`f63a33f`** (`noiseHandshakeListeners` **null**, MaxListeners 65>64) — **redeploy this Hub tip** before treating #1 as closed. Do **not** raise `--max-old-space-size`. Ops: `pm2-logrotate` (~41 GiB logs), drop `sensemaker.io:7778` seed, Lightning stub/off, Hub↔RSI hairpin, Node 24.15.x.
 - [ ] **P1 RSI memory / peer I/O** — RSS **~12.3 GiB** (was ~10 GiB @ 02:55Z), heap **~1.77 GiB @ ~94%**, restarts **2 +0**, **0** FATAL; closed-or-destroyed stream spam + oversized AMP frames (`140736 > 4096` from `66.58.241.57`). Write-after-close + frame-size / inventory carrier.
 - [ ] **SECURITY-RECOMMENDATIONS remainder:** CORS `*`, Sensemaker HTTP default bind, Payjoin session *list* still unauthenticated, Lightning GET status public. Login/link `pollSecret` lives in `@fabric/http` (Hub SPA sends `X-Fabric-Poll-Secret`).
 - [ ] Named AMP types on public Hub UI WebSocket (`GenericMessage` remaining).
-- [x] Fabric Message `parent` — originate previous-`id` chains like GoonCitizen
-  (D-020). `_appendFabricMessage` now sets AMP `parent` / `frameId` (genesis zeros
-  for Ping / Pong; `GENESIS_MESSAGE` is the chain root). Do not drop inbound genesis zeros yet.
-- [ ] Always-fresh device-link nonce (reject client-supplied) — coordinated with http.
+- [x] Fabric Message `parent` — Hub `_appendFabricMessage` and **Bridge** `signMessage` set AMP `parent` / advance tip (Ping/Pong genesis). Inbound zeros still accepted.
+- [x] Device-link v2 prepare/commit in Hub SPA (`IdentityManager`); server nonce via http Wave 3 pin.
+- [ ] **`shims/noble-secp256k1.js` is dead and broken** (same class as the fixed
+  `noble-nist.js`, but the fix is a guess so it is left alone). It requires
+  `noble-secp256k1-raw`, which is not a package and has **no** `resolve.alias`
+  entry in `webpack.config.js`; nothing references the shim. Its comment says the
+  alias exists specifically because a direct `require` of the `.js` path "can be
+  mis-parsed in production builds", so repointing it at `@noble/curves/secp256k1`
+  may reintroduce the bug it was written to dodge. Either restore the intended
+  alias or delete the shim — owner's call.
 - [ ] Deploy `assets/passport-privacy.html` so `https://hub.fabric.pub/passport-privacy.html` is live for the Passport Chrome Web Store listing (source: `@fabric/passport` `store/privacy.html`).
 
 ## Closed this pass (do not re-open)
+- **`stoppable` was a phantom dependency and it broke the release gate.**
+  `functions/fabricHttpRebind.js` is a **shipped** file (`functions/**/*.js` in
+  `files`) that requires `stoppable`, but this package declared it in neither
+  `dependencies` nor `devDependencies` — it only ever resolved by hoisting out of
+  `@fabric/http`. Once `@fabric/http` is `npm link`ed, `stoppable` lives in that
+  sibling tree and does **not** hoist here, so `npm run test:unit` aborted during
+  file load with `Cannot find module 'stoppable'` and ran **zero** tests. Now
+  pinned `=1.1.0` (matching http). Suite is back to **828 passing / 0 failing**.
+  This is the same class as the `contracts/hasRole` deploy break — re-running
+  `npm install` masks it instead of fixing it.
+- **Device-link v2 fallout in Hub's own tests.** `tests/fabric.deviceLink.test.js`
+  still called the v1 builder signatures, so all three cases threw
+  `sessionId must be 48 hex chars` once the Wave 3 pin landed. Updated to v2
+  (48-hex `sessionId` first argument, v2 prefix assertions) and added coverage for
+  the rejection path plus legacy v1 parsing, which http deliberately retains.
+- `functions/fabricDeviceLink.js` re-exports `DEVICE_LINK_V1_PREFIX`,
+  `DEVICE_LINK_V2_PREFIX`, and `isSessionIdHex` (added upstream in http this pass).
+- **`shims/noble-nist.js` was dead and broken.** It reached into
+  `../node_modules/@noble/curves/p256.js` — both a hardcoded `node_modules`
+  traversal that breaks under npm hoisting when `@fabric/hub` is a dependency, and
+  a **v1.x** file layout that no longer exists on the pinned `@noble/curves@2.0.1`
+  (which ships `nist.js`). Nothing in this repo or any sibling referenced it, and
+  there is no webpack alias for it, so it could only ever have thrown. Now a
+  one-line passthrough over the `@noble/curves/nist.js` package export.
+- Dropped an unused `@fabric/core/types/actor` require from `types/worker.js`.
+- **Pack integrity verified.** `npm pack` → extract → require `services/hub.js`
+  plus all 200 shipped CJS files: no missing local requires, and no secret
+  leakage (`files` correctly narrows `settings/` to `*.json`, so a developer's
+  `settings/local.js` cannot be published).
 - Federation vault NUMS vs MuSig2: Hub defaults `internalKeyMode` to `nums` (`FABRIC_FEDERATION_INTERNAL_KEY_MODE`). Core n≥2 ladder default is MuSig2 (new address). Do not switch until NUMS UTXOs are swept.
 - Bulk OpenSSF / GHSA malware-advisory documents are not ingested (`functions/bulkSecurityAdvisory.js`, package export `./functions/bulkSecurityAdvisory`; JSON arrays of advisory objects recurse). Array walk uses `for…of` (not `input[i]`) so Codacy Semgrep “object injection” on the bounded advisory list is a non-issue.
 - WebRTC → TCP shoutbox inner body is UTF-8 `P2P_CHAT_MESSAGE` (legacy JSON envelopes unpacked). Registry encoding `utf8-text`.
@@ -81,8 +174,12 @@ the Hub side.
 - Identity cluster keys are x-only / compressed hex only (no colon-smashed fallback).
 - Operator Accept tokens verify against Hub `_rootKey` **or** Peer `agent.key` (`functions/operatorAdminToken.js`, package export). Hub-level Accept/Reject tests bypass `setup.verifyAdminToken` (`tests/hub.operatorAccept.test.js`). Low-level helper also rejects a non-`admin` subject.
 - CLI loads `~/.fabric/env` via core `fabricHomeEnv` (process env wins). Playnet `loadPeerKeySettings` / `fabricHomeEnv` catch only `MODULE_NOT_FOUND` (a broken home env still fails).
-- Core pin **`9938917`** (Filesystem publish retain cut + [#185](https://github.com/FabricLabs/fabric/pull/185) follow-ups; MuSig2 `autoAccept` default off, BIP-21 `req-*`, collection cwd-containment, Codacy `Number('…')` literals; plus MuSig2/BIP helpers, IPv6 candidate `[host]:port`, generic-message debug exact-match, exported `fabricIdentityAccountPath`, AMP wire name wins so inventory JSON `type: 98` cannot enqueue a peering candidate). Next core pin is [#186](https://github.com/FabricLabs/fabric/pull/186) (handshake-bus + gossip catalog + review follow-ups; HEAD **`9c6ade0`**). Http pin **`7d7f1c7`** (POST-null 400, device-link DELETE cancel; 402 blob-id omit, CLI `fabricHomeEnv`, Internal-log + commit snapshot cut, `fabricChatNormalize` re-exports core `fabricChatText`, `pubkey@` strip + dedicated-NIC `:7778`→`:7777`, unicast `FABRIC_INTERFACE` does not treat sibling NICs as self). WebRTC shoutbox `chatTextOf` uses core `fabricChatText`. Playnet `fallbackPeerKeySettingsFromEnv` keeps raw `FABRIC_SEED` hex as `{ seed }` when core `fabricKeyMaterial` is missing.
+- At-rest identity v2: PBKDF2+AES-GCM fresh encrypt (`fabricLocalIdentityAtRestCrypto.js`); legacy CBC decrypt retained.
+- Core pin **`1c3f8d08c`** (coverage expansions + packaging tests on `feature/rsi`; includes [#186](https://github.com/FabricLabs/fabric/pull/186) prover-chosen-root / NOISE / Store flush work). Http pin **`bbdb72a`** (`contracts/hasRole.js` + `components/**` in npm `files` via `a7095e0`/`c122816` — **push http before Hub CI**; git-only installs can `npm run build` without `link:fabric`). WebRTC shoutbox `chatTextOf` uses core `fabricChatText`. Playnet `fallbackPeerKeySettingsFromEnv` keeps raw `FABRIC_SEED` hex as `{ seed }` when core `fabricKeyMaterial` is missing.
 - Shared-mode re-export picks local `isHttpSharedModeEnabled` / `resolveHttpListenHost` / `DEFAULT_HTTP_LISTEN_ENV_KEYS` when the http pin omits those functions (not only `applySharedModeWebsocketGate`). Local `resolveHttpListenHost` matches http: constructor `host` beats inherited `INTERFACE` env. `applySharedModeWebsocketGate` still fail-closes `requireClientToken` without a token (HTTPServer rejects the handshake; do not throw at Hub startup). Dropping the advisory-detector Semgrep exclude remains **wontfix**.
+- **[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) review threads (2026-08-25).** The PR carries only **10** inline comments plus 3 outside-diff findings in review bodies, and **every one was already addressed** — 8 carry "Addressed in commit" markers and the rest were verified against current code, not assumed. Checked by probe: `EditDocument` has the `looksLikeBulkSecurityAdvisory` guard on `buffer` + `nextName` (`services/hub.js` ~12368), so the "bypass `CreateDocument` by calling `EditDocument`" gap is closed; the classifier walks arrays under a `MAX_ADVISORY_ARRAY` bound and `advisoryObjectMatches` demands a GHSA id / malware type / malicious-package summary rather than any object-valued `security_advisory`; `tests/bulkSecurityAdvisory.test.js` has both requested regression cases; `tests/parseFilesystemJson.test.js` asserts the plain `Uint8Array` branch that `Buffer.isBuffer` used to short-circuit; and `tests/hub.operatorAccept.test.js` already covers Accept/Reject with `_rootKey` and `agent.key` tokens while stubbing `setup.verifyAdminToken` to `false` (that thread is simply unmarked, not open). Added while here: `Hub._verifyOperatorAdminToken` gate tests for the cases the handler tests cannot reach (unset `agent.key`, and that `setup.verifyAdminToken` is consulted first but cannot veto a key-valid token).
+- **`shims/noble-secp256k1.js` was dead and broken.** It did `require('noble-secp256k1-raw')` — a Webpack alias that no longer exists and was never a package — so every load threw `MODULE_NOT_FOUND`. Nothing referenced it (no alias in `webpack.config.js`, no import anywhere), which is why the browser build kept passing. Repointed at the `@noble/curves` `exports` map, the same repair already applied to `shims/noble-nist.js`. New `tests/shims.exports.test.js` requires each shim so this class of rot fails the suite instead of a production bundle.
+- Doc pin hygiene: `docs/OUTSTANDING.md`, `docs/PRODUCTION_MARCH.md`, `SECURITY.md`, and `CHANGELOG.md` cited three different stale core/http SHAs as current. All current-state claims now read the lockfile (`1c3f8d08c` / `bbdb72a`); the dated `CHANGELOG` pin entry is labelled a snapshot instead of being rewritten.
 
 ## PRs
-[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — GitHub/local HEAD **`64e0403`**. GitHub Actions `build-test` / macOS+Ubuntu tests **SUCCESS**. Codacy **ACTION_REQUIRED** on that tip: Semgrep path.join / pinned-URL on desktop userData, `/downloads` index, managed binaries, and seed `OPTIONS` probes — excluded in `.codacy.yml` like `hubLightningGate`. Shared-mode listen-host env lookup is named properties (not `env[key]`). CodeRabbit inline threads from #16 are in tree (bulk-advisory arrays, `EditDocument` filter, resync warn, shared-mode fallbacks, operator Accept tests including `_rootKey` + `agent.key`, playnet `loadFabricHomeEnv` only swallows `MODULE_NOT_FOUND`). Remaining open: identity import/KDF, login redeem (http), device-link nonce/`sessionId` bind, **RSS / NOISE deploy** (core [#186](https://github.com/FabricLabs/fabric/pull/186) HEAD **`9c6ade0`**). Pin `@fabric/core` / `@fabric/http` via lockfile (`#feature/rsi` + `npm run report:install`), currently core **`9938917`** / http **`7d7f1c7`**. Live (10:39Z): Hub **`6bf825d`**, core **`f63a33f`**, http **`4625215`**. Do not wire `applySharedModeWebsocketGate` inside the `HTTPServer` constructor. Do not throw at Hub startup when the shared-mode WS token is unset (handshake already fail-closes). Dropping the advisory-detector Semgrep exclude remains **wontfix**. Deploy `assets/passport-privacy.html` is ops, not this slice.
+[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — local tip ahead of GitHub. Wave 4: device-link v2 SPA + at-rest KDF + Bridge parent. Remaining: identity import, **live RSS / NOISE redeploy**, **push http `bbdb72a` then Hub lockfile**. Pinned at core **`1c3f8d08c`** / http **`bbdb72a`**.

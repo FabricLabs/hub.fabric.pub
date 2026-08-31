@@ -66,6 +66,26 @@ const {
 } = require('../functions/fabricTransportSession');
 const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChatNormalize');
 
+let fabricMessageParent = null;
+try {
+  fabricMessageParent = require('@fabric/http/functions/fabricMessageParent');
+} catch (err) {
+  if (!err || err.code !== 'MODULE_NOT_FOUND') throw err;
+  try {
+    fabricMessageParent = require('@fabric/core/functions/fabricMessageParent');
+  } catch (err2) {
+    if (!err2 || err2.code !== 'MODULE_NOT_FOUND') throw err2;
+  }
+}
+
+/** Ping/pong keep genesis parent on browser-originated durable frames. */
+const BRIDGE_PARENT_CHAIN_SKIP = new Set([
+  'Ping',
+  'Pong',
+  'P2P_PING',
+  'P2P_PONG'
+]);
+
 const COLLAB_INVITE_PREFIX = '[COLLAB_INVITATION] ';
 
 /**
@@ -175,6 +195,8 @@ class Bridge extends React.Component {
 
     // Canonical browser-side Fabric state store (offline-first baseline).
     this._fabricStore = fabricBrowserStateStore();
+    /** Previous signed outbound AMP frame id (D-020 parent chain). */
+    this._outboundMessageTip = null;
     const restoredUnified = this._fabricStore.GET('/');
     if (restoredUnified && typeof restoredUnified === 'object') {
       this.globalState = {
@@ -3782,8 +3804,22 @@ class Bridge extends React.Component {
       return message;
     }
 
+    const wireType = fabricMessage.type != null ? String(fabricMessage.type) : '';
+    const chainParent = fabricMessageParent &&
+      typeof fabricMessageParent.setMessageParent === 'function' &&
+      wireType &&
+      !BRIDGE_PARENT_CHAIN_SKIP.has(wireType);
+
     try {
-      return fabricMessage.signWithKey(signingKey);
+      if (chainParent) {
+        const parent = this._outboundMessageTip || fabricMessageParent.ZERO_PARENT;
+        fabricMessageParent.setMessageParent(fabricMessage, parent);
+      }
+      const signed = fabricMessage.signWithKey(signingKey);
+      if (chainParent && signed && signed.id) {
+        this._outboundMessageTip = signed.id;
+      }
+      return signed;
     } catch (error) {
       console.warn('[BRIDGE]', 'Signing failed, sending unsigned:', safeIdentityErr(error));
       return message;

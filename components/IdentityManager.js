@@ -61,8 +61,8 @@ const {
 } = require('../functions/fabricAccountDerivedIdentity');
 const { verifyFabricDesktopLoginSignedPayload, buildFabricIdentitySignedPayload } = require('../functions/fabricDesktopLoginVerify');
 const {
-  buildDeviceLinkOfferMessage,
-  createDeviceLinkOffer,
+  prepareDeviceLinkOffer,
+  commitDeviceLinkOffer,
   fetchDeviceLinkSession,
   postDeviceLinkSignature
 } = require('../functions/fabricDeviceLinkClient');
@@ -659,16 +659,23 @@ function IdentityManager (props) {
       const key = new Key({ xprv: localIdentity.xprv });
       const signedProbe = buildFabricIdentitySignedPayload(key, 'fabric:device-link:id-probe');
       const identId = localIdentity.id || signedProbe.identity.id;
-      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-      const offerMessage = buildDeviceLinkOfferMessage(nonce, identId, label, origin);
-      const offerSigned = buildFabricIdentitySignedPayload(key, offerMessage);
-      const created = await createDeviceLinkOffer({
+      const prepared = await prepareDeviceLinkOffer({
         hubBase: origin,
         origin,
         label,
-        nonce,
+        identity: { id: identId, xpub: localIdentity.xpub || signedProbe.identity.xpub }
+      });
+      if (!prepared.ok) {
+        setError(prepared.error || 'Could not prepare device link offer');
+        setDeviceLinkBusy(false);
+        return;
+      }
+      const offerSigned = buildFabricIdentitySignedPayload(key, prepared.offerMessage);
+      const created = await commitDeviceLinkOffer({
+        hubBase: origin,
+        origin,
+        sessionId: prepared.sessionId,
+        label,
         identity: offerSigned.identity,
         pubkeyHex: offerSigned.pubkeyHex,
         signature: offerSigned.signature

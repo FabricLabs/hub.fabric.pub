@@ -4,7 +4,6 @@
 const fetch = require('cross-fetch');
 
 // Fabric Types
-const Actor = require('@fabric/core/types/actor');
 const Service = require('@fabric/core/types/service');
 
 // Types

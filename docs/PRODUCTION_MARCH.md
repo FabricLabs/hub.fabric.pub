@@ -3,7 +3,7 @@ Hub-specific security and deploy queue: **[OUTSTANDING.md](OUTSTANDING.md)**. Op
 
 The type-tree / docs-clutter march below is **inherited from `@fabric/core`** (keep Hub’s public surface on Peer, documents, contracts, Security). Do not expand Hub RC with new payment rails while those leftovers are open.
 
-**This deploy (2026-08-16):** lockfile core `9938917` + http `7d7f1c7`; Test workflow `.nvmrc` path; **fixed** leftover bitcoinClient `hubAdminToken` on payments URLs; `verifyAdminToken` cap/sub; backup KDF bounds. **Next Hub security slice:** identity import / at-rest KDF (heavy lift). **Suite blocker:** http login/link possession proof. **Next core pin:** [#186](https://github.com/FabricLabs/fabric/pull/186) HEAD **`9c6ade0`** (handshake-bus; not live `f63a33f`).
+**This tree (2026-08-31):** lockfile core `1c3f8d08c` + http `bbdb72a` (packaging: `components/**` + `hasRole` — **http tip must be pushed** for Hub CI); Test workflow `.nvmrc` path; **fixed** leftover bitcoinClient `hubAdminToken` on payments URLs; `verifyAdminToken` cap/sub; backup KDF bounds; Wave 4 at-rest identity **PBKDF2 + AES-GCM**. **Next Hub security slice:** identity import (at-rest KDF is done). **Suite blocker:** http login/link possession proof — the Origin-as-auth read paths in [http #69](https://github.com/FabricLabs/fabric-http/pull/69). **Redeploy still pending:** the live host is behind this lockfile, so treat these pins as tree state, not deployed state.
 
 ---
 
