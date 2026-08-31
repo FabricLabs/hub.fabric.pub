@@ -1,58 +1,30 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `87a3ffc`: packaging/`build-test` green; remaining gate is mocha **`Hub mocha bind isolation`** on macOS (`Timeout of 2000ms` under c8 — Hub ctor > default timeout). Fix: `this.timeout(30000)` + Test matrix `fail-fast: false`. Pins: core **`1c3f8d08c`** / http **`bbdb72a`** (both on GitHub). Codacy still `action_required` on excluded paths — do not churn `.codacy.yml`.
+**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `91999ff`: **build-test + Run tests (macOS/ubuntu) green**. Codacy still `action_required` (**87** new issues / **50** annotations). Staged: clear the **3 non-excluded** findings (`httpSharedMode` for…of, `fabricHttpRebind` `events.once`+`AbortSignal.timeout`, codecov action full SHA) + `.codacy.yml` `enabled: true` on semgrep/opengrep so engine excludes can apply. Remaining ~**47** annotations are still on already-excluded path helpers — if Codacy still scores them after push, batch-ignore in the Codacy UI. Do not keep adding exclude paths.
 
-## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — packaging cleared; mocha timeout next
-Earlier `build-test` / macOS failures at `c184907f0` were
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — tests green; Codacy gate remains
+Earlier packaging/`build-test` failures at `c184907f0` were
 `Cannot find module '../components/browser-content'` (and macOS `hasRole`) from
-`@fabric/http/types/browser.js` under `scripts/build.js`
-(`build.js → types/compiler → http types/compiler → site → spa → app → browser`).
+`@fabric/http/types/browser.js` under `scripts/build.js`. Cleared by http pin
+**`bbdb72a`**. Mocha bind-isolation macOS timeout cleared with `this.timeout(30000)`
++ `fail-fast: false` (`91999ff`).
 
-**Not a Hub bug.** Lockfile had pinned http at **`ca27d1472`** without
-`components/**` / `contracts/hasRole.js` in `files[]`. Tip **`87a3ffc`** pins
-**`bbdb72a`** — `build-test` is green. Remaining: macOS `Run tests` fails on
-`tests/hubLifecycle.test.js` (“binds HTTP and Peer to loopback…”) because Hub
-construction under coverage exceeds mocha’s default **2s**; ubuntu was cancelled
-via matrix fail-fast.
+## Codacy on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16): mostly excluded-path FPs (config historically ignored)
+Tip check annotations (**50**): almost all `path.join` / "dynamic path" / SSRF on
+files this repo **already excludes** in `.codacy.yml` (semgrep + opengrep + global):
+`hubManagedBinaries.js`, `hubDownloadsIndex.js`, `desktopUserData.js`,
+`desktopOpenAtLogin.js`, `fabricHubSeedProbe.js`. Containment is real
+(`normalizeRelativePath` + `tests/hubDownloadsIndex.test.js`).
 
-Guarded upstream so it cannot recur: new http `tests/packageFilesClosure.test.js`
-runs `npm pack --dry-run --json` and asserts every relative `require` of a
-packed module is itself packed. Verified to reproduce this outage, naming
-`types/browser.js -> ../components/browser-content` first, when the
-`components/**` glob is removed.
+**Non-excluded (staged fixes):**
+- `httpSharedMode.js` — "Generic Object Injection" on `list[i]` → `for…of`
+- `fabricHttpRebind.js:62` — "inappropriate function body" on setTimeout/removeListener → `events.once` + `AbortSignal.timeout`
+- `.github/workflows/test.yaml` — codecov action pinned to full commit SHA
 
-**CI actions were also on borrowed time.** All four workflows pinned
-`actions/checkout@v4` / `setup-node@v4` (plus `upload-artifact@v4` and
-`codecov/codecov-action@v3.1.1`), which GitHub now force-runs on Node 24.
-Bumped to `@v7` after verifying each input in use is still declared in the
-target `action.yml` and that every `v7` tag resolves; `upload-artifact`'s
-no-merge rule is satisfied because the name is matrix-scoped
-(`fabric-hub-desktop-${{ matrix.os }}`). The codecov step gained
-`continue-on-error: true` to match `@fabric/core` — v4+ prefers a token even on
-public repos, so a tokenless upload can be rate-limited and must not gate CI.
-
-## Codacy on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16): config is not being honoured (do not add more excludes)
-Codacy reported **86 new issues** / 30 annotations and held the check at
-`action_required`. **28 of 30 are on files this repo already excludes** — both
-per-engine (`semgrep`, `opengrep`) *and* globally: `hubDownloadsIndex.js` (11),
-`desktopUserData.js` (7), `hubManagedBinaries.js` (6), `desktopOpenAtLogin.js`
-(2), `fabricHubSeedProbe.js` (2). Those excludes were present in `.codacy.yml`
-**at the analyzed commit `c184907f0`**, so this is not a stale-config problem
-and **adding more paths will not help** — the gate needs a Codacy re-run or a
-UI-side ignore. Do not churn `.codacy.yml` for it.
-
-The findings themselves are the known dynamic-path false-positive class, and the
-containment is real, not nominal — `normalizeRelativePath` was probed directly:
-`../etc/passwd`, `../../secret`, `mac/../../etc/passwd`, and `..` all return
-`null`, `/abs/path` is demoted to `abs/path`, and `....//x` → `..../x` is a
-literal directory name rather than an escape. `tests/hubDownloadsIndex.test.js`
-already pins the traversal cases. The two findings *not* on the exclude list are
-also false positives: `httpSharedMode.js:52` "Generic Object Injection Sink" is
-`list[i]` over a local array of literal env-key names — that function
-deliberately avoids dynamic `env[key]` access with an if/else chain on literals
-— and `fabricHttpRebind.js:62` "inappropriate function body content" is a
-`setTimeout` cleanup inside a listen promise.
+`.codacy.yml` now sets `engines.semgrep|opengrep.enabled: true` (excludes unchanged).
+If Codacy still scores the excluded files after push, **UI ignore / pattern mute**
+is required — more YAML paths will not help.
 
 ~~The repeated `Could not wipe database: ModuleError: Database is not open` lines~~
 **Resolved by the `ff7c05c52` pin.** The installed `@fabric/core/types/store.js`

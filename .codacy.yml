@@ -1,6 +1,11 @@
 # Codacy — reduce noise on generated / vendor / report trees (PR #15 100-issue cap).
 # https://docs.codacy.com/repositories-configure/codacy-configuration-file/
 # Advisory detector stays in Semgrep/Opengrep (array walk is `for…of`, not `input[i]`).
+#
+# Tip `91999ff` still reported path.join / SSRF FPs on the excluded helpers below
+# (Codacy check annotations ignore this file's excludes). `enabled: true` is set
+# explicitly so engine-level `exclude_paths` are applied when Codacy honors config;
+# do not add more paths unless a new FP appears on a *non*-excluded file.
 ---
 engines:
   remark-lint:
@@ -9,35 +14,37 @@ engines:
   # on path.join(PATH entry, 'lightningd'). Lookup is now `which`/`where`; keep the
   # exclude so a future PATH walk cannot fail the PR (Codacy ignores nosemgrep).
   semgrep:
+    enabled: true
     exclude_paths:
-      - "functions/hubLightningGate.js"
+      - 'functions/hubLightningGate.js'
       # Operator-local path.join / pinned-binary fetch (not HTTP user input).
-      - "functions/desktopOpenAtLogin.js"
-      - "functions/desktopUserData.js"
-      - "functions/hubDownloadsIndex.js"
-      - "functions/hubManagedBinaries.js"
-      - "functions/fabricHubSeedProbe.js"
+      - 'functions/desktopOpenAtLogin.js'
+      - 'functions/desktopUserData.js'
+      - 'functions/hubDownloadsIndex.js'
+      - 'functions/hubManagedBinaries.js'
+      - 'functions/fabricHubSeedProbe.js'
   opengrep:
+    enabled: true
     exclude_paths:
-      - "functions/hubLightningGate.js"
-      - "functions/desktopOpenAtLogin.js"
-      - "functions/desktopUserData.js"
-      - "functions/hubDownloadsIndex.js"
-      - "functions/hubManagedBinaries.js"
-      - "functions/fabricHubSeedProbe.js"
+      - 'functions/hubLightningGate.js'
+      - 'functions/desktopOpenAtLogin.js'
+      - 'functions/desktopUserData.js'
+      - 'functions/hubDownloadsIndex.js'
+      - 'functions/hubManagedBinaries.js'
+      - 'functions/fabricHubSeedProbe.js'
 exclude_paths:
-  - "assets/**"
-  - "libraries/**"
-  - "reports/**"
-  - "docs/**"
-  - "tests/**"
-  - "scripts/**"
-  - "extension/vendor/**"
-  - "coverage/**"
-  - "SECURITY.md"
-  - "AUDIT.md"
-  - "functions/desktopOpenAtLogin.js"
-  - "functions/desktopUserData.js"
-  - "functions/hubDownloadsIndex.js"
-  - "functions/hubManagedBinaries.js"
-  - "functions/fabricHubSeedProbe.js"
+  - 'assets/**'
+  - 'libraries/**'
+  - 'reports/**'
+  - 'docs/**'
+  - 'tests/**'
+  - 'scripts/**'
+  - 'extension/vendor/**'
+  - 'coverage/**'
+  - 'SECURITY.md'
+  - 'AUDIT.md'
+  - 'functions/desktopOpenAtLogin.js'
+  - 'functions/desktopUserData.js'
+  - 'functions/hubDownloadsIndex.js'
+  - 'functions/hubManagedBinaries.js'
+  - 'functions/fabricHubSeedProbe.js'

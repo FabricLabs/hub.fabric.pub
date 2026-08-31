@@ -34,4 +34,12 @@ describe('waitForHttpServerListening', function () {
       /no server/
     );
   });
+
+  it('rejects when the server never binds before timeout', async function () {
+    const srv = http.createServer();
+    await assert.rejects(
+      () => waitForHttpServerListening(srv, 50),
+      /timed out/
+    );
+  });
 });

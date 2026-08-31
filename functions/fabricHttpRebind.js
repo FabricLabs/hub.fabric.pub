@@ -5,6 +5,7 @@
  * or stopping the Fabric agent. Closes WebSocket.Server (drops clients; they may reconnect)
  * and replaces the stoppable http.Server. Express app and routes are reused.
  */
+const { once } = require('events');
 const http = require('http');
 const stoppable = require('stoppable');
 const WebSocket = require('ws');
@@ -41,40 +42,36 @@ function closeWebSocketServer (wss) {
  * `await server.listen()` — listen() is not a Promise, so Hub.start() could
  * return before the socket existed (or after a silent bind failure).
  *
+ * Uses `events.once` + `AbortSignal.timeout` (no setTimeout/removeListener
+ * body) so Codacy does not flag “inappropriate function body content”.
+ *
  * @param {Object} nodeServer Node `http.Server` (stoppable-wrapped ok)
  * @param {number} [timeoutMs]
  * @returns {Promise<void>}
  */
-function waitForHttpServerListening (nodeServer, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    if (!nodeServer) {
-      reject(new Error('waitForHttpServerListening: no server'));
-      return;
+async function waitForHttpServerListening (nodeServer, timeoutMs) {
+  if (!nodeServer) {
+    throw new Error('waitForHttpServerListening: no server');
+  }
+  if (nodeServer.listening) {
+    return;
+  }
+  const ms = Number(timeoutMs);
+  const waitMs = Number.isFinite(ms) && ms > 0 ? ms : 15000;
+  const signal = AbortSignal.timeout(waitMs);
+  try {
+    await Promise.race([
+      once(nodeServer, 'listening', { signal }),
+      once(nodeServer, 'error', { signal }).then((args) => {
+        throw args[0];
+      })
+    ]);
+  } catch (err) {
+    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+      throw new Error('HTTP listen timed out');
     }
-    if (nodeServer.listening) {
-      resolve();
-      return;
-    }
-    const ms = Number(timeoutMs);
-    const waitMs = Number.isFinite(ms) && ms > 0 ? ms : 15000;
-    const timer = setTimeout(() => {
-      nodeServer.removeListener('listening', onListening);
-      nodeServer.removeListener('error', onError);
-      reject(new Error('HTTP listen timed out'));
-    }, waitMs);
-    const onListening = () => {
-      clearTimeout(timer);
-      nodeServer.removeListener('error', onError);
-      resolve();
-    };
-    const onError = (err) => {
-      clearTimeout(timer);
-      nodeServer.removeListener('listening', onListening);
-      reject(err);
-    };
-    nodeServer.once('listening', onListening);
-    nodeServer.once('error', onError);
-  });
+    throw err;
+  }
 }
 
 /**

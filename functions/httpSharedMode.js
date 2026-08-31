@@ -39,8 +39,8 @@ function isHttpSharedModeEnabledLocal (raw) {
 
 function listenHostFromNamedEnv (env, keys) {
   const list = Array.isArray(keys) && keys.length ? keys : DEFAULT_HTTP_LISTEN_ENV_KEYS;
-  for (let i = 0; i < list.length; i++) {
-    const key = list[i];
+  // for…of — avoid `list[i]` which Codacy flags as Generic Object Injection.
+  for (const key of list) {
     let raw = '';
     if (key === 'FABRIC_HUB_INTERFACE') raw = env && env.FABRIC_HUB_INTERFACE;
     else if (key === 'INTERFACE') raw = env && env.INTERFACE;
