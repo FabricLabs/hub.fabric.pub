@@ -217,24 +217,35 @@ function _keyBagEmpty (bag) {
   return !(xprv || seed || mnemonic);
 }
 
-if (_keyBagEmpty(settings.key)) {
-  try {
-    const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
-    const fromWallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
-    if (fromWallet && fromWallet.xprv) {
-      settings = {
-        ...settings,
-        key: {
-          ...(settings.key || {}),
-          xprv: fromWallet.xprv,
-          seed: fromWallet.seed || (settings.key && settings.key.seed) || null,
-          mnemonic: fromWallet.mnemonic || (settings.key && settings.key.mnemonic) || null,
-          xpub: fromWallet.xpub || (settings.key && settings.key.xpub) || null
-        }
-      };
-      console.log('[FABRIC:HUB] Identity loaded from ~/.fabric/wallet.json');
+try {
+  const { exclusiveOperatorKeySettings, resolveFabricOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+  const exclusive = exclusiveOperatorKeySettings(settings.key);
+  if (exclusive) {
+    settings = { ...settings, key: exclusive };
+  } else if (_keyBagEmpty(settings.key)) {
+    const resolved = resolveFabricOperatorKeySettings(process.env, {
+      allowWalletFallback: true,
+      password: process.env.FABRIC_PASSWORD
+    });
+    if (resolved && resolved.key) {
+      settings = { ...settings, key: resolved.key };
+      console.log('[FABRIC:HUB] Identity from', resolved.source, '(fabric setup Environment)');
     }
-  } catch (_) { /* older core pin or locked wallet */ }
+  }
+} catch (_) {
+  if (_keyBagEmpty(settings.key)) {
+    try {
+      const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
+      const fromWallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
+      if (fromWallet && fromWallet.xprv) {
+        settings = {
+          ...settings,
+          key: { xprv: fromWallet.xprv, xpub: fromWallet.xpub || null }
+        };
+        console.log('[FABRIC:HUB] Identity loaded from ~/.fabric/wallet.json');
+      }
+    } catch (__) { /* older core pin or locked wallet */ }
+  }
 }
 
 // Services
@@ -275,7 +286,12 @@ async function exitWithHubStop (reason = 'unknown', exitCode = 0) {
 
 // Main process
 async function main (input = {}) {
-  console.log('[FABRIC:HUB]', 'Hub settings:', input);
+  let logSettings = input;
+  try {
+    const { redactHubSettingsForLog } = require('../functions/redactHubSettings');
+    logSettings = redactHubSettingsForLog(input);
+  } catch (_) {}
+  console.log('[FABRIC:HUB]', 'Hub settings:', logSettings);
   const hub = new Hub(input);
   activeHub = hub;
 

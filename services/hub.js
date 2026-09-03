@@ -183,9 +183,11 @@ const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelop
 const documentPaymentHash = require('../functions/documentPaymentHash');
 const sidechainState = require('../functions/sidechainState');
 const trackedApplicationContracts = require('../functions/trackedApplicationContracts');
+const contractPublishAuthority = require('@fabric/core/functions/contractPublishAuthority');
 const contractStatechains = require('../functions/contractStatechains');
 const contractMessageQueue = require('../functions/contractMessageQueue');
 const beaconNetworkGuard = require('@fabric/core/functions/beaconNetworkGuard');
+const beaconFederationSigning = require('@fabric/core/functions/beaconFederationSigning');
 let beaconContractDefinition = null;
 try {
   beaconContractDefinition = require('@fabric/core/functions/beaconContractDefinition');
@@ -494,7 +496,19 @@ class Hub extends Service {
     // Vector Clock
     this.clock = this.settings.clock;
 
-    // Root Key
+    // Root Key — exclusive identity (xprv > seed > mnemonic). Mixed bags
+    // from settings/local.js would otherwise follow Key's mnemonic-first path
+    // and diverge from playnet / FABRIC_XPRV.
+    try {
+      const { exclusiveOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+      const exclusive = exclusiveOperatorKeySettings(this.settings.key);
+      if (exclusive) {
+        this.settings.key = Object.assign({}, {
+          passphrase: this.settings.key && this.settings.key.passphrase
+        }, exclusive);
+      }
+    } catch (_) { /* older @fabric/core pin */ }
+
     this._rootKey = new Key(this.settings.key);
 
     // Internals
@@ -656,6 +670,25 @@ class Hub extends Service {
       getEpochStatus: () => this._getDistributedEpochJson(),
       getSidechainState: () => this._getSidechainStateJson(),
       submitSidechainStatePatch: (params) => this._submitSidechainStatePatch(params),
+      listPendingBeaconEpochSignatures: () => {
+        if (!this.beacon || typeof this.beacon.listPendingFederationEpochRounds !== 'function') {
+          return { type: 'PendingBeaconEpochSignatures', rounds: [] };
+        }
+        return {
+          type: 'PendingBeaconEpochSignatures',
+          rounds: this.beacon.listPendingFederationEpochRounds()
+        };
+      },
+      submitBeaconEpochSignature: (params = {}) => {
+        if (!this.beacon || typeof this.beacon.submitFederationEpochSignature !== 'function') {
+          return Promise.resolve({ status: 'error', message: 'Beacon not available' });
+        }
+        return this.beacon.submitFederationEpochSignature(
+          params.commitmentDigest,
+          params.pubkey,
+          params.signature || params.signatureHex
+        );
+      },
       getSidechainJournal: (req) => {
         const q = (req && req.query) || {};
         return this._getSidechainJournalJson({
@@ -2944,6 +2977,28 @@ class Hub extends Service {
     ));
   }
 
+  /**
+   * Whether trusted sidechain apply (no federation witness) is allowed.
+   * Disabled by default; regtest/playnet only via env or explicit setting.
+   * @returns {boolean}
+   */
+  _allowTrustedSidechainPatch () {
+    if (process.env.FABRIC_SIDECHAIN_TRUSTED_PATCH === '1') return true;
+    const cfg = this.settings.distributed && this.settings.distributed.allowTrustedSidechainPatch;
+    return cfg === true;
+  }
+
+  /**
+   * Fail-closed beacon epoch witness verification when federation validators are configured.
+   * @returns {boolean}
+   */
+  _federationWitnessFailClosedEffective () {
+    const beaconCfg = this.settings.beacon || {};
+    if (beaconCfg.federationWitnessFailClosed === false) return false;
+    if (beaconCfg.federationWitnessFailClosed === true) return true;
+    return this._distributedFederationValidatorsFromEnv().length > 0;
+  }
+
   _reapplyBeaconFederationPolicy () {
     if (!this.beacon || typeof this.beacon.attach !== 'function') return;
     try {
@@ -2955,6 +3010,7 @@ class Hub extends Service {
         key: this._rootKey,
         federationValidators: validators,
         federationThreshold,
+        federationWitnessFailClosed: this._federationWitnessFailClosedEffective(),
         getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon(),
         getContractsSnapshotForEpoch: () => this._getContractsSnapshotForBeacon()
       });
@@ -3161,12 +3217,132 @@ class Hub extends Service {
 
   /**
    * Snapshot of accepted tracked application contracts for Beacon epochs (`payload.contracts`).
-   * This is the federation-facing state root of published contracts the operator accepted.
-   * @returns {{ clock: number, stateDigest: string, kind: string, acceptedCount: number }}
+   * This is the federation-facing Merkle root of published contracts the operator accepted.
+   * @returns {{ clock: number, stateDigest: string, merkleRoot: string, kind: string, acceptedCount: number }}
    */
   _getContractsSnapshotForBeacon () {
     const state = this._ensureTrackedContracts();
     return trackedApplicationContracts.beaconSnapshot(state);
+  }
+
+  /**
+   * Gossip a FederationSignRequest / FederationSignResponse (GenericMessage JSON).
+   * @param {object} body
+   * @private
+   */
+  _broadcastFederationSignMessage (body) {
+    if (!body || typeof body !== 'object') return;
+    if (typeof this.http.broadcast !== 'function' && !(this.agent && typeof this.agent.relayFrom === 'function')) {
+      return;
+    }
+    const payload = JSON.stringify(body);
+    const msg = Message.fromVector(['GenericMessage', payload]);
+    if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+    if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
+    if (this.agent && typeof this.agent.relayFrom === 'function') {
+      this.agent.relayFrom('_hub', msg).catch(() => {});
+    }
+  }
+
+  /**
+   * True when a peer epoch payload matches this Hub's locally computed digests
+   * (contracts Merkle root + sidechain head). Clock may differ until seal.
+   * @param {object} epoch
+   * @returns {boolean}
+   * @private
+   */
+  _federationEpochMatchesLocalDigests (epoch) {
+    if (!epoch || typeof epoch !== 'object') return false;
+    try {
+      const contracts = this._getContractsSnapshotForBeacon();
+      const sidechain = this._getSidechainSnapshotForBeacon();
+      if (epoch.contracts && typeof epoch.contracts === 'object') {
+        const remoteRoot = epoch.contracts.merkleRoot || epoch.contracts.stateDigest;
+        const localRoot = contracts.merkleRoot || contracts.stateDigest;
+        if (remoteRoot && localRoot && String(remoteRoot) !== String(localRoot)) return false;
+      }
+      if (epoch.sidechain && typeof epoch.sidechain === 'object') {
+        const remoteDig = epoch.sidechain.stateDigest;
+        const localDig = sidechain.stateDigest;
+        if (remoteDig && localDig && String(remoteDig) !== String(localDig)) return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Sign a pending federation epoch round with the Hub root key and gossip the response.
+   * @param {object} signRequest
+   * @returns {Promise<object|null>}
+   * @private
+   */
+  async _maybeAutoSignFederationEpoch (signRequest) {
+    if (!this.beacon || !signRequest || !signRequest.commitmentDigest) return null;
+    const validators = this._distributedFederationValidatorsFromEnv();
+    if (!validators.length) return null;
+    if (!this._rootKey || !this._rootKey.private) return null;
+    const pk = this._rootKey.pubkey ? String(this._rootKey.pubkey).trim() : null;
+    if (!pk || !validators.includes(pk)) return null;
+
+    if (signRequest.epoch && !this._federationEpochMatchesLocalDigests(signRequest.epoch)) {
+      console.warn('[HUB:BEACON] Refusing to auto-sign epoch: local digests diverge');
+      return null;
+    }
+
+    const adopted = await this.beacon.adoptFederationSignRequest(signRequest);
+    if (!adopted.ok) {
+      console.warn('[HUB:BEACON] adoptFederationSignRequest:', adopted.error);
+      return null;
+    }
+
+    const signed = await this.beacon.signPendingFederationRoundAsLocalValidator(signRequest.commitmentDigest);
+    if (!signed.ok) {
+      // Already contributed / not a validator is fine.
+      if (signed.error && !/not a federation validator|unknown pending/i.test(signed.error)) {
+        console.warn('[HUB:BEACON] auto-sign:', signed.error);
+      }
+      return null;
+    }
+    if (signed.response) this._broadcastFederationSignMessage(signed.response);
+    return signed.submit || null;
+  }
+
+  /**
+   * Ingest a peer FederationSignRequest: verify digests, adopt, auto-sign, accumulate.
+   * @param {object} ev
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _ingestFederationSignRequestFromPeer (ev = {}) {
+    const request = (ev && ev.request) || ev || {};
+    if (!request.commitmentDigest || !request.epoch) return;
+    if (!this._federationEpochMatchesLocalDigests(request.epoch)) {
+      if (this.settings && this.settings.debug) {
+        console.debug('[HUB:BEACON] Ignoring peer FederationSignRequest (digest mismatch)');
+      }
+      return;
+    }
+    await this._maybeAutoSignFederationEpoch(request);
+  }
+
+  /**
+   * Ingest a peer FederationSignResponse into local signature accumulation.
+   * @param {object} ev
+   * @returns {Promise<object|null>}
+   * @private
+   */
+  async _ingestFederationSignResponseFromPeer (ev = {}) {
+    if (!this.beacon || typeof this.beacon.submitFederationEpochSignature !== 'function') return null;
+    const body = (ev && ev.response) || ev || {};
+    const parsed = beaconFederationSigning.parseSignResponse(body);
+    if (!parsed.ok) return null;
+    return this.beacon.submitFederationEpochSignature(
+      parsed.commitmentDigest,
+      parsed.pubkey,
+      parsed.signature
+    );
   }
 
   _ensureTrackedContracts () {
@@ -3558,6 +3734,21 @@ class Hub extends Service {
     if (!contractId) return { status: 'error', message: 'contractId required' };
     try {
       const state = this._ensureTrackedContracts();
+      const pending = state.pending && state.pending[contractId] ? state.pending[contractId] : null;
+      const acceptedExisting = state.accepted && state.accepted[contractId] ? state.accepted[contractId] : null;
+      const publishEntry = pending || acceptedExisting;
+      if (publishEntry && publishEntry.definition && publishEntry.signer) {
+        const authorized = contractPublishAuthority.contractPublishSignerAuthorized(
+          publishEntry.definition,
+          publishEntry.signer
+        );
+        if (!authorized) {
+          return {
+            status: 'error',
+            message: 'pending publish signer is not listed in contract authority set'
+          };
+        }
+      }
       const tip = await this._bitcoinTipForArc();
       const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
         || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
@@ -3709,6 +3900,42 @@ class Hub extends Service {
   }
 
   /**
+   * Authorize a sidechain patch proposal (global or contract namespace).
+   * @param {{ validators: string[], threshold: number, federationWitness: *, adminToken: *, msgBuf: Buffer }} auth
+   * @returns {{ ok: true }|{ status: 'error', message: string }}
+   * @private
+   */
+  _authorizeSidechainPatchProposal (auth) {
+    const validators = auth.validators || [];
+    const threshold = auth.threshold;
+    const federationWitness = auth.federationWitness || null;
+    const adminToken = auth.adminToken;
+    const msgBuf = auth.msgBuf;
+    if (validators.length > 0) {
+      if (!federationWitness) {
+        return {
+          status: 'error',
+          message: 'federationWitness required (federation validators configured; admin token not accepted)'
+        };
+      }
+      const ok = DistributedExecution.verifyFederationWitnessOnMessage(
+        msgBuf,
+        federationWitness,
+        validators,
+        threshold
+      );
+      if (!ok) {
+        return { status: 'error', message: 'federationWitness invalid or insufficient' };
+      }
+      return { ok: true };
+    }
+    if (!this.setup.verifyAdminToken(adminToken)) {
+      return { status: 'error', message: 'adminToken required (no federation validators configured)' };
+    }
+    return { ok: true };
+  }
+
+  /**
    * Contract Statechain head for an accepted CONTRACT_PUBLISH namespace (ADR-001).
    * @param {{ contractId: (string|undefined)}} params
    */
@@ -3782,19 +4009,14 @@ class Hub extends Service {
     const basisDigest = sidechainState.stateDigest(contractState);
     const proposal = { basisClock, basisDigest, patches };
     const msgBuf = Buffer.from(sidechainState.signingStringForSidechainStatePatch(proposal), 'utf8');
-    if (validators.length > 0) {
-      const ok = DistributedExecution.verifyFederationWitnessOnMessage(
-        msgBuf,
-        federationWitness,
-        validators,
-        threshold
-      );
-      if (!ok) {
-        return { status: 'error', message: 'federationWitness invalid or insufficient' };
-      }
-    } else if (!this.setup.verifyAdminToken(adminToken)) {
-      return { status: 'error', message: 'adminToken required (no federation validators configured)' };
-    }
+    const auth = this._authorizeSidechainPatchProposal({
+      validators,
+      threshold,
+      federationWitness,
+      adminToken,
+      msgBuf
+    });
+    if (auth.status === 'error') return auth;
 
     const applied = await contractStatechains.applyPatchesToContractStatechain(
       this.fs,
@@ -3868,6 +4090,13 @@ class Hub extends Service {
   }
 
   async _applySidechainPatchesTrustedUnlocked (patches) {
+    if (!this._allowTrustedSidechainPatch()) {
+      console.warn('[HUB:SIDECHAIN] Trusted sidechain apply rejected (set FABRIC_SIDECHAIN_TRUSTED_PATCH=1 for regtest/playnet)');
+      return {
+        status: 'error',
+        message: 'trusted sidechain apply disabled (federation witness required; set FABRIC_SIDECHAIN_TRUSTED_PATCH=1 for regtest/playnet only)'
+      };
+    }
     if (!Array.isArray(patches) || !patches.length) {
       return { status: 'error', message: 'patches required' };
     }
@@ -3918,6 +4147,22 @@ class Hub extends Service {
     };
   }
 
+  /**
+   * Ingest a SIDECHAIN_STATE_PATCH from the Fabric Peer mesh.
+   * @param {{ proposal?: object, federationWitness?: object|null }} ev
+   * @returns {Promise<object|null>}
+   */
+  async _ingestSidechainPatchFromPeer (ev = {}) {
+    const proposal = ev && ev.proposal ? ev.proposal : null;
+    if (!proposal || !Array.isArray(proposal.patches) || !proposal.patches.length) return null;
+    const run = this._sidechainSerialize || ((fn) => fn());
+    return run(() => this._submitSidechainStatePatchUnlocked({
+      patches: proposal.patches,
+      basisClock: proposal.basisClock,
+      federationWitness: (ev && ev.federationWitness) || proposal.federationWitness || null
+    }));
+  }
+
   async _submitSidechainStatePatchUnlocked (params = {}) {
     const req = (params && typeof params === 'object') ? params : {};
     const patches = req.patches;
@@ -3945,19 +4190,14 @@ class Hub extends Service {
     const proposal = { basisClock, basisDigest, patches };
     const msgBuf = Buffer.from(sidechainState.signingStringForSidechainStatePatch(proposal), 'utf8');
 
-    if (validators.length > 0) {
-      const ok = DistributedExecution.verifyFederationWitnessOnMessage(
-        msgBuf,
-        federationWitness,
-        validators,
-        threshold
-      );
-      if (!ok) {
-        return { status: 'error', message: 'federationWitness invalid or insufficient' };
-      }
-    } else if (!this.setup.verifyAdminToken(adminToken)) {
-      return { status: 'error', message: 'adminToken required (no federation validators configured)' };
-    }
+    const auth = this._authorizeSidechainPatchProposal({
+      validators,
+      threshold,
+      federationWitness,
+      adminToken,
+      msgBuf
+    });
+    if (auth.status === 'error') return auth;
 
     const applied = sidechainState.applyPatchesToState(state, patches, policy);
     if (!applied.ok) {
@@ -10276,6 +10516,9 @@ class Hub extends Service {
       key: this._rootKey,
       federationValidators: _fedVals,
       federationThreshold: _fedVals.length ? _fedThrRaw : Math.max(1, _fedThrRaw),
+      federationWitnessFailClosed: this._federationWitnessFailClosedEffective(),
+      // Every federation validator observes L1 tips locally (incl. regtest).
+      followBlocks: _fedVals.length > 0,
       getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon(),
       getContractsSnapshotForEpoch: () => this._getContractsSnapshotForBeacon()
     });
@@ -10342,20 +10585,20 @@ class Hub extends Service {
 
     this.beacon.on('federation:sign-request', (signRequest) => {
       try {
-        if (typeof this.http.broadcast !== 'function') return;
-        const payload = JSON.stringify(signRequest);
-        const msg = Message.fromVector(['GenericMessage', payload]);
-        if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
-        this.http.broadcast(msg);
-        if (this.agent && typeof this.agent.relayFrom === 'function') {
-          this.agent.relayFrom('_hub', msg).catch(() => {});
-        }
+        this._broadcastFederationSignMessage(signRequest);
         console.log(
           '[HUB:BEACON] Federation sign request pending:',
           signRequest && signRequest.commitmentDigest
             ? String(signRequest.commitmentDigest).slice(0, 16) + '…'
             : '?'
         );
+        // Local validator already contributed its Schnorr in createRound; still
+        // re-sign/finalize if the round was adopted without a local witness.
+        Promise.resolve()
+          .then(() => this._maybeAutoSignFederationEpoch(signRequest))
+          .catch((e) => {
+            console.warn('[HUB:BEACON] local auto-sign failed:', e && e.message ? e.message : e);
+          });
       } catch (e) {
         console.warn('[HUB:BEACON] federation:sign-request broadcast failed:', e && e.message ? e.message : e);
       }
@@ -12929,7 +13172,7 @@ class Hub extends Service {
       });
 
       // Regtest only: OP_RETURN anchor for {@link computeExecutionRunCommitmentHex} (admin + funded wallet).
-      // Params: { commitmentHex, adminToken }
+      // Params: { commitmentHex, adminToken, programHash?, contractId?, federationWitness? }
       this.http._registerMethod('AnchorExecutionRunCommitment', async (...params) => {
         const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
         const token = String(req.adminToken || '').trim();
@@ -12939,6 +13182,35 @@ class Hub extends Service {
         const commitmentHex = String(req.commitmentHex || '').trim().toLowerCase();
         if (!/^[0-9a-f]{64}$/.test(commitmentHex)) {
           return { status: 'error', message: 'commitmentHex must be 64 hex characters' };
+        }
+        const validators = this._distributedFederationValidatorsFromEnv();
+        const threshold = this._distributedFederationThresholdEffective();
+        if (validators.length > 0) {
+          const executionRunAttestation = require('@fabric/core/functions/executionRunAttestation');
+          const programHash = req.programHash != null ? String(req.programHash) : '';
+          if (!programHash) {
+            return { status: 'error', message: 'programHash required when federation validators configured' };
+          }
+          const witness = req.federationWitness || null;
+          if (!witness) {
+            return {
+              status: 'error',
+              message: 'federationWitness required for execution run anchor (validators configured)'
+            };
+          }
+          const ok = executionRunAttestation.verifyExecutionRunFederationWitness(
+            {
+              programHash,
+              runCommitmentHex: commitmentHex,
+              contractId: req.contractId != null ? String(req.contractId) : null
+            },
+            witness,
+            validators,
+            threshold
+          );
+          if (!ok) {
+            return { status: 'error', message: 'federationWitness invalid or insufficient for execution run' };
+          }
         }
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) {
@@ -14047,6 +14319,29 @@ class Hub extends Service {
       // queued as opaque AMP hex (hub-blind; no seal open) for later relay.
       this._contractNamespaces = this._contractNamespaces || new Set();
       this._contractMessageCounts = this._contractMessageCounts || Object.create(null);
+      this.agent.on('sidechain:patch', (ev) => {
+        Promise.resolve()
+          .then(() => this._ingestSidechainPatchFromPeer(ev || {}))
+          .catch((err) => {
+            if (this.settings && this.settings.debug) {
+              console.error('[HUB:SIDECHAIN] peer patch ingest failed:', err && err.message ? err.message : err);
+            }
+          });
+      });
+      this.agent.on('federation:sign-request', (ev) => {
+        Promise.resolve()
+          .then(() => this._ingestFederationSignRequestFromPeer(ev || {}))
+          .catch((err) => {
+            console.warn('[HUB:BEACON] peer FederationSignRequest failed:', err && err.message ? err.message : err);
+          });
+      });
+      this.agent.on('federation:sign-response', (ev) => {
+        Promise.resolve()
+          .then(() => this._ingestFederationSignResponseFromPeer(ev || {}))
+          .catch((err) => {
+            console.warn('[HUB:BEACON] peer FederationSignResponse failed:', err && err.message ? err.message : err);
+          });
+      });
       this.agent.on('contract:publish', (ev) => {
         const contract = ev && ev.contract ? String(ev.contract) : null;
         if (!contract) return;

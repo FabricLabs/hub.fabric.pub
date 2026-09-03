@@ -13,8 +13,9 @@ function applySharedModeWebsocketGateLocal (settings = {}, opts = {}) {
     ws.requireClientToken === 0 ||
     ws.requireClientToken === '0';
   if (explicitOff) return settings;
-  // Fail closed at the handshake: require a token, but do not abort Hub
-  // start when FABRIC_WS_CLIENT_TOKEN / websocket.clientToken is empty.
+  // Fail-closed: shared bind turns requireClientToken on even when the env
+  // token is unset — HTTPServer rejects handshakes until a token is configured.
+  // Do not abort Hub process start (ops can set FABRIC_WS_CLIENT_TOKEN later).
   ws.requireClientToken = true;
   const envTok = String(env.FABRIC_WS_CLIENT_TOKEN || '').trim();
   if (envTok && !ws.clientToken) ws.clientToken = envTok;

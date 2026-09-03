@@ -116,9 +116,21 @@ function loadPeerKeySettings (opts = {}) {
     : true;
 
   try {
+    const { resolveFabricOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+    const resolved = resolveFabricOperatorKeySettings(process.env, {
+      allowWalletFallback: allowWallet
+    });
+    if (resolved && resolved.key && (resolved.key.xprv || resolved.key.seed || resolved.key.mnemonic)) {
+      return resolved.key;
+    }
+  } catch (err) {
+    if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+  }
+
+  try {
     const { keySettingsFromEnv } = require('@fabric/core/functions/fabricKeyMaterial');
     const fromEnv = keySettingsFromEnv(process.env);
-    if (fromEnv) return fromEnv;
+    if (fromEnv && (fromEnv.xprv || fromEnv.seed || fromEnv.mnemonic)) return fromEnv;
   } catch (err) {
     if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
     const fallback = fallbackPeerKeySettingsFromEnv(process.env);

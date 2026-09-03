@@ -125,6 +125,9 @@ stores/hub/debug.log
 logs/hub/debug.log
 logs/hub/debug.log.1
 
+# Screenshot capture ephemeral Hub datadirs
+stores/screenshot-runs/
+
 # Local playnet regtest mesh (launcher-generated state)
 stores/playnet-mesh-runtime/
 

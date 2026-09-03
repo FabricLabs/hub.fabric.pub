@@ -1,6 +1,8 @@
 # Production deployment
 Operator checklist for running **hub.fabric.pub** beyond local development—suitable for a public or team-facing Hub.
 
+**Federation promotion (regtest → signet → mainnet, `fabric setup` identity):** [FEDERATION_DEPLOYMENT.md](FEDERATION_DEPLOYMENT.md).
+
 ## Playnet contracts (hub.fabric.pub + relay.goon.vc)
 
 After this Hub is running on **hub.fabric.pub** with a Fabric Peer and Beacon:

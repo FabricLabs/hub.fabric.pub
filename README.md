@@ -9,6 +9,7 @@ If you are a **software engineer** who wants to **fork or clone** and run the Hu
 | Protocol & payments | [PAYMENTS_PROTOCOL.md](PAYMENTS_PROTOCOL.md) · [INVENTORY_HTLC_ONCHAIN.md](INVENTORY_HTLC_ONCHAIN.md) |
 | Production deploy | [docs/PRODUCTION.md](docs/PRODUCTION.md) |
 | Marketing overview | [docs/MARKETING_OVERVIEW.md](docs/MARKETING_OVERVIEW.md) |
+| UI user-flow screenshots | [docs/USER_FLOWS.md](docs/USER_FLOWS.md) (`npm run screenshots`) |
 | Release / checklist | [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) · [CHANGELOG.md](CHANGELOG.md) |
 
 **Status:** `0.1.0-RC1` — run `npm run ci` before release tags.

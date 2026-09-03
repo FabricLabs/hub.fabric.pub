@@ -32,6 +32,17 @@ function contractSpend () {
   return _contractSpend;
 }
 
+let _Tree = null;
+function TreeType () {
+  if (_Tree !== null) return _Tree;
+  try {
+    _Tree = require('@fabric/core/types/tree');
+  } catch (_) {
+    _Tree = false;
+  }
+  return _Tree;
+}
+
 function sha256hex (s) {
   return crypto.createHash('sha256').update(String(s)).digest('hex');
 }
@@ -59,22 +70,42 @@ function emptyRoot () {
 }
 
 /**
+ * Sorted leaf digests for the accepted-contracts Merkle tree.
  * @param {object} state
- * @returns {string}
+ * @returns {string[]}
  */
-function computeStateRoot (state) {
+function acceptedContractLeaves (state) {
   const accepted = (state && state.accepted) || {};
-  const rows = Object.keys(accepted).sort().map((id) => {
+  return Object.keys(accepted).sort().map((id) => {
     const c = accepted[id] || {};
-    return {
+    return sha256hex(canonicalStringify({
       contractId: id,
       definitionDigest: c.definitionDigest || null,
       stateDigest: c.stateDigest || c.definitionDigest || null,
       name: c.name || null,
       version: c.version != null ? c.version : null
-    };
+    }));
   });
-  return sha256hex(canonicalStringify({ version: SCHEMA_VERSION, contracts: rows }));
+}
+
+/**
+ * Merkle root over accepted contracts (Bitcoin-style Tree when available).
+ * Falls back to SHA-256 of the sorted leaf list so digests stay deterministic.
+ * @param {object} state
+ * @returns {string}
+ */
+function computeStateRoot (state) {
+  const leaves = acceptedContractLeaves(state);
+  if (!leaves.length) return emptyRoot();
+  const Tree = TreeType();
+  if (Tree) {
+    try {
+      const tree = new Tree({ leaves, sortLeaves: true });
+      const hex = tree.rootHex;
+      if (hex && /^[0-9a-f]{64}$/i.test(hex)) return hex.toLowerCase();
+    } catch (_) { /* fall through */ }
+  }
+  return sha256hex(canonicalStringify({ version: SCHEMA_VERSION, leaves }));
 }
 
 function definitionDigestOf (definition) {
@@ -391,12 +422,13 @@ function summarize (state) {
   };
 }
 
-/** Snapshot for Beacon epoch payloads. */
+/** Snapshot for Beacon epoch payloads (merkle root of accepted contracts). */
 function beaconSnapshot (state) {
   const root = (state && state.stateRoot) || computeStateRoot(state || emptyState());
   return {
     clock: Number(state && state.clock) || 0,
     stateDigest: root,
+    merkleRoot: root,
     kind: 'TrackedApplicationContracts',
     acceptedCount: Object.keys((state && state.accepted) || {}).length
   };
@@ -453,6 +485,7 @@ module.exports = {
   emptyState,
   emptyRoot,
   computeStateRoot,
+  acceptedContractLeaves,
   definitionDigestOf,
   enrichArcFields,
   loadState,

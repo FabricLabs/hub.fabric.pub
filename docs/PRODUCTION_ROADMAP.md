@@ -67,10 +67,10 @@ Living plan for shipping core product themes: **browser Bitcoin wallet**, **crow
 - [ ] Deploy: TLS, `FABRIC_SEED`, backup `stores/hub/` per [PRODUCTION.md](PRODUCTION.md)
 
 ### Key feature acceptance (L1 + browser + tests)
-- [ ] Crowdfund on L1: browser walkthrough + automated test evidence
-- [ ] Payjoin on L1: browser walkthrough + automated test evidence
+- [ ] Crowdfund on L1: browser walkthrough + automated test evidence (`npm run screenshots:l1` → [USER_FLOWS.md](USER_FLOWS.md); mocha: `test:e2e-crowdfund-l1`)
+- [ ] Payjoin on L1: browser walkthrough + automated test evidence (`npm run screenshots:l1` → [USER_FLOWS.md](USER_FLOWS.md); `test:e2e-payjoin` / `test:e2e-payjoin-l1`)
 - [x] **L1-indexed sellable documents** — Block (+ optional tx) hub documents, list pricing, prune-aware local inventory, canonical binding for inventory HTLC (hub + unit tests; see Progress log 2026-03-29)
-- [ ] Document exchange on L1: **end-to-end browser** walkthrough + dedicated automated suite (beyond unit tests / playnet market integration)
+- [ ] Document exchange on L1: **end-to-end browser** walkthrough + dedicated automated suite (beyond unit tests / playnet market integration) — UI gallery: `npm run screenshots` / `screenshots:l1` → [USER_FLOWS.md](USER_FLOWS.md); mocha: `test:e2e-inventory-htlc`
 - [ ] Admin visibility: clear node-wealth panel for operator outcomes
 
 ---

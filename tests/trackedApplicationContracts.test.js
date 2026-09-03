@@ -50,9 +50,10 @@ describe('trackedApplicationContracts', function () {
     assert.strictEqual(snap.kind, 'TrackedApplicationContracts');
     assert.strictEqual(snap.acceptedCount, 1);
     assert.strictEqual(snap.stateDigest, tac.computeStateRoot(state));
+    assert.strictEqual(snap.merkleRoot, snap.stateDigest);
   });
 
-  it('Beacon epoch payload includes contracts snapshot', function () {
+  it('Beacon epoch payload includes contracts merkleRoot', function () {
     const beacon = new Beacon({ name: 'test', interval: 0, regtest: true });
     const state = tac.emptyState();
     tac.recordPublish(state, { contractId: 'c5', definition: { name: 'DemoApplication', version: 1 } });
@@ -70,6 +71,7 @@ describe('trackedApplicationContracts', function () {
     });
     assert.ok(entry.payload.contracts);
     assert.strictEqual(entry.payload.contracts.stateDigest, tac.computeStateRoot(state));
+    assert.strictEqual(entry.payload.contracts.merkleRoot, tac.computeStateRoot(state));
     assert.strictEqual(entry.payload.contracts.kind, 'TrackedApplicationContracts');
   });
 

@@ -3,7 +3,7 @@ Hub-specific security and deploy queue: **[OUTSTANDING.md](OUTSTANDING.md)**. Op
 
 The type-tree / docs-clutter march below is **inherited from `@fabric/core`** (keep Hub’s public surface on Peer, documents, contracts, Security). Do not expand Hub RC with new payment rails while those leftovers are open.
 
-**This tree (2026-08-31):** lockfile core `1c3f8d08c` + http `bbdb72a` (packaging: `components/**` + `hasRole` — **http tip must be pushed** for Hub CI); Test workflow `.nvmrc` path; **fixed** leftover bitcoinClient `hubAdminToken` on payments URLs; `verifyAdminToken` cap/sub; backup KDF bounds; Wave 4 at-rest identity **PBKDF2 + AES-GCM**. **Next Hub security slice:** identity import (at-rest KDF is done). **Suite blocker:** http login/link possession proof — the Origin-as-auth read paths in [http #69](https://github.com/FabricLabs/fabric-http/pull/69). **Redeploy still pending:** the live host is behind this lockfile, so treat these pins as tree state, not deployed state.
+**This tree (2026-09-03):** [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) production polish + Beacon federation sign accumulate / contracts `merkleRoot`. **Resolved (not an active leak):** bitcoinClient no longer puts `hubAdminToken` on payments URLs. Also: `verifyAdminToken` cap/sub; backup KDF bounds; Wave 4 at-rest identity **PBKDF2 + AES-GCM**. **Next Hub security slice:** identity import (at-rest KDF is done). **Suite blocker:** http login/link possession proof — Origin-as-auth read paths in [http #69](https://github.com/FabricLabs/fabric-http/pull/69). **Redeploy still pending** relative to live host. Codacy on #16 remains `action_required` (path/SSRF FPs on operator helpers under `libs/hub-operator/` — see [OUTSTANDING.md](OUTSTANDING.md)).
 
 ---
 

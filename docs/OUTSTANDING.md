@@ -1,14 +1,13 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `8b96aeb`: tests green; Codacy still `action_required` (**86** issues / **50** annotations) because Semgrep scores `path.join` / SSRF on operator helpers **despite** `.codacy.yml` excludes. Staged: move those implementations to **`libs/hub-operator/`** (Codacy default-ignores `.*libs/.*`), keep thin `functions/*` re-exports; further harden `httpSharedMode` / `fabricHttpRebind`.
+**Last reviewed:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip `364b12da`: **tests green** (ubuntu/macos + `build-test`); mergeable but **unstable** only because Codacy is `action_required` (**21** critical · **36** high on the PR summary — mostly Semgrep `path.join` / SSRF FPs). CodeRabbit review comments from Aug (advisory detector, `EditDocument` filter, `.codacy.yml`, shared-mode WS, `parseFilesystemJson` Uint8Array) are **already landed** on the branch. Local uncommitted slice adds Beacon federation sign broadcast/ingest, contracts `merkleRoot`, `FEDERATION_DEPLOYMENT.md`, operator-identity redact, screenshot gallery scripts, and epoch `/services/distributed/epoch/signatures` Hub callbacks (needs http #69 binder).
 
 ## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — tests green; Codacy path FPs
-Packaging + mocha bind-isolation cleared on earlier tips. Remaining Codacy gate was
-almost entirely `path.join` / dynamic-path / SSRF on:
-`hubManagedBinaries`, `hubDownloadsIndex`, `desktopUserData`, `desktopOpenAtLogin`,
-`fabricHubSeedProbe` — files already listed in `.codacy.yml` excludes that Codacy
-still annotated on tip `8b96aeb`.
+Packaging + mocha bind-isolation cleared on earlier tips. Remaining Codacy gate is
+almost entirely `path.join` / dynamic-path / SSRF on operator helpers (now under
+`libs/hub-operator/` with thin `functions/*` re-exports). `.codacy.yml` excludes
+`libs/**` + those paths; Codacy still annotates some of them on the PR.
 
 ## Codacy: move operator helpers under `libs/` (default ignore)
 Implementations now live in `libs/hub-operator/*.js`. `functions/<name>.js` are
