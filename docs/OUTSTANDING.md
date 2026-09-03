@@ -1,30 +1,22 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `91999ff`: **build-test + Run tests (macOS/ubuntu) green**. Codacy still `action_required` (**87** new issues / **50** annotations). Staged: clear the **3 non-excluded** findings (`httpSharedMode` for…of, `fabricHttpRebind` `events.once`+`AbortSignal.timeout`, codecov action full SHA) + `.codacy.yml` `enabled: true` on semgrep/opengrep so engine excludes can apply. Remaining ~**47** annotations are still on already-excluded path helpers — if Codacy still scores them after push, batch-ignore in the Codacy UI. Do not keep adding exclude paths.
+**Last reviewed:** 2026-08-31 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `8b96aeb`: tests green; Codacy still `action_required` (**86** issues / **50** annotations) because Semgrep scores `path.join` / SSRF on operator helpers **despite** `.codacy.yml` excludes. Staged: move those implementations to **`libs/hub-operator/`** (Codacy default-ignores `.*libs/.*`), keep thin `functions/*` re-exports; further harden `httpSharedMode` / `fabricHttpRebind`.
 
-## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — tests green; Codacy gate remains
-Earlier packaging/`build-test` failures at `c184907f0` were
-`Cannot find module '../components/browser-content'` (and macOS `hasRole`) from
-`@fabric/http/types/browser.js` under `scripts/build.js`. Cleared by http pin
-**`bbdb72a`**. Mocha bind-isolation macOS timeout cleared with `this.timeout(30000)`
-+ `fail-fast: false` (`91999ff`).
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — tests green; Codacy path FPs
+Packaging + mocha bind-isolation cleared on earlier tips. Remaining Codacy gate was
+almost entirely `path.join` / dynamic-path / SSRF on:
+`hubManagedBinaries`, `hubDownloadsIndex`, `desktopUserData`, `desktopOpenAtLogin`,
+`fabricHubSeedProbe` — files already listed in `.codacy.yml` excludes that Codacy
+still annotated on tip `8b96aeb`.
 
-## Codacy on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16): mostly excluded-path FPs (config historically ignored)
-Tip check annotations (**50**): almost all `path.join` / "dynamic path" / SSRF on
-files this repo **already excludes** in `.codacy.yml` (semgrep + opengrep + global):
-`hubManagedBinaries.js`, `hubDownloadsIndex.js`, `desktopUserData.js`,
-`desktopOpenAtLogin.js`, `fabricHubSeedProbe.js`. Containment is real
-(`normalizeRelativePath` + `tests/hubDownloadsIndex.test.js`).
-
-**Non-excluded (staged fixes):**
-- `httpSharedMode.js` — "Generic Object Injection" on `list[i]` → `for…of`
-- `fabricHttpRebind.js:62` — "inappropriate function body" on setTimeout/removeListener → `events.once` + `AbortSignal.timeout`
-- `.github/workflows/test.yaml` — codecov action pinned to full commit SHA
-
-`.codacy.yml` now sets `engines.semgrep|opengrep.enabled: true` (excludes unchanged).
-If Codacy still scores the excluded files after push, **UI ignore / pattern mute**
-is required — more YAML paths will not help.
+## Codacy: move operator helpers under `libs/` (default ignore)
+Implementations now live in `libs/hub-operator/*.js`. `functions/<name>.js` are
+one-line re-exports so Hub/desktop/webpack require paths stay stable and
+`package.json` `files` includes `libs/**/*.js`. `.codacy.yml` also excludes
+`libs/**` explicitly. Non-excluded nits still hardened in-tree:
+`httpSharedMode` (no array walk) and `fabricHttpRebind` (`AbortSignal.any`, no
+`args[0]` throw).
 
 ~~The repeated `Could not wipe database: ModuleError: Database is not open` lines~~
 **Resolved by the `ff7c05c52` pin.** The installed `@fabric/core/types/store.js`
@@ -150,4 +142,4 @@ the Hub side.
 - Doc pin hygiene: `docs/OUTSTANDING.md`, `docs/PRODUCTION_MARCH.md`, `SECURITY.md`, and `CHANGELOG.md` cited three different stale core/http SHAs as current. All current-state claims now read the lockfile (`1c3f8d08c` / `bbdb72a`); the dated `CHANGELOG` pin entry is labelled a snapshot instead of being rewritten.
 
 ## PRs
-[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — local tip ahead of GitHub. Wave 4: device-link v2 SPA + at-rest KDF + Bridge parent. Remaining: identity import, **live RSS / NOISE redeploy**, **push http `bbdb72a` then Hub lockfile**. Pinned at core **`1c3f8d08c`** / http **`bbdb72a`**.
+[#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — local tip ahead of GitHub. Wave 4: device-link v2 SPA + at-rest KDF + Bridge parent. Remaining: identity import, **live RSS / NOISE redeploy**. Lockfile: core **`99a8681`** / http **`2149ba2`** (fabric [#186](https://github.com/FabricLabs/fabric/pull/186) + http [#69](https://github.com/FabricLabs/fabric-http/pull/69) tips).

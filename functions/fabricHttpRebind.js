@@ -58,19 +58,27 @@ async function waitForHttpServerListening (nodeServer, timeoutMs) {
   }
   const ms = Number(timeoutMs);
   const waitMs = Number.isFinite(ms) && ms > 0 ? ms : 15000;
-  const signal = AbortSignal.timeout(waitMs);
+  const timeout = AbortSignal.timeout(waitMs);
+  const fail = new AbortController();
+  const onError = (err) => {
+    try {
+      fail.abort(err);
+    } catch (_) { /* already aborted */ }
+  };
+  nodeServer.once('error', onError);
   try {
-    await Promise.race([
-      once(nodeServer, 'listening', { signal }),
-      once(nodeServer, 'error', { signal }).then((args) => {
-        throw args[0];
-      })
-    ]);
+    const signal = AbortSignal.any([timeout, fail.signal]);
+    await once(nodeServer, 'listening', { signal });
   } catch (err) {
-    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+    if (fail.signal.aborted && fail.signal.reason) {
+      throw fail.signal.reason;
+    }
+    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR' || timeout.aborted)) {
       throw new Error('HTTP listen timed out');
     }
     throw err;
+  } finally {
+    nodeServer.removeListener('error', onError);
   }
 }
 

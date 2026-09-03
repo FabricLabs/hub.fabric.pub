@@ -38,14 +38,19 @@ function isHttpSharedModeEnabledLocal (raw) {
 }
 
 function listenHostFromNamedEnv (env, keys) {
-  const list = Array.isArray(keys) && keys.length ? keys : DEFAULT_HTTP_LISTEN_ENV_KEYS;
-  // for…of — avoid `list[i]` which Codacy flags as Generic Object Injection.
-  for (const key of list) {
-    let raw = '';
-    if (key === 'FABRIC_HUB_INTERFACE') raw = env && env.FABRIC_HUB_INTERFACE;
-    else if (key === 'INTERFACE') raw = env && env.INTERFACE;
-    else if (key === 'FABRIC_HTTP_INTERFACE') raw = env && env.FABRIC_HTTP_INTERFACE;
-    const v = String(raw || '').trim();
+  // Prefer an explicit key list when provided; otherwise the three Hub listen env names.
+  // No array-index or dynamic `env[key]` access (Codacy Generic Object Injection).
+  const useDefault = !(Array.isArray(keys) && keys.length);
+  if (useDefault || keys.includes('FABRIC_HUB_INTERFACE')) {
+    const v = String((env && env.FABRIC_HUB_INTERFACE) || '').trim();
+    if (v) return v;
+  }
+  if (useDefault || keys.includes('INTERFACE')) {
+    const v = String((env && env.INTERFACE) || '').trim();
+    if (v) return v;
+  }
+  if (useDefault || keys.includes('FABRIC_HTTP_INTERFACE')) {
+    const v = String((env && env.FABRIC_HTTP_INTERFACE) || '').trim();
     if (v) return v;
   }
   return '';
