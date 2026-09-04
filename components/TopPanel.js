@@ -2,7 +2,7 @@
 
 // Dependencies
 const React = require('react');
-const { Link, useLocation } = require('react-router-dom');
+const { Link, useLocation, useNavigate } = require('react-router-dom');
 
 // Semantic UI
 const {
@@ -28,10 +28,12 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
 const { buildLocalFabricIdentityPayload } = require('../functions/fabricHubLocalIdentity');
+const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
 
 function TopPanel (props) {
   const location = useLocation();
+  const navigate = useNavigate();
   const pathname = (location && location.pathname) || '/';
 
   const hubAddress = (props && props.hubAddress) ? String(props.hubAddress) : '';
@@ -41,7 +43,7 @@ function TopPanel (props) {
   const onManageIdentity = props && typeof props.onManageIdentity === 'function' ? props.onManageIdentity : null;
   const onUnlockIdentity = props && typeof props.onUnlockIdentity === 'function' ? props.onUnlockIdentity : null;
   const onLockIdentity = props && typeof props.onLockIdentity === 'function' ? props.onLockIdentity : null;
-  const onProfile = props && typeof props.onProfile === 'function' ? props.onProfile : onManageIdentity;
+  const onProfile = props && typeof props.onProfile === 'function' ? props.onProfile : null;
   const onSignMessage = props && typeof props.onSignMessage === 'function' ? props.onSignMessage : null;
   const onDestroyIdentity = props && typeof props.onDestroyIdentity === 'function' ? props.onDestroyIdentity : null;
   const onRefreshBalance = props && typeof props.onRefreshBalance === 'function' ? props.onRefreshBalance : null;
@@ -106,6 +108,22 @@ function TopPanel (props) {
     }
   }, [hasLocalIdentity, localIdentity && localIdentity.xpub, hasLockedIdentity]);
   const identitySource = localIdentity || auth || persistedIdentity;
+  const profilePeerId = (() => {
+    const id = identitySource && identitySource.id != null ? String(identitySource.id).trim() : '';
+    if (!id || isLikelyBip32ExtendedKey(id)) return '';
+    return id;
+  })();
+  const openUserProfile = () => {
+    if (typeof onProfile === 'function') {
+      onProfile();
+      return;
+    }
+    if (profilePeerId) {
+      navigate(`/peers/${encodeURIComponent(profilePeerId)}`);
+      return;
+    }
+    if (typeof onManageIdentity === 'function') onManageIdentity();
+  };
   const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
   // Password-protected identity without xprv in memory → show Locked (unlock flow).
   // xpub / watch-only (no password) → show Watch-only (upgrade/import path), not "Locked".
@@ -541,7 +559,21 @@ function TopPanel (props) {
               icon={null}
             >
               <Dropdown.Menu>
-                <Dropdown.Item icon="user" text="User profile" onClick={() => { onProfile && onProfile(); }} />
+                <Dropdown.Item
+                  icon="user"
+                  text="User profile"
+                  disabled={!profilePeerId && typeof onProfile !== 'function'}
+                  title={profilePeerId
+                    ? 'Open your peer profile (same page as clicking your name in chat)'
+                    : 'Unlock identity to open your peer profile'}
+                  onClick={() => { openUserProfile(); }}
+                />
+                <Dropdown.Item
+                  icon="key"
+                  text="Manage identity"
+                  onClick={() => { onManageIdentity && onManageIdentity(); }}
+                  title="Create, restore, lock, or export local Fabric keys"
+                />
                 <Dropdown.Item icon="pencil" text="Sign message" onClick={() => { onSignMessage && onSignMessage(); }} />
                 <Dropdown.Item
                   icon="plug"

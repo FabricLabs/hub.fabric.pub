@@ -30,7 +30,7 @@ const { formatSatsDisplay } = require('../functions/formatSats');
 const { toast } = require('../functions/toast');
 const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
-const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput } = require('../functions/peerIdentity');
+const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput, findFabricPeerRow } = require('../functions/peerIdentity');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
@@ -830,10 +830,10 @@ class Bridge extends React.Component {
   }
 
   /**
-   * Return the display name for a peer (nickname if set, else actorId).
-   * Used in chat to show user-friendly names.
+   * Return the display name for a peer.
+   * Mesh-advertised alias (P2P_PEER_ALIAS) wins over the operator's node-local nickname.
    * @param {string} actorId - Peer id or address from chat.actor.id
-   * @returns {string} Nickname if set, otherwise actorId
+   * @returns {string} Alias, nickname, or actorId
    */
   getPeerDisplayName (actorId) {
     if (!actorId || typeof actorId !== 'string') return actorId || 'unknown';
@@ -844,8 +844,8 @@ class Bridge extends React.Component {
     }
     const ns = this.state?.networkStatus || this.state?.lastNetworkStatus;
     const peers = Array.isArray(ns?.peers) ? ns.peers : [];
-    const peer = peers.find((p) => p && (p.id === actorId || p.address === actorId));
-    const meshFromPeer = peer && (peer.alias || peer.nickname) && String(peer.alias || peer.nickname).trim();
+    const peer = findFabricPeerRow(peers, actorId);
+    const meshFromPeer = peer && peer.alias && String(peer.alias).trim();
     if (meshFromPeer) return meshFromPeer;
     const nickname = peer && peer.nickname && String(peer.nickname).trim();
     if (nickname) return nickname;

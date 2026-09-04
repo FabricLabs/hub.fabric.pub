@@ -1980,7 +1980,6 @@ class HubInterface extends React.Component {
                   onLockIdentity={() => this._handleLockIdentity()}
                   onLogin={this.requestLogin}
                   onManageIdentity={this.openIdentityManager}
-                  onProfile={this.openIdentityManager}
                   onSignMessage={() => this.setState({ uiSignMessageOpen: true })}
                   onDestroyIdentity={() => this.setState({ uiDestroyIdentityConfirmOpen: true })}
                   onOpenSettings={() => {

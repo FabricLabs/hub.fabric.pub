@@ -19,7 +19,8 @@ const {
   classifyPlatformFolder,
   destRelativeForInstaller,
   isInstallerFile,
-  syncDownloadsAssets
+  syncDownloadsAssets,
+  syncPassportExtensionDownloads
 } = require('../functions/hubDownloadsIndex');
 
 describe('hubDownloadsTree', function () {
@@ -79,7 +80,9 @@ describe('hubDownloadsIndex', function () {
     assert.strictEqual(classifyPlatformFolder('FabricHub Setup 0.1.0.exe'), 'win');
     assert.strictEqual(classifyPlatformFolder('fabrichub_0.1.0-RC1_x64.AppImage'), 'linux');
     assert.strictEqual(classifyPlatformFolder('notes.zip'), 'other');
+    assert.strictEqual(classifyPlatformFolder('fabric-passport-v0.1.0.zip'), 'extension');
     assert.strictEqual(destRelativeForInstaller('Hub.dmg'), 'mac/Hub.dmg');
+    assert.strictEqual(destRelativeForInstaller('fabric-passport-v0.1.0.zip'), 'extension/fabric-passport-v0.1.0.zip');
     assert.ok(isInstallerFile('Hub.dmg'));
     assert.ok(!isInstallerFile('latest-mac.yml'));
   });
@@ -96,17 +99,43 @@ describe('hubDownloadsIndex', function () {
     fs.writeFileSync(path.join(distDir, 'latest-mac.yml'), 'nope');
     fs.mkdirSync(destDir, { recursive: true });
     fs.writeFileSync(path.join(destDir, 'README.md'), 'keep\n');
+    fs.mkdirSync(path.join(destDir, 'extension'), { recursive: true });
+    fs.writeFileSync(path.join(destDir, 'extension', 'fabric-passport-v0.1.0.zip'), 'passport');
 
     const result = syncDownloadsAssets({ distDir, destDir, copyDist: true });
     assert.strictEqual(result.copied, 1);
-    assert.strictEqual(result.fileCount, 1);
     assert.ok(fs.existsSync(path.join(destDir, 'mac', 'Hub.dmg')));
     assert.ok(fs.existsSync(path.join(destDir, 'README.md')));
+    assert.ok(fs.existsSync(path.join(destDir, 'extension', 'fabric-passport-v0.1.0.zip')),
+      'extension/ survives desktop installer sync wipe');
     assert.ok(!fs.existsSync(path.join(destDir, 'mac-arm64-unpacked')));
     const index = JSON.parse(fs.readFileSync(path.join(destDir, 'index.json'), 'utf8'));
-    assert.strictEqual(index.files.length, 1);
-    assert.strictEqual(index.files[0].path, 'mac/Hub.dmg');
-    assert.strictEqual(index.files[0].size, 9);
+    const paths = index.files.map((f) => f.path).sort();
+    assert.deepStrictEqual(paths, [
+      'extension/fabric-passport-v0.1.0.zip',
+      'mac/Hub.dmg'
+    ]);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('syncPassportExtensionDownloads copies zips without wiping installers', function () {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-passport-dl-'));
+    const destDir = path.join(tmp, 'downloads');
+    const zipDir = path.join(tmp, 'passport-zip');
+    fs.mkdirSync(path.join(destDir, 'mac'), { recursive: true });
+    fs.writeFileSync(path.join(destDir, 'mac', 'Hub.dmg'), 'dmg');
+    fs.mkdirSync(zipDir, { recursive: true });
+    fs.writeFileSync(path.join(zipDir, 'fabric-passport-v0.1.0.zip'), 'zip-bytes');
+    fs.writeFileSync(path.join(zipDir, 'ignore.zip'), 'nope');
+
+    const result = syncPassportExtensionDownloads({ destDir, passportZipDir: zipDir });
+    assert.strictEqual(result.copied, 1);
+    assert.ok(fs.existsSync(path.join(destDir, 'extension', 'fabric-passport-v0.1.0.zip')));
+    assert.ok(fs.existsSync(path.join(destDir, 'mac', 'Hub.dmg')));
+    const index = JSON.parse(fs.readFileSync(path.join(destDir, 'index.json'), 'utf8'));
+    assert.ok(index.files.some((f) => f.path === 'extension/fabric-passport-v0.1.0.zip'));
+    assert.ok(index.files.some((f) => f.path === 'mac/Hub.dmg'));
 
     fs.rmSync(tmp, { recursive: true, force: true });
   });

@@ -1153,6 +1153,44 @@ async function fetchBlockByHash (settings = {}, blockhash = '') {
   return null;
 }
 
+/**
+ * Compact block summaries for a height window (Hub `GET /services/bitcoin/blocks?around=`).
+ * Ascending by height. Used by the block-view chain scroller.
+ * @param {object} [settings]
+ * @param {object} [opts]
+ * @param {number} opts.around — center height
+ * @param {number} [opts.before=10]
+ * @param {number} [opts.after=2]
+ * @returns {Promise<object[]>}
+ */
+async function fetchBlockWindow (settings = {}, opts = {}) {
+  const bUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
+  const around = Math.floor(Number(opts.around));
+  if (!bUrl || !Number.isFinite(around) || around < 0) return [];
+  const before = opts.before != null ? Math.floor(Number(opts.before)) : 10;
+  const after = opts.after != null ? Math.floor(Number(opts.after)) : 2;
+  const q = new URLSearchParams();
+  q.set('around', String(around));
+  if (Number.isFinite(before)) q.set('before', String(before));
+  if (Number.isFinite(after)) q.set('after', String(after));
+
+  if (isBitcoinServiceEndpoint(bUrl)) {
+    const rpcTok = resolveBitcoinClientAuthToken(settings, bUrl);
+    const data = await callBitcoinServiceMethod(bUrl, 'ListBlocks', {
+      around,
+      ...(Number.isFinite(before) ? { before } : {}),
+      ...(Number.isFinite(after) ? { after } : {})
+    }, rpcTok).catch(() => null);
+    return pickArray(data, ['blocks', 'items', 'results', 'data']);
+  }
+
+  const result = await tryRequests(bUrl, [
+    { path: `/blocks?${q.toString()}` }
+  ], settings.apiToken);
+  if (!result) return [];
+  return pickArray(result.data, ['blocks', 'items', 'results', 'data']);
+}
+
 async function fetchTransactionByHash (settings = {}, txhash = '') {
   const bUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
   const hash = String(txhash || '').trim();
@@ -2085,6 +2123,7 @@ module.exports = {
   fetchExplorerData,
   fetchBitcoinStatus,
   fetchBlockByHash,
+  fetchBlockWindow,
   fetchTransactionByHash,
   fetchTransactionHex,
   fetchWalletSummary,

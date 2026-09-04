@@ -147,8 +147,9 @@ function SettingsHome () {
               <Icon name="user circle" aria-hidden="true" /> Fabric identity
             </Card.Header>
             <Card.Description>
-              Unlock, import, or export your local Fabric keys (same modal as <strong>Profile</strong> / <strong>Manage identity</strong> in the top bar).
+              Unlock, import, or export your local Fabric keys (same modal as <strong>Manage identity</strong> in the top bar).
               For Bitcoin receive addresses and balance, use <strong>Bitcoin wallet &amp; derivation</strong>.
+              Your public peer page is <strong>User profile</strong> (same route as clicking your name in chat).
             </Card.Description>
           </Card.Content>
         </Card>

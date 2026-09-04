@@ -20,6 +20,7 @@ const LEGACY_KEY_PATHS = {
   'fabric.hub.adminTokenExpiresAt': '/hub/adminTokenExpiresAt',
   'fabric.hub.identityWizardPending': '/hub/identityWizardPending',
   'fabric.hub.identityWizardDismissed': '/hub/identityWizardDismissed',
+  'fabric.hub.promoDismissed': '/hub/promoDismissed',
   'fabric.hub.address': '/hub/address',
   'fabric.delegation': '/delegation',
   'fabric.hub.federationSpendingPrefs': '/preferences/federationSpending',

@@ -124,7 +124,9 @@ class BitcoinHome extends React.Component {
       rawTxResult: null,
       txLookupId: '',
       txLookupError: null,
-      hubUiFlagsRev: 0
+      hubUiFlagsRev: 0,
+      bitcoinPeerSortColumn: 'bytes',
+      bitcoinPeerSortDirection: 'descending'
     };
     this._onBitcoinHashChange = () => this._syncBitcoinHashScroll();
   }
@@ -248,6 +250,56 @@ class BitcoinHome extends React.Component {
     if (v < 1024) return `${Math.round(v)} B`;
     if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
     return `${(v / 1048576).toFixed(2)} MiB`;
+  }
+
+  _bitcoinPeerSortValue (p, col) {
+    switch (col) {
+      case 'addr':
+        return String((p && (p.addr || p.addrbind)) || '').toLowerCase();
+      case 'direction':
+        return p && p.inbound ? 0 : 1;
+      case 'ping':
+        return Number(p && p.pingtime) || 0;
+      case 'bytes':
+        return (Number(p && p.bytesrecv) || 0) + (Number(p && p.bytessent) || 0);
+      case 'subver':
+        return String((p && p.subver) || '').toLowerCase();
+      case 'height':
+        return Number(p && p.synced_headers) || 0;
+      default:
+        return 0;
+    }
+  }
+
+  _sortedBitcoinNodePeers (nodePeers) {
+    const col = this.state.bitcoinPeerSortColumn || 'bytes';
+    const dir = this.state.bitcoinPeerSortDirection === 'ascending' ? 1 : -1;
+    const arr = Array.isArray(nodePeers) ? nodePeers.slice() : [];
+    arr.sort((a, b) => {
+      const va = this._bitcoinPeerSortValue(a, col);
+      const vb = this._bitcoinPeerSortValue(b, col);
+      if (typeof va === 'string' || typeof vb === 'string') {
+        return String(va).localeCompare(String(vb)) * dir;
+      }
+      if (va !== vb) return va > vb ? dir : -dir;
+      return String((a && a.addr) || '').localeCompare(String((b && b.addr) || ''));
+    });
+    return arr;
+  }
+
+  _handleBitcoinPeerSort (col) {
+    this.setState((s) => {
+      if (s.bitcoinPeerSortColumn === col) {
+        return {
+          bitcoinPeerSortDirection: s.bitcoinPeerSortDirection === 'ascending' ? 'descending' : 'ascending'
+        };
+      }
+      const numeric = col === 'ping' || col === 'bytes' || col === 'height' || col === 'direction';
+      return {
+        bitcoinPeerSortColumn: col,
+        bitcoinPeerSortDirection: numeric ? 'descending' : 'ascending'
+      };
+    });
   }
 
   async handleBroadcastRawTx () {
@@ -744,6 +796,7 @@ class BitcoinHome extends React.Component {
     const bc = this.state.bitcoinStatus && this.state.bitcoinStatus.blockchain;
     const mp = this.state.bitcoinStatus && this.state.bitcoinStatus.mempoolInfo;
     const nodePeers = Array.isArray(this.state.nodePeers) ? this.state.nodePeers : [];
+    const sortedNodePeers = this._sortedBitcoinNodePeers(nodePeers);
     const nn = this.state.nodeNetwork && typeof this.state.nodeNetwork === 'object' ? this.state.nodeNetwork : {};
     const ni = nn.networkInfo && typeof nn.networkInfo === 'object' ? nn.networkInfo : null;
     const depRoot = nn.deployments && typeof nn.deployments === 'object' ? nn.deployments : null;
@@ -1289,19 +1342,49 @@ class BitcoinHome extends React.Component {
             </div>
           ) : (
             <div style={{ overflowX: 'auto', marginBottom: '1em' }}>
-              <Table compact celled unstackable size='small'>
+              <Table compact celled unstackable sortable size='small'>
                 <Table.Header>
                   <Table.Row>
-                    <Table.HeaderCell>Address</Table.HeaderCell>
-                    <Table.HeaderCell>Direction</Table.HeaderCell>
-                    <Table.HeaderCell>Ping (ms)</Table.HeaderCell>
-                    <Table.HeaderCell>Bytes in / out</Table.HeaderCell>
-                    <Table.HeaderCell>User agent</Table.HeaderCell>
-                    <Table.HeaderCell>Height</Table.HeaderCell>
+                    <Table.HeaderCell
+                      sorted={this.state.bitcoinPeerSortColumn === 'addr' ? this.state.bitcoinPeerSortDirection : null}
+                      onClick={() => this._handleBitcoinPeerSort('addr')}
+                    >
+                      Address
+                    </Table.HeaderCell>
+                    <Table.HeaderCell
+                      sorted={this.state.bitcoinPeerSortColumn === 'direction' ? this.state.bitcoinPeerSortDirection : null}
+                      onClick={() => this._handleBitcoinPeerSort('direction')}
+                    >
+                      Direction
+                    </Table.HeaderCell>
+                    <Table.HeaderCell
+                      sorted={this.state.bitcoinPeerSortColumn === 'ping' ? this.state.bitcoinPeerSortDirection : null}
+                      onClick={() => this._handleBitcoinPeerSort('ping')}
+                    >
+                      Ping (ms)
+                    </Table.HeaderCell>
+                    <Table.HeaderCell
+                      sorted={this.state.bitcoinPeerSortColumn === 'bytes' ? this.state.bitcoinPeerSortDirection : null}
+                      onClick={() => this._handleBitcoinPeerSort('bytes')}
+                    >
+                      Bytes in / out
+                    </Table.HeaderCell>
+                    <Table.HeaderCell
+                      sorted={this.state.bitcoinPeerSortColumn === 'subver' ? this.state.bitcoinPeerSortDirection : null}
+                      onClick={() => this._handleBitcoinPeerSort('subver')}
+                    >
+                      User agent
+                    </Table.HeaderCell>
+                    <Table.HeaderCell
+                      sorted={this.state.bitcoinPeerSortColumn === 'height' ? this.state.bitcoinPeerSortDirection : null}
+                      onClick={() => this._handleBitcoinPeerSort('height')}
+                    >
+                      Height
+                    </Table.HeaderCell>
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {nodePeers.slice(0, 40).map((p, i) => (
+                  {sortedNodePeers.slice(0, 40).map((p, i) => (
                     <Table.Row key={`${p.id != null ? p.id : i}-${p.addr || i}`}>
                       <Table.Cell><code style={{ fontSize: '0.85em' }}>{p.addr || p.addrbind || '—'}</code></Table.Cell>
                       <Table.Cell>{p.inbound ? 'inbound' : 'outbound'}</Table.Cell>

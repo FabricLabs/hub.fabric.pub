@@ -1,13 +1,21 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip `364b12da`: **tests green** (ubuntu/macos + `build-test`); mergeable but **unstable** only because Codacy is `action_required` (**21** critical · **36** high on the PR summary — mostly Semgrep `path.join` / SSRF FPs). CodeRabbit review comments from Aug (advisory detector, `EditDocument` filter, `.codacy.yml`, shared-mode WS, `parseFilesystemJson` Uint8Array) are **already landed** on the branch. Local uncommitted slice adds Beacon federation sign broadcast/ingest, contracts `merkleRoot`, `FEDERATION_DEPLOYMENT.md`, operator-identity redact, screenshot gallery scripts, and epoch `/services/distributed/epoch/signatures` Hub callbacks (needs http #69 binder).
+**Last reviewed:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) CI was red on tip `192960b`: (1) stale lockfile-pin assert in `tests/pr16.review.coverage.js` vs lock `@fabric/core#f5f8c86` / `@fabric/http#99b40a7`; (2) `hub.sidechainStrict` Hub-construct timeouts under 2s mocha default. Local fix: bump pin assert to lock `#0d128dc` / `#fe41132`, `this.timeout(30000)` on sidechain suite. Codacy remains `action_required` (path/SSRF FPs). Dropped Passport-on-Vercel; site-login = live Hub / goon.vc. Quick wins staged: Passport login (Hub-HTTP gated), opt-in allowlist suffixes, `skipPlaynetPeer`, noise-handshake verify script, PromoHero visitor-only after setup.
 
-## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — tests green; Codacy path FPs
-Packaging + mocha bind-isolation cleared on earlier tips. Remaining Codacy gate is
-almost entirely `path.join` / dynamic-path / SSRF on operator helpers (now under
-`libs/hub-operator/` with thin `functions/*` re-exports). `.codacy.yml` excludes
-`libs/**` + those paths; Codacy still annotates some of them on the PR.
+**Prior:** 2026-09-03T19:29Z — [downstream scan](https://relay.goon.vc/downstream.agents.md) (mirrored `reports/downstream.agents.md`). Live Hub **`208eaa9`** PID **1104314**: HTTP healthy again (RSS **~207 MiB**, `external` flat **~32 MiB**, `nhl` **0/0/0**). FATAL still **317 (+0)**. Today’s outage was **event-loop starvation** (self-`addnode`, Lightning sock retries, tip I/O, contract-queue rewrite storm + PM2 `--update-env` bind footgun), not a new V8 OOM. Active patches: [`reports/patches/`](../reports/patches/) / https://relay.goon.vc/patches/ (`hub-http-listen-2026-09-03.patch`). Portable code (`services/hub.js` `skipPlaynetPeer` + unit test) applied on this tree; host `settings/local.js` stays ops (loopback HTTP, Lightning stub, `skipPlaynetPeer`, slower Bitcoin `interval`, drop `sensemaker.io` seed).
+
+**Prior:** 2026-09-03 — Suite cut series **staged**: after core #187 commit + push, bump `@fabric/core` lockfile past handshake-bus tip, **redeploy** Hub, run `npm run verify:noise-handshake` (or curl heap status). Device-link v2 + `X-Fabric-Poll-Secret` already in SPA; Origin-GET redeem stays Blocker (http). Codacy path FPs unchanged.
+
+**Prior:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip `364b12da`: **tests green** (ubuntu/macos + `build-test`); mergeable but **unstable** only because Codacy is `action_required` (**21** critical · **36** high on the PR summary — mostly Semgrep `path.join` / SSRF FPs). CodeRabbit review comments from Aug (advisory detector, `EditDocument` filter, `.codacy.yml`, shared-mode WS, `parseFilesystemJson` Uint8Array) are **already landed** on the branch. Local uncommitted slice adds Beacon federation sign broadcast/ingest, contracts `merkleRoot`, `FEDERATION_DEPLOYMENT.md`, operator-identity redact, screenshot gallery scripts, and epoch `/services/distributed/epoch/signatures` Hub callbacks (needs http #69 binder).
+
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — mocha pin + sidechain timeout (fix staged)
+Tip `192960b` failed `build-test` + ubuntu/macos Test on (1) stale `pr16.review.coverage`
+lockfile SHAs and (2) `hub.sidechainStrict` 2s timeouts (~500–600ms Hub construct × CI load).
+Fixes are local: pin assert → `#0d128dc` / `#fe41132`, sidechain `this.timeout(30000)`.
+Codacy gate remains `action_required` — almost entirely `path.join` / dynamic-path / SSRF on
+operator helpers (now under `libs/hub-operator/` with thin `functions/*` re-exports).
+`.codacy.yml` excludes `libs/**` + those paths; Codacy still annotates some of them on the PR.
 
 ## Codacy: move operator helpers under `libs/` (default ignore)
 Implementations now live in `libs/hub-operator/*.js`. `functions/<name>.js` are
@@ -63,7 +71,7 @@ carries its own [AUDIT.md](https://github.com/FabricLabs/fabric-browser-extensio
 which restates the `assets/passport-privacy.html` deploy as a listing blocker on
 the Hub side.
 
-**Prior review:** 2026-08-20 ([downstream scan](https://relay.goon.vc/downstream.agents.md) **10:39Z**; live Hub **`6bf825d`**, PID **172076**, restarts **542**, FATAL **317 +0**). Named retainers still flat. RSS **~1.7 GiB** tracks **`external`/`arrayBuffers` (~38→984 MiB in ~61 m)**, not V8 heap (~82 MiB). NOISE MaxListeners 65>64 on **4** PIDs including current; `noiseHandshakeListeners` stays **null** on live core **`f63a33f`**. Crash loop remains broken. Do not throw at Hub startup when the shared-mode WS token is unset. Do not drop the advisory-detector Semgrep exclude. Passport privacy HTML deploy is ops.
+**Prior review:** 2026-09-03T19:29Z ([downstream scan](https://relay.goon.vc/downstream.agents.md); live Hub **`208eaa9`**, PID **1104314**, restarts **6**, FATAL **317 +0**). RSS **~207 MiB**, `external` **~32 MiB** flat, `nhl` **0/0/0**. Aug-20 `external`→984 MiB climb is not reproducing. HTTP restored via HTTP-listen patches; keep `FABRIC_HUB_INTERFACE=127.0.0.1` in PM2 (do not `--update-env` from a shell that inherited relay NIC). Shared-mode WS token unset still must not throw at startup. Advisory-detector Semgrep exclude stays. Passport privacy HTML deploy is ops.
 
 ## Blockers before production shared bind
 1. **Inherited login/link redeem** — http requires create-response `pollSecret` for signed GET and device-link DELETE; Hub SPA sends `X-Fabric-Poll-Secret`. **Device-link v2** (prepare + commit, server nonce) is wired in `IdentityManager` — bump http lockfile to the Wave 3 tip when pushed. Hub desktop `allowHubSelfSign` defaults on; http **loopback-gates** the sign so public `hub.fabric.pub` cannot remote self-sign.
@@ -71,21 +79,24 @@ the Hub side.
 3. **At-rest identity KDF** — fresh saves use PBKDF2+AES-GCM (`fabricLocalIdentityAtRestCrypto.js`); legacy CBC records still decrypt. Passport should align datastore unlock with the same scheme (Wave 6).
 
 ## Next slices
-- [ ] **P0 Hub RSS / NOISE redeploy** ([scan 2026-08-20T10:39Z](https://relay.goon.vc/downstream.agents.md): life **~61 m** on **`6bf825d`**, heap **~82 MiB @ 41%**, RSS **~1.7 GiB**). `[HUB:HEAP]` Filesystem/STATE/docs counters stay **flat**. **Watch `memory.external` / `arrayBuffers`**. Local pin already has [@fabric/core #186](https://github.com/FabricLabs/fabric/pull/186) **`ff7c05c52`** (`functions/noiseProtocolStream.js` + `Peer#countNoiseHandshakeListeners`, plus the `onverify` freed-pointer guard). Live still **`f63a33f`** (`noiseHandshakeListeners` **null**, MaxListeners 65>64) — **redeploy this Hub tip** before treating #1 as closed. Do **not** raise `--max-old-space-size`. Ops: `pm2-logrotate` (~41 GiB logs), drop `sensemaker.io:7778` seed, Lightning stub/off, Hub↔RSI hairpin, Node 24.15.x.
-- [ ] **P1 RSI memory / peer I/O** — RSS **~12.3 GiB** (was ~10 GiB @ 02:55Z), heap **~1.77 GiB @ ~94%**, restarts **2 +0**, **0** FATAL; closed-or-destroyed stream spam + oversized AMP frames (`140736 > 4096` from `66.58.241.57`). Write-after-close + frame-size / inventory carrier.
+- [x] **P0 Hub RSS / NOISE redeploy (Aug-20 story)** — live tip has `nhl` object; MaxListeners quiet on current life. Superseded by Sep-3 HTTP-listen recovery.
+- [ ] **P0 Keep HTTP-listen patches + PM2 bind discipline** ([scan 2026-09-03T19:29Z](https://relay.goon.vc/downstream.agents.md)): land host `settings/local.js` defaults on `feature/production` / tracked branch (`skipPlaynetPeer`, Lightning stub, Bitcoin `interval` 300 s, HTTP `127.0.0.1`, drop `sensemaker.io` seed, tip `documentBlocks`/federation scan off). Lock PM2 `FABRIC_HUB_INTERFACE=127.0.0.1`, `FABRIC_INTERFACE=65.21.231.166`. Re-sample Bitcoin hang-up rate + `[HUB:HEAP]` for a few hours.
+- [ ] **P0 PM2 logrotate** — `~/.pm2/logs` **~42 GiB** (hub-error ~9.3 GiB).
+- [ ] **P1 Bitcoin RPC hang-up residual** — confirm quiet after `interval` / `skipPlaynetPeer`.
+- [ ] **P1 RSI oversized frames** — `145656 > 4096` from `69.57.221.43`.
+- [ ] **P1 NOISE listener teardown** — MaxListeners still on short lives; finish Peer handshake `removeListener`.
+- [ ] **P2 Hub↔RSI hairpin** — still no ESTAB `.166`↔`.149`.
 - [ ] **SECURITY-RECOMMENDATIONS remainder:** CORS `*`, Sensemaker HTTP default bind, Payjoin session *list* still unauthenticated, Lightning GET status public. Login/link `pollSecret` lives in `@fabric/http` (Hub SPA sends `X-Fabric-Poll-Secret`).
 - [ ] Named AMP types on public Hub UI WebSocket (`GenericMessage` remaining).
 - [x] Fabric Message `parent` — Hub `_appendFabricMessage` and **Bridge** `signMessage` set AMP `parent` / advance tip (Ping/Pong genesis). Inbound zeros still accepted.
 - [x] Device-link v2 prepare/commit in Hub SPA (`IdentityManager`); server nonce via http Wave 3 pin.
-- [ ] **`shims/noble-secp256k1.js` is dead and broken** (same class as the fixed
-  `noble-nist.js`, but the fix is a guess so it is left alone). It requires
-  `noble-secp256k1-raw`, which is not a package and has **no** `resolve.alias`
-  entry in `webpack.config.js`; nothing references the shim. Its comment says the
-  alias exists specifically because a direct `require` of the `.js` path "can be
-  mis-parsed in production builds", so repointing it at `@noble/curves/secp256k1`
-  may reintroduce the bug it was written to dodge. Either restore the intended
-  alias or delete the shim — owner's call.
+- [x] **C8 consume note (staged):** after http #69 / core #187 owner commits, refresh `@fabric/http` + `@fabric/core` lockfiles together; SPA already sends `X-Fabric-Poll-Secret` and v2 device-link. Origin-GET redeem stays open (http Blocker #3).
+- [x] **`shims/noble-secp256k1.js`** — repointed at `@noble/curves` exports (same as
+  `noble-nist.js`); `tests/shims.exports.test.js` requires each shim.
 - [ ] Deploy `assets/passport-privacy.html` so `https://hub.fabric.pub/passport-privacy.html` is live for the Passport Chrome Web Store listing (source: `@fabric/passport` `store/privacy.html`).
+- [x] Hub SPA **Log in with Passport** (client-signed `/sessions`) on live Hub HTTP; CDN/HTML-only Identity hides Passport/desktop site-login (no `/sessions` on static hosts — use goon.vc or hub.fabric.pub).
+- [x] Opt-in Hub allowlist extras: exact origins + HTTPS host suffixes (`*.example.com`) via `FABRIC_HUB_ALLOWLIST` / Passport `fabric.hub.allowlist` — no hardcoded CDN hosts.
+- [x] Home **PromoHero** (`uf.promo`) only for **public visitors** after the node is configured; operators / signed-in users never see “someone else's hub / Run your own hub”; dismiss persists in `fabric.hub.promoDismissed`.
 
 ## Closed this pass (do not re-open)
 - **`stoppable` was a phantom dependency and it broke the release gate.**

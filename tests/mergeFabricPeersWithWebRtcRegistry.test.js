@@ -54,4 +54,31 @@ describe('mergeFabricPeersWithWebRtcRegistry', function () {
     assert.deepStrictEqual(merged.map((p) => p.id), ['fresh-tcp', 'mesh-mid', 'old-tcp']);
     assert.strictEqual(merged[1].lastSeen, 5000);
   });
+
+  it('does not copy a connected mesh alias onto a stale identity at the same TCP address', function () {
+    const merged = mergeFabricPeersWithWebRtcRegistry([
+      {
+        id: 'id14vsxaujx9qwnpyjd0',
+        address: 'relay.goon.vc:7777',
+        status: 'connected',
+        alias: 'Fadingdoughnut0',
+        nickname: 'localhost',
+        lastSeen: 9000
+      },
+      {
+        id: 'dc6142cd08a6a3853500',
+        address: 'relay.goon.vc:7777',
+        status: 'disconnected',
+        alias: 'Fadingdoughnut0',
+        nickname: 'Fadingdoughnut0',
+        lastSeen: 1000
+      }
+    ], []);
+    assert.strictEqual(merged.length, 2);
+    const stale = merged.find((p) => p.id === 'dc6142cd08a6a3853500');
+    const live = merged.find((p) => p.id === 'id14vsxaujx9qwnpyjd0');
+    assert.strictEqual(live.alias, 'Fadingdoughnut0');
+    assert.strictEqual(stale.alias, null);
+    assert.strictEqual(stale.nickname, null);
+  });
 });

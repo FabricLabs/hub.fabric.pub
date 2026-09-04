@@ -89,4 +89,66 @@ describe('Hub UI client vs hub chrome', function () {
     assert.ok(html.includes('data-testid="hub-client-home"'));
     assert.ok(html.includes('data-testid="hub-client-documents"'));
   });
+
+  it('Home promo hero is for public visitors only (hidden for signed-in operators)', function () {
+    const { setHubUiFeatureFlag, saveHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
+    const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');
+    const globalsBefore = {
+      window: global.window,
+      CustomEvent: global.CustomEvent
+    };
+    const local = Object.create(null);
+    global.window = {
+      localStorage: {
+        getItem: (k) => (Object.prototype.hasOwnProperty.call(local, k) ? local[k] : null),
+        setItem: (k, v) => { local[k] = String(v); },
+        removeItem: (k) => { delete local[k]; }
+      },
+      dispatchEvent: () => {}
+    };
+    global.CustomEvent = function MockCustomEvent (name, init) {
+      this.type = name;
+      this.detail = init && init.detail;
+    };
+    try {
+      resetFabricBrowserStateStore();
+      saveHubUiFeatureFlags({ promo: true, advancedMode: true });
+      assert.strictEqual(require('../functions/hubUiFeatureFlags').loadHubUiFeatureFlags().promo, true);
+
+      const networkStatusFromEvent = {
+        clock: 1,
+        peers: [],
+        network: { address: '127.0.0.1:7777' },
+        state: { status: 'ACTIVE' },
+        fabricPeerId: 'ab'.repeat(32)
+      };
+
+      const visitorHtml = renderWithRuntime(
+        React.createElement(Home, { publicHubVisitor: true, networkStatusFromEvent }),
+        HUB_UI_RUNTIME_HUB
+      );
+      assert.ok(
+        visitorHtml.includes('fabric-hub-promo'),
+        'public visitors should see the promo when the flag is on'
+      );
+
+      const operatorHtml = renderWithRuntime(
+        React.createElement(Home, { publicHubVisitor: false, networkStatusFromEvent }),
+        HUB_UI_RUNTIME_HUB
+      );
+      assert.ok(
+        !operatorHtml.includes('fabric-hub-promo'),
+        'signed-in / operator home should hide the visitor promo after the node is in use'
+      );
+    } finally {
+      try {
+        setHubUiFeatureFlag('promo', false);
+      } catch (_) {}
+      try {
+        resetFabricBrowserStateStore();
+      } catch (_) {}
+      global.window = globalsBefore.window;
+      global.CustomEvent = globalsBefore.CustomEvent;
+    }
+  });
 });

@@ -22,7 +22,7 @@ const BeaconAdminPanel = require('./BeaconAdminPanel');
  * Operator admin hub: Beacon, federation links, regtest admin token.
  */
 const UI_FLAG_LABELS = {
-  promo: 'Promo hero block on the homepage (what is Hub, install your own node)',
+  promo: 'Promo hero on Home for signed-out public visitors only (install your own node — hidden after you sign in / for operators)',
   advancedMode: 'Advanced Mode (shows power-user navigation and tools)',
   peers: 'Peers & WebRTC (nav, routes, home network card)',
   peersAdmin: 'Peers (hub admin token required in this browser)',

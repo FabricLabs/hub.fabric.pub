@@ -4,6 +4,9 @@ const assert = require('assert');
 const Hub = require('../services/hub');
 
 describe('Hub sidechain strict gates', function () {
+  // Hub construction loads Fabric types; CI under full-suite load can exceed mocha's 2s default.
+  this.timeout(30000);
+
   function makeMinimalHub (settings = {}) {
     const hub = new Hub(Object.assign({
       debug: false,

@@ -1,6 +1,6 @@
 'use strict';
 
-const { sortFabricPeersMostRecentFirst } = require('./peerIdentity');
+const { sortFabricPeersMostRecentFirst, reclaimSharedAddressAliases } = require('./peerIdentity');
 
 /**
  * Merge hub WebRTC signaling registry into {@link GetNetworkStatus} `peers` so browser clients
@@ -44,7 +44,7 @@ function mergeFabricPeersWithWebRtcRegistry (knownPeers, webrtcPeerList) {
       metadata: meta
     });
   }
-  return sortFabricPeersMostRecentFirst(out);
+  return sortFabricPeersMostRecentFirst(reclaimSharedAddressAliases(out));
 }
 
 module.exports = { mergeFabricPeersWithWebRtcRegistry };

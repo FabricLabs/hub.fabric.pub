@@ -37,7 +37,11 @@ const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../func
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { readStorageString, writeStorageString } = require('../functions/fabricBrowserState');
 const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
+
+/** Persist visitor promo dismiss across reloads (session-only React state was not enough). */
+const PROMO_DISMISSED_STORAGE_KEY = 'fabric.hub.promoDismissed';
 
 function formatBytes (n) {
   const v = Number(n);
@@ -349,7 +353,7 @@ class Home extends React.Component {
       operatorHealth: null,
       operatorHealthLoading: false,
       operatorHealthError: null,
-      promoDismissed: false
+      promoDismissed: readStorageString(PROMO_DISMISSED_STORAGE_KEY) === '1'
     };
     this._snapshotRefreshSafetyTimer = null;
     this._healthRefreshTimer = null;
@@ -608,9 +612,16 @@ class Home extends React.Component {
           </Card>
         ) : (
           <>
-            {/* ─── Promo hero (opt-in via Admin → Feature visibility) ─── */}
-            {uf.promo && !this.state.promoDismissed ? (
-              <PromoHero onDismiss={() => this.setState({ promoDismissed: true })} />
+            {/* ─── Promo hero: public visitors only (opt-in via Admin → Feature visibility) ─── */}
+            {uf.promo && publicHubVisitor && !this.state.promoDismissed ? (
+              <PromoHero
+                onDismiss={() => {
+                  try {
+                    writeStorageString(PROMO_DISMISSED_STORAGE_KEY, '1');
+                  } catch (e) {}
+                  this.setState({ promoDismissed: true });
+                }}
+              />
             ) : null}
 
             {/* ─── Main content ─── */}
@@ -875,7 +886,10 @@ class Home extends React.Component {
 
 function HomeWithLocation (props) {
   const location = useLocation();
-  const [networkStatusFromEvent, setNetworkStatusFromEvent] = React.useState(null);
+  const [networkStatusFromEvent, setNetworkStatusFromEvent] = React.useState(() => {
+    const n = props.networkStatusFromEvent;
+    return isHubNetworkStatusShape(n) ? n : null;
+  });
 
   React.useEffect(() => {
     const seed = () => {

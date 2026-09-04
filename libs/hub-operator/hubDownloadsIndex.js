@@ -3,6 +3,7 @@
 /**
  * Build-time listing for Hub `/downloads`.
  * Copies electron-builder artifacts from `dist/` into `assets/downloads/` and writes `index.json`.
+ * Passport store zips land under `extension/` via {@link syncPassportExtensionDownloads}.
  */
 
 const fs = require('fs');
@@ -13,11 +14,15 @@ const {
 } = require('../../functions/hubDownloadsTree');
 
 const KEEP_DEST_NAMES = new Set(['README.md', '.gitkeep']);
+/** Survives electron-builder `copyDist` wipe so Passport zips stay listed. */
+const KEEP_DEST_DIRS = new Set(['extension']);
 
 const SKIP_COPY_NAMES = new Set([
   'builder-debug.yml',
   'builder-effective-config.yaml'
 ]);
+
+const PASSPORT_ZIP_RE = /^fabric-passport-v.+\.zip$/i;
 
 function repoRoot () {
   return path.join(__dirname, '..', '..');
@@ -49,6 +54,9 @@ function isInstallerFile (name) {
  */
 function classifyPlatformFolder (name) {
   const n = String(name || '').toLowerCase();
+  if (PASSPORT_ZIP_RE.test(String(name || '')) || /^fabric-passport/i.test(String(name || ''))) {
+    return 'extension';
+  }
   if (n.endsWith('.dmg') || n.endsWith('.pkg')) return 'mac';
   if (n.endsWith('.zip') && /(mac|darwin|osx)/.test(n)) return 'mac';
   if (n.endsWith('.exe') || n.endsWith('.msi')) return 'win';
@@ -105,6 +113,7 @@ function emptyDownloadsDest (destDir) {
   for (let i = 0; i < entries.length; i++) {
     const ent = entries[i];
     if (KEEP_DEST_NAMES.has(ent.name)) continue;
+    if (ent.isDirectory() && KEEP_DEST_DIRS.has(ent.name)) continue;
     fs.rmSync(path.join(destDir, ent.name), { recursive: true, force: true });
   }
 }
@@ -204,13 +213,97 @@ function syncDownloadsAssets (opts) {
   };
 }
 
+/**
+ * Copy Fabric Passport store zips into `assets/downloads/extension/` and refresh
+ * `index.json` without wiping mac/win/linux installer folders.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.destDir]
+ * @param {string[]} [opts.passportZipPaths] Absolute paths to zip files
+ * @param {string} [opts.passportZipDir] Directory to scan for fabric-passport-v*.zip
+ * @returns {{ destDir: string, copied: number, fileCount: number, paths: string[] }}
+ */
+function syncPassportExtensionDownloads (opts) {
+  const defaults = defaultPaths();
+  const destDir = opts && opts.destDir ? String(opts.destDir) : defaults.destDir;
+  const extensionDir = path.join(destDir, 'extension');
+  fs.mkdirSync(extensionDir, { recursive: true });
+
+  const sources = [];
+  if (opts && Array.isArray(opts.passportZipPaths)) {
+    for (let i = 0; i < opts.passportZipPaths.length; i++) {
+      const abs = path.resolve(String(opts.passportZipPaths[i] || ''));
+      if (!abs) continue;
+      sources.push(abs);
+    }
+  }
+  const zipDir = opts && opts.passportZipDir ? String(opts.passportZipDir) : '';
+  if (zipDir && fs.existsSync(zipDir)) {
+    let names;
+    try {
+      names = fs.readdirSync(zipDir);
+    } catch (_) {
+      names = [];
+    }
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (!PASSPORT_ZIP_RE.test(name)) continue;
+      sources.push(path.join(zipDir, name));
+    }
+  }
+
+  const copiedPaths = [];
+  let copied = 0;
+  const seen = new Set();
+  for (let i = 0; i < sources.length; i++) {
+    const abs = sources[i];
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    let st;
+    try {
+      st = fs.statSync(abs);
+    } catch (_) {
+      continue;
+    }
+    if (!st.isFile()) continue;
+    const base = path.basename(abs);
+    if (!PASSPORT_ZIP_RE.test(base) && !/^fabric-passport/i.test(base)) continue;
+    const target = path.join(extensionDir, base);
+    fs.copyFileSync(abs, target);
+    copied += 1;
+    copiedPaths.push(`extension/${base}`);
+  }
+
+  const files = walkDownloadFiles(destDir);
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  writeDownloadsIndexFile(destDir, files);
+  return {
+    destDir,
+    copied,
+    fileCount: files.length,
+    paths: copiedPaths
+  };
+}
+
+/**
+ * Default sibling path: ../fabric-browser-extension/zip next to hub.fabric.pub.
+ * @returns {string}
+ */
+function defaultPassportZipDir () {
+  return path.join(repoRoot(), '..', 'fabric-browser-extension', 'zip');
+}
+
 module.exports = {
   KEEP_DEST_NAMES,
+  KEEP_DEST_DIRS,
+  PASSPORT_ZIP_RE,
   classifyPlatformFolder,
   collectInstallerFiles,
   destRelativeForInstaller,
   isInstallerFile,
   syncDownloadsAssets,
+  syncPassportExtensionDownloads,
+  defaultPassportZipDir,
   walkDownloadFiles,
   writeDownloadsIndexFile
 };

@@ -118,6 +118,11 @@ const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
+const {
+  peerMeshAliasRegistryPatch,
+  peerNicknameRegistryPatch,
+  findFabricPeerRow
+} = require('../functions/peerIdentity');
 const hubCollaboration = require('../functions/hubCollaboration');
 
 // Fabric HTTP
@@ -756,7 +761,7 @@ class Hub extends Service {
     this._delegationRegistry = new Map();
     /** @type {Map<string, Object>} */
     this._delegationSignatureMessages = new Map();
-    /** Set during `POST /services/rpc` dispatch from `req.socket.remoteAddress` (loopback vs LAN). Reserved for policy; not currently read. */
+    /** Set during `POST /services/rpc` dispatch from `req.socket.remoteAddress` (loopback vs LAN). Used by CreateDocument filePath ingest. */
     this._rpcHttpIsLocal = false;
     /** Previous signed AMP `Message.id` for `_appendFabricMessage` (D-020). */
     this._outboundMessageTip = null;
@@ -806,6 +811,10 @@ class Hub extends Service {
       port: this.settings.http.port,
       // Serve assets/index.html for client-side routes (React Router) on refresh; see @fabric/http _maybeServeSpaShell.
       spaFallback: this.settings.http && this.settings.http.spaFallback !== false,
+      // CreateDocument base64 can approach MAX_DOCUMENT_BYTES (8 MiB) → ~11 MiB JSON.
+      jsonBodyLimit: (this.settings.http && this.settings.http.jsonBodyLimit) ||
+        process.env.FABRIC_HTTP_JSON_LIMIT ||
+        '12mb',
       websocket: this.settings.websocket || {},
       middlewares: {
         securityHeaders: (req, res, next) => {
@@ -2342,6 +2351,8 @@ class Hub extends Service {
   /**
    * Bitcoin Core P2P `addnode` targets for playnet/LAN regtest (not Fabric TCP peers).
    * Merges `settings.bitcoin.p2pAddNodes` with `FABRIC_BITCOIN_P2P_ADDNODES` (comma-separated).
+   * For **regtest**, also appends `hub.fabric.pub:18444` unless `FABRIC_BITCOIN_SKIP_PLAYNET_PEER`
+   * is set or `settings.bitcoin.skipPlaynetPeer` is true (this host is the playnet seed).
    * @returns {string[]}
    */
   _bitcoinP2pAddNodesList () {
@@ -2360,8 +2371,10 @@ class Hub extends Service {
         if (s) out.push(s);
       }
     }
-    const skipPlaynet = process.env.FABRIC_BITCOIN_SKIP_PLAYNET_PEER === '1'
-      || process.env.FABRIC_BITCOIN_SKIP_PLAYNET_PEER === 'true';
+    const envSkip = process.env.FABRIC_BITCOIN_SKIP_PLAYNET_PEER;
+    const skipPlaynet = envSkip === '1' || envSkip === 'true'
+      || (envSkip !== '0' && envSkip !== 'false'
+        && !!(this.settings.bitcoin && this.settings.bitcoin.skipPlaynetPeer));
     const network = this.settings.bitcoin && this.settings.bitcoin.network;
     if (!skipPlaynet && network === 'regtest') {
       const playnet = String(process.env.FABRIC_BITCOIN_PLAYNET_PEER || 'hub.fabric.pub:18444').trim();
@@ -6356,41 +6369,12 @@ class Hub extends Service {
       const chainHeight = heightNorm != null ? heightNorm : 0;
 
       const maxRecent = 6;
-      const recentBlocks = [];
-      for (let h = chainHeight; h >= 0 && recentBlocks.length < maxRecent; h--) {
-        try {
-          const hash = await bitcoin._makeRPCRequest('getblockhash', [h]);
-          const block = await bitcoin._makeRPCRequest('getblock', [hash, 1]);
-          const txCount = Array.isArray(block.tx) ? block.tx.length : 0;
-          let rewardSats;
-          let totalOutSats;
-          try {
-            const stats = await bitcoin._makeRPCRequest('getblockstats', [hash]);
-            if (stats && typeof stats === 'object') {
-              const subsidy = Number(stats.subsidy || 0);
-              const totalfee = Number(stats.totalfee || 0);
-              if (Number.isFinite(subsidy) && Number.isFinite(totalfee)) {
-                rewardSats = Math.round(subsidy + totalfee);
-              }
-              if (stats.total_out != null) {
-                const out = Number(stats.total_out);
-                if (Number.isFinite(out)) totalOutSats = Math.round(out);
-              }
-            }
-          } catch (_) { /* older nodes may lack getblockstats */ }
-          recentBlocks.push({
-            hash: block.hash,
-            height: block.height,
-            time: block.time,
-            txCount,
-            size: block.size,
-            ...(rewardSats != null ? { rewardSats } : {}),
-            ...(totalOutSats != null ? { totalOutSats } : {})
-          });
-        } catch (e) {
-          break;
-        }
-      }
+      const recentBlocks = await this._listBitcoinBlockSummaries(bitcoin, {
+        fromHeight: Math.max(0, chainHeight - (maxRecent - 1)),
+        toHeight: chainHeight
+      });
+      // Tip-first for status / ListBlocks default (matches prior recentBlocks order).
+      recentBlocks.reverse();
 
       const mempoolVerbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
       const mempoolTxs = Object.entries(mempoolVerbose || {})
@@ -7636,8 +7620,79 @@ class Hub extends Service {
     });
   }
 
+  /**
+   * Lightweight getblock(+stats) summary for explorer / chain scroller tiles.
+   * @param {object} bitcoin
+   * @param {string} hash
+   * @returns {Promise<object|null>}
+   */
+  async _summarizeBitcoinBlockByHash (bitcoin, hash) {
+    const { summarizeBitcoinBlock } = require('../functions/bitcoinBlockSummary');
+    const h = String(hash || '').trim();
+    if (!bitcoin || !h) return null;
+    try {
+      const block = await bitcoin._makeRPCRequest('getblock', [h, 1]);
+      let stats = null;
+      try {
+        stats = await bitcoin._makeRPCRequest('getblockstats', [h]);
+      } catch (_) { /* older nodes may lack getblockstats */ }
+      return summarizeBitcoinBlock(block, stats);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Inclusive height window of block summaries (ascending by height).
+   * @param {object} bitcoin
+   * @param {{ fromHeight: number, toHeight: number }} range
+   * @returns {Promise<object[]>}
+   */
+  async _listBitcoinBlockSummaries (bitcoin, range = {}) {
+    const fromHeight = Math.max(0, Math.floor(Number(range.fromHeight)));
+    const toHeight = Math.max(fromHeight, Math.floor(Number(range.toHeight)));
+    if (!bitcoin || !Number.isFinite(fromHeight) || !Number.isFinite(toHeight)) return [];
+    const heights = [];
+    for (let height = fromHeight; height <= toHeight; height++) heights.push(height);
+    const rows = await Promise.all(heights.map(async (height) => {
+      try {
+        const hash = await bitcoin._makeRPCRequest('getblockhash', [height]);
+        return this._summarizeBitcoinBlockByHash(bitcoin, hash);
+      } catch (_) {
+        return null;
+      }
+    }));
+    return rows.filter(Boolean);
+  }
+
   _handleBitcoinBlocksListRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
+      const bitcoin = this._getBitcoinService();
+      const aroundRaw = req && req.query ? req.query.around : null;
+      const around = aroundRaw != null && String(aroundRaw).trim() !== ''
+        ? Math.floor(Number(aroundRaw))
+        : NaN;
+
+      if (Number.isFinite(around) && around >= 0) {
+        if (!bitcoin) {
+          return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
+        }
+        const { bitcoinBlockWindowRange } = require('../functions/bitcoinBlockSummary');
+        let tipHeight = null;
+        try {
+          const tip = await bitcoin._makeRPCRequest('getblockcount', []);
+          tipHeight = tip != null && Number.isFinite(Number(tip)) ? Number(tip) : null;
+        } catch (_) { /* ignore */ }
+        const before = req.query && req.query.before != null ? Number(req.query.before) : 10;
+        const after = req.query && req.query.after != null ? Number(req.query.after) : 2;
+        const range = bitcoinBlockWindowRange({ around, before, after, tipHeight });
+        if (!range) {
+          return res.status(400).json({ status: 'error', message: 'Valid around height is required.' });
+        }
+        const blocks = await this._listBitcoinBlockSummaries(bitcoin, range);
+        return res.json(blocks);
+      }
+
       const status = await this._collectBitcoinStatus({ force: true });
       if (!status || !status.available) {
         return res.status(503).json(status || { status: 'error', message: 'Bitcoin service unavailable' });
@@ -9690,6 +9745,23 @@ class Hub extends Service {
         return status;
       }
       case 'listblocks': {
+        const aroundParam = params.around != null ? Math.floor(Number(params.around)) : NaN;
+        if (Number.isFinite(aroundParam) && aroundParam >= 0) {
+          const { bitcoinBlockWindowRange } = require('../functions/bitcoinBlockSummary');
+          let tipHeight = null;
+          try {
+            const tip = await bitcoin._makeRPCRequest('getblockcount', []);
+            tipHeight = tip != null && Number.isFinite(Number(tip)) ? Number(tip) : null;
+          } catch (_) { /* ignore */ }
+          const range = bitcoinBlockWindowRange({
+            around: aroundParam,
+            before: params.before != null ? Number(params.before) : 10,
+            after: params.after != null ? Number(params.after) : 2,
+            tipHeight
+          });
+          if (!range) return { status: 'error', message: 'Valid around height is required.' };
+          return this._listBitcoinBlockSummaries(bitcoin, range);
+        }
         const status = await this._collectBitcoinStatus({ force: true });
         if (!status || !status.available) return status || { status: 'error', message: 'Bitcoin service unavailable' };
         const limit = Math.max(1, Math.min(100, Number(params.limit || 25)));
@@ -11885,7 +11957,9 @@ class Hub extends Service {
       this._refreshChainState('startup-resource-sync');
 
       // Create a document from a locally-processed upload (content is sent from client).
-      // Params: (doc: { name, mime, size, sha256, contentBase64 })
+      // Params: (doc: { name, mime, size, sha256, contentBase64 } | { name, mime, filePath })
+      // filePath is operator-local ingest (admin token): read bytes from disk instead of
+      // shipping multi-MiB base64 over JSON-RPC (Passport / installer publish scripts).
       this.http._registerMethod('CreateDocument', async (...params) => {
         const doc = params[0];
         if (!doc || typeof doc !== 'object') return { status: 'error', message: 'document payload required' };
@@ -11893,7 +11967,38 @@ class Hub extends Service {
         const name = doc.name ? String(doc.name) : 'upload';
         const mime = doc.mime ? String(doc.mime) : 'application/octet-stream';
         const size = doc.size != null ? Number(doc.size) : null;
-        const contentBase64 = doc.contentBase64 ? String(doc.contentBase64) : '';
+        let contentBase64 = doc.contentBase64 ? String(doc.contentBase64) : '';
+        const filePathRaw = doc.filePath != null ? String(doc.filePath).trim() : '';
+
+        if (!contentBase64 && filePathRaw) {
+          const token = String(doc.adminToken || doc.token || params[1] && (params[1].adminToken || params[1].token) || '').trim();
+          const tokenOk = token && this.setup && typeof this.setup.verifyAdminToken === 'function'
+            ? this.setup.verifyAdminToken(token)
+            : false;
+          // Hub owns POST /services/rpc via `_handleHttpJsonRpcRequest`, which sets `_rpcHttpIsLocal`.
+          const loopback = this._rpcHttpIsLocal === true;
+          if (!tokenOk && !loopback) {
+            return { status: 'error', message: 'filePath ingest requires adminToken (or loopback HTTP JSON-RPC)' };
+          }
+          let abs;
+          try {
+            abs = fs.realpathSync(path.resolve(filePathRaw));
+          } catch (_) {
+            return { status: 'error', message: 'filePath not found' };
+          }
+          let st;
+          try {
+            st = fs.statSync(abs);
+          } catch (_) {
+            return { status: 'error', message: 'filePath not found' };
+          }
+          if (!st.isFile()) return { status: 'error', message: 'filePath must be a file' };
+          const bufferFromDisk = fs.readFileSync(abs);
+          const sizeErrDisk = this._validateDocumentSize(bufferFromDisk);
+          if (sizeErrDisk) return sizeErrDisk;
+          contentBase64 = bufferFromDisk.toString('base64');
+        }
+
         if (!contentBase64) return { status: 'error', message: 'contentBase64 required' };
 
         const buffer = Buffer.from(contentBase64, 'base64');
@@ -13592,6 +13697,14 @@ class Hub extends Service {
           },
           // TCP known peers plus browser WebRTC registrations (Fabric ids via metadata.fabricPeerId).
           peers: mergeFabricPeersWithWebRtcRegistry(this.agent.knownPeers, this.http.webrtcPeerList || []),
+          /** Fabric P2P byte counters vs Bitcoin L1 (1 MiB / 10 min) split across 32 peers. */
+          bandwidth: (() => {
+            try {
+              return (this.agent && this.agent.bandwidthSummary) ? this.agent.bandwidthSummary : undefined;
+            } catch (_) {
+              return undefined;
+            }
+          })(),
           // Browser WebRTC mesh peers (registered via RegisterWebRTCPeer / Bridge)
           webrtcPeers: this.http.webrtcPeerList || [],
           /** Server process FEATURE_FLAGS (see constants.js / FABRIC_FEATURE_*). */
@@ -13933,7 +14046,6 @@ class Hub extends Service {
           const registry = this.agent._state && this.agent._state.peers ? this.agent._state.peers : {};
           const addressToId = this.agent._addressToId || {};
           const key = registry[idOrAddress] ? idOrAddress : (addressToId[idOrAddress] || idOrAddress);
-          this.agent._upsertPeerRegistry(key, { id: key, nickname: clean || null, alias: clean || null });
           const selfId = this.agent && this.agent.identity && this.agent.identity.id
             ? String(this.agent.identity.id)
             : '';
@@ -13943,6 +14055,8 @@ class Hub extends Service {
           const isSelf = key === selfId || key === selfPub ||
             String(idOrAddress) === selfId || String(idOrAddress) === selfPub ||
             String(idOrAddress) === 'self' || String(idOrAddress) === 'me';
+          const nickPatch = peerNicknameRegistryPatch(key, clean || null, isSelf);
+          if (nickPatch) this.agent._upsertPeerRegistry(key, nickPatch);
           if (isSelf && clean && typeof this.agent._announceAlias === 'function') {
             this.agent._announceAlias(clean);
           } else if (isSelf && clean) {
@@ -13968,7 +14082,8 @@ class Hub extends Service {
         const known = this.agent && typeof this.agent.knownPeers !== 'undefined' ? this.agent.knownPeers : [];
         const addressToId = this.agent._addressToId || {};
 
-        const entry = Array.isArray(known) && known.find((p) => p && (p.id === input || p.address === input));
+        const knownList = Array.isArray(known) ? known : [];
+        const entry = findFabricPeerRow(knownList, input);
         const id = entry ? entry.id : (registry[input] && registry[input].id) || input;
         const address = typeof this.agent._resolveToAddress === 'function'
           ? this.agent._resolveToAddress(input)
@@ -14296,8 +14411,9 @@ class Hub extends Service {
           const alias = ev && ev.alias != null ? String(ev.alias).trim().slice(0, 64) : '';
           const signer = ev && ev.signer ? String(ev.signer) : null;
           if (!alias || !signer) return;
-          if (typeof this.agent._upsertPeerRegistry === 'function') {
-            this.agent._upsertPeerRegistry(signer, { id: signer, alias, nickname: alias });
+          const aliasPatch = peerMeshAliasRegistryPatch(signer, alias);
+          if (aliasPatch && typeof this.agent._upsertPeerRegistry === 'function') {
+            this.agent._upsertPeerRegistry(signer, aliasPatch);
           }
           const payload = JSON.stringify({
             type: 'P2P_PEER_ALIAS',

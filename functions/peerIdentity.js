@@ -62,8 +62,39 @@ function shortenPublicId (s, head = 10, tail = 8) {
   return `${str.slice(0, head)}…${str.slice(-tail)}`;
 }
 
+/**
+ * Stable cryptographic identity for a peer row (compressed pubkey hex, else bech32 id).
+ * Empty when the row is still address-keyed / pre-handshake.
+ * @param {object|null|undefined} peer
+ * @returns {string}
+ */
+function fabricPeerCryptoIdentityKey (peer) {
+  const hex = fabricPeerPubkeyHex(peer);
+  if (hex) return `pk:${hex}`;
+  const b32 = fabricPeerBech32Id(peer);
+  if (b32 && isLikelyFabricBech32Id(b32)) return `id:${b32}`;
+  return '';
+}
+
+/**
+ * True when `s` is a durable peer identity, not a TCP host:port placeholder.
+ * @param {string} s
+ * @returns {boolean}
+ */
+function looksLikePeerIdentityId (s) {
+  const t = String(s || '').trim();
+  if (!t || t.includes(':')) return false;
+  if (isLikelyCompressedPubkeyHex(t) || isLikelyFabricBech32Id(t)) return true;
+  return /^[0-9a-f]{16,}$/i.test(t);
+}
+
 function sameLogicalFabricPeer (a, b) {
   if (!a || !b) return false;
+  const ca = fabricPeerCryptoIdentityKey(a);
+  const cb = fabricPeerCryptoIdentityKey(b);
+  // Distinct signed identities must never collapse — even when they share a TCP host:port
+  // (reconnect, NAT, two nodes on one machine). Collapsing mixes P2P_PEER_ALIAS labels.
+  if (ca && cb && ca !== cb) return false;
   const aid = String(a.id || '').trim();
   const bid = String(b.id || '').trim();
   const aad = String(a.address || '').trim();
@@ -71,7 +102,12 @@ function sameLogicalFabricPeer (a, b) {
   if (aid && bid && aid === bid) return true;
   const an = aad ? normalizeFabricPeerAddress(aad) : '';
   const bn = bad ? normalizeFabricPeerAddress(bad) : '';
-  if (an && bn && an === bn) return true;
+  if (an && bn && an === bn) {
+    if (aid && bid && aid !== bid && looksLikePeerIdentityId(aid) && looksLikePeerIdentityId(bid)) {
+      return false;
+    }
+    return true;
+  }
   if (aid && (aid === bad || aid === bn)) return true;
   if (bid && (bid === aad || bid === an)) return true;
   const xa = extractPeerXpub(a);
@@ -81,6 +117,66 @@ function sameLogicalFabricPeer (a, b) {
   const mb = b && b.metadata && b.metadata.fabricPeerId != null ? String(b.metadata.fabricPeerId).trim() : '';
   if (ma && mb && ma === mb) return true;
   return false;
+}
+
+/**
+ * Drop a disconnected row's mesh alias when it is identical to a connected peer
+ * at the same TCP address (stale registry copy from a previous occupant).
+ * @param {object[]} peers
+ * @returns {object[]}
+ */
+function reclaimSharedAddressAliases (peers) {
+  const arr = Array.isArray(peers) ? peers : [];
+  const liveAliasByAddr = new Map();
+  for (let i = 0; i < arr.length; i++) {
+    const p = arr[i];
+    if (!p || p.status !== 'connected') continue;
+    const alias = p.alias && String(p.alias).trim();
+    const addr = p.address && String(p.address).trim();
+    if (!alias || !addr || addr.toLowerCase().startsWith('webrtc:')) continue;
+    liveAliasByAddr.set(normalizeFabricPeerAddress(addr), alias);
+  }
+  if (!liveAliasByAddr.size) return arr;
+  return arr.map((p) => {
+    if (!p || p.status === 'connected') return p;
+    const addr = p.address && String(p.address).trim();
+    if (!addr || addr.toLowerCase().startsWith('webrtc:')) return p;
+    const stolen = liveAliasByAddr.get(normalizeFabricPeerAddress(addr));
+    const alias = p.alias && String(p.alias).trim();
+    if (!stolen || !alias || alias !== stolen) return p;
+    const next = { ...p, alias: null };
+    const nick = p.nickname && String(p.nickname).trim();
+    if (nick && nick === stolen) next.nickname = null;
+    return next;
+  });
+}
+
+/**
+ * Choose alias or nickname when merging two rows of the same logical peer.
+ * Prefer a crypto-identified row over an address-keyed placeholder, then the
+ * connected row, then the more recently seen value. Never invent a label.
+ * @param {*} aVal
+ * @param {*} bVal
+ * @param {object} a
+ * @param {object} b
+ * @returns {string|null}
+ * @private
+ */
+function pickMergedPeerLabel (aVal, bVal, a, b) {
+  const sa = aVal != null && String(aVal).trim() ? String(aVal).trim() : '';
+  const sb = bVal != null && String(bVal).trim() ? String(bVal).trim() : '';
+  if (sa && sb && sa !== sb) {
+    const aCrypto = !!fabricPeerCryptoIdentityKey(a);
+    const bCrypto = !!fabricPeerCryptoIdentityKey(b);
+    if (aCrypto !== bCrypto) return aCrypto ? sa : sb;
+    const aConn = !!(a && a.status === 'connected');
+    const bConn = !!(b && b.status === 'connected');
+    if (aConn !== bConn) return aConn ? sa : sb;
+    const ra = fabricPeerRecencyMs(a);
+    const rb = fabricPeerRecencyMs(b);
+    if (rb !== ra) return rb > ra ? sb : sa;
+  }
+  return sa || sb || null;
 }
 
 /**
@@ -156,6 +252,82 @@ function sortFabricPeersMostRecentFirst (peers) {
 }
 
 /**
+ * Session byte total for Fabric (or Bitcoin-shaped) peer rows.
+ * @param {object} peer
+ * @returns {number}
+ */
+function fabricPeerSessionBytes (peer) {
+  const inn = Number(peer && peer.bytesIn);
+  const out = Number(peer && peer.bytesOut);
+  return (Number.isFinite(inn) ? inn : 0) + (Number.isFinite(out) ? out : 0);
+}
+
+/**
+ * Rolling L1-window bytes (in + out) for a Fabric peer row.
+ * @param {object} peer
+ * @returns {number}
+ */
+function fabricPeerWindowBytes (peer) {
+  if (peer && Number.isFinite(Number(peer.windowBytes))) return Math.max(0, Number(peer.windowBytes));
+  const inn = Number(peer && peer.windowBytesIn);
+  const out = Number(peer && peer.windowBytesOut);
+  return (Number.isFinite(inn) ? inn : 0) + (Number.isFinite(out) ? out : 0);
+}
+
+/**
+ * Sort Fabric peer rows by a Hub table column.
+ * @param {object[]} peers
+ * @param {string} [column] `seen` (default), `id`, `connection`, `status`, `bytes`, `bytesIn`, `bytesOut`, `window`, `budget`
+ * @param {string} [direction] `ascending` or `descending` (default)
+ * @returns {object[]}
+ */
+function sortFabricPeersByColumn (peers, column, direction) {
+  const col = column != null ? String(column) : 'seen';
+  const dir = direction === 'ascending' ? 1 : -1;
+  if (!col || col === 'seen') {
+    const list = sortFabricPeersMostRecentFirst(peers);
+    return dir === 1 ? list.reverse() : list;
+  }
+  const arr = Array.isArray(peers) ? peers.slice() : [];
+  const value = (p) => {
+    switch (col) {
+      case 'id':
+        return fabricPeerPrimaryLabel(p).toLowerCase();
+      case 'connection':
+        return String((p && (p.address || p.host || p.url)) || '').toLowerCase();
+      case 'status':
+        return (p && p.status) === 'connected' ? 1 : 0;
+      case 'bytesIn':
+        return Number(p && p.bytesIn) || 0;
+      case 'bytesOut':
+        return Number(p && p.bytesOut) || 0;
+      case 'bytes':
+        return fabricPeerSessionBytes(p);
+      case 'window':
+        return fabricPeerWindowBytes(p);
+      case 'budget': {
+        const w = fabricPeerWindowBytes(p);
+        const b = Number(p && p.budgetBytes);
+        return Number.isFinite(b) && b > 0 ? w / b : 0;
+      }
+      default:
+        return 0;
+    }
+  };
+  arr.sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (typeof va === 'string' || typeof vb === 'string') {
+      const c = String(va).localeCompare(String(vb));
+      return c === 0 ? fabricPeerPrimaryLabel(a).localeCompare(fabricPeerPrimaryLabel(b)) : c * dir;
+    }
+    if (va !== vb) return va > vb ? dir : -dir;
+    return fabricPeerPrimaryLabel(a).localeCompare(fabricPeerPrimaryLabel(b));
+  });
+  return arr;
+}
+
+/**
  * Prefer the later of two timestamp fields (ISO string or epoch).
  * @param {*} a
  * @param {*} b
@@ -182,9 +354,8 @@ function mergeFabricPeerRows (a, b) {
   const misbehavior = (Number.isFinite(ma) || Number.isFinite(mb))
     ? Math.max(Number.isFinite(ma) ? ma : 0, Number.isFinite(mb) ? mb : 0)
     : (a && a.misbehavior != null ? a.misbehavior : b && b.misbehavior);
-  const na = a && a.nickname && String(a.nickname).trim();
-  const nb = b && b.nickname && String(b.nickname).trim();
-  const nickname = na || nb || null;
+  const nickname = pickMergedPeerLabel(a && a.nickname, b && b.nickname, a, b);
+  const alias = pickMergedPeerLabel(a && a.alias, b && b.alias, a, b);
   const id = (a && a.id) || (b && b.id);
   const address = (a && a.address) || (b && b.address);
   const metaA = a && a.metadata && typeof a.metadata === 'object' ? a.metadata : {};
@@ -192,6 +363,21 @@ function mergeFabricPeerRows (a, b) {
   const metadata = { ...metaB, ...metaA };
   const lastSeen = laterTimestampValue(a && a.lastSeen, b && b.lastSeen);
   const lastMessage = laterTimestampValue(a && a.lastMessage, b && b.lastMessage);
+  const maxNum = (x, y) => {
+    const nx = Number(x);
+    const ny = Number(y);
+    if (Number.isFinite(nx) && Number.isFinite(ny)) return Math.max(nx, ny);
+    if (Number.isFinite(nx)) return nx;
+    if (Number.isFinite(ny)) return ny;
+    return undefined;
+  };
+  const bytesIn = maxNum(a && a.bytesIn, b && b.bytesIn);
+  const bytesOut = maxNum(a && a.bytesOut, b && b.bytesOut);
+  const windowBytesIn = maxNum(a && a.windowBytesIn, b && b.windowBytesIn);
+  const windowBytesOut = maxNum(a && a.windowBytesOut, b && b.windowBytesOut);
+  const windowBytes = maxNum(a && a.windowBytes, b && b.windowBytes);
+  const budgetBytes = maxNum(a && a.budgetBytes, b && b.budgetBytes);
+  const budgetShare = maxNum(a && a.budgetShare, b && b.budgetShare);
   return {
     ...b,
     ...a,
@@ -200,10 +386,19 @@ function mergeFabricPeerRows (a, b) {
     status,
     score,
     misbehavior,
-    nickname: nickname || a.nickname || b.nickname,
+    nickname: nickname || null,
+    alias: alias || null,
     lastSeen,
     lastMessage,
-    metadata
+    metadata,
+    bytesIn,
+    bytesOut,
+    windowBytesIn,
+    windowBytesOut,
+    windowBytes,
+    budgetBytes,
+    budgetShare,
+    overBudget: !!(a && a.overBudget) || !!(b && b.overBudget)
   };
 }
 
@@ -229,7 +424,7 @@ function dedupeFabricPeers (peers) {
     out.push(merged);
     consumed.add(i);
   }
-  return out;
+  return reclaimSharedAddressAliases(out);
 }
 
 const FABRIC_IDENTITY_HRP_PREFIX = 'id1';
@@ -311,18 +506,84 @@ function fabricPeerDialIdentity (peer) {
  */
 function fabricPeerPrimaryLabel (peer) {
   if (!peer || typeof peer !== 'object') return '';
+  // Mesh-advertised P2P_PEER_ALIAS, then operator-local nickname.
+  const alias = peer.alias && String(peer.alias).trim();
+  if (alias) return alias;
   const nick = peer.nickname && String(peer.nickname).trim();
   if (nick) return nick;
   const fb = fabricPeerBech32Id(peer);
   if (fb && isLikelyFabricBech32Id(fb)) return shortenPublicId(fb, 14, 12);
   const x = extractPeerXpub(peer);
   if (x) return shortenPublicId(x, 12, 10);
-  if (peer.alias && String(peer.alias).trim()) return String(peer.alias).trim();
   if (fb) return shortenPublicId(fb, 14, 12);
   const id = peer.id && String(peer.id).trim();
   if (id) return shortenPublicId(id, 12, 10);
   const addr = peer.address && String(peer.address).trim();
   return addr ? shortenPublicId(addr, 14, 8) : 'peer';
+}
+
+/**
+ * Registry patch for an inbound signed {@link P2P_PEER_ALIAS}.
+ * Writes mesh <code>alias</code> only — never the operator's node-local nickname.
+ * @param {string} signer
+ * @param {string} alias
+ * @returns {{ id: string, alias: string }|null}
+ */
+function peerMeshAliasRegistryPatch (signer, alias) {
+  const id = String(signer || '').trim();
+  const name = String(alias || '').trim().slice(0, 64);
+  if (!id || !name) return null;
+  return { id, alias: name };
+}
+
+/**
+ * Registry patch for SetPeerNickname.
+ * Remote peers: nickname only (leave mesh alias). Self: nickname is also the advertised alias.
+ * @param {string} key
+ * @param {string|null|undefined} nickname
+ * @param {boolean} [isSelf]
+ * @returns {{ id: string, nickname: string|null, alias?: string|null }|null}
+ */
+function peerNicknameRegistryPatch (key, nickname, isSelf) {
+  const id = String(key || '').trim();
+  if (!id) return null;
+  const clean = nickname == null ? null : (String(nickname).trim().slice(0, 64) || null);
+  if (isSelf) return { id, nickname: clean, alias: clean };
+  return { id, nickname: clean };
+}
+
+/**
+ * Locate a peer row by cryptographic id first, then TCP address.
+ * Shared host:port must not steal another identity's alias.
+ * @param {object[]} peers
+ * @param {string} actorId
+ * @returns {object|null}
+ */
+function findFabricPeerRow (peers, actorId) {
+  const arr = Array.isArray(peers) ? peers : [];
+  const id = actorId != null ? String(actorId).trim() : '';
+  if (!id) return null;
+  const identityHits = arr.filter((p) => {
+    if (!p || typeof p !== 'object') return false;
+    if (p.id != null && String(p.id) === id) return true;
+    const hex = fabricPeerPubkeyHex(p);
+    if (hex && hex === id.toLowerCase()) return true;
+    const b32 = fabricPeerBech32Id(p);
+    if (b32 && b32 === id) return true;
+    return false;
+  });
+  if (identityHits.length) {
+    return identityHits.find((p) => p && p.status === 'connected') || identityHits[0];
+  }
+  const want = normalizeFabricPeerAddress(id);
+  const addrHits = arr.filter((p) => {
+    if (!p || typeof p !== 'object') return false;
+    const addr = p.address != null ? String(p.address).trim() : '';
+    if (!addr) return false;
+    return addr === id || normalizeFabricPeerAddress(addr) === want;
+  });
+  if (!addrHits.length) return null;
+  return addrHits.find((p) => p && p.status === 'connected') || addrHits[0];
 }
 
 /**
@@ -564,6 +825,7 @@ module.exports = {
   isLikelyCompressedPubkeyHex,
   fabricPeerBech32Id,
   fabricPeerPubkeyHex,
+  fabricPeerCryptoIdentityKey,
   fabricPeerDialIdentity,
   peerPublicConnectionTargetHostPort,
   peerPeeringEndpointIsSignaling,
@@ -571,9 +833,18 @@ module.exports = {
   peerConnectionPubkeyAtHostPort,
   fabricP2PIdentityConfirmed,
   consolidateUnifiedPeersByFabricId,
+  sameLogicalFabricPeer,
+  looksLikePeerIdentityId,
+  reclaimSharedAddressAliases,
+  findFabricPeerRow,
+  peerMeshAliasRegistryPatch,
+  peerNicknameRegistryPatch,
   dedupeFabricPeers,
   fabricPeerRecencyMs,
   sortFabricPeersMostRecentFirst,
+  sortFabricPeersByColumn,
+  fabricPeerSessionBytes,
+  fabricPeerWindowBytes,
   fabricPeerPrimaryLabel,
   buildWebrtcCombinedRows,
   webrtcRowPrimaryLabel,
