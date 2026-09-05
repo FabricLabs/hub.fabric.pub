@@ -77,7 +77,7 @@ Cookie file: `datadir/<subdir>/.cookie`
 ### Configuration
 
 - **Env**: `FABRIC_BITCOIN_NETWORK=signet|testnet|mainnet|regtest`
-- **Setup**: `stores/hub/settings.json` → `BITCOIN_NETWORK`
+- **Setup**: `stores/hub/STATE` → `.settings.BITCOIN_NETWORK` (and optional `BITCOIN_PRESET` / prune / listen / dbcache knobs from first-time setup)
 - **Unmanaged**: When `BITCOIN_MANAGED=false`, use default RPC port per network (not always 8332).
 - **Explorer HTTP fallback** (`@fabric/core` `Bitcoin`): optional `FABRIC_EXPLORER_URL` or `bitcoin.explorerBaseUrl` (origin only, e.g. `http://localhost:8080`). Unset means RPC-only for block/tx; address-index queries need an explorer or hub that exposes `/services/bitcoin/addresses/...`.
 
@@ -89,7 +89,7 @@ Use this when Bitcoin Core runs on another machine (for example a known-good nod
    - **Host**: RPC host (e.g. `127.0.0.1`)
    - **RPC port**: `8332` unless your node uses a custom port
    - **Username / password**: as in the remote node’s `bitcoin.conf`, or use cookie auth if you run the Hub on the same filesystem as that node (unusual for LAN RPC; user/pass is typical).
-2. Or edit `stores/hub/settings.json` after setup (keys vary by bootstrap; mirror what onboarding writes), ensuring `BITCOIN_MANAGED` is false and host/port/network match the remote node.
+2. Or edit `stores/hub/STATE` `.settings` after setup (keys vary by bootstrap; mirror what onboarding writes), ensuring `BITCOIN_MANAGED` is false and host/port/network match the remote node.
 3. **Firewall / bind**: the remote `bitcoind` must accept RPC from the Hub host (`rpcbind`, `rpcallowip`, and no firewall drop). **Use RPC over a trusted LAN or TLS/stunnel; never expose raw RPC to the internet.**
 4. **Fabric CLI / `@fabric/core`**: point a non-managed wallet at the same RPC with `FABRIC_BITCOIN_NODE=127.0.0.1` (optional `:port`) or `bitcoin.spvNode` in settings, as documented in the core CLI help.
 

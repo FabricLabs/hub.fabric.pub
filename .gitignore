@@ -125,6 +125,9 @@ stores/hub/debug.log
 logs/hub/debug.log
 logs/hub/debug.log.1
 
+# Screenshot capture ephemeral Hub datadirs
+stores/screenshot-runs/
+
 # Local playnet regtest mesh (launcher-generated state)
 stores/playnet-mesh-runtime/
 
@@ -134,6 +137,44 @@ stores/playnet-mesh-runtime/
 # Store
 store/
 
+# Managed bitcoind / lightningd (keep binaries/README.md)
+binaries/**
+!binaries/README.md
+build/.installer-binaries/**
+!build/.installer-binaries/.keep
+
+# Public /downloads installers (keep README + .gitkeep; index.json is generated)
+assets/downloads/**
+!assets/downloads/README.md
+!assets/downloads/.gitkeep
+
 # Browser extension build artifacts (@fabric/hub)
 extension/vendor/
 extension/popup.bundle.js
+
+# Local scratch / PR dumps (dominate npm pack if left unignored)
+.tmp-*
+.tmp-pr*/
+192.168.50.5
+test-my-assumptions.js
+.archive/
+
+# Accidental LevelDB in assets/
+/assets/CURRENT
+/assets/LOCK
+/assets/LOG
+/assets/LOG.old
+/assets/MANIFEST-*
+
+# Managed Bitcoin / Lightning datadirs (blk00000.dat is ~16 MiB)
+stores/bitcoin-*/
+stores/lightning/
+
+# Leftover schema / lightning test copies
+stores/schemas/
+stores/schemas-backup/
+stores/hub-test-lightning/
+stores/hub-test-lightning-nc/
+
+# Local Fomantic checkout — compiled CSS/JS already lives in assets/
+libraries/fomantic/

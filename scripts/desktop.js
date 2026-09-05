@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
@@ -10,13 +11,26 @@ if (!electron.ipcMain) {
   console.error('[DESKTOP] Run the Electron main process with the Electron binary, e.g. ./node_modules/.bin/electron scripts/desktop.js (not `node scripts/desktop.js` or a mis-resolved `npx electron`).');
   process.exit(1);
 }
-const { app, BrowserWindow, shell, ipcMain, dialog } = electron;
+const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage } = electron;
 
 const settings = require('../settings/local');
 const { fabricMessageSummaryFromHex, parseOpaqueFabricMessageHex } = require('../functions/fabricProtocolUrl');
 const { assertAllowedFabricHub } = require('../functions/fabricHubAllowlist');
 const { hubPaymentsPathFromBitcoinUri } = require('../functions/bitcoinProtocolUrl');
 const { runDesktopHubStartupProbe, isFabricHubSettingsListPayload } = require('./desktopHubProbe');
+const {
+  argvRequestsHidden,
+  desktopShellStatePath,
+  electronLoginItemSettings,
+  linuxAutostartPath,
+  parseBoolEnv,
+  readDesktopShellState,
+  resolveOpenAtLogin,
+  shouldStartHidden,
+  syncLinuxAutostart,
+  writeDesktopShellState
+} = require('../functions/desktopOpenAtLogin');
+const { configureDesktopUserData, hubStoreDir } = require('../functions/desktopUserData');
 const HUB_PORT = Number(
   (settings.http && settings.http.port) ||
   process.env.FABRIC_HUB_PORT ||
@@ -31,6 +45,8 @@ const BITCOIN_PROTOCOL = 'bitcoin';
 
 let mainWindow = null;
 let hubProcess = null;
+let tray = null;
+let isQuitting = false;
 /** When true, loopback already runs Hub HTTP; do not spawn or kill `scripts/hub.js`. */
 let usesExternalHub = false;
 
@@ -41,6 +57,15 @@ ipcMain.handle('fabric:get-pending-login-prompt', () => {
   const p = pendingLoginPromptPayload;
   pendingLoginPromptPayload = null;
   return p;
+});
+
+ipcMain.handle('fabric:get-desktop-paths', () => {
+  const userData = app.getPath('userData');
+  return {
+    userData: userData,
+    hubStore: hubStoreDir(userData),
+    usesExternalHub: !!usesExternalHub
+  };
 });
 
 /**
@@ -104,8 +129,8 @@ function deliverLoginPromptPayload (payload) {
   if (!w || !w.webContents) return;
   const send = () => {
     try {
+      showMainWindow();
       w.webContents.send('fabric-login-prompt', payload);
-      w.focus();
     } catch (_) {}
   };
   if (w.webContents.isLoading()) {
@@ -123,6 +148,26 @@ let pendingBitcoinUrl = null;
 let delegationPollTimer = null;
 const delegationInFlight = new Set();
 
+/** Pin userData to "Fabric Hub" before the instance lock (unpackaged Electron otherwise uses the Electron profile). */
+const desktopUserData = configureDesktopUserData(app);
+console.log(
+  '[DESKTOP] Hub data:',
+  desktopUserData.userDataDir,
+  'store:',
+  desktopUserData.hubStoreDir,
+  'source:',
+  desktopUserData.source
+);
+if (desktopUserData.migratedFrom && desktopUserData.migrated && desktopUserData.migrated.copied) {
+  console.log(
+    '[DESKTOP] Migrated Hub files from unpackaged Electron profile:',
+    desktopUserData.migratedFrom,
+    '→',
+    desktopUserData.userDataDir,
+    desktopUserData.migrated.names.join(', ')
+  );
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -137,13 +182,13 @@ app.on('second-instance', (_event, commandLine) => {
   const btc = commandLine.find((arg) => typeof arg === 'string' && arg.toLowerCase().startsWith(`${BITCOIN_PROTOCOL}:`));
   if (btc) {
     void handleBitcoinProtocolUrl(btc);
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+    if (app.isReady()) showMainWindow();
     return;
   }
   const prefix = `${FABRIC_PROTOCOL}:`;
   const url = commandLine.find((arg) => typeof arg === 'string' && arg.startsWith(prefix));
   if (url) void handleFabricProtocolUrl(url);
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+  if (app.isReady()) showMainWindow();
 });
 
 function hubUrl () {
@@ -275,8 +320,217 @@ function getAppRoot () {
   return path.join(__dirname, '..');
 }
 
+function resolveAppIcon () {
+  const root = getAppRoot();
+  const candidates = [
+    path.join(root, 'assets', 'icons', 'icon-512.png'),
+    path.join(root, 'build', 'icon.png'),
+    path.join(root, 'assets', 'favicon.ico')
+  ];
+  for (const file of candidates) {
+    try {
+      if (fs.existsSync(file)) return file;
+    } catch (_) {}
+  }
+  return undefined;
+}
+
+function resolveTrayImage () {
+  const root = getAppRoot();
+  const candidates = [
+    path.join(root, 'assets', 'icons', 'icon-32.png'),
+    path.join(root, 'assets', 'icons', 'icon-48.png'),
+    path.join(root, 'assets', 'icons', 'icon-16.png'),
+    path.join(root, 'build', 'icon.png'),
+    path.join(root, 'assets', 'icons', 'icon.png')
+  ];
+  for (const file of candidates) {
+    try {
+      if (fs.existsSync(file)) {
+        const img = nativeImage.createFromPath(file);
+        if (img && !img.isEmpty()) return img;
+      }
+    } catch (_) {}
+  }
+  return nativeImage.createEmpty();
+}
+
+function shellStatePath () {
+  return desktopShellStatePath(app.getPath('userData'));
+}
+
+function persistedOpenAtLogin () {
+  const state = readDesktopShellState(shellStatePath());
+  return typeof state.openAtLogin === 'boolean' ? state.openAtLogin : undefined;
+}
+
+function openAtLoginEnabled () {
+  try {
+    return !!app.getLoginItemSettings().openAtLogin;
+  } catch (_) {
+    if (process.platform === 'linux') {
+      try {
+        return fs.existsSync(linuxAutostartPath(app.getPath('home')));
+      } catch (_err) {
+        return false;
+      }
+    }
+    return false;
+  }
+}
+
+function desiredOpenAtLogin () {
+  return resolveOpenAtLogin({
+    env: process.env,
+    persisted: persistedOpenAtLogin(),
+    settingsOpenAtLogin: settings.openAtLogin,
+    isPackaged: !!app.isPackaged
+  });
+}
+
+function applyOpenAtLogin (enabled) {
+  const on = !!enabled;
+  try {
+    app.setLoginItemSettings(electronLoginItemSettings({
+      openAtLogin: on,
+      platform: process.platform,
+      execPath: process.execPath
+    }));
+  } catch (error) {
+    console.warn('[DESKTOP] Could not set login item:', error && error.message ? error.message : error);
+  }
+  if (process.platform === 'linux') {
+    try {
+      syncLinuxAutostart({
+        enabled: on,
+        homeDir: app.getPath('home'),
+        execPath: process.execPath,
+        iconPath: resolveAppIcon() || ''
+      });
+    } catch (error) {
+      console.warn('[DESKTOP] Could not write Linux autostart:', error && error.message ? error.message : error);
+    }
+  }
+  try {
+    writeDesktopShellState(shellStatePath(), { openAtLogin: on });
+  } catch (error) {
+    console.warn('[DESKTOP] Could not persist Run at startup:', error && error.message ? error.message : error);
+  }
+  console.log('[DESKTOP] Run at startup:', on ? 'on' : 'off');
+  rebuildTrayMenu();
+}
+
+function configureAutoLaunch () {
+  const env = parseBoolEnv(process.env.FABRIC_OPEN_AT_LOGIN);
+  const persisted = persistedOpenAtLogin();
+  if (!app.isPackaged && env === null && typeof persisted !== 'boolean') {
+    return;
+  }
+  applyOpenAtLogin(desiredOpenAtLogin());
+}
+
+function startHiddenRequested () {
+  let login = {};
+  try {
+    login = app.getLoginItemSettings() || {};
+  } catch (_) {
+    login = {};
+  }
+  return shouldStartHidden({
+    argv: process.argv,
+    wasOpenedAtLogin: !!login.wasOpenedAtLogin,
+    wasOpenedAsHidden: !!login.wasOpenedAsHidden
+  }) || argvRequestsHidden(process.argv);
+}
+
+function showMainWindow () {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createWindow({ show: true }).catch((err) => {
+      console.error('[DESKTOP] show window failed:', err && err.message ? err.message : err);
+    });
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (process.platform === 'darwin' && app.dock) app.dock.show();
+}
+
+function hideMainWindow () {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.hide();
+  if (process.platform === 'darwin' && app.dock) app.dock.hide();
+}
+
+function quitApp () {
+  isQuitting = true;
+  app.quit();
+}
+
+function rebuildTrayMenu () {
+  if (!tray) return;
+  const atLogin = (function () {
+    const persisted = persistedOpenAtLogin();
+    if (typeof persisted === 'boolean') return persisted;
+    return openAtLoginEnabled();
+  }());
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Show Fabric Hub',
+      click: () => showMainWindow()
+    },
+    {
+      label: 'Run at startup',
+      type: 'checkbox',
+      checked: !!atLogin,
+      click: (item) => applyOpenAtLogin(item.checked)
+    },
+    {
+      label: 'Reveal Hub data folder',
+      click: () => {
+        const dir = app.getPath('userData');
+        try {
+          shell.openPath(dir);
+        } catch (e) {
+          console.warn('[DESKTOP] openPath userData failed:', e && e.message ? e.message : e);
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit Fabric Hub',
+      click: () => quitApp()
+    }
+  ]);
+  tray.setContextMenu(menu);
+}
+
+function createTray () {
+  if (tray) return;
+  const image = resolveTrayImage();
+  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
+  tray.setToolTip('Fabric Hub — Bitcoin, Fabric, Lightning');
+  rebuildTrayMenu();
+  tray.on('click', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      hideMainWindow();
+    } else {
+      showMainWindow();
+    }
+  });
+  tray.on('double-click', () => showMainWindow());
+}
+
 function getHubScriptPath () {
   return path.join(getAppRoot(), 'scripts', 'hub.js');
+}
+
+function bundledBinariesDir () {
+  const id = `${process.platform}-${process.arch}`;
+  if (app.isPackaged && process.resourcesPath) {
+    return path.join(process.resourcesPath, 'binaries', id);
+  }
+  return path.join(getAppRoot(), 'binaries', id);
 }
 
 function spawnHub () {
@@ -285,6 +539,7 @@ function spawnHub () {
   const appRoot = getAppRoot();
   const userData = app.getPath('userData');
   const hubScript = getHubScriptPath();
+  console.log('[DESKTOP] Spawning Hub with FABRIC_HUB_USER_DATA=', userData, 'store=', hubStoreDir(userData));
 
   const loopbackHubOrigin = `http://127.0.0.1:${HUB_PORT}`;
   hubProcess = spawn(process.execPath, [hubScript], {
@@ -296,6 +551,7 @@ function spawnHub () {
       PORT: String(HUB_PORT),
       FABRIC_HUB_APP_ROOT: appRoot,
       FABRIC_HUB_USER_DATA: userData,
+      FABRIC_HUB_BINARIES: process.env.FABRIC_HUB_BINARIES || bundledBinariesDir(),
       // Do not set FABRIC_HUB_INTERFACE: hub reads HTTP_SHARED_MODE from settings (Admin) and binds 0.0.0.0 when shared.
       FABRIC_HUB_HOSTNAME: '127.0.0.1',
       /** Same-origin L1 HTTP explorer as the UI so `@fabric/core` Bitcoin can use Hub `/services/bitcoin` for block/tx fallbacks (playnet / desktop). */
@@ -518,7 +774,7 @@ async function handleBitcoinProtocolUrl (urlStr) {
   }
   try {
     await w.loadURL(target);
-    w.focus();
+    showMainWindow();
     console.log('[DESKTOP] Opened Payments from bitcoin: URI');
   } catch (e) {
     console.error('[DESKTOP] loadURL failed for bitcoin URI:', e && e.message ? e.message : e);
@@ -535,7 +791,8 @@ function drainArgvBitcoinUrl () {
   if (arg) void handleBitcoinProtocolUrl(arg);
 }
 
-async function createWindow () {
+async function createWindow (opts) {
+  const showWindow = !(opts && opts.show === false);
   const forceInternal = process.env.FABRIC_DESKTOP_ALWAYS_SPAWN_HUB === '1'
     || String(process.env.FABRIC_DESKTOP_ALWAYS_SPAWN_HUB || '').toLowerCase() === 'true';
   let probeSummary = { useExternalHub: false, reason: 'forced_internal' };
@@ -557,6 +814,11 @@ async function createWindow () {
   spawnHub();
   await waitForHub();
 
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (showWindow) showMainWindow();
+    return;
+  }
+
   const preload = path.join(__dirname, 'desktop-preload.js');
   const win = new BrowserWindow({
     width: 1280,
@@ -564,8 +826,9 @@ async function createWindow () {
     minWidth: 800,
     minHeight: 600,
     title: 'Fabric Hub',
-    // Show immediately: waiting only on `ready-to-show` can leave a forever-hidden window if a asset hangs.
-    show: true,
+    icon: resolveAppIcon(),
+    // Show immediately unless this is a login-item / --hidden start (tray still runs Hub).
+    show: showWindow,
     backgroundColor: '#f7f7f7',
     webPreferences: {
       preload,
@@ -596,6 +859,12 @@ async function createWindow () {
     } catch (_) {}
   }
   mainWindow = win;
+
+  win.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    hideMainWindow();
+  });
 
   win.on('closed', () => {
     mainWindow = null;
@@ -689,11 +958,15 @@ app.on('open-url', (event, url) => {
 app.whenReady().then(async () => {
   registerFabricProtocol();
   registerBitcoinProtocol();
+  createTray();
+  configureAutoLaunch();
+  const hidden = startHiddenRequested();
   try {
-    await createWindow();
+    await createWindow({ show: !hidden });
+    if (hidden && process.platform === 'darwin' && app.dock) app.dock.hide();
   } catch (err) {
     console.error('[DESKTOP] Failed to start:', err && err.stack ? err.stack : err);
-    app.quit();
+    quitApp();
     return;
   }
   drainArgvFabricUrl();
@@ -709,22 +982,16 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    killHub();
-    app.quit();
-  }
+  // Keep Hub (Bitcoin / Fabric / Lightning) running in the tray.
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   killHub();
 });
 
 app.on('activate', () => {
   registerFabricProtocol();
   registerBitcoinProtocol();
-  if (BrowserWindow.getAllWindows().length === 0) {
-    void createWindow().catch((err) => {
-      console.error('[DESKTOP] activate failed:', err && err.message ? err.message : err);
-    });
-  }
+  showMainWindow();
 });

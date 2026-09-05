@@ -3,7 +3,8 @@
 const assert = require('assert');
 const {
   isHttpSharedModeEnabled,
-  resolveHttpListenHost
+  resolveHttpListenHost,
+  applySharedModeWebsocketGate
 } = require('../functions/httpSharedMode');
 
 describe('httpSharedMode', () => {
@@ -27,5 +28,43 @@ describe('httpSharedMode', () => {
     assert.strictEqual(typeof resolveHttpListenHost, 'function');
     assert.strictEqual(resolveHttpListenHost({ mode: 'relay', env: {} }), '127.0.0.1');
     assert.strictEqual(resolveHttpListenHost({ mode: 'server', env: {} }), '0.0.0.0');
+    assert.strictEqual(
+      resolveHttpListenHost({ host: '10.0.0.8', env: { INTERFACE: '0.0.0.0' } }),
+      '10.0.0.8'
+    );
+    assert.strictEqual(
+      resolveHttpListenHost({ env: { INTERFACE: '10.0.0.9' } }),
+      '10.0.0.9'
+    );
+    assert.strictEqual(
+      resolveHttpListenHost({ env: { FABRIC_HUB_INTERFACE: '10.0.0.10' } }),
+      '10.0.0.10'
+    );
+  });
+
+  it('applySharedModeWebsocketGate requires token when shared + env token', () => {
+    assert.strictEqual(typeof applySharedModeWebsocketGate, 'function');
+    const gated = applySharedModeWebsocketGate({}, {
+      bindAll: true,
+      env: { FABRIC_WS_CLIENT_TOKEN: 'secret-ws' }
+    });
+    assert.strictEqual(gated.websocket.requireClientToken, true);
+    assert.strictEqual(gated.websocket.clientToken, 'secret-ws');
+    const off = applySharedModeWebsocketGate({ websocket: { requireClientToken: false } }, {
+      bindAll: true,
+      env: { FABRIC_WS_CLIENT_TOKEN: 'secret-ws' }
+    });
+    assert.strictEqual(off.websocket.requireClientToken, false);
+  });
+
+  it('applySharedModeWebsocketGate fail-closes shared bind without env token', () => {
+    // Handshake reject is the gate. Do not throw at Hub startup when the
+    // shared-mode WS token is unset (HTTPServer refuses the socket).
+    let gated;
+    assert.doesNotThrow(() => {
+      gated = applySharedModeWebsocketGate({}, { bindAll: true, env: {} });
+    });
+    assert.strictEqual(gated.websocket.requireClientToken, true);
+    assert.ok(!gated.websocket.clientToken);
   });
 });

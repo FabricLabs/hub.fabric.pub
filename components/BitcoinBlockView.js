@@ -14,8 +14,9 @@ const {
   Label,
   Loader
 } = require('semantic-ui-react');
-const { fetchBlockByHash, loadUpstreamSettings } = require('../functions/bitcoinClient');
+const { fetchBlockByHash, fetchBlockWindow, loadUpstreamSettings } = require('../functions/bitcoinClient');
 const { UI_NUMBER_LOG_EXP_THRESHOLD, UI_NUMBER_COMPACT_FRACTION_THRESHOLD } = require('../constants');
+const BitcoinBlockScroller = require('./BitcoinBlockScroller');
 
 const BLOCK_HASH_REGEX = /^[a-fA-F0-9]{64}$/;
 
@@ -68,6 +69,8 @@ function BitcoinBlockView () {
   const [loading, setLoading] = React.useState(!!rawHash);
   const [error, setError] = React.useState(null);
   const [block, setBlock] = React.useState(null);
+  const [scrollerBlocks, setScrollerBlocks] = React.useState([]);
+  const [scrollerLoading, setScrollerLoading] = React.useState(false);
 
   const loadBlock = React.useCallback(() => {
     if (!rawHash) {
@@ -101,6 +104,34 @@ function BitcoinBlockView () {
   React.useEffect(() => {
     loadBlock();
   }, [loadBlock]);
+
+  const blockHeight = block && block.height != null ? Number(block.height) : null;
+  const blockHashKey = block && block.hash ? String(block.hash) : '';
+
+  React.useEffect(() => {
+    if (blockHeight == null || !Number.isFinite(blockHeight) || blockHeight < 0) {
+      setScrollerBlocks([]);
+      setScrollerLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setScrollerLoading(true);
+    const upstream = loadUpstreamSettings();
+    fetchBlockWindow(upstream, { around: blockHeight, before: 12, after: 3 })
+      .then((rows) => {
+        if (cancelled) return;
+        const list = Array.isArray(rows) ? rows.slice() : [];
+        list.sort((a, b) => Number(a && a.height) - Number(b && b.height));
+        setScrollerBlocks(list);
+      })
+      .catch(() => {
+        if (!cancelled) setScrollerBlocks([]);
+      })
+      .finally(() => {
+        if (!cancelled) setScrollerLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [blockHeight, blockHashKey]);
 
   const txs = Array.isArray(block && block.tx) ? block.tx : [];
   const hash = (block && block.hash) || rawHash;
@@ -145,6 +176,15 @@ function BitcoinBlockView () {
             </Header.Content>
           </Header>
         </div>
+
+        {(scrollerLoading || scrollerBlocks.length > 0) && (
+          <BitcoinBlockScroller
+            blocks={scrollerBlocks}
+            selectedHash={hash}
+            selectedHeight={height}
+            loading={scrollerLoading && scrollerBlocks.length === 0}
+          />
+        )}
 
         {!loading && !error && block && (prevPath || nextPath) && (
           <div style={{ marginTop: '1rem' }}>

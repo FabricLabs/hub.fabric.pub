@@ -98,6 +98,26 @@ describe('peerIdentity Fabric id consolidation', function () {
     assert.strictEqual(merged[0].misbehavior, 2);
   });
 
+  it('consolidateUnifiedPeersByFabricId keeps the later lastSeen', function () {
+    const merged = consolidateUnifiedPeersByFabricId([
+      {
+        id: 'id1seen',
+        address: '1.2.3.4:7777',
+        lastSeen: 1000,
+        lastMessage: 4000
+      },
+      {
+        id: 'id1seen',
+        address: 'webrtc:abc',
+        lastSeen: 9000,
+        metadata: { transport: WEBRTC_TRANSPORT, webrtcSignalingId: 'abc', fabricPeerId: 'id1seen' }
+      }
+    ]);
+    assert.strictEqual(merged.length, 1);
+    assert.strictEqual(merged[0].lastSeen, 9000);
+    assert.strictEqual(merged[0].lastMessage, 4000);
+  });
+
   it('fabricP2PIdentityConfirmed is false for mesh', function () {
     assert.strictEqual(fabricP2PIdentityConfirmed({
       id: 'id1x',

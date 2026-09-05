@@ -29,4 +29,15 @@ describe('SetupService.verifyAdminToken', function () {
     assert.strictEqual(setup.verifyAdminToken(wrongSubject), false);
     assert.strictEqual(setup.verifyAdminToken('not-a-token'), false);
   });
+
+  it('redacts BITCOIN_PASSWORD unless the caller is admin', function () {
+    const setup = new SetupService({});
+    const listed = setup.redactSettingsForHttp({
+      NODE_NAME: 'Hub',
+      BITCOIN_PASSWORD: 'rpc-secret'
+    }, false);
+    assert.strictEqual(listed.NODE_NAME, 'Hub');
+    assert.strictEqual(listed.BITCOIN_PASSWORD, '');
+    assert.strictEqual(setup.redactSettingValue('BITCOIN_PASSWORD', 'rpc-secret', true), 'rpc-secret');
+  });
 });

@@ -1,10 +1,10 @@
 'use strict';
 
-// Shim to provide @noble/curves/nist.js-style exports for noble-curves v1.x
-// by re-exporting the individual NIST curves.
+// Compatibility shim for consumers importing NIST curves from this package.
+// Resolves through the `@noble/curves` package `exports` map rather than a
+// hardcoded `../node_modules` path, so it survives npm hoisting when
+// `@fabric/hub` is installed as a dependency.
 
-const { p256 } = require('../node_modules/@noble/curves/p256.js');
-const { p384 } = require('../node_modules/@noble/curves/p384.js');
-const { p521 } = require('../node_modules/@noble/curves/p521.js');
+const { p256, p384, p521 } = require('@noble/curves/nist.js');
 
 module.exports = { p256, p384, p521 };

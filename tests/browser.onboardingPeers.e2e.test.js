@@ -2,7 +2,7 @@
 
 /**
  * Full-stack optional E2E: fresh hub datadir → finish first-time setup **via the Onboarding modal**
- * (unchecked managed Bitcoin/LN → Complete Setup), then open /peers and assert hooks.
+ * (unchecked managed Bitcoin/LN on the Bitcoin stage → Complete Setup), then open /peers and assert hooks.
  *
  * Run (after `npm run build:browser`): `HUB_E2E_UI_ONBOARDING=1 npx mocha tests/browser.onboardingPeers.e2e.test.js --exit --timeout 120000`
  */
@@ -181,10 +181,16 @@ async function waitForMainUIPostSetup (page, timeoutMs = 45000) {
     await sandbox.browser.goto(baseUrl, DEFAULT_GOTO);
 
     await sandbox.browser.waitForSelector('[data-testid="hub-onboarding-modal"]', { timeout: 30000 }).catch(() => {});
+    await sandbox.browser.waitForSelector('[data-testid="hub-onboarding-next"]', { timeout: 15000 });
+    await sandbox.browser.click('[data-testid="hub-onboarding-next"]');
+    await sandbox.browser.waitForSelector('[data-testid="hub-onboarding-next"]', { timeout: 10000 });
+    await sandbox.browser.click('[data-testid="hub-onboarding-next"]');
+    await sandbox.browser.waitForSelector('[data-testid="hub-onboarding-complete-setup"]', { timeout: 10000 });
     await toggleOffCheckboxByTestId(sandbox.browser, 'hub-onboarding-bitcoin-managed');
     await toggleOffCheckboxByTestId(sandbox.browser, 'hub-onboarding-lightning-managed');
 
     await sandbox.browser.click('[data-testid="hub-onboarding-complete-setup"]');
+    await sandbox.browser.waitForSelector('[data-testid="hub-onboarding-applying"]', { timeout: 10000 }).catch(() => {});
     await waitForNeedsSetupFalse(baseUrl.replace(/\/$/, ''));
 
     await sleep(1500);

@@ -37,6 +37,11 @@ const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../func
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const { readStorageString, writeStorageString } = require('../functions/fabricBrowserState');
+const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
+
+/** Persist visitor promo dismiss across reloads (session-only React state was not enough). */
+const PROMO_DISMISSED_STORAGE_KEY = 'fabric.hub.promoDismissed';
 
 function formatBytes (n) {
   const v = Number(n);
@@ -120,7 +125,9 @@ function PromoHero ({ onDismiss }) {
                 Download the Fabric Hub desktop app. One click installs the hub,
                 Bitcoin node, and browser UI on macOS, Windows, or Linux.
               </p>
-              <code style={{ fontSize: '0.85em', color: '#8ec8e8' }}>npm run desktop</code>
+              <Button as={Link} to="/downloads" size="small" primary>
+                <Icon name="download" /> Get the desktop app
+              </Button>
             </Segment>
           </Grid.Column>
           <Grid.Column>
@@ -277,6 +284,63 @@ function HealthPanel ({ health, loading, error, onRefresh }) {
   );
 }
 
+function ClientHomePanel () {
+  const meshAvailable = useHubMeshAvailable();
+  return (
+    <Card fluid data-testid="hub-client-home">
+      <Card.Content>
+        <Header as="h2" id="hub-client-home-heading" style={{ marginTop: 0 }}>
+          Fabric Hub client
+        </Header>
+        <p style={{ color: '#666', lineHeight: 1.5, maxWidth: '40rem' }}>
+          This origin is serving the HTML client only — no Hub HTTP API on this host.
+          Identity, keys, and local wallet derivation run in the browser.
+          {meshAvailable
+            ? ' Seed Hubs are used for OPTIONS feature detection, WebRTC mesh, and document inventories.'
+            : ''}
+        </p>
+        <Button
+          primary
+          type="button"
+          icon
+          labelPosition="left"
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
+            }
+          }}
+        >
+          <Icon name="user circle" />
+          Identity
+        </Button>
+        <Button as={Link} to="/downloads" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }} data-testid="hub-client-downloads">
+          <Icon name="download" />
+          Downloads
+        </Button>
+        <Button as={Link} to="/settings" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }}>
+          <Icon name="setting" />
+          Settings
+        </Button>
+        <Button as={Link} to="/settings/bitcoin-wallet" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }}>
+          <Icon name="bitcoin" />
+          Local wallet
+        </Button>
+        {meshAvailable ? (
+          <Button as={Link} to="/documents" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }} data-testid="hub-client-documents">
+            <Icon name="file outline" />
+            Documents
+          </Button>
+        ) : null}
+        <p style={{ color: '#888', fontSize: '0.9em', marginTop: '1.25em', lineHeight: 1.45 }}>
+          {meshAvailable
+            ? 'Documents lists files advertised by seed and mesh peers. Set extra seed origins in config.local.js (FABRIC_HUB_SEEDS).'
+            : 'When you have a Hub, set its address from the cog (Settings and UI mode).'}
+        </p>
+      </Card.Content>
+    </Card>
+  );
+}
+
 class Home extends React.Component {
   constructor (props) {
     super(props);
@@ -289,7 +353,7 @@ class Home extends React.Component {
       operatorHealth: null,
       operatorHealthLoading: false,
       operatorHealthError: null,
-      promoDismissed: false
+      promoDismissed: readStorageString(PROMO_DISMISSED_STORAGE_KEY) === '1'
     };
     this._snapshotRefreshSafetyTimer = null;
     this._healthRefreshTimer = null;
@@ -309,6 +373,7 @@ class Home extends React.Component {
   }
 
   componentDidMount () {
+    if (this.props.hubHttpAvailable === false) return;
     if (typeof window !== 'undefined') {
       window.addEventListener('networkStatusUpdate', this._onNetworkStatusEvent);
     }
@@ -338,6 +403,7 @@ class Home extends React.Component {
   }
 
   componentDidUpdate () {
+    if (this.props.hubHttpAvailable === false) return;
     this._scheduleHomeNetworkHttpFallback();
     this._touchSnapshotTimeIfReady();
   }
@@ -352,6 +418,7 @@ class Home extends React.Component {
   }
 
   _scheduleHomeNetworkHttpFallback () {
+    if (this.props.hubHttpAvailable === false) return;
     if (typeof window === 'undefined') return;
     if (this._homeHttpHydrateAttempted) return;
     const ref = this.props.bridgeRef || this.props.bridge;
@@ -380,6 +447,7 @@ class Home extends React.Component {
   }
 
   async _refreshOperatorHealth () {
+    if (this.props.hubHttpAvailable === false) return;
     this.setState({ operatorHealthLoading: true, operatorHealthError: null });
     try {
       const res = await fetch('/services/operator/health', { headers: { Accept: 'application/json' } });
@@ -410,6 +478,14 @@ class Home extends React.Component {
   };
 
   render () {
+    if (this.props.hubHttpAvailable === false) {
+      return (
+        <fabric-hub-home class="fade-in">
+          <ClientHomePanel />
+        </fabric-hub-home>
+      );
+    }
+
     const {
       bridge,
       bridgeRef,
@@ -536,9 +612,16 @@ class Home extends React.Component {
           </Card>
         ) : (
           <>
-            {/* ─── Promo hero (opt-in via Admin → Feature visibility) ─── */}
-            {uf.promo && !this.state.promoDismissed ? (
-              <PromoHero onDismiss={() => this.setState({ promoDismissed: true })} />
+            {/* ─── Promo hero: public visitors only (opt-in via Admin → Feature visibility) ─── */}
+            {uf.promo && publicHubVisitor && !this.state.promoDismissed ? (
+              <PromoHero
+                onDismiss={() => {
+                  try {
+                    writeStorageString(PROMO_DISMISSED_STORAGE_KEY, '1');
+                  } catch (e) {}
+                  this.setState({ promoDismissed: true });
+                }}
+              />
             ) : null}
 
             {/* ─── Main content ─── */}
@@ -737,7 +820,7 @@ class Home extends React.Component {
           </>
         )}
 
-        {/* ─── Global chat ─── */}
+        {/* ─── Public mesh shoutbox ─── */}
         {networkStatus ? (
           <Segment
             role="region"
@@ -745,7 +828,7 @@ class Home extends React.Component {
             aria-labelledby="home-global-chat-heading"
           >
             <Header as="h2" id="home-global-chat-heading" style={{ marginTop: 0 }}>
-              Global chat
+              Public mesh shoutbox
             </Header>
             <p style={{ color: '#666', marginTop: '-0.25em', marginBottom: '0.75em' }}>
               {uf.activities ? (
@@ -803,7 +886,10 @@ class Home extends React.Component {
 
 function HomeWithLocation (props) {
   const location = useLocation();
-  const [networkStatusFromEvent, setNetworkStatusFromEvent] = React.useState(null);
+  const [networkStatusFromEvent, setNetworkStatusFromEvent] = React.useState(() => {
+    const n = props.networkStatusFromEvent;
+    return isHubNetworkStatusShape(n) ? n : null;
+  });
 
   React.useEffect(() => {
     const seed = () => {
@@ -828,7 +914,15 @@ function HomeWithLocation (props) {
   React.useLayoutEffect(() => {
     scrollToHashElement(location.hash);
   }, [location.pathname, location.hash]);
-  return <Home {...props} location={location} networkStatusFromEvent={networkStatusFromEvent} />;
+  const hubHttpAvailable = useHubHttpAvailable();
+  return (
+    <Home
+      {...props}
+      location={location}
+      networkStatusFromEvent={networkStatusFromEvent}
+      hubHttpAvailable={hubHttpAvailable}
+    />
+  );
 }
 
 module.exports = HomeWithLocation;

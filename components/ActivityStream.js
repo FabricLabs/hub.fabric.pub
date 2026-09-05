@@ -520,9 +520,15 @@ class ActivityStreamElement extends React.Component {
                 }
                 const isChat = entry.type === 'P2P_CHAT_MESSAGE';
                 const created = (entry.object && entry.object.created) || entry.created || null;
-                const rawActorId = (entry.actor && (entry.actor.username || entry.actor.id)) || (isChat ? 'unknown' : 'system');
-                const actorId = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && entry.actor?.id)
-                  ? bridgeInstance.getPeerDisplayName(entry.actor.id)
+                // Route id must stay the Fabric peer id — never a nickname / shortened display label.
+                const actorRouteId = (entry.actor && entry.actor.id)
+                  ? String(entry.actor.id).trim()
+                  : '';
+                const rawActorId = actorRouteId ||
+                  (entry.actor && entry.actor.username) ||
+                  (isChat ? 'unknown' : 'system');
+                const actorId = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && actorRouteId)
+                  ? bridgeInstance.getPeerDisplayName(actorRouteId)
                   : rawActorId;
                 const target = entry.target;
                 const targetLabel = typeof target === 'string'
@@ -545,8 +551,8 @@ class ActivityStreamElement extends React.Component {
                     opacity: (isPending || isQueued) ? 0.7 : 1,
                     color: isQueued ? '#888' : undefined
                   };
-                  const actorPeerPath = actorId && !isLikelyBip32ExtendedKey(actorId) && uf.peers
-                    ? `/peers/${encodeURIComponent(actorId)}`
+                  const actorPeerPath = actorRouteId && !isLikelyBip32ExtendedKey(actorRouteId) && uf.peers
+                    ? `/peers/${encodeURIComponent(actorRouteId)}`
                     : null;
                   const actorNode = actorId && actorId !== 'unknown'
                     ? (
@@ -689,16 +695,16 @@ class ActivityStreamElement extends React.Component {
                   >
                     {actorId && actorId !== 'system'
                       ? (
-                          !isLikelyBip32ExtendedKey(actorId) && peerDetailNav
+                          actorRouteId && !isLikelyBip32ExtendedKey(actorRouteId) && peerDetailNav
                             ? (
                               <Link
-                                to={`/peers/${encodeURIComponent(actorId)}`}
+                                to={`/peers/${encodeURIComponent(actorRouteId)}`}
                                 style={{ color: 'inherit', textDecoration: 'none' }}
                               >
                                 <strong>@{actorId}</strong>
                               </Link>
                               )
-                            : <strong title={!peerDetailNav && !isLikelyBip32ExtendedKey(actorId) ? 'Peers detail requires hub admin token in this browser' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
+                            : <strong title={!peerDetailNav && actorRouteId && !isLikelyBip32ExtendedKey(actorRouteId) ? 'Peers detail requires hub admin token in this browser' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
                         )
                       : <strong>@{actorId}</strong>}{' '}
                     {verb}{' '}
@@ -757,6 +763,15 @@ class ActivityStreamElement extends React.Component {
           )}
         </div>
         <div style={{ marginTop: '0.5em' }}>
+          {showChatChrome && (
+            <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
+              <strong>Public mesh shoutbox</strong>
+              {' — '}
+              cleartext <code>P2P_CHAT_MESSAGE</code> flood (relays can read).
+              Confidential traffic uses onion-sealed <code>SendOnion</code> or sealed GroupChat on contracts;
+              peering/gossip stays the primary mesh fabric.
+            </div>
+          )}
           {showChatChrome && (meshStatus || chatDebug) && (
             <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
               WebRTC Debug: mesh connected {meshStatus && Number.isFinite(meshStatus.connected) ? meshStatus.connected : 0}

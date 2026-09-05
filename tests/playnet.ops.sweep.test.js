@@ -17,6 +17,7 @@ const {
   productionPlaynetTarget,
   loadMnemonic,
   loadPeerKeySettings,
+  fallbackPeerKeySettingsFromEnv,
   loadLocalOperatorMnemonic
 } = require('../scripts/lib/playnetOps');
 
@@ -214,6 +215,49 @@ describe('playnet ops sweep (wipe → fund → deploy)', function () {
     }
   });
 
+  it('fallbackPeerKeySettingsFromEnv keeps raw FABRIC_SEED hex as seed', function () {
+    const hex = 'ab'.repeat(32);
+    const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    assert.deepStrictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_SEED: hex, FABRIC_MNEMONIC: phrase }),
+      { seed: hex }
+    );
+    assert.deepStrictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_SEED: '0x' + hex.toUpperCase() }),
+      { seed: hex }
+    );
+    assert.strictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_SEED: 'not-a-seed-or-mnemonic' }),
+      null
+    );
+    assert.deepStrictEqual(
+      fallbackPeerKeySettingsFromEnv({ FABRIC_MNEMONIC: phrase }),
+      { mnemonic: phrase }
+    );
+  });
+
+  it('does not treat invalid FABRIC_SEED as a mnemonic when core keySettingsFromEnv is present', function () {
+    const prevX = process.env.FABRIC_XPRV;
+    const prevS = process.env.FABRIC_SEED;
+    const prevM = process.env.FABRIC_MNEMONIC;
+    try {
+      delete process.env.FABRIC_XPRV;
+      delete process.env.FABRIC_MNEMONIC;
+      process.env.FABRIC_SEED = 'not-a-seed-or-mnemonic';
+      assert.strictEqual(loadPeerKeySettings({
+        allowLocalIdentityFallback: false,
+        allowWalletFallback: false
+      }), null);
+    } finally {
+      if (prevX === undefined) delete process.env.FABRIC_XPRV;
+      else process.env.FABRIC_XPRV = prevX;
+      if (prevS === undefined) delete process.env.FABRIC_SEED;
+      else process.env.FABRIC_SEED = prevS;
+      if (prevM === undefined) delete process.env.FABRIC_MNEMONIC;
+      else process.env.FABRIC_MNEMONIC = prevM;
+    }
+  });
+
   it('loadMnemonic uses env before optional local operator-identity fallback', function () {
     const localMn = loadLocalOperatorMnemonic();
     const prevMn = process.env.FABRIC_MNEMONIC;
@@ -238,5 +282,39 @@ describe('playnet ops sweep (wipe → fund → deploy)', function () {
       if (prevS === undefined) delete process.env.FABRIC_SEED;
       else process.env.FABRIC_SEED = prevS;
     }
+  });
+
+  it('plans local Hub as playnet registry (loopback Accept, omit public Hub peer)', function () {
+    const { planLocalHubAsPlaynetRegistry } = require('../scripts/lib/playnetOps');
+    const plan = planLocalHubAsPlaynetRegistry({
+      hub: 'http://127.0.0.1:8080',
+      includeRelay: true
+    });
+    assert.strictEqual(plan.role, 'local-registry');
+    assert.strictEqual(plan.networkAlwaysExists, true);
+    assert.strictEqual(plan.management.shortTerm, 'local-lead');
+    assert.strictEqual(plan.management.longTerm, 'hub.fabric.pub');
+    assert.strictEqual(plan.safe, true);
+    assert.strictEqual(plan.acceptMethod, 'AcceptTrackedApplicationContract');
+    assert.strictEqual(plan.peers[0], '127.0.0.1:7777');
+    assert.ok(plan.peers.includes('relay.goon.vc:7777'));
+    assert.ok(!plan.peers.some((p) => /hub\.fabric\.pub/i.test(p)));
+    assert.ok(plan.readinessRpc.includes('ListTrackedApplicationContracts'));
+    assert.strictEqual(plan.expectNativeBeacon, 'fabric-beacon');
+
+    const bad = planLocalHubAsPlaynetRegistry({ hub: 'https://hub.fabric.pub' });
+    assert.strictEqual(bad.safe, false);
+    assert.ok(bad.blockers.length >= 1);
+  });
+
+  it('plans short-term local lead vs long-term hub.fabric.pub management', function () {
+    const { planPlaynetLeadCapture } = require('../scripts/lib/playnetOps');
+    const local = planPlaynetLeadCapture({ horizon: 'local-lead' });
+    assert.strictEqual(local.networkAlwaysExists, true);
+    assert.strictEqual(local.horizon, 'local-lead');
+    assert.strictEqual(local.safe, true);
+    const remote = planPlaynetLeadCapture({ horizon: 'hub.fabric.pub' });
+    assert.strictEqual(remote.horizon, 'hub.fabric.pub');
+    assert.strictEqual(remote.active.registryPeer, 'hub.fabric.pub:7777');
   });
 });

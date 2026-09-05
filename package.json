@@ -2,6 +2,7 @@
   "name": "@fabric/hub",
   "version": "0.1.0-RC1",
   "description": "Peer rendezvous for Fabric.",
+  "desktopName": "pub.fabric.hub",
   "main": "services/hub.js",
   "exports": {
     ".": "./services/hub.js",
@@ -31,6 +32,8 @@
     "./functions/oracleAttestation": "./functions/oracleAttestation.js",
     "./functions/fabricPubkey": "./functions/fabricPubkey.js",
     "./functions/fabricChatNormalize": "./functions/fabricChatNormalize.js",
+    "./functions/bulkSecurityAdvisory": "./functions/bulkSecurityAdvisory.js",
+    "./functions/operatorAdminToken": "./functions/operatorAdminToken.js",
     "./functions/hubLifecycle": "./functions/hubLifecycle.js",
     "./functions/sidechainState": "./functions/sidechainState.js",
     "./functions/peerIdentity": "./functions/peerIdentity.js",
@@ -41,13 +44,45 @@
     "./types/LightningChannel": "./types/lightningChannel.js"
   },
   "engines": {
-    "node": "24.15.0"
+    "node": "24.15.0",
+    "npm": ">=12.0.0"
   },
+  "files": [
+    "components/**/*.js",
+    "contracts/**",
+    "functions/**/*.js",
+    "libs/**/*.js",
+    "routes/**/*.js",
+    "scripts/**/*.js",
+    "scripts/startup/**",
+    "services/**/*.js",
+    "settings/*.json",
+    "shims/**",
+    "types/**/*.js",
+    "constants.js",
+    "assets/**",
+    "!assets/downloads/**",
+    "!assets/CURRENT",
+    "!assets/LOCK",
+    "!assets/LOG",
+    "!assets/LOG.old",
+    "!assets/MANIFEST-*",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "AGENTS.md",
+    "docs/**/*.md"
+  ],
   "scripts": {
     "build": "npm run build:browser",
     "build:browser": "node scripts/build.js",
-    "build:desktop": "npm run build:browser && electron-builder build",
+    "build:desktop": "npm run build:browser && electron-builder build && node scripts/sync-downloads-assets.js",
     "build:desktop:dir": "npm run build:browser && electron-builder --dir",
+    "sync:passport-downloads": "node scripts/sync-passport-downloads.js",
+    "binaries:fetch": "node scripts/download-managed-binaries.js",
+    "binaries:fetch:all": "node scripts/download-managed-binaries.js --all",
+    "build:installers": "npm run build:browser && node scripts/download-managed-binaries.js --all && node scripts/build-installers.js",
     "link:fabric": "bash scripts/link-fabric.sh",
     "predesktop": "node scripts/ensure-fabric-linked.js && node scripts/prepare-hub-dev-port.js",
     "desktop": "npm run build:browser && env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron scripts/desktop.js",
@@ -64,7 +99,7 @@
     "make:coverage": "npm run coverage && c8 report --reporter html",
     "reports": "npm run report:install && npm run report:coverage",
     "report:coverage": "npm run make:coverage && c8 report --reporter=text-lcov > reports/coverage.lcov",
-    "report:install": "rm -rf node_modules && echo \"\\n\" > package-lock.json && echo \"$ npm i --allow-git=all\" > reports/install.log && npm i --allow-git=all >> reports/install.log 2>&1",
+    "report:install": "rm -rf node_modules && mkdir -p reports && rm -f package-lock.json && echo \"$ npm i --allow-git=all\" > reports/install.log && npm i --allow-git=all >> reports/install.log 2>&1",
     "report:legal": "node_modules/.bin/license-checker --json > reports/licenses.json",
     "report:dependency-trees": "node scripts/generate-dependency-trees.js",
     "report:todo": "grep --exclude package.json --exclude-dir=.env --exclude-dir=.git --exclude-dir=_book --exclude-dir=stores --exclude-dir=assets --exclude-dir=node_modules --exclude-dir=reports --exclude-dir=coverage --exclude-dir=docs --exclude-dir=libraries -rEI \"TODO|FIXME\" . | sed 's/\\([^:]*:\\)[ ]*/\\1 /' > reports/TODO.txt",
@@ -72,6 +107,8 @@
     "prestart": "node scripts/prepare-hub-dev-port.js",
     "start": "npm run build && node scripts/hub.js",
     "start:fast": "node scripts/prepare-hub-dev-port.js && node scripts/hub.js",
+    "verify:noise-handshake": "node scripts/verify-noise-handshake.js",
+    "reset:stores": "node scripts/reset-hub-stores.js",
     "hub-ui:test-secrets": "node scripts/hub-ui-write-test-secrets.js",
     "hub-ui:test-secrets:inject": "node scripts/hub-ui-write-test-secrets.js --print-inject",
     "operator-identity:init": "node scripts/fabric-operator-identity.js init",
@@ -81,15 +118,18 @@
     "start:mainnet-local": "bash scripts/run-hub-local-mainnet.sh",
     "sync": "npm run sync:specs",
     "sync:specs": "scripts/import-specs.sh",
-    "test": "NODE_PATH=\"$PWD/node_modules${NODE_PATH:+:$NODE_PATH}\" mocha tests --exit --ignore tests/browser.hubAlerts.test.js --ignore tests/browser.onboardingPeers.e2e.test.js",
-    "test:unit": "NODE_PATH=\"$PWD/node_modules${NODE_PATH:+:$NODE_PATH}\" mocha tests --exit --ignore tests/browser.interface.test.js --ignore tests/browser.hubAlerts.test.js --ignore tests/browser.onboardingPeers.e2e.test.js --ignore tests/crowdfunding.regtest.integration.js",
+    "test": "NODE_ENV=test NODE_PATH=\"$PWD/node_modules${NODE_PATH:+:$NODE_PATH}\" mocha tests --exit --ignore tests/browser.hubAlerts.test.js --ignore tests/browser.onboardingPeers.e2e.test.js",
+    "test:unit": "NODE_ENV=test NODE_PATH=\"$PWD/node_modules${NODE_PATH:+:$NODE_PATH}\" mocha tests --exit --ignore tests/browser.interface.test.js --ignore tests/browser.hubAlerts.test.js --ignore tests/browser.onboardingPeers.e2e.test.js --ignore tests/crowdfunding.regtest.integration.js --ignore tests/hub.inventory.htlc.e2e.test.js --ignore tests/hub.payjoin.l1.e2e.test.js --ignore tests/hub.core-features.l1.e2e.test.js",
     "test:bridge": "mocha tests/bridge.webrtc.signal.test.js",
-    "puppeteer:install-chrome": "npx puppeteer browsers install chrome",
+    "puppeteer:install-chrome": "node node_modules/@fabric/http/node_modules/puppeteer/install.mjs || node ../fabric-http/node_modules/puppeteer/install.mjs || npx --package=puppeteer@24.37.5 puppeteer browsers install chrome",
+    "screenshots": "NODE_PATH=\"$PWD/node_modules/@fabric/http/node_modules${NODE_PATH:+:$NODE_PATH}\" node scripts/capture-user-flows.js",
+    "screenshots:l1": "HUB_SCREENSHOTS_L1=1 NODE_PATH=\"$PWD/node_modules/@fabric/http/node_modules${NODE_PATH:+:$NODE_PATH}\" node scripts/capture-user-flows.js",
     "test:browser": "npm run build:browser && mocha tests/browser.interface.test.js --exit --timeout 60000",
     "test:e2e-browser": "npm run build:browser && HUB_E2E=1 mocha tests/browser.interface.test.js --exit --timeout 90000",
     "test:e2e-browser-onboarding": "npm run build:browser && HUB_E2E_UI_ONBOARDING=1 mocha tests/browser.onboardingPeers.e2e.test.js --exit --timeout 120000",
     "test:e2e-hub-alerts": "mocha tests/browser.hubAlerts.test.js --exit --timeout 120000",
     "test:e2e-payjoin": "node scripts/verify-payjoin-e2e.js",
+    "test:e2e-payjoin-l1": "FABRIC_PAYJOIN_L1_E2E=1 mocha tests/hub.payjoin.l1.e2e.test.js --exit --timeout 240000",
     "test:e2e-all-browser": "node scripts/verify-browser-e2e-suite.js",
     "test:stack": "node scripts/verify-full-stack.js",
     "test:stack:no-l1": "FABRIC_STACK_SKIP_L1_CONTRACTS=1 node scripts/verify-full-stack.js",
@@ -97,12 +137,14 @@
     "test:crowdfund-regtest": "FABRIC_CROWDFUND_REGTEST=1 mocha tests/crowdfunding.regtest.integration.js --exit --timeout 600000",
     "test:e2e-storage-contract": "node scripts/verify-storage-contract-e2e.js",
     "test:e2e-document-purchase": "node scripts/verify-document-purchase-e2e.js",
+    "test:e2e-inventory-htlc": "FABRIC_INVENTORY_HTLC_E2E=1 mocha tests/hub.inventory.htlc.e2e.test.js --exit --timeout 240000",
+    "test:e2e-core-features-l1": "FABRIC_CORE_FEATURES_L1_E2E=1 mocha tests/hub.core-features.l1.e2e.test.js --exit --timeout 480000",
     "test:e2e-execution-contract": "node scripts/verify-execution-contract-e2e.js",
     "test:e2e-execution-anchor": "FABRIC_EXEC_E2E_ANCHOR=1 node scripts/verify-execution-contract-e2e.js",
     "test:e2e-crowdfund-l1": "node scripts/verify-crowdfund-l1-e2e.js",
     "test:e2e-value-flows": "node scripts/verify-value-flows-e2e.js",
     "test:e2e-contracts-l1": "node scripts/verify-contracts-l1-e2e-suite.js",
-    "test:lightning": "mocha tests/lightning.hub.http.test.js tests/lightning.bitcoinClient.test.js --exit",
+    "test:lightning": "NODE_ENV=test mocha tests/lightning.hub.http.test.js tests/lightning.bitcoinClient.test.js --exit",
     "test:smoke-mainnet-rpc": "node scripts/verify-mainnet-rpc-smoke.js",
     "bitcoin:addnode": "node scripts/bitcoin-addnode.js",
     "test:playnet-mesh": "FABRIC_PLAYNET_MESH=1 mocha tests/playnet.market.integration.js --exit --timeout 600000",
@@ -181,6 +223,7 @@
     "redux": "=4.2.1",
     "redux-thunk": "=2.4.2",
     "semantic-ui-react": "=2.1.5",
+    "stoppable": "=1.1.0",
     "stream-browserify": "=3.0.0",
     "tiny-secp256k1": "=2.2.4",
     "webpack": "=5.109.2",
@@ -229,23 +272,111 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "beforePack": "./scripts/electron-builder-before-pack.js",
+    "extraResources": [
+      {
+        "from": "build/.installer-binaries",
+        "to": "binaries",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "scripts/startup",
+        "to": "startup",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "npmRebuild": false,
+    "compression": "maximum",
+    "executableName": "FabricHub",
     "files": [
       "assets/**/*",
+      "!assets/downloads/**/*.dmg",
+      "!assets/downloads/**/*.pkg",
+      "!assets/downloads/**/*.zip",
+      "!assets/downloads/**/*.exe",
+      "!assets/downloads/**/*.msi",
+      "!assets/downloads/**/*.AppImage",
+      "!assets/downloads/**/*.deb",
+      "!assets/downloads/**/*.rpm",
+      "!assets/downloads/**/*.snap",
+      "!assets/downloads/**/*.blockmap",
       "scripts/desktop.js",
       "scripts/desktop-preload.js",
       "scripts/desktopHubProbe.js",
       "scripts/hub.js",
       "services/**/*",
       "functions/**/*",
+      "libs/**/*",
       "types/**/*",
       "routes/**/*",
       "settings/**/*",
+      "contracts/**/*",
+      "constants.js",
       "shims/**/*",
       "package.json",
-      "node_modules/**/*",
-      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
-      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/.git/**",
+      "!**/node_modules/@fabric/http/assets/**",
+      "!**/node_modules/@fabric/http/node_modules/**",
+      "!**/node_modules/@fabric/http/.git/**",
+      "!**/node_modules/@fabric/http/{tests,docs,coverage,stores,examples,reports,libraries,logs}/**",
+      "!**/node_modules/@fabric/core/node_modules/**",
+      "!**/node_modules/@fabric/core/.git/**",
+      "!**/node_modules/@fabric/core/{src,tests,docs,coverage,coverage-*,coverage-hot,coverage-hot2,coverage-hot3,coverage-hot4,coverage-covfocus,stores,examples,_book,reports,assets,native}/**",
+      "!**/node_modules/@fabric/core/.envrc",
+      "!**/node_modules/@fabric/core/.hub-dev-data/**",
+      "!**/node_modules/@fabric/core/settings/local.js",
+      "!**/node_modules/@fabric/http/settings/local.js",
+      "!**/node_modules/@hpcc-js/wasm/**",
+      "!**/node_modules/blessed/**",
+      "!**/node_modules/redis/**",
+      "!**/node_modules/ts-morph/**",
+      "!**/node_modules/@ts-morph/**",
+      "!**/node_modules/node-gyp/**",
+      "!**/node_modules/@webassemblyjs/**",
+      "!**/node_modules/mocha/**",
+      "!**/node_modules/puppeteer/**",
+      "!**/node_modules/puppeteer-core/**",
+      "!**/node_modules/@puppeteer/**",
+      "!**/node_modules/electron/**",
+      "!**/node_modules/electron-builder/**",
+      "!**/node_modules/webpack/**",
+      "!**/node_modules/webpack-cli/**",
+      "!**/node_modules/webpack-dev-server/**",
+      "!**/node_modules/jsdom/**",
+      "!**/node_modules/d3/**",
+      "!**/node_modules/d3-*/**",
+      "!**/node_modules/@babel/**",
+      "!**/node_modules/babel-loader/**",
+      "!**/node_modules/semantic-ui-react/**",
+      "!**/node_modules/react/**",
+      "!**/node_modules/react-dom/**",
+      "!**/node_modules/react-router/**",
+      "!**/node_modules/react-router-dom/**",
+      "!**/node_modules/jsdoc/**",
+      "!**/node_modules/jsdoc-to-markdown/**",
+      "!**/node_modules/caniuse-lite/**",
+      "!**/node_modules/chromium-bidi/**",
+      "!**/node_modules/jquery/**",
+      "!**/node_modules/terser-webpack-plugin/**",
+      "!**/*.map",
+      "!assets/*.ldb",
+      "!assets/CURRENT",
+      "!assets/LOCK",
+      "!assets/LOG",
+      "!assets/LOG.old",
+      "!assets/MANIFEST-*",
+      "!assets/semantic.css",
+      "!assets/semantic.rtl.css",
+      "!assets/semantic.js",
+      "!assets/scripts/semantic.js",
+      "!assets/scripts/jquery-3.4.1.js",
       "!stores/**",
+      "!binaries/**",
+      "!build/.installer-binaries/**",
       "!tests/**",
       "!docs/**",
       "!coverage/**",
@@ -271,6 +402,7 @@
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.utilities",
       "target": [
         "dmg",
@@ -278,16 +410,54 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "linux": {
+      "syncDesktopName": true,
+      "icon": "build/icon.png",
+      "desktop": {
+        "entry": {
+          "Name": "Fabric Hub",
+          "Comment": "Easy Bitcoin, Fabric, and Lightning node. Tray: Run at startup."
+        }
+      },
       "target": [
-        "AppImage",
-        "deb"
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "executableName": "FabricHub",
+      "artifactName": "fabrichub_${version}_${arch}.${ext}",
+      "maintainer": "Fabric Labs <support@fabric.pub>"
+    },
+    "nsis": {
+      "shortcutName": "Fabric Hub",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
+    "deb": {
+      "packageName": "fabrichub"
     }
   },
   "allowScripts": {

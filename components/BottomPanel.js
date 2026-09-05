@@ -10,6 +10,8 @@ const {
   Segment,
   Icon
 } = require('semantic-ui-react');
+const { HubUiRuntimeContext } = require('./hubUiRuntime');
+const { HUB_UI_RUNTIME_CLIENT } = require('../functions/hubClientEnvironment');
 
 class BottomPanel extends React.Component {
   constructor (props) {
@@ -50,7 +52,8 @@ class BottomPanel extends React.Component {
     const { now, hubUiTick } = this.state;
     void hubUiTick;
     const uf = loadHubUiFeatureFlags();
-    const peerFooterLink = !!uf.peers;
+    const hubHttpAvailable = this.context !== HUB_UI_RUNTIME_CLIENT;
+    const peerFooterLink = !!uf.peers && hubHttpAvailable;
     const timeText = now.toLocaleTimeString();
     const iso = now.toISOString();
 
@@ -136,5 +139,7 @@ class BottomPanel extends React.Component {
     );
   }
 }
+
+BottomPanel.contextType = HubUiRuntimeContext;
 
 module.exports = BottomPanel;

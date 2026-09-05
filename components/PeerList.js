@@ -36,7 +36,10 @@ const {
   buildWebrtcCombinedRows,
   webrtcCombinedToFabricPeerRows,
   mergeTcpAndWebrtcPeerRows,
-  isWebrtcTransportPeerRow
+  isWebrtcTransportPeerRow,
+  sortFabricPeersMostRecentFirst,
+  sortFabricPeersByColumn,
+  fabricPeerWindowBytes
 } = require('../functions/peerIdentity');
 const {
   loadHubUiFeatureFlags,
@@ -72,6 +75,15 @@ function writePrimaryPeerAddress (addr) {
   } catch (e) {}
 }
 
+function formatPeerBytes (n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return '—';
+  if (v < 1024) return `${Math.round(v)} B`;
+  if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
+  if (v < 1073741824) return `${(v / 1048576).toFixed(2)} MiB`;
+  return `${(v / 1073741824).toFixed(2)} GiB`;
+}
+
 function inventoryDocCountForFabricPeer (globalPeers, fabricId) {
   if (!globalPeers || typeof globalPeers !== 'object' || !fabricId) return null;
   const fid = String(fabricId).trim();
@@ -97,9 +109,12 @@ function UnifiedPeersPaginatedList ({
   onFabricPeerResync
 }) {
   const navigate = useNavigate();
-  const first = unifiedPeers[0];
-  const last = unifiedPeers.length ? unifiedPeers[unifiedPeers.length - 1] : null;
-  const resetKey = `${unifiedPeers.length}:${first && (first.id || first.address)}:${last && (last.id || last.address)}`;
+  const [sortColumn, setSortColumn] = React.useState('seen');
+  const [sortDirection, setSortDirection] = React.useState('descending');
+  const sortedPeers = sortFabricPeersByColumn(unifiedPeers, sortColumn, sortDirection);
+  const first = sortedPeers[0];
+  const last = sortedPeers.length ? sortedPeers[sortedPeers.length - 1] : null;
+  const resetKey = `${sortedPeers.length}:${sortColumn}:${sortDirection}:${first && (first.id || first.address)}:${last && (last.id || last.address)}`;
   const {
     slice,
     page,
@@ -108,10 +123,22 @@ function UnifiedPeersPaginatedList ({
     rangeTo,
     total,
     setPage
-  } = useHubListPagination(unifiedPeers, resetKey);
+  } = useHubListPagination(sortedPeers, resetKey);
 
   const sigHp = String(signalingHostPort || '').trim();
   const gp = globalPeers && typeof globalPeers === 'object' ? globalPeers : null;
+
+  const handleSort = (col) => {
+    if (sortColumn === col) {
+      setSortDirection((d) => (d === 'ascending' ? 'descending' : 'ascending'));
+      return;
+    }
+    const numeric = col === 'bytes' || col === 'window' || col === 'status' || col === 'seen';
+    setSortColumn(col);
+    setSortDirection(numeric ? 'descending' : 'ascending');
+  };
+
+  const headerSorted = (col) => (sortColumn === col ? sortDirection : null);
 
   return (
     <>
@@ -120,17 +147,60 @@ function UnifiedPeersPaginatedList ({
         celled
         striped
         selectable
+        sortable
         size="small"
         unstackable
         style={{ marginTop: '0.75em', tableLayout: 'fixed' }}
       >
         <Table.Header>
           <Table.Row>
-            <Table.HeaderCell style={{ width: '28%' }}>Fabric Peer ID</Table.HeaderCell>
-            <Table.HeaderCell style={{ width: '32%' }}>Connection</Table.HeaderCell>
-            <Table.HeaderCell style={{ width: '18%' }} textAlign="center">Status</Table.HeaderCell>
-            <Table.HeaderCell style={{ width: '14%' }}>Seen</Table.HeaderCell>
-            <Table.HeaderCell collapsing textAlign="right"> </Table.HeaderCell>
+            <Table.HeaderCell
+              sorted={headerSorted('id')}
+              onClick={() => handleSort('id')}
+              style={{ width: '22%' }}
+            >
+              Fabric Peer ID
+            </Table.HeaderCell>
+            <Table.HeaderCell
+              sorted={headerSorted('connection')}
+              onClick={() => handleSort('connection')}
+              style={{ width: '22%' }}
+            >
+              Connection
+            </Table.HeaderCell>
+            <Table.HeaderCell
+              sorted={headerSorted('status')}
+              onClick={() => handleSort('status')}
+              style={{ width: '12%' }}
+              textAlign="center"
+            >
+              Status
+            </Table.HeaderCell>
+            <Table.HeaderCell
+              sorted={headerSorted('bytes')}
+              onClick={() => handleSort('bytes')}
+              style={{ width: '14%' }}
+              textAlign="right"
+            >
+              In / Out
+            </Table.HeaderCell>
+            <Table.HeaderCell
+              sorted={headerSorted('window')}
+              onClick={() => handleSort('window')}
+              style={{ width: '16%' }}
+              textAlign="right"
+              title="Rolling 10-minute usage vs Bitcoin L1 share (1 MiB / 10 min / 32 peers)"
+            >
+              10m / budget
+            </Table.HeaderCell>
+            <Table.HeaderCell
+              sorted={headerSorted('seen')}
+              onClick={() => handleSort('seen')}
+              style={{ width: '10%' }}
+            >
+              Seen
+            </Table.HeaderCell>
+            <Table.HeaderCell collapsing textAlign="right" disabled> </Table.HeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
@@ -149,7 +219,9 @@ function UnifiedPeersPaginatedList ({
             const isConnected = status === 'connected';
             const score = peer && (peer.score != null ? peer.score : null);
             const misbehavior = peer && peer.misbehavior != null ? Number(peer.misbehavior) : null;
-            const nickname = peer && peer.nickname;
+            const meshAlias = peer && peer.alias && String(peer.alias).trim();
+            const nickname = peer && peer.nickname && String(peer.nickname).trim();
+            const humanLabel = meshAlias || nickname;
             const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
             const addrNorm = normalizeFabricPeerAddress(address);
             const isPrimaryRow = !meshRow && primaryPeerNorm && (addrNorm === primaryPeerNorm || String(address) === primaryPeerNorm);
@@ -196,9 +268,13 @@ function UnifiedPeersPaginatedList ({
                   >
                     {headlineId}
                   </div>
-                  {nickname ? (
-                    <div style={{ fontSize: '0.78rem', color: '#767676', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={nickname}>
-                      {nickname}
+                  {humanLabel ? (
+                    <div style={{ fontSize: '0.78rem', color: '#767676', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={
+                      meshAlias && nickname && meshAlias !== nickname
+                        ? `${meshAlias} (local: ${nickname})`
+                        : humanLabel
+                    }>
+                      {humanLabel}
                     </div>
                   ) : null}
                 </Table.Cell>
@@ -233,6 +309,37 @@ function UnifiedPeersPaginatedList ({
                       {isConnected ? 'On' : (meshRow ? (status === 'signaling' ? 'Sig' : 'Off') : 'Off')}
                     </span>
                   </span>
+                </Table.Cell>
+                <Table.Cell textAlign="right" style={{ verticalAlign: 'middle', fontSize: '0.8rem', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                  {(() => {
+                    const inn = peer && peer.bytesIn;
+                    const out = peer && peer.bytesOut;
+                    if (inn == null && out == null) return '—';
+                    return `${formatPeerBytes(inn)} / ${formatPeerBytes(out)}`;
+                  })()}
+                </Table.Cell>
+                <Table.Cell
+                  textAlign="right"
+                  style={{
+                    verticalAlign: 'middle',
+                    fontSize: '0.8rem',
+                    whiteSpace: 'nowrap',
+                    fontVariantNumeric: 'tabular-nums',
+                    color: peer && peer.overBudget ? '#9f3a38' : '#666'
+                  }}
+                  title={peer && peer.budgetBytes
+                    ? `10-minute window vs ${formatPeerBytes(peer.budgetBytes)} L1 share`
+                    : 'Bitcoin L1 share: 1 MiB / 10 min / 32 peers'}
+                >
+                  {(() => {
+                    const used = fabricPeerWindowBytes(peer);
+                    const budget = peer && Number(peer.budgetBytes);
+                    if (!used && !(Number.isFinite(budget) && budget > 0) && !(peer && peer.bytesIn) && !(peer && peer.bytesOut)) {
+                      return '—';
+                    }
+                    const budgetLabel = Number.isFinite(budget) && budget > 0 ? formatPeerBytes(budget) : '32 KiB';
+                    return `${formatPeerBytes(used)} / ${budgetLabel}`;
+                  })()}
                 </Table.Cell>
                 <Table.Cell style={{ verticalAlign: 'middle', fontSize: '0.8rem', color: '#666', whiteSpace: 'nowrap' }} title={lastSeen ? new Date(lastSeen).toLocaleString() : ''}>
                   {seenShort}
@@ -301,27 +408,12 @@ function UnifiedPeersPaginatedList ({
           />
         </div>
       )}
+      <p style={{ color: '#767676', fontSize: '0.82em', marginTop: '0.65em', lineHeight: 1.45 }}>
+        Bandwidth is plaintext AMP bytes on each Fabric TCP session. The 10-minute budget is Bitcoin L1
+        (1&nbsp;MiB / 10&nbsp;min) split across 32 peer slots (~32&nbsp;KiB each). Click a column header to sort.
+      </p>
     </>
   );
-}
-
-function sortFabricPeersForAuthority (peers, primaryNorm) {
-  const arr = [...(peers || [])];
-  const pn = String(primaryNorm || '').trim();
-  arr.sort((a, b) => {
-    const aa = normalizeFabricPeerAddress(a && a.address);
-    const ba = normalizeFabricPeerAddress(b && b.address);
-    const ap = pn && (aa === pn || String(a && a.address) === pn);
-    const bp = pn && (ba === pn || String(b && b.address) === pn);
-    if (ap !== bp) return ap ? -1 : 1;
-    const sa = Number(a && a.score);
-    const sb = Number(b && b.score);
-    if (Number.isFinite(sa) && Number.isFinite(sb) && sa !== sb) return sb - sa;
-    if (Number.isFinite(sa) && !Number.isFinite(sb)) return -1;
-    if (!Number.isFinite(sa) && Number.isFinite(sb)) return 1;
-    return String(aa).localeCompare(String(ba));
-  });
-  return arr;
 }
 
 class PeersPage extends React.Component {
@@ -480,7 +572,7 @@ class PeersPage extends React.Component {
     });
 
     const primaryPeerNorm = normalizeFabricPeerAddress(readPrimaryPeerAddress());
-    const fabricPeersSorted = sortFabricPeersForAuthority(dedupeFabricPeers(fabricPeers), primaryPeerNorm);
+    const fabricPeersSorted = sortFabricPeersMostRecentFirst(dedupeFabricPeers(fabricPeers));
 
     const localWebrtcPeers = (current && typeof current.localWebrtcPeers !== 'undefined')
       ? current.localWebrtcPeers
@@ -538,8 +630,10 @@ class PeersPage extends React.Component {
       repLookup
     );
 
-    const unifiedPeers = consolidateUnifiedPeersByFabricId(
-      mergeTcpAndWebrtcPeerRows(fabricPeersWithRep, webrtcExtraRows, primaryPeerNorm)
+    const unifiedPeers = sortFabricPeersMostRecentFirst(
+      consolidateUnifiedPeersByFabricId(
+        mergeTcpAndWebrtcPeerRows(fabricPeersWithRep, webrtcExtraRows, primaryPeerNorm)
+      )
     );
 
     const signalingHostPort = typeof window !== 'undefined' ? window.location.host : '';
@@ -858,7 +952,7 @@ class PeersPage extends React.Component {
                           Add primary hub ({DEFAULT_PRIMARY_FABRIC_HUB})
                         </Button>
                         <span style={{ color: '#666', fontSize: '0.88em' }}>
-                          Saved primary: <code>{readPrimaryPeerAddress()}</code> — sorted first when connected.
+                          Saved primary: <code>{readPrimaryPeerAddress()}</code> — starred in the list (peers are shown most recently seen first).
                         </span>
                       </div>
                     ) : null}

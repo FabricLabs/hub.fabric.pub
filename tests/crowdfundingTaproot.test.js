@@ -191,6 +191,14 @@ describe('crowdfundingTaproot', function () {
     assert.strictEqual(prep.inputCount, 2);
     assert.strictEqual(prep.totalInputSats, 85000);
     assert.strictEqual(prep.psbt.data.inputs.length, 2);
+    const id1 = tx1.getId();
+    const id2 = tx2.getId();
+    const expectedFirst = id1 < id2 ? id1 : id2;
+    const expectedSecond = id1 < id2 ? id2 : id1;
+    const got0 = Buffer.from(prep.psbt.txInputs[0].hash).reverse().toString('hex');
+    const got1 = Buffer.from(prep.psbt.txInputs[1].hash).reverse().toString('hex');
+    assert.strictEqual(got0, expectedFirst, 'payout vins follow BIP-69, not insertion order');
+    assert.strictEqual(got1, expectedSecond);
   });
 
   it('prepareCrowdfundPayoutPsbt throws when fee leaves destination below dust', () => {

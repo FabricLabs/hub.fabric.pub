@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const BIP32 = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
 const payments = require('bitcoinjs-lib/src/payments');
+const { encodeBitcoinUri } = require('@fabric/core/functions/bip21');
 const {
   readStorageJSON,
   writeStorageJSON,
@@ -449,7 +450,7 @@ function deriveFabricBitcoinAccountKeys (masterXprv, masterXpub, accountIndex) {
 /**
  * Fabric master key for Bitcoin BIP44 (m/44'/0'/n') is always the HD root (master xpriv).
  * When {@link fabricIdentityMode} is `account`, {@link masterXprv} holds that root; {@link xprv} is the
- * Fabric-protocol signing key at m/44'/7778'/… and must not be used for Bitcoin derivation.
+ * Fabric-protocol signing key at `fabricIdentityDerivationPath` (7777/7778) and must not be used for Bitcoin derivation.
  */
 function bitcoinDerivationSecretsFromFabricIdentity (identity = {}) {
   if (identity && identity.fabricIdentityMode === 'account' &&
@@ -1152,6 +1153,44 @@ async function fetchBlockByHash (settings = {}, blockhash = '') {
   return null;
 }
 
+/**
+ * Compact block summaries for a height window (Hub `GET /services/bitcoin/blocks?around=`).
+ * Ascending by height. Used by the block-view chain scroller.
+ * @param {object} [settings]
+ * @param {object} [opts]
+ * @param {number} opts.around — center height
+ * @param {number} [opts.before=10]
+ * @param {number} [opts.after=2]
+ * @returns {Promise<object[]>}
+ */
+async function fetchBlockWindow (settings = {}, opts = {}) {
+  const bUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
+  const around = Math.floor(Number(opts.around));
+  if (!bUrl || !Number.isFinite(around) || around < 0) return [];
+  const before = opts.before != null ? Math.floor(Number(opts.before)) : 10;
+  const after = opts.after != null ? Math.floor(Number(opts.after)) : 2;
+  const q = new URLSearchParams();
+  q.set('around', String(around));
+  if (Number.isFinite(before)) q.set('before', String(before));
+  if (Number.isFinite(after)) q.set('after', String(after));
+
+  if (isBitcoinServiceEndpoint(bUrl)) {
+    const rpcTok = resolveBitcoinClientAuthToken(settings, bUrl);
+    const data = await callBitcoinServiceMethod(bUrl, 'ListBlocks', {
+      around,
+      ...(Number.isFinite(before) ? { before } : {}),
+      ...(Number.isFinite(after) ? { after } : {})
+    }, rpcTok).catch(() => null);
+    return pickArray(data, ['blocks', 'items', 'results', 'data']);
+  }
+
+  const result = await tryRequests(bUrl, [
+    { path: `/blocks?${q.toString()}` }
+  ], settings.apiToken);
+  if (!result) return [];
+  return pickArray(result.data, ['blocks', 'items', 'results', 'data']);
+}
+
 async function fetchTransactionByHash (settings = {}, txhash = '') {
   const bUrl = resolveBaseUrl(settings.explorerBaseUrl, '/services/bitcoin');
   const hash = String(txhash || '').trim();
@@ -1756,9 +1795,12 @@ function buildCrowdfundFunderBitcoinUri (address, amountBtc) {
   const addr = String(address || '').trim();
   if (!addr) return '';
   const n = Number(amountBtc);
-  if (!Number.isFinite(n) || n <= 0) return `bitcoin:${addr}`;
-  const amt = n.toFixed(8).replace(/\.?0+$/, '') || '0';
-  return `bitcoin:${addr}?amount=${amt}`;
+  try {
+    if (!Number.isFinite(n) || n <= 0) return encodeBitcoinUri({ address: addr });
+    return encodeBitcoinUri({ address: addr, amount: n });
+  } catch (_) {
+    return '';
+  }
 }
 
 /**
@@ -2081,6 +2123,7 @@ module.exports = {
   fetchExplorerData,
   fetchBitcoinStatus,
   fetchBlockByHash,
+  fetchBlockWindow,
   fetchTransactionByHash,
   fetchTransactionHex,
   fetchWalletSummary,
@@ -2102,6 +2145,7 @@ module.exports = {
   getCrowdfundingBeneficiaryPrivateKey32,
   getCrowdfundingBeneficiaryPayoutAddress,
   signCrowdfundingPayoutPsbtBeneficiary,
+  encodeBitcoinUri,
   buildCrowdfundFunderBitcoinUri,
   buildCrowdfundPaymentsDeepLink,
   crowdfundCampaignApiUrl,

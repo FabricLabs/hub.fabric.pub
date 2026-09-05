@@ -19,7 +19,8 @@ const {
   getNextReceiveWalletContext,
   sendPayment,
   verifyL1Payment,
-  createPayjoinDeposit
+  createPayjoinDeposit,
+  encodeBitcoinUri
 } = require('../functions/bitcoinClient');
 const { SATS_PER_BTC } = require('../constants');
 const { buildTabPayerPayjoinUrl } = require('../functions/tabPayerDemoUrl');
@@ -142,8 +143,14 @@ function Invoice (props) {
   // Payment URI for QR code (BIP 21)
   const paymentUri = React.useMemo(() => {
     if (!address || !amountSats || amountSats <= 0) return null;
-    const btc = (Number(amountSats) / SATS_PER_BTC).toFixed(8);
-    return `bitcoin:${address}?amount=${btc}`;
+    try {
+      return encodeBitcoinUri({
+        address,
+        amount: Number(amountSats) / SATS_PER_BTC
+      });
+    } catch (_) {
+      return null;
+    }
   }, [address, amountSats]);
 
   // Generate QR code

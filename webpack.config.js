@@ -36,9 +36,10 @@ function resolveFabricHttpAssetsDir () {
 
 const TerserPlugin = require('terser-webpack-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
+const { hubDevProxyOnError } = require('./functions/hubDevProxyOnError');
 
 module.exports = (env, argv) => {
-  const mode = argv.mode || 'development';
+  const mode = (argv && argv.mode) || 'production';
   const hubProxyOrigin = process.env.FABRIC_HUB_DEV_PROXY
     || `http://127.0.0.1:${process.env.FABRIC_HUB_PORT || 8080}`;
 
@@ -66,7 +67,7 @@ module.exports = (env, argv) => {
 
   return {
   mode,
-  devtool: 'eval-source-map',
+  devtool: mode === 'production' ? false : 'eval-source-map',
   entry: './scripts/browser.js',
   // Sequential processing to avoid intermittent race conditions (concatenateModules
   // is already disabled for similar reasons with @msgpack/msgpack). Trades build speed for reliability.
@@ -74,7 +75,8 @@ module.exports = (env, argv) => {
   output: {
     path: path.resolve(__dirname, 'assets/bundles'),
     filename: 'browser.min.js',
-    publicPath: '/bundles/'
+    publicPath: '/bundles/',
+    clean: mode === 'production'
   },
   cache: false,
   experiments: {
@@ -130,6 +132,10 @@ module.exports = (env, argv) => {
     // bs58check still require @noble/hashes/* entrypoints that existed in noble-hashes@1 only;
     // map those names to the v2 modules (no duplicate noble versions).
     alias: {
+      // bitcoinjs-lib@6 deep-imports bip174@2 paths; npm link hoists bip174@3
+      // whose package "exports" only expose ".". Files still exist on disk.
+      'bip174/src/lib/converter/varint': path.resolve(__dirname, 'node_modules/bip174/src/lib/converter/varint.js'),
+      'bip174/src/lib/utils': path.resolve(__dirname, 'node_modules/bip174/src/lib/utils.js'),
       '@noble/hashes/sha256': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
       '@noble/hashes/sha512': path.resolve(__dirname, 'node_modules/@noble/hashes/sha2.js'),
       '@noble/hashes/hmac': path.resolve(__dirname, 'node_modules/@noble/hashes/hmac.js'),
@@ -141,8 +147,8 @@ module.exports = (env, argv) => {
       // webpack then hits `__webpack_modules__[id].call is not a function` on ESM interop.
       // Pin CJS builds (`$` = exact package root only, so `react-router/dom` still resolves).
       'react-router-dom$': path.resolve(__dirname, 'node_modules/react-router-dom/dist/index.js'),
-      'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/development/index.js'),
-      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/development/dom-export.js')
+      'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/production/index.js'),
+      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/production/dom-export.js')
     },
     fallback: {
       // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle
@@ -167,9 +173,9 @@ module.exports = (env, argv) => {
     // Proxy backend services when running via webpack-dev-server
     // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
     proxy: [
-      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true },
-      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true },
-      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true }
+      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true, onError: hubDevProxyOnError },
+      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true, onError: hubDevProxyOnError },
+      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true, onError: hubDevProxyOnError }
     ],
     // Watch source directories for changes to rebuild
     watchFiles: [
@@ -186,7 +192,7 @@ module.exports = (env, argv) => {
     // Compress output for faster loading
     compress: true,
     client: {
-      overlay: true,
+      overlay: { errors: true, warnings: false },
       progress: true,
       logging: 'info'
     }
@@ -200,7 +206,8 @@ module.exports = (env, argv) => {
   plugins: [
     new webpack.DefinePlugin({
       // Must match `mode` or webpack reports conflicting process.env.NODE_ENV
-      'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development')
+      'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development'),
+      'process.env.FABRIC_HUB_SEEDS': JSON.stringify(process.env.FABRIC_HUB_SEEDS || '')
     }),
     new webpack.ProvidePlugin({
       Buffer: ['buffer', 'Buffer'],

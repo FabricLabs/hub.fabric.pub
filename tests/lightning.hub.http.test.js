@@ -6,22 +6,40 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
 const http = require('http');
+const net = require('net');
+const path = require('path');
 const url = require('url');
 const merge = require('lodash.merge');
 const Hub = require('../services/hub');
 const settings = require('../settings/local');
 
+function getFreePort () {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const addr = s.address();
+      const port = typeof addr === 'object' && addr ? addr.port : null;
+      s.close((err) => (err ? reject(err) : resolve(port)));
+    });
+    s.on('error', reject);
+  });
+}
+
 describe('Lightning HTTP (stub)', function () {
   let hub;
-  const baseUrl = 'http://localhost:8085';
-  const httpPort = 8085;
+  let baseUrl;
+  let testFsPath;
 
   before(async function () {
     this.timeout(60000);
+    const [p2pPort, httpPort] = await Promise.all([getFreePort(), getFreePort()]);
+    testFsPath = path.join(__dirname, '..', 'stores', `hub-test-lightning-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(testFsPath, { recursive: true });
     hub = new Hub(merge({}, settings, {
-      port: 7780,
-      fs: { path: 'stores/hub-test-lightning' },
+      port: p2pPort,
+      fs: { path: testFsPath },
       bitcoin: {
         enable: false,
         network: 'regtest'
@@ -31,7 +49,8 @@ describe('Lightning HTTP (stub)', function () {
         managed: false
       },
       http: {
-        hostname: 'localhost',
+        hostname: '127.0.0.1',
+        interface: '127.0.0.1',
         listen: true,
         port: httpPort
       },
@@ -39,6 +58,7 @@ describe('Lightning HTTP (stub)', function () {
     }));
 
     await hub.start();
+    baseUrl = `http://127.0.0.1:${httpPort}`;
     await new Promise((resolve) => setTimeout(resolve, 500));
   });
 
@@ -49,6 +69,11 @@ describe('Lightning HTTP (stub)', function () {
         hub.stop(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('hub.stop() timeout')), 8000))
       ]).catch(() => {});
+    }
+    if (testFsPath) {
+      try {
+        fs.rmSync(testFsPath, { recursive: true, force: true });
+      } catch (_) {}
     }
   });
 
@@ -171,27 +196,32 @@ describe('Lightning HTTP (stub)', function () {
 
 describe('Lightning HTTP (no node, no stub)', function () {
   let hub;
-  const baseUrl = 'http://localhost:8086';
-  const httpPort = 8086;
+  let baseUrl;
+  let testFsPath;
 
   before(async function () {
     this.timeout(60000);
+    const [p2pPort, httpPort] = await Promise.all([getFreePort(), getFreePort()]);
+    testFsPath = path.join(__dirname, '..', 'stores', `hub-test-lightning-nc-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(testFsPath, { recursive: true });
     hub = new Hub(merge({}, settings, {
-      port: 7781,
-      fs: { path: 'stores/hub-test-lightning-nc' },
+      port: p2pPort,
+      fs: { path: testFsPath },
       bitcoin: { enable: false, network: 'regtest' },
       lightning: {
         stub: false,
         managed: false
       },
       http: {
-        hostname: 'localhost',
+        hostname: '127.0.0.1',
+        interface: '127.0.0.1',
         listen: true,
         port: httpPort
       },
       debug: false
     }));
     await hub.start();
+    baseUrl = `http://127.0.0.1:${httpPort}`;
     await new Promise((resolve) => setTimeout(resolve, 500));
   });
 
@@ -202,6 +232,11 @@ describe('Lightning HTTP (no node, no stub)', function () {
         hub.stop(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('hub.stop() timeout')), 8000))
       ]).catch(() => {});
+    }
+    if (testFsPath) {
+      try {
+        fs.rmSync(testFsPath, { recursive: true, force: true });
+      } catch (_) {}
     }
   });
 

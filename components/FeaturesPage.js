@@ -17,8 +17,9 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
-const { featuresPageIdentityButtonLabelFromStorage } = require('../functions/hubIdentityUiHints');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
+const { featuresPageIdentityButtonLabelFromStorage } = require('../functions/hubIdentityUiHints');
+const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
 
 function FeaturesPage () {
   const [hubUiTick, setHubUiTick] = React.useState(0);
@@ -55,8 +56,10 @@ function FeaturesPage () {
   }, [refreshIdentityButtonLabel]);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
+  const hubHttpAvailable = useHubHttpAvailable();
+  const meshAvailable = useHubMeshAvailable();
   const hasAdminToken = !!readHubAdminTokenFromBrowser();
-  const showPeersShortcut = uf.peers && hasAdminToken;
+  const showPeersShortcut = hubHttpAvailable && uf.peers && hasAdminToken;
 
   return (
     <fabric-hub-features className="fade-in">
@@ -148,39 +151,52 @@ function FeaturesPage () {
             <Icon name="user" aria-hidden="true" />
             {identityButtonLabel}
           </Button>
+          <Button as={Link} to="/downloads" basic icon labelPosition="left">
+            <Icon name="download" aria-hidden="true" />
+            Downloads
+          </Button>
           {showPeersShortcut ? (
             <Button as={Link} to="/peers" basic icon labelPosition="left">
               <Icon name="sitemap" aria-hidden="true" />
               Peers
             </Button>
           ) : null}
-          <Button as={Link} to="/documents" basic icon labelPosition="left">
-            <Icon name="file outline" aria-hidden="true" />
-            Documents
-          </Button>
-          <Button as={Link} to="/contracts" basic icon labelPosition="left">
-            <Icon name="file code" aria-hidden="true" />
-            Contracts
-          </Button>
-          {uf.activities ? (
+          {hubHttpAvailable || meshAvailable ? (
+            <Button as={Link} to="/documents" basic icon labelPosition="left">
+              <Icon name="file outline" aria-hidden="true" />
+              Documents
+            </Button>
+          ) : null}
+          {hubHttpAvailable ? (
+            <Button as={Link} to="/contracts" basic icon labelPosition="left">
+              <Icon name="file code" aria-hidden="true" />
+              Contracts
+            </Button>
+          ) : (
+            <Button as={Link} to="/settings/bitcoin-wallet" basic icon labelPosition="left">
+              <Icon name="bitcoin" aria-hidden="true" />
+              Local wallet
+            </Button>
+          )}
+          {hubHttpAvailable && uf.activities ? (
             <Button as={Link} to="/notifications" basic icon labelPosition="left" title="Wallet, Payjoin, and hub toasts (bell in the top bar)">
               <Icon name="bell outline" aria-hidden="true" />
               Notifications
             </Button>
           ) : null}
-          {uf.activities ? (
+          {hubHttpAvailable && uf.activities ? (
             <Button as={Link} to="/activities" basic icon labelPosition="left" title="Hub message log, chat, Bitcoin blocks">
               <Icon name="comments" aria-hidden="true" />
               Activity log
             </Button>
           ) : null}
-          {uf.sidechain ? (
+          {hubHttpAvailable && uf.sidechain ? (
             <Button as={Link} to="/sidechains" basic icon labelPosition="left">
               <Icon name="random" aria-hidden="true" />
               Sidechain
             </Button>
           ) : null}
-          {uf.sidechain ? (
+          {hubHttpAvailable && uf.sidechain ? (
             <Button
               as={Link}
               to="/settings/admin/beacon-federation"
@@ -193,62 +209,70 @@ function FeaturesPage () {
               Beacon Federation
             </Button>
           ) : null}
-          {uf.sidechain ? (
+          {hubHttpAvailable && uf.sidechain ? (
             <Button as={Link} to="/federations" basic icon labelPosition="left" title="Multi-sig validator policy (k-of-n)">
               <Icon name="users" aria-hidden="true" />
               Federations
             </Button>
           ) : null}
-          <Button as={Link} to="/services/bitcoin" basic icon labelPosition="left">
-            <Icon name="bitcoin" aria-hidden="true" />
-            Bitcoin
-          </Button>
-          {uf.bitcoinPayments ? (
+          {hubHttpAvailable ? (
+            <Button as={Link} to="/services/bitcoin" basic icon labelPosition="left">
+              <Icon name="bitcoin" aria-hidden="true" />
+              Bitcoin
+            </Button>
+          ) : null}
+          {hubHttpAvailable && uf.bitcoinPayments ? (
             <Button as={Link} to="/payments" basic icon labelPosition="left">
               <Icon name="credit card outline" aria-hidden="true" />
               Payments
             </Button>
           ) : null}
-          <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic icon labelPosition="left">
-            <Icon name="file alternate outline" aria-hidden="true" />
-            Invoices
-          </Button>
-          {uf.bitcoinLightning ? (
+          {hubHttpAvailable ? (
+            <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic icon labelPosition="left">
+              <Icon name="file alternate outline" aria-hidden="true" />
+              Invoices
+            </Button>
+          ) : null}
+          {hubHttpAvailable && uf.bitcoinLightning ? (
             <Button as={Link} to="/services/bitcoin#fabric-bitcoin-lightning" basic icon labelPosition="left" title="Invoices, decode, pay via Hub Lightning bridge">
               <Icon name="bolt" aria-hidden="true" />
               Lightning
             </Button>
           ) : null}
-          {uf.bitcoinExplorer ? (
+          {hubHttpAvailable && uf.bitcoinExplorer ? (
             <Button as={Link} to="/services/bitcoin/blocks" basic icon labelPosition="left" title="Block explorer — recent blocks and mempool">
               <Icon name="search" aria-hidden="true" />
               Explorer
             </Button>
           ) : null}
-          {uf.bitcoinResources ? (
+          {hubHttpAvailable && uf.bitcoinResources ? (
             <Button as={Link} to="/services/bitcoin/resources" basic icon labelPosition="left">
               <Icon name="code" aria-hidden="true" />
               Resources
             </Button>
           ) : null}
-          {uf.bitcoinCrowdfund ? (
+          {hubHttpAvailable && uf.bitcoinCrowdfund ? (
             <Button as={Link} to="/services/bitcoin/crowdfunds" basic icon labelPosition="left" title="Taproot vault, ACP donation PSBT, Payjoin to campaign">
               <Icon name="heart outline" aria-hidden="true" />
               Crowdfunds
             </Button>
           ) : null}
-          <Button as={Link} to="/settings/admin" basic icon labelPosition="left">
-            <Icon name="settings" aria-hidden="true" />
-            Admin
-          </Button>
+          {hubHttpAvailable ? (
+            <Button as={Link} to="/settings/admin" basic icon labelPosition="left">
+              <Icon name="settings" aria-hidden="true" />
+              Admin
+            </Button>
+          ) : null}
           <Button as={Link} to="/settings" basic icon labelPosition="left">
             <Icon name="setting" aria-hidden="true" />
             Settings
           </Button>
-          <Button as={Link} to="/settings/security" basic icon labelPosition="left" title="Unlock, delegation, same destination as Log in">
-            <Icon name="shield" aria-hidden="true" />
-            Security & delegation
-          </Button>
+          {hubHttpAvailable ? (
+            <Button as={Link} to="/settings/security" basic icon labelPosition="left" title="Unlock, delegation, same destination as Log in">
+              <Icon name="shield" aria-hidden="true" />
+              Security & delegation
+            </Button>
+          ) : null}
         </div>
       </Segment>
     </fabric-hub-features>

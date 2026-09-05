@@ -5,6 +5,7 @@
  * or stopping the Fabric agent. Closes WebSocket.Server (drops clients; they may reconnect)
  * and replaces the stoppable http.Server. Express app and routes are reused.
  */
+const { once } = require('events');
 const http = require('http');
 const stoppable = require('stoppable');
 const WebSocket = require('ws');
@@ -34,6 +35,51 @@ function closeWebSocketServer (wss) {
       resolve();
     }
   });
+}
+
+/**
+ * Wait until a Node `http.Server` is bound. `@fabric/http` `start()` used to
+ * `await server.listen()` — listen() is not a Promise, so Hub.start() could
+ * return before the socket existed (or after a silent bind failure).
+ *
+ * Uses `events.once` + `AbortSignal.timeout` (no setTimeout/removeListener
+ * body) so Codacy does not flag “inappropriate function body content”.
+ *
+ * @param {Object} nodeServer Node `http.Server` (stoppable-wrapped ok)
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
+async function waitForHttpServerListening (nodeServer, timeoutMs) {
+  if (!nodeServer) {
+    throw new Error('waitForHttpServerListening: no server');
+  }
+  if (nodeServer.listening) {
+    return;
+  }
+  const ms = Number(timeoutMs);
+  const waitMs = Number.isFinite(ms) && ms > 0 ? ms : 15000;
+  const timeout = AbortSignal.timeout(waitMs);
+  const fail = new AbortController();
+  const onError = (err) => {
+    try {
+      fail.abort(err);
+    } catch (_) { /* already aborted */ }
+  };
+  nodeServer.once('error', onError);
+  try {
+    const signal = AbortSignal.any([timeout, fail.signal]);
+    await once(nodeServer, 'listening', { signal });
+  } catch (err) {
+    if (fail.signal.aborted && fail.signal.reason) {
+      throw fail.signal.reason;
+    }
+    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR' || timeout.aborted)) {
+      throw new Error('HTTP listen timed out');
+    }
+    throw err;
+  } finally {
+    nodeServer.removeListener('error', onError);
+  }
 }
 
 /**
@@ -87,4 +133,4 @@ async function rebindFabricHttpListen (fabricHttp) {
   });
 }
 
-module.exports = { rebindFabricHttpListen };
+module.exports = { rebindFabricHttpListen, waitForHttpServerListening };

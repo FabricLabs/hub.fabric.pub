@@ -61,6 +61,23 @@ describe('fabricMessageRegistry', function () {
     assert.strictEqual(registry.findOuterByName('P2P_CONTRACT_PROPOSAL').opcodeDec, constants.CONTRACT_PROPOSAL_TYPE);
   });
 
+  it('P2P_MUSIG_* opcodes match @fabric/core', function () {
+    const names = [
+      'P2P_MUSIG_START',
+      'P2P_MUSIG_ACCEPT',
+      'P2P_MUSIG_RECEIVE_COUNTER',
+      'P2P_MUSIG_SEND_PROPOSAL',
+      'P2P_MUSIG_REPLY_TO_PROPOSAL',
+      'P2P_MUSIG_ACCEPT_PROPOSAL'
+    ];
+    for (const name of names) {
+      const row = registry.findOuterByName(name);
+      assert.ok(row, name);
+      assert.strictEqual(row.encoding, registry.PayloadEncoding.structuredBinary);
+      assert.strictEqual(row.opcodeDec, constants[name]);
+    }
+  });
+
   it('APPLICATION_CONTRACT_BODY_TYPES lists shared namespace body types', function () {
     const types = registry.APPLICATION_CONTRACT_BODY_TYPES.map((r) => r.type);
     assert.ok(types.includes('GroupChat'));

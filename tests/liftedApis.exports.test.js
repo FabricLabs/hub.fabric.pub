@@ -21,6 +21,8 @@ describe('Hub lifted API package exports', function () {
     './functions/oracleAttestation',
     './functions/fabricPubkey',
     './functions/fabricChatNormalize',
+    './functions/bulkSecurityAdvisory',
+    './functions/operatorAdminToken',
     './functions/hubLifecycle',
     './functions/documentInventoryMarket',
     './functions/identityCluster',
@@ -55,8 +57,22 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
   it('allowlist + httpSharedMode re-export http', function () {
     const hubAllow = require('../functions/fabricHubAllowlist');
     const httpAllow = require('@fabric/http/functions/fabricHubAllowlist');
-    assert.strictEqual(hubAllow.isAllowedFabricHub, httpAllow.isAllowedFabricHub);
+    // Prefer http once the pin exports HTTPS suffix helpers; until then Hub keeps
+    // a local copy so FABRIC_HUB_ALLOWLIST=*.example.com works (same pattern as
+    // federation invite / fabricChatNormalize collapse-when-ready shims).
+    if (typeof httpAllow.normalizeHttpsHostSuffix === 'function') {
+      assert.strictEqual(hubAllow.isAllowedFabricHub, httpAllow.isAllowedFabricHub);
+    } else {
+      assert.notStrictEqual(hubAllow.isAllowedFabricHub, httpAllow.isAllowedFabricHub);
+      assert.strictEqual(typeof hubAllow.normalizeHttpsHostSuffix, 'function');
+    }
     assert.strictEqual(hubAllow.assertAllowedFabricHub('https://evil.example').ok, false);
+    assert.strictEqual(
+      hubAllow.isAllowedFabricHub('https://pub-fabric-hub-git-feature-rsi-fabric-labs.vercel.app', {
+        env: { FABRIC_HUB_ALLOWLIST: '*.vercel.app' }
+      }),
+      true
+    );
 
     const hubShared = require('../functions/httpSharedMode');
     const httpShared = require('@fabric/http/functions/httpSharedMode');
@@ -144,17 +160,39 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
 
     const hubChat = require('../functions/fabricChatNormalize');
     const httpChat = require('@fabric/http/functions/fabricChatNormalize');
+    const coreChat = require('@fabric/core/functions/fabricChatText');
     // Hub wraps http normalize to sanitize Number(null)/'' created timestamps (epoch 0).
+    // http re-exports core shoutbox helpers. Nested npm copies of @fabric/core can
+    // be distinct function objects even when the source is identical.
+    const sample = { object: { content: 'hello mesh' } };
+    assert.strictEqual(httpChat.chatTextOf(sample), coreChat.chatTextOf(sample));
     assert.strictEqual(hubChat.chatTextOf, httpChat.chatTextOf);
     assert.strictEqual(hubChat.chatActorIdOf, httpChat.chatActorIdOf);
-    assert.notStrictEqual(hubChat.normalizeP2pChatMessage, httpChat.normalizeP2pChatMessage);
-    const n = hubChat.normalizeP2pChatMessage({ text: 'hi' }, { signer: key.pubkey });
-    assert.strictEqual(n.actor.id, hubPk.pubkeyXOnly(key.pubkey));
-    const coerced = hubChat.normalizeP2pChatMessage(
-      { text: 'hi', created: null },
-      { signer: key.pubkey }
-    );
-    assert.ok(Number(coerced.object.created) > 0);
+    if (hubChat.normalizeP2pChatMessage === httpChat.normalizeP2pChatMessage) {
+      // Current http pin sanitizes created upstream; Hub re-exports bare module.
+      const coerced = hubChat.normalizeP2pChatMessage(
+        { object: { content: 'hi', created: null } },
+        { signer: key.pubkey }
+      );
+      assert.ok(Number(coerced.object.created) > 0);
+    } else {
+      const n = hubChat.normalizeP2pChatMessage({ text: 'hi' }, { signer: key.pubkey });
+      assert.strictEqual(n.actor.id, hubPk.pubkeyXOnly(key.pubkey));
+      const coerced = hubChat.normalizeP2pChatMessage(
+        { text: 'hi', created: null },
+        { signer: key.pubkey }
+      );
+      assert.ok(Number(coerced.object.created) > 0);
+    }
+  });
+
+  it('resolves core home-env / key-material helpers on this pin', function () {
+    const home = require('@fabric/core/functions/fabricHomeEnv');
+    const material = require('@fabric/core/functions/fabricKeyMaterial');
+    assert.strictEqual(typeof home.loadFabricHomeEnv, 'function');
+    assert.strictEqual(typeof material.parseRawSeedHex, 'function');
+    assert.strictEqual(typeof material.keySettingsFromEnv, 'function');
+    assert.strictEqual(material.classifyFabricKeyMaterial('aa'.repeat(32)).kind, 'seedHex');
   });
 
   it('fabricDelegation exports mount + session helpers', function () {

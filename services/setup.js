@@ -22,6 +22,14 @@ const GLOBAL_SETTINGS = [
   'BITCOIN_RPC_PORT',
   'BITCOIN_USERNAME',
   'BITCOIN_PASSWORD',
+  'BITCOIN_PRESET',
+  'BITCOIN_PRUNE',
+  'BITCOIN_TXINDEX',
+  'BITCOIN_TXRELAY',
+  'BITCOIN_DBCACHE',
+  'BITCOIN_LISTEN',
+  'BITCOIN_MAXCONNECTIONS',
+  'BITCOIN_MAXUPLOADTARGET',
   'LIGHTNING_MANAGED',
   'LIGHTNING_SOCKET',
   'DISK_ALLOCATION_MB',
@@ -29,6 +37,9 @@ const GLOBAL_SETTINGS = [
   /** When true, hub HTTP binds 0.0.0.0; when false, 127.0.0.1 (unless FABRIC_HUB_INTERFACE / INTERFACE is set). Changing via PUT rebinds the listener at runtime when env does not override. */
   'HTTP_SHARED_MODE'
 ];
+
+/** Setting names that must not leave the Hub over unauthenticated GET /settings. */
+const SECRET_SETTING_NAMES = new Set(['BITCOIN_PASSWORD']);
 
 /**
  * Setup service for Hub first-time configuration.
@@ -100,6 +111,36 @@ class SetupService {
   }
 
   /**
+   * Drop secret setting values unless the caller presented a valid admin token.
+   * @param {string} name
+   * @param {*} value
+   * @param {boolean} isAdmin
+   * @returns {*}
+   */
+  redactSettingValue (name, value, isAdmin) {
+    if (isAdmin) return value;
+    if (SECRET_SETTING_NAMES.has(String(name))) {
+      if (value == null || value === '') return value;
+      return '';
+    }
+    return value;
+  }
+
+  /**
+   * @param {Object} settings
+   * @param {boolean} isAdmin
+   * @returns {Object}
+   */
+  redactSettingsForHttp (settings, isAdmin) {
+    const src = settings && typeof settings === 'object' ? settings : {};
+    const result = {};
+    for (const [name, value] of Object.entries(src)) {
+      result[name] = this.redactSettingValue(name, value, isAdmin);
+    }
+    return result;
+  }
+
+  /**
    * List all settings.
    * @returns {Object} Map of name -> value
    */
@@ -153,7 +194,7 @@ class SetupService {
    * Create and sign an admin token. Token is returned to the client only; never stored on server.
    * Only succeeds when not yet configured (first client).
    * @param {Object} [initialConfig] Optional initial settings (NODE_NAME, etc.)
-   * @returns {Promise<{token: string, configured: boolean, expiresAt?: number}>}
+   * @returns {Promise<{token: string, configured: boolean, expiresAt: (number|undefined)}>}
    */
   async createAdminToken (initialConfig = {}) {
     const status = this.getSetupStatus();
@@ -194,7 +235,7 @@ class SetupService {
    * Refresh an admin token. Verifies the current token and returns a new one.
    * Token is never stored on server.
    * @param {string} currentToken
-   * @returns {Promise<{token: string, expiresAt?: number}>}
+   * @returns {Promise<{token: string, expiresAt: (number|undefined)}>}
    */
   async refreshAdminToken (currentToken) {
     if (!currentToken || typeof currentToken !== 'string') {

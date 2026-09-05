@@ -23,6 +23,8 @@ const ECPairFactory = typeof ecpairMod === 'function' ? ecpairMod : (ecpairMod.d
 bitcoin.initEccLib(ecc);
 const ecpair = ECPairFactory(ecc);
 const { SATS_PER_BTC } = require('../constants');
+const { sortPsbtInputBags, sortPsbtOutputBags } = require('./psbtFabric');
+const { parseBitcoinUri } = require('@fabric/core/functions/bip21');
 
 /** 0x81 — commit to all outputs; only this input is bound (others may be appended). */
 const SIGHASH_ALL_ANYONECANPAY = bitcoin.Transaction.SIGHASH_ALL | bitcoin.Transaction.SIGHASH_ANYONECANPAY;
@@ -46,35 +48,28 @@ function bip32NetworkForKeys (xpub, networkName) {
 }
 
 /**
- * @returns {{ address: string, amountSats: number|null, pjUrl: string, label?: string, message?: string }|null}
+ * Parse a BIP-21 URI that includes an http(s) BIP-78 `pj=` endpoint.
+ *
+ * @param {string} uri
+ * @returns {Object|null} `{ address, amountSats, pjUrl, label, message }` or null
  */
 function parseBitcoinUriForPayjoin (uri) {
-  const s = String(uri || '').trim();
-  if (!/^bitcoin:/i.test(s)) return null;
-  const noScheme = s.replace(/^bitcoin:/i, '');
-  const q = noScheme.indexOf('?');
-  const addressPart = (q >= 0 ? noScheme.slice(0, q) : noScheme).split('/')[0];
-  const address = addressPart;
-  const search = q >= 0 ? noScheme.slice(q) : '';
-  const params = new URLSearchParams(search);
-  const pjRaw = params.get('pj');
-  if (!pjRaw) return null;
-  let pjUrl;
+  let parsed;
   try {
-    pjUrl = decodeURIComponent(String(pjRaw).replace(/\+/g, '%20'));
+    parsed = parseBitcoinUri(uri);
   } catch (_) {
     return null;
   }
-  if (!/^https?:\/\//i.test(pjUrl)) return null;
-  const amountStr = params.get('amount');
-  const amountBtc = amountStr != null ? Number(amountStr) : NaN;
+  const pjUrl = parsed.extras && parsed.extras.pj ? String(parsed.extras.pj) : '';
+  if (!pjUrl || !/^https?:\/\//i.test(pjUrl)) return null;
+  const amountBtc = parsed.amount != null ? Number(parsed.amount) : NaN;
   const amountSats = Number.isFinite(amountBtc) ? Math.round(amountBtc * SATS_PER_BTC) : null;
   return {
-    address,
+    address: parsed.address,
     amountSats,
     pjUrl,
-    label: params.get('label') || '',
-    message: params.get('message') || ''
+    label: parsed.label || '',
+    message: parsed.message || ''
   };
 }
 
@@ -154,6 +149,7 @@ async function postPayjoinProposalWithDesktopFallback (pjUrl, psbtBase64, opts =
  * @param {number} [opts.feeSatPerVbyte]
  * @param {boolean} [opts.anyoneCanPayAll] - if true, sign with SIGHASH_ALL|ANYONECANPAY so a receiver may add inputs without changing outputs
  * @returns {Promise<{ psbtBase64: string, ourInputIndices: number[], usedUtxos: object[] }>}
+ *   `ourInputIndices` are sequential after BIP-69 ordering of the original unsigned tx.
  */
 async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const xprv = String(opts.xprv || '').trim();
@@ -178,6 +174,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const bip32 = BIP32Factory(ecc);
   const root = bip32.fromBase58(xprv, decodeNetwork);
 
+  /** Greedy largest-first for coin selection only; BIP-69 orders the unsigned PSBT later. */
   const sorted = utxos
     .map((u) => ({
       ...u,
@@ -221,12 +218,20 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
     throw new Error('Insufficient funds for amount plus estimated fee (try single-output after dust change).');
   }
 
+  const pickedSorted = sortPsbtInputBags(picked.map((u) => ({
+    ...u,
+    txid: String(u.txid),
+    vout: Number(u.vout),
+    index: Number(u.vout)
+  })));
+  const outputsSorted = sortPsbtOutputBags(outputs, network);
+
   const psbt = new bitcoin.Psbt({ network });
   const ourInputIndices = [];
   const usedUtxos = [];
 
-  for (let i = 0; i < picked.length; i++) {
-    const u = picked[i];
+  for (let i = 0; i < pickedSorted.length; i++) {
+    const u = pickedSorted[i];
     const hex = await getPrevTxHex(String(u.txid));
     if (!hex || !/^[0-9a-fA-F]+$/i.test(hex)) throw new Error(`Prev tx hex missing for ${u.txid}`);
     const prev = bitcoin.Transaction.fromHex(hex);
@@ -260,7 +265,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
     usedUtxos.push(u);
   }
 
-  for (const o of outputs) {
+  for (const o of outputsSorted) {
     psbt.addOutput({ address: o.address, value: o.value });
   }
 

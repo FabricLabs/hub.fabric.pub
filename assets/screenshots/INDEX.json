@@ -1,0 +1,301 @@
+{
+  "capturedAt": "2026-09-03T18:02:25.460Z",
+  "includeL1": true,
+  "hubUrl": "http://127.0.0.1:18084/",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "shots": [
+    {
+      "id": "01-documents-empty",
+      "flow": "document-exchange",
+      "tier": "ui",
+      "title": "Documents list",
+      "path": "assets/screenshots/document-exchange/01-documents-empty.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T17:59:37.485Z"
+    },
+    {
+      "id": "02-document-create",
+      "flow": "document-exchange",
+      "tier": "ui",
+      "title": "Create document",
+      "path": "assets/screenshots/document-exchange/02-document-create.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T17:59:39.801Z"
+    },
+    {
+      "id": "03-document-published",
+      "flow": "document-exchange",
+      "tier": "ui",
+      "title": "Published document row",
+      "path": "assets/screenshots/document-exchange/03-document-published.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T17:59:42.578Z"
+    },
+    {
+      "id": "04-document-view",
+      "flow": "document-exchange",
+      "tier": "ui",
+      "title": "Document detail",
+      "path": "assets/screenshots/document-exchange/04-document-view.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T17:59:45.267Z"
+    },
+    {
+      "id": "05-market-strip",
+      "flow": "document-exchange",
+      "tier": "ui",
+      "title": "Document market strip",
+      "path": "assets/screenshots/document-exchange/05-market-strip.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T17:59:48.054Z"
+    },
+    {
+      "id": "06-peer-inventory",
+      "flow": "document-exchange",
+      "tier": "ui",
+      "title": "Peer inventory panel",
+      "path": "assets/screenshots/document-exchange/06-peer-inventory.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T17:59:53.692Z"
+    },
+    {
+      "id": "07-htlc-fund",
+      "flow": "document-exchange",
+      "tier": "l1",
+      "title": "Inventory HTLC fund",
+      "path": "assets/screenshots/document-exchange/07-htlc-fund.png",
+      "status": "ok",
+      "reason": "HTLC panel unavailable; captured document purchase / unlock chrome",
+      "capturedAt": "2026-09-03T18:00:06.992Z"
+    },
+    {
+      "id": "08-htlc-confirm",
+      "flow": "document-exchange",
+      "tier": "l1",
+      "title": "Inventory HTLC confirm",
+      "path": "assets/screenshots/document-exchange/08-htlc-confirm.png",
+      "status": "ok",
+      "reason": "HTLC panel unavailable; captured document purchase / unlock chrome",
+      "capturedAt": "2026-09-03T18:00:29.499Z"
+    },
+    {
+      "id": "01-peers-list",
+      "flow": "p2p",
+      "tier": "ui",
+      "title": "Peers list",
+      "path": "assets/screenshots/p2p/01-peers-list.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:00:52.037Z"
+    },
+    {
+      "id": "02-add-peer",
+      "flow": "p2p",
+      "tier": "ui",
+      "title": "Add peer modal",
+      "path": "assets/screenshots/p2p/02-add-peer.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:00:54.418Z"
+    },
+    {
+      "id": "03-peer-detail",
+      "flow": "p2p",
+      "tier": "ui",
+      "title": "Peer detail",
+      "path": "assets/screenshots/p2p/03-peer-detail.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:00:57.062Z"
+    },
+    {
+      "id": "04-peer-chat",
+      "flow": "p2p",
+      "tier": "ui",
+      "title": "Peer chat",
+      "path": "assets/screenshots/p2p/04-peer-chat.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:10.340Z"
+    },
+    {
+      "id": "05-webrtc-discover",
+      "flow": "p2p",
+      "tier": "ui",
+      "title": "WebRTC discover",
+      "path": "assets/screenshots/p2p/05-webrtc-discover.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:23.399Z"
+    },
+    {
+      "id": "06-topology",
+      "flow": "p2p",
+      "tier": "ui",
+      "title": "Peer topology",
+      "path": "assets/screenshots/p2p/06-topology.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:25.698Z"
+    },
+    {
+      "id": "01-home",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Home",
+      "path": "assets/screenshots/features/01-home.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:28.366Z"
+    },
+    {
+      "id": "02-features",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Features",
+      "path": "assets/screenshots/features/02-features.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:38.672Z"
+    },
+    {
+      "id": "03-downloads",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Downloads",
+      "path": "assets/screenshots/features/03-downloads.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:41.080Z"
+    },
+    {
+      "id": "04-activities",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Activities",
+      "path": "assets/screenshots/features/04-activities.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:43.200Z"
+    },
+    {
+      "id": "05-notifications",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Notifications",
+      "path": "assets/screenshots/features/05-notifications.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:53.784Z"
+    },
+    {
+      "id": "06-bitcoin",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Bitcoin dashboard",
+      "path": "assets/screenshots/features/06-bitcoin.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:56.827Z"
+    },
+    {
+      "id": "07-payjoin",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Payjoin",
+      "path": "assets/screenshots/features/07-payjoin.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:01:59.839Z"
+    },
+    {
+      "id": "07b-payjoin-l1",
+      "flow": "features",
+      "tier": "l1",
+      "title": "Payjoin (L1 live)",
+      "path": "assets/screenshots/features/07b-payjoin-l1.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:04.628Z"
+    },
+    {
+      "id": "08-crowdfunds",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Crowdfunds",
+      "path": "assets/screenshots/features/08-crowdfunds.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:08.805Z"
+    },
+    {
+      "id": "08b-crowdfunds-l1",
+      "flow": "features",
+      "tier": "l1",
+      "title": "Crowdfunds (L1 live)",
+      "path": "assets/screenshots/features/08b-crowdfunds-l1.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:11.032Z"
+    },
+    {
+      "id": "09-contracts",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Contracts",
+      "path": "assets/screenshots/features/09-contracts.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:13.265Z"
+    },
+    {
+      "id": "10-sidechains",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Sidechains",
+      "path": "assets/screenshots/features/10-sidechains.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:15.493Z"
+    },
+    {
+      "id": "11-beacon-federation",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Beacon Federation",
+      "path": "assets/screenshots/features/11-beacon-federation.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:18.311Z"
+    },
+    {
+      "id": "12-settings",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Settings",
+      "path": "assets/screenshots/features/12-settings.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:20.894Z"
+    },
+    {
+      "id": "13-security",
+      "flow": "features",
+      "tier": "ui",
+      "title": "Security",
+      "path": "assets/screenshots/features/13-security.png",
+      "status": "ok",
+      "reason": null,
+      "capturedAt": "2026-09-03T18:02:23.263Z"
+    }
+  ]
+}

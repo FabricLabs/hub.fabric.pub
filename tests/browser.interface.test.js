@@ -174,6 +174,7 @@ async function bootstrapHubForBrowserE2e (hubOrigin) {
       body: JSON.stringify({
         NODE_NAME: 'Browser E2E Hub',
         BITCOIN_MANAGED: false,
+        LIGHTNING_MANAGED: false,
         BITCOIN_HOST: '127.0.0.1',
         BITCOIN_RPC_PORT: '18443',
         BITCOIN_USERNAME: '',
@@ -344,6 +345,24 @@ async function waitForBodyText (page, needle, timeoutMs = 12000) {
   return false;
 }
 
+async function waitForTestId (page, testId, timeoutMs = 10000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const found = await page.evaluate((id) => !!document.querySelector(`[data-testid="${id}"]`), testId);
+    if (found) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
+/** Static `assets/` server has no Hub HTTP; hub routes render ClientNeedsHub. */
+async function skipLiveHubPageIfClientOrigin (page) {
+  if (HUB_E2E) return false;
+  const gated = await waitForTestId(page, 'hub-client-needs-hub', 8000);
+  assert.ok(gated, 'static origin should show the HTML-client Hub gate');
+  return true;
+}
+
 async function waitForMainUI (page, timeoutMs = 15000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -491,6 +510,25 @@ describe('Browser Interface', function () {
     assert.strictEqual(hasApp, true, 'application-target should exist');
   });
 
+  it('static origin shows HTML-client home (not hub snapshot spinner)', async function () {
+    if (HUB_E2E) this.skip();
+    this.timeout(25000);
+    const ready = await waitForMainUI(sandbox.browser, 12000);
+    assert.ok(ready, 'main UI should appear after /settings probe');
+    const homeOk = await waitForTestId(sandbox.browser, 'hub-client-home', 10000);
+    assert.ok(homeOk, 'expected [data-testid="hub-client-home"]');
+    const nav = await sandbox.browser.evaluate(() => ({
+      settings: !!document.querySelector('[data-testid="hub-nav-settings"]'),
+      documents: !!document.querySelector('[data-testid="hub-nav-documents"]'),
+      downloads: !!document.querySelector('[data-testid="hub-nav-downloads"]'),
+      snapshot: /Waiting for hub snapshot/i.test(document.body && document.body.innerText ? document.body.innerText : '')
+    }));
+    assert.strictEqual(nav.settings, true, 'client chrome should show Settings in the top nav');
+    assert.strictEqual(nav.documents, false, 'client chrome should hide Documents');
+    assert.strictEqual(nav.downloads, false, 'client chrome should not put Downloads in the header');
+    assert.strictEqual(nav.snapshot, false, 'client home should not wait on a hub WebSocket snapshot');
+  });
+
   describe('navigation (requires main UI)', function () {
     before(async function () {
       const hasMainUI = await waitForMainUI(sandbox.browser, 8000);
@@ -515,7 +553,11 @@ describe('Browser Interface', function () {
       }
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/peers', `Expected /peers, got ${pathname}`);
-      if (!HUB_E2E) return;
+      if (!HUB_E2E) {
+        const gated = await waitForTestId(sandbox.browser, 'hub-client-needs-hub', 8000);
+        assert.ok(gated, 'static origin: /peers should show the HTML-client Hub gate');
+        return;
+      }
       await mergeHubUiFeatureFlags(sandbox.browser, { peers: true });
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'load', timeout: 15000 });
       const hooked = await sandbox.browser.evaluate(
@@ -530,6 +572,19 @@ describe('Browser Interface', function () {
       await sleep(500);
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/documents', `Expected /documents, got ${pathname}`);
+    });
+
+    it('should serve Downloads at /downloads without a header tab', async function () {
+      const headerTab = await sandbox.browser.evaluate(() => {
+        return !!document.querySelector('[data-testid="hub-nav-downloads"]');
+      });
+      assert.strictEqual(headerTab, false, 'header must not include Downloads');
+      await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/downloads`, { waitUntil: 'load', timeout: 15000 });
+      await sleep(500);
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/downloads', `Expected /downloads, got ${pathname}`);
+      const page = await waitForTestId(sandbox.browser, 'hub-downloads-page', 8000);
+      assert.ok(page, 'Downloads should render FileBrowser');
     });
 
     it('should navigate to Notifications via bell', async function () {
@@ -575,14 +630,17 @@ describe('Browser Interface', function () {
       await sandbox.browser.goto(`${baseUrl.replace(/\/$/, '')}/peers`, { waitUntil: 'load', timeout: 20000 });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/peers', `Expected /peers (peers feature on), got ${pathname}`);
+      if (!HUB_E2E) {
+        const gated = await waitForTestId(sandbox.browser, 'hub-client-needs-hub', 8000);
+        assert.ok(gated, 'static origin: Peers route should show the HTML-client Hub gate');
+        return;
+      }
       const hasHeading = await waitForElementById(sandbox.browser, 'peers-page-heading', 12000);
       assert.ok(hasHeading, 'Peers page should render peers heading');
       const layoutOk = await sandbox.browser.evaluate(() => {
         const footer = document.getElementById('peers-page-footer');
         const body = document.body && document.body.innerText ? document.body.innerText : '';
         if (!footer || !/Fabric Peer ID/i.test(body)) return false;
-        // Static `assets/` test server has no WebSocket; Bridge may stay in “Connecting to hub…”.
-        // When `networkStatus` is set, the “Fabric peers” table block is shown; otherwise loader or empty list.
         return (
           /Fabric peers/i.test(body) ||
           /Connecting to hub/i.test(body) ||
@@ -621,6 +679,11 @@ describe('Browser Interface', function () {
       await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/activities', { activities: true });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/activities', `Expected /activities, got ${pathname}`);
+      if (!HUB_E2E) {
+        const gated = await waitForTestId(sandbox.browser, 'hub-client-needs-hub', 8000);
+        assert.ok(gated, 'static origin: /activities should show the HTML-client Hub gate');
+        return;
+      }
       const hasHeading = await sandbox.browser.evaluate(() => {
         const el = document.getElementById('activities-page-heading');
         return !!(el && String(el.textContent || '').includes('Activities'));
@@ -632,6 +695,11 @@ describe('Browser Interface', function () {
       await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/notifications', { activities: true });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/notifications', `Expected /notifications, got ${pathname}`);
+      if (!HUB_E2E) {
+        const gated = await waitForTestId(sandbox.browser, 'hub-client-needs-hub', 8000);
+        assert.ok(gated, 'static origin: /notifications should show the HTML-client Hub gate');
+        return;
+      }
       const hasHeading = await sandbox.browser.evaluate(() => {
         const el = document.getElementById('notifications-page-heading');
         return !!(el && String(el.textContent || '').includes('Notifications'));
@@ -686,11 +754,13 @@ describe('Browser Interface', function () {
       await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/services/bitcoin/crowdfunds', { bitcoinCrowdfund: true });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/services/bitcoin/crowdfunds', `Expected /services/bitcoin/crowdfunds, got ${pathname}`);
+      if (await skipLiveHubPageIfClientOrigin(sandbox.browser)) return;
       const hasHeading = await sandbox.browser.evaluate(() => {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
-        return body.includes('Crowdfunds');
+        const hook = !!document.querySelector('[data-testid="hub-crowdfund-page"]');
+        return body.includes('Crowdfunds') && hook;
       });
-      assert.ok(hasHeading, 'Crowdfunds page should show Crowdfunds heading');
+      assert.ok(hasHeading, 'Crowdfunds page should show Crowdfunds heading and [data-testid="hub-crowdfund-page"]');
     });
 
     it('should render Settings home at /settings without crashing', async function () {
@@ -709,6 +779,7 @@ describe('Browser Interface', function () {
       await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/settings/federation', { sidechain: true });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/settings/federation', `Expected /settings/federation, got ${pathname}`);
+      if (await skipLiveHubPageIfClientOrigin(sandbox.browser)) return;
       const hasHeading = await sandbox.browser.evaluate(() => {
         const el = document.getElementById('settings-federation-heading');
         return !!(el && el.textContent && el.textContent.includes('Distributed federation'));
@@ -720,6 +791,7 @@ describe('Browser Interface', function () {
       await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/federations', { sidechain: true });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
       assert.strictEqual(pathname, '/federations', `Expected /federations, got ${pathname}`);
+      if (await skipLiveHubPageIfClientOrigin(sandbox.browser)) return;
       const ok = await sandbox.browser.evaluate(() => {
         const h = document.getElementById('federations-page-heading');
         const body = document.body && document.body.innerText ? document.body.innerText : '';
@@ -773,6 +845,11 @@ describe('Browser Interface', function () {
       });
       await mergeHubUiFeatureFlags(sandbox.browser, { sidechain: true });
       await sandbox.browser.goto(`${root}/federations`, { waitUntil: 'load', timeout: 10000 });
+      if (await skipLiveHubPageIfClientOrigin(sandbox.browser)) {
+        await seedBrowserUnlockedTestIdentity(sandbox.browser);
+        await sandbox.browser.goto(baseUrl, { waitUntil: 'load', timeout: 15000 });
+        return;
+      }
       const gate = await waitForBodyText(sandbox.browser, 'Sign in with a Fabric identity', 12000);
       assert.ok(gate, 'Expected sign-in gate on Federations when not logged in');
       await seedBrowserUnlockedTestIdentity(sandbox.browser);
@@ -858,7 +935,8 @@ describe('Browser Interface', function () {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
         const hasMakePayment = !!document.getElementById('fabric-btc-make-payment-h4');
         const hasPaymentsHeader = !!document.getElementById('fabric-bitcoin-payments-h2');
-        const hasPayjoinBoard = !!document.getElementById('wealth-payjoin-board');
+        const hasPayjoinBoard = !!document.getElementById('wealth-payjoin-board')
+          || !!document.querySelector('[data-testid="hub-payjoin-board"]');
         const mentionsPayjoin = /payjoin|BIP78|fabricProtocol/i.test(body);
         const fallbackText =
           body.includes('Payment') && (body.includes('Bitcoin') || body.includes('sats'));
@@ -900,6 +978,7 @@ describe('Browser Interface', function () {
         const body = document.body && document.body.innerText ? document.body.innerText : '';
         return (
           !!document.getElementById('fabric-bitcoin-crowdfunding') &&
+          !!document.querySelector('[data-testid="hub-crowdfund-page"]') &&
           /Crowdfunds/i.test(body) &&
           body.includes('Taproot')
         );
@@ -980,7 +1059,7 @@ describe('Browser Interface', function () {
         if (HUB_E2E) this.skip();
       });
 
-      it('redirects /settings/collaboration to /settings when admin token is absent', async function () {
+      it('shows client Hub gate on /settings/collaboration when Hub HTTP is absent', async function () {
         this.timeout(25000);
         const root = baseUrl.replace(/\/$/, '');
         await sandbox.browser.goto(`${root}/`, { waitUntil: 'load', timeout: 15000 });
@@ -1006,8 +1085,8 @@ describe('Browser Interface', function () {
           } catch (e) { /* ignore */ }
         });
         await sandbox.browser.goto(`${root}/settings/collaboration`, { waitUntil: 'load', timeout: 15000 });
-        const redirected = await waitForPathname(sandbox.browser, '/settings', 12000);
-        assert.ok(redirected, 'expected redirect to /settings when admin token is absent');
+        const gated = await waitForTestId(sandbox.browser, 'hub-client-needs-hub', 12000);
+        assert.ok(gated, 'static origin: collaboration needs Hub HTTP, not a silent /settings bounce');
       });
     });
 

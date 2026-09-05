@@ -13,6 +13,14 @@ const { URL } = require('url');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
+let loadFabricHomeEnv;
+try {
+  ({ loadFabricHomeEnv } = require('@fabric/core/functions/fabricHomeEnv'));
+} catch (err) {
+  if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+}
+if (typeof loadFabricHomeEnv === 'function') loadFabricHomeEnv();
+
 /**
  * Optional local operator identity (gitignored). Prefer FABRIC_XPRV in the environment.
  * @returns {{ mnemonic: string, xprv: string }|null}
@@ -44,28 +52,99 @@ function loadLocalOperatorMnemonic () {
 }
 
 /**
+ * Even-length BIP32 seed hex (16–64 bytes), optional `0x` prefix.
+ * @param {string} value
+ * @returns {boolean}
+ */
+function looksLikeRawSeedHex (value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  if (!/^(?:0x)?[0-9a-fA-F]+$/i.test(trimmed)) return false;
+  const hex = trimmed.slice(0, 2).toLowerCase() === '0x' ? trimmed.slice(2) : trimmed;
+  if (hex.length % 2 !== 0) return false;
+  const bytes = hex.length / 2;
+  return bytes >= 16 && bytes <= 64;
+}
+
+/**
+ * Classify env identity when `@fabric/core/functions/fabricKeyMaterial` is missing.
+ * Raw `FABRIC_SEED` hex stays `{ seed }` — never `{ mnemonic }`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ xprv: string }|{ seed: string }|{ mnemonic: string }|null}
+ */
+function fallbackPeerKeySettingsFromEnv (env = process.env) {
+  const xprv = String((env && env.FABRIC_XPRV) || '').trim();
+  if (xprv.startsWith('xprv') || xprv.startsWith('tprv')) return { xprv };
+
+  const seedRaw = String((env && env.FABRIC_SEED) || '').trim();
+  if (seedRaw.startsWith('xprv') || seedRaw.startsWith('tprv')) return { xprv: seedRaw };
+  if (looksLikeRawSeedHex(seedRaw)) {
+    const hex = seedRaw.slice(0, 2).toLowerCase() === '0x' ? seedRaw.slice(2) : seedRaw;
+    return { seed: hex.toLowerCase() };
+  }
+  if (seedRaw && /\s/.test(seedRaw)) return { mnemonic: seedRaw };
+
+  const mnemonic = String((env && env.FABRIC_MNEMONIC) || '').trim();
+  if (mnemonic.startsWith('xprv') || mnemonic.startsWith('tprv')) return { xprv: mnemonic };
+  if (looksLikeRawSeedHex(mnemonic)) {
+    const hex = mnemonic.slice(0, 2).toLowerCase() === '0x' ? mnemonic.slice(2) : mnemonic;
+    return { seed: hex.toLowerCase() };
+  }
+  if (mnemonic) return { mnemonic };
+  return null;
+}
+
+/**
  * Operator Peer key for playnet scripts (suite-wide).
  *
  * Priority:
  *   1. `FABRIC_XPRV` — preferred for public docs and production
- *   2. `FABRIC_SEED` / `FABRIC_MNEMONIC` — BIP39 phrase, or an `xprv…` string
- *   3. Optional `local/fabric-operator-identity.json` (automation fallback only)
+ *   2. `FABRIC_SEED` — raw BIP32 seed hex (or a legacy mnemonic / `xprv…` string)
+ *   3. `FABRIC_MNEMONIC` — BIP39 phrase
+ *   4. `~/.fabric/wallet.json` (`FABRIC_PASSWORD` unlocks a sealed wallet)
+ *   5. Optional `local/fabric-operator-identity.json` (automation fallback only)
  *
  * @param {object} [opts]
  * @param {boolean} [opts.allowLocalIdentityFallback=true]
- * @returns {{ xprv: string }|{ mnemonic: string }|null}
+ * @param {boolean} [opts.allowWalletFallback]
+ * @returns {{ xprv: string }|{ mnemonic: string }|{ seed: string }|null}
  */
 function loadPeerKeySettings (opts = {}) {
   const allowLocal = opts.allowLocalIdentityFallback !== false;
-  const fromXprv = String(process.env.FABRIC_XPRV || '').trim();
-  if (fromXprv.startsWith('xprv') || fromXprv.startsWith('tprv')) {
-    return { xprv: fromXprv };
+  const allowWallet = opts.allowWalletFallback != null
+    ? opts.allowWalletFallback
+    : true;
+
+  try {
+    const { resolveFabricOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+    const resolved = resolveFabricOperatorKeySettings(process.env, {
+      allowWalletFallback: allowWallet
+    });
+    if (resolved && resolved.key && (resolved.key.xprv || resolved.key.seed || resolved.key.mnemonic)) {
+      return resolved.key;
+    }
+  } catch (err) {
+    if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
   }
-  const seed = String(process.env.FABRIC_SEED || process.env.FABRIC_MNEMONIC || '').trim();
-  if (seed.startsWith('xprv') || seed.startsWith('tprv')) {
-    return { xprv: seed };
+
+  try {
+    const { keySettingsFromEnv } = require('@fabric/core/functions/fabricKeyMaterial');
+    const fromEnv = keySettingsFromEnv(process.env);
+    if (fromEnv && (fromEnv.xprv || fromEnv.seed || fromEnv.mnemonic)) return fromEnv;
+  } catch (err) {
+    if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+    const fallback = fallbackPeerKeySettingsFromEnv(process.env);
+    if (fallback) return fallback;
   }
-  if (seed) return { mnemonic: seed };
+
+  if (allowWallet) {
+    try {
+      const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
+      const wallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
+      if (wallet && wallet.xprv) return { xprv: wallet.xprv };
+    } catch (_) { /* older core pin or locked wallet */ }
+  }
+
   if (!allowLocal) return null;
   const local = loadLocalOperatorIdentityFile();
   if (!local) return null;
@@ -405,10 +484,103 @@ function planPlaynetOperatorSweep (opts = {}) {
   };
 }
 
+/**
+ * Plan for this Hub process to act as the live playnet registry (local takeover).
+ * Accept authority stays on loopback; Fabric peer omits public hub.fabric.pub.
+ *
+ * @param {object} [opts]
+ * @returns {object}
+ */
+function planLocalHubAsPlaynetRegistry (opts = {}) {
+  const hubUrl = String(
+    opts.hub || opts.hubUrl || process.env.FABRIC_LOCAL_HUB_RPC_URL || 'http://127.0.0.1:8080'
+  ).trim().replace(/\/$/, '');
+  let loopback = false;
+  try {
+    const u = new URL(hubUrl);
+    const host = String(u.hostname || '').toLowerCase();
+    loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch (_) {
+    loopback = false;
+  }
+  const productionHttp = /(?:^|[./])hub\.fabric\.pub(?::|\/|$)/i.test(hubUrl);
+  const localPeer = String(opts.localPeer || process.env.FABRIC_LOCAL_HUB_PEER || '127.0.0.1:7777').trim();
+  const peers = [localPeer];
+  if (opts.includeRelay !== false) peers.push('relay.goon.vc:7777');
+
+  return {
+    role: 'local-registry',
+    hubUrl,
+    peers,
+    omitProductionHubPeer: true,
+    networkAlwaysExists: true,
+    management: {
+      shortTerm: 'local-lead',
+      longTerm: 'hub.fabric.pub'
+    },
+    acceptMethod: 'AcceptTrackedApplicationContract',
+    readinessRpc: [
+      'GetNetworkStatus',
+      'ListTrackedApplicationContracts',
+      'GetSidechainState'
+    ],
+    readinessHttp: [
+      '/services/peering',
+      '/services/distributed/manifest',
+      '/services/distributed/epoch'
+    ],
+    expectNativeBeacon: 'fabric-beacon',
+    safe: loopback && !productionHttp,
+    blockers: [
+      !loopback ? 'registry Hub HTTP must be loopback' : null,
+      productionHttp ? 'refusing production hub.fabric.pub as local registry' : null
+    ].filter(Boolean)
+  };
+}
+
+/**
+ * Short-term local playnet lead; long-term management on hub.fabric.pub.
+ * @param {object} [opts]
+ * @param {'local-lead'|'hub.fabric.pub'} [opts.horizon]
+ * @returns {object}
+ */
+function planPlaynetLeadCapture (opts = {}) {
+  const horizon = opts.horizon === 'hub.fabric.pub' ? 'hub.fabric.pub' : 'local-lead';
+  const local = planLocalHubAsPlaynetRegistry(opts);
+  const shortTerm = {
+    horizon: 'local-lead',
+    registryHttp: local.hubUrl,
+    registryPeer: (local.peers && local.peers[0]) || '127.0.0.1:7777',
+    plan: local
+  };
+  const longTerm = {
+    horizon: 'hub.fabric.pub',
+    registryHttp: PRODUCTION_HUB_HTTP,
+    registryPeer: 'hub.fabric.pub:7777',
+    deployFlags: ['--production', '--accept'],
+    steps: [
+      'align-operator-FABRIC_XPRV-with-hub-_rootKey',
+      'AcceptTracked-on-hub.fabric.pub',
+      'publish-management-from-hub.fabric.pub',
+      'retire-local-lead-authority'
+    ]
+  };
+  return {
+    role: 'playnet-lead-capture',
+    networkAlwaysExists: true,
+    horizon,
+    active: horizon === 'hub.fabric.pub' ? longTerm : shortTerm,
+    shortTerm,
+    longTerm,
+    safe: horizon === 'local-lead' ? !!local.safe : true
+  };
+}
+
 module.exports = {
   ROOT,
   loadMnemonic,
   loadPeerKeySettings,
+  fallbackPeerKeySettingsFromEnv,
   loadLocalOperatorIdentityFile,
   loadLocalOperatorMnemonic,
   loadAdminToken,
@@ -426,5 +598,7 @@ module.exports = {
   loadPlaynetContract,
   waitForPeerConnections,
   localFlushToSnapshot,
-  planPlaynetOperatorSweep
+  planPlaynetOperatorSweep,
+  planLocalHubAsPlaynetRegistry,
+  planPlaynetLeadCapture
 };

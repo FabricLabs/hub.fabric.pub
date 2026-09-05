@@ -66,4 +66,36 @@ describe('Hub _l1PaymentVerificationDetail', function () {
     assert.strictEqual(d.verified, false);
     assert.strictEqual(d.matchedSats, 0);
   });
+
+  it('falls back to wallet gettransaction when getrawtransaction cannot see a wallet send', async function () {
+    const hub = makeHubStub();
+    const hex = '02000000000100';
+    const bitcoin = {
+      walletName: 'hub',
+      _makeRPCRequest: async (method, params) => {
+        if (method === 'getrawtransaction') {
+          throw new Error('[-5] No such mempool or blockchain transaction. Use gettransaction for wallet transactions.');
+        }
+        if (method === 'decoderawtransaction') {
+          assert.strictEqual(params[0], hex);
+          return {
+            vout: [{ value: 0.000025, scriptPubKey: { address: addr } }]
+          };
+        }
+        if (method === 'getrawmempool') return [];
+        throw new Error('unexpected ' + method);
+      },
+      _makeWalletRequest: async (method, params, wallet) => {
+        assert.strictEqual(method, 'gettransaction');
+        assert.strictEqual(wallet, 'hub');
+        assert.strictEqual(params[0], 'd'.repeat(64));
+        return { hex, confirmations: 1 };
+      }
+    };
+    const d = await hub._l1PaymentVerificationDetail(bitcoin, 'd'.repeat(64), addr, 2500);
+    assert.strictEqual(d.verified, true);
+    assert.strictEqual(d.confirmations, 1);
+    assert.strictEqual(d.inMempool, false);
+    assert.strictEqual(d.matchedSats, 2500);
+  });
 });

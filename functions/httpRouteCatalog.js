@@ -112,6 +112,19 @@ const SCHEMAS = Object.freeze({
       message: { type: 'string' }
     }
   },
+  managedBinariesStatus: {
+    $id: 'https://fabric.pub/schemas/hub-managed-binaries.json',
+    type: 'object',
+    required: ['platform', 'bitcoin', 'lightning'],
+    additionalProperties: true,
+    properties: {
+      success: { type: 'boolean' },
+      platform: { type: 'string' },
+      bitcoin: { type: 'object' },
+      lightning: { type: 'object' },
+      job: {}
+    }
+  },
   payjoinStatus: {
     $id: 'https://fabric.pub/schemas/hub-payjoin-status.json',
     type: 'object',
@@ -175,6 +188,7 @@ const SCHEMAS = Object.freeze({
 const EXPECTED_GET_ROUTES = Object.freeze([
   // Resource list surfaces (SPA shell for HTML; JSON collections / status)
   { path: '/', schema: null, spaOk: true, htmlOnly: true },
+  { path: '/downloads', schema: null, spaOk: true, htmlOnly: true },
   { path: '/contracts', schema: 'jsonArrayOrObject', spaOk: true },
   { path: '/documents', schema: 'jsonArrayOrObject', spaOk: true },
   { path: '/peers', schema: 'jsonArrayOrObject', spaOk: true },
@@ -189,6 +203,7 @@ const EXPECTED_GET_ROUTES = Object.freeze([
   { path: '/api/developers', schema: 'jsonObject', optional: true, jsonOnly: true },
 
   // Peering / challenge
+  { path: '/services/binaries', schema: 'managedBinariesStatus', spaOk: true },
   { path: '/services/peering', schema: 'peeringCapabilities', spaOk: true },
   { path: '/services/peering/attestation', schema: 'oracleAttestation', spaOk: true },
   { path: '/services/challenges', schema: 'jsonObject', spaOk: true },

@@ -5,7 +5,8 @@ const Identity = require('@fabric/core/types/identity');
 
 const {
   deriveFabricAccountIdentityKeys,
-  fabricBech32IdFromCompressedPubHex
+  fabricBech32IdFromCompressedPubHex,
+  fabricIdentityAccountPath
 } = require('../functions/fabricAccountDerivedIdentity');
 const { describeFabricIdentityCapabilities } = require('../functions/fabricIdentityCapabilities');
 
@@ -18,8 +19,10 @@ describe('fabricIdentityCapabilities', () => {
     const master = String(ident.key.xprv).trim();
     const dk = deriveFabricAccountIdentityKeys(master, 0, 0);
     assert.strictEqual(dk.path, "m/44'/7778'/0'/0/0");
+    assert.strictEqual(fabricIdentityAccountPath(0), "m/44'/7778'/0'");
     const mainnet = deriveFabricAccountIdentityKeys(master, 0, 0, 'mainnet');
     assert.strictEqual(mainnet.path, "m/44'/7777'/0'/0/0");
+    assert.strictEqual(fabricIdentityAccountPath(0, 'mainnet'), "m/44'/7777'/0'");
     assert.notStrictEqual(mainnet.id, dk.id);
     const cap = describeFabricIdentityCapabilities({
       fabricIdentityMode: 'account',

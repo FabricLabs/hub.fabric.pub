@@ -13,10 +13,11 @@ const BIP32 = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
 const Hash256 = require('@fabric/core/types/hash256');
 const Bech32 = require('@fabric/core/types/bech32');
+const coreConstants = require('@fabric/core/constants');
 const {
   fabricIdentityDerivationPath,
   FABRIC_COIN_TYPE_TESTNET
-} = require('@fabric/core/constants');
+} = coreConstants;
 
 /** Same bip32 network buckets as bitcoinClient#getNetworkFromXpub (extended keys only). */
 function bip32DecodeNetworkFromXKey (referenceXkey) {
@@ -50,6 +51,20 @@ function bip32DecodeNetworkFromXKey (referenceXkey) {
  */
 function fabricPurposePath7778 (accountIndex, addressIndex, networkOrCoinType = FABRIC_COIN_TYPE_TESTNET) {
   return fabricIdentityDerivationPath(accountIndex, addressIndex, networkOrCoinType);
+}
+
+/**
+ * Account node m/44'/{7777|7778}'/n' — core `fabricIdentityAccountPath` when
+ * the pin exports it; otherwise strip the receive leaf from the derivation path.
+ * @param {number} [account=0]
+ * @param {string|number} [networkOrCoinType]
+ * @returns {string}
+ */
+function fabricIdentityAccountPath (account, networkOrCoinType) {
+  if (typeof coreConstants.fabricIdentityAccountPath === 'function') {
+    return coreConstants.fabricIdentityAccountPath(account, networkOrCoinType);
+  }
+  return String(fabricIdentityDerivationPath(account, 0, networkOrCoinType)).replace(/\/0\/\d+$/, '');
 }
 
 function fabricBech32IdFromCompressedPubHex (compressedPubHex) {
@@ -130,6 +145,7 @@ function identityFromFabricProtocolSigningXprv (accountNodeXprv) {
 
 module.exports = {
   fabricPurposePath7778,
+  fabricIdentityAccountPath,
   fabricRootXpubFromMasterXprv,
   deriveFabricAccountIdentityKeys,
   fabricBech32IdFromCompressedPubHex,

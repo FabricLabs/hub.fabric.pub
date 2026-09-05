@@ -1,52 +1,98 @@
 'use strict';
 
 /**
- * HTTP shared-mode helpers — canonical in `@fabric/http`.
- * Local fallback keeps Fabric env names only (no app-specific `SC_*` prefixes).
+ * HTTP shared-mode helpers — prefer `@fabric/http`, keep local fallbacks so Hub
+ * can gate shared-mode WebSocket tokens even when the linked http pin is older.
  */
+
+function applySharedModeWebsocketGateLocal (settings = {}, opts = {}) {
+  if (!opts.bindAll) return settings;
+  const env = opts.env || process.env;
+  const ws = Object.assign({}, settings.websocket || {});
+  const explicitOff = ws.requireClientToken === false ||
+    ws.requireClientToken === 0 ||
+    ws.requireClientToken === '0';
+  if (explicitOff) return settings;
+  // Fail-closed: shared bind turns requireClientToken on even when the env
+  // token is unset — HTTPServer rejects handshakes until a token is configured.
+  // Do not abort Hub process start (ops can set FABRIC_WS_CLIENT_TOKEN later).
+  ws.requireClientToken = true;
+  const envTok = String(env.FABRIC_WS_CLIENT_TOKEN || '').trim();
+  if (envTok && !ws.clientToken) ws.clientToken = envTok;
+  return Object.assign({}, settings, { websocket: ws });
+}
+
+const DEFAULT_HTTP_LISTEN_ENV_KEYS = Object.freeze([
+  'FABRIC_HUB_INTERFACE',
+  'INTERFACE',
+  'FABRIC_HTTP_INTERFACE'
+]);
+
+function isHttpSharedModeEnabledLocal (raw) {
+  if (raw === undefined || raw === null) return false;
+  if (raw === true || raw === 1) return true;
+  if (typeof raw === 'string') {
+    const s = raw.trim().toLowerCase();
+    return s === 'true' || s === '1' || s === 'yes' || s === 'on';
+  }
+  return false;
+}
+
+function listenHostFromNamedEnv (env, keys) {
+  // Prefer an explicit key list when provided; otherwise the three Hub listen env names.
+  // No array-index or dynamic `env[key]` access (Codacy Generic Object Injection).
+  const useDefault = !(Array.isArray(keys) && keys.length);
+  if (useDefault || keys.includes('FABRIC_HUB_INTERFACE')) {
+    const v = String((env && env.FABRIC_HUB_INTERFACE) || '').trim();
+    if (v) return v;
+  }
+  if (useDefault || keys.includes('INTERFACE')) {
+    const v = String((env && env.INTERFACE) || '').trim();
+    if (v) return v;
+  }
+  if (useDefault || keys.includes('FABRIC_HTTP_INTERFACE')) {
+    const v = String((env && env.FABRIC_HTTP_INTERFACE) || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+function resolveHttpListenHostLocal (opts = {}) {
+  const env = opts.env || process.env;
+  if (opts.envHost != null) {
+    const forced = String(opts.envHost).trim();
+    if (forced) return forced;
+  }
+  const explicit = String(opts.host || '').trim();
+  if (explicit) return explicit;
+  const fromEnv = listenHostFromNamedEnv(env, opts.envHostKeys);
+  if (fromEnv) return fromEnv;
+  if (String(opts.mode || '') === 'server') return '0.0.0.0';
+  if (isHttpSharedModeEnabledLocal(opts.httpSharedMode)) return '0.0.0.0';
+  return '127.0.0.1';
+}
+
 try {
-  module.exports = require('@fabric/http/functions/httpSharedMode');
+  const httpMod = require('@fabric/http/functions/httpSharedMode');
+  module.exports = {
+    DEFAULT_HTTP_LISTEN_ENV_KEYS: Array.isArray(httpMod.DEFAULT_HTTP_LISTEN_ENV_KEYS)
+      ? httpMod.DEFAULT_HTTP_LISTEN_ENV_KEYS
+      : DEFAULT_HTTP_LISTEN_ENV_KEYS,
+    isHttpSharedModeEnabled: typeof httpMod.isHttpSharedModeEnabled === 'function'
+      ? httpMod.isHttpSharedModeEnabled
+      : isHttpSharedModeEnabledLocal,
+    resolveHttpListenHost: typeof httpMod.resolveHttpListenHost === 'function'
+      ? httpMod.resolveHttpListenHost
+      : resolveHttpListenHostLocal,
+    applySharedModeWebsocketGate: typeof httpMod.applySharedModeWebsocketGate === 'function'
+      ? httpMod.applySharedModeWebsocketGate
+      : applySharedModeWebsocketGateLocal
+  };
 } catch (_) {
-  const DEFAULT_HTTP_LISTEN_ENV_KEYS = Object.freeze([
-    'FABRIC_HUB_INTERFACE',
-    'INTERFACE',
-    'FABRIC_HTTP_INTERFACE'
-  ]);
-
-  function isHttpSharedModeEnabled (raw) {
-    if (raw === undefined || raw === null) return false;
-    if (raw === true || raw === 1) return true;
-    if (typeof raw === 'string') {
-      const s = raw.trim().toLowerCase();
-      return s === 'true' || s === '1' || s === 'yes' || s === 'on';
-    }
-    return false;
-  }
-
-  function resolveHttpListenHost (opts = {}) {
-    const env = opts.env || process.env;
-    if (opts.envHost != null) {
-      const forced = String(opts.envHost).trim();
-      if (forced) return forced;
-    } else {
-      const keys = Array.isArray(opts.envHostKeys) && opts.envHostKeys.length
-        ? opts.envHostKeys
-        : DEFAULT_HTTP_LISTEN_ENV_KEYS;
-      for (const key of keys) {
-        const v = String(env[key] || '').trim();
-        if (v) return v;
-      }
-    }
-    const explicit = String(opts.host || '').trim();
-    if (explicit) return explicit;
-    if (String(opts.mode || '') === 'server') return '0.0.0.0';
-    if (isHttpSharedModeEnabled(opts.httpSharedMode)) return '0.0.0.0';
-    return '127.0.0.1';
-  }
-
   module.exports = {
     DEFAULT_HTTP_LISTEN_ENV_KEYS,
-    isHttpSharedModeEnabled,
-    resolveHttpListenHost
+    isHttpSharedModeEnabled: isHttpSharedModeEnabledLocal,
+    resolveHttpListenHost: resolveHttpListenHostLocal,
+    applySharedModeWebsocketGate: applySharedModeWebsocketGateLocal
   };
 }
