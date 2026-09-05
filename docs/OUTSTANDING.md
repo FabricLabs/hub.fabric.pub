@@ -1,7 +1,11 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) CI was red on tip `192960b`: (1) stale lockfile-pin assert in `tests/pr16.review.coverage.js` vs lock `@fabric/core#f5f8c86` / `@fabric/http#99b40a7`; (2) `hub.sidechainStrict` Hub-construct timeouts under 2s mocha default. Local fix: bump pin assert to lock `#0d128dc` / `#fe41132`, `this.timeout(30000)` on sidechain suite. Codacy remains `action_required` (path/SSRF FPs). Dropped Passport-on-Vercel; site-login = live Hub / goon.vc. Quick wins staged: Passport login (Hub-HTTP gated), opt-in allowlist suffixes, `skipPlaynetPeer`, noise-handshake verify script, PromoHero visitor-only after setup.
+**Last reviewed:** 2026-09-05 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip still `f7b425a` (**CI red**): same single mocha failure `allowlist + httpSharedMode re-export http` (Hub local suffix allowlist ≠ http pin `#fe41132`). Fix is **staged locally** (`tests/liftedApis.exports.test.js` collapse-when-ready) — not on GitHub until commit+push. Related suite allowlist work staged in `@fabric/http` + Passport. Codacy remains `action_required` (path/SSRF FPs).
+
+**Prior:** 2026-09-04 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `f7b425a`: mocha red on a single assert — Hub allowlist correctly uses a **local** suffix-capable copy until `@fabric/http` exports `normalizeHttpsHostSuffix` (pin still `#fe41132`), but `tests/liftedApis.exports.test.js` still demanded reference equality. Fix: behaviour assert + collapse-when-ready. Pin/timeout nits from `192960b` already on tip. Codacy remains `action_required` (path/SSRF FPs). Inline review threads resolved / outdated; CodeRabbit auto-paused on the busy branch.
+
+**Prior:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) CI was red on tip `192960b`: (1) stale lockfile-pin assert in `tests/pr16.review.coverage.js` vs lock `@fabric/core#f5f8c86` / `@fabric/http#99b40a7`; (2) `hub.sidechainStrict` Hub-construct timeouts under 2s mocha default. Local fix: bump pin assert to lock `#0d128dc` / `#fe41132`, `this.timeout(30000)` on sidechain suite. Codacy remains `action_required` (path/SSRF FPs). Dropped Passport-on-Vercel; site-login = live Hub / goon.vc. Quick wins staged: Passport login (Hub-HTTP gated), opt-in allowlist suffixes, `skipPlaynetPeer`, noise-handshake verify script, PromoHero visitor-only after setup.
 
 **Prior:** 2026-09-03T19:29Z — [downstream scan](https://relay.goon.vc/downstream.agents.md) (mirrored `reports/downstream.agents.md`). Live Hub **`208eaa9`** PID **1104314**: HTTP healthy again (RSS **~207 MiB**, `external` flat **~32 MiB**, `nhl` **0/0/0**). FATAL still **317 (+0)**. Today’s outage was **event-loop starvation** (self-`addnode`, Lightning sock retries, tip I/O, contract-queue rewrite storm + PM2 `--update-env` bind footgun), not a new V8 OOM. Active patches: [`reports/patches/`](../reports/patches/) / https://relay.goon.vc/patches/ (`hub-http-listen-2026-09-03.patch`). Portable code (`services/hub.js` `skipPlaynetPeer` + unit test) applied on this tree; host `settings/local.js` stays ops (loopback HTTP, Lightning stub, `skipPlaynetPeer`, slower Bitcoin `interval`, drop `sensemaker.io` seed).
 
@@ -9,13 +13,15 @@ Living queue for this repo. Detail and closed items live in [SECURITY.md](../SEC
 
 **Prior:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip `364b12da`: **tests green** (ubuntu/macos + `build-test`); mergeable but **unstable** only because Codacy is `action_required` (**21** critical · **36** high on the PR summary — mostly Semgrep `path.join` / SSRF FPs). CodeRabbit review comments from Aug (advisory detector, `EditDocument` filter, `.codacy.yml`, shared-mode WS, `parseFilesystemJson` Uint8Array) are **already landed** on the branch. Local uncommitted slice adds Beacon federation sign broadcast/ingest, contracts `merkleRoot`, `FEDERATION_DEPLOYMENT.md`, operator-identity redact, screenshot gallery scripts, and epoch `/services/distributed/epoch/signatures` Hub callbacks (needs http #69 binder).
 
-## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — mocha pin + sidechain timeout (fix staged)
-Tip `192960b` failed `build-test` + ubuntu/macos Test on (1) stale `pr16.review.coverage`
-lockfile SHAs and (2) `hub.sidechainStrict` 2s timeouts (~500–600ms Hub construct × CI load).
-Fixes are local: pin assert → `#0d128dc` / `#fe41132`, sidechain `this.timeout(30000)`.
-Codacy gate remains `action_required` — almost entirely `path.join` / dynamic-path / SSRF on
-operator helpers (now under `libs/hub-operator/` with thin `functions/*` re-exports).
-`.codacy.yml` excludes `libs/**` + those paths; Codacy still annotates some of them on the PR.
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — allowlist lift assert (tip `f7b425a`)
+`build-test` + ubuntu/macos Test: **870–897 pass / 1 fail** —
+`allowlist + httpSharedMode re-export http` demanded
+`hub.isAllowedFabricHub === http.isAllowedFabricHub`. Hub's wrapper
+intentionally keeps a local copy until the http pin exports
+`normalizeHttpsHostSuffix` (suffix allowlist). Test updated to assert
+behaviour + collapse-when-ready. Prior pin SHA / sidechain timeout fixes
+already on tip. Codacy stays `action_required` (path/SSRF FPs on operator
+helpers under `libs/hub-operator/`).
 
 ## Codacy: move operator helpers under `libs/` (default ignore)
 Implementations now live in `libs/hub-operator/*.js`. `functions/<name>.js` are

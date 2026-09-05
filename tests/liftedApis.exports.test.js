@@ -57,8 +57,22 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
   it('allowlist + httpSharedMode re-export http', function () {
     const hubAllow = require('../functions/fabricHubAllowlist');
     const httpAllow = require('@fabric/http/functions/fabricHubAllowlist');
-    assert.strictEqual(hubAllow.isAllowedFabricHub, httpAllow.isAllowedFabricHub);
+    // Prefer http once the pin exports HTTPS suffix helpers; until then Hub keeps
+    // a local copy so FABRIC_HUB_ALLOWLIST=*.example.com works (same pattern as
+    // federation invite / fabricChatNormalize collapse-when-ready shims).
+    if (typeof httpAllow.normalizeHttpsHostSuffix === 'function') {
+      assert.strictEqual(hubAllow.isAllowedFabricHub, httpAllow.isAllowedFabricHub);
+    } else {
+      assert.notStrictEqual(hubAllow.isAllowedFabricHub, httpAllow.isAllowedFabricHub);
+      assert.strictEqual(typeof hubAllow.normalizeHttpsHostSuffix, 'function');
+    }
     assert.strictEqual(hubAllow.assertAllowedFabricHub('https://evil.example').ok, false);
+    assert.strictEqual(
+      hubAllow.isAllowedFabricHub('https://pub-fabric-hub-git-feature-rsi-fabric-labs.vercel.app', {
+        env: { FABRIC_HUB_ALLOWLIST: '*.vercel.app' }
+      }),
+      true
+    );
 
     const hubShared = require('../functions/httpSharedMode');
     const httpShared = require('@fabric/http/functions/httpSharedMode');
