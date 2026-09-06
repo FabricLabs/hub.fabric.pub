@@ -578,6 +578,10 @@ function IdentityManager (props) {
   const pollSiteLoginSigned = React.useCallback((sessionId, pollSecret, origin, signerLabel) => {
     const maxAttempts = 360;
     let attempts = 0;
+    // Same-origin only — relative /sessions avoids Semgrep SSRF on `${origin}/…`.
+    const pollOrigin = (origin && origin === window.location.origin)
+      ? origin
+      : window.location.origin;
     clearDesktopLoginPoll();
     desktopPollIntervalRef.current = setInterval(() => {
       attempts++;
@@ -594,7 +598,7 @@ function IdentityManager (props) {
         try {
           const pollHeaders = { Accept: 'application/json' };
           if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
-          const r = await fetch(`${origin}/sessions/${encodeURIComponent(sessionId)}`, {
+          const r = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, {
             headers: pollHeaders,
             cache: 'no-store'
           });
@@ -607,7 +611,7 @@ function IdentityManager (props) {
             return;
           }
           if (!j.ok || j.status !== 'signed' || !j.identity) return;
-          const applied = applySignedSiteLogin(j, sessionId, origin, signerLabel);
+          const applied = applySignedSiteLogin(j, sessionId, pollOrigin, signerLabel);
           clearDesktopLoginPoll();
           clearPassportWait();
           setBusy(false);

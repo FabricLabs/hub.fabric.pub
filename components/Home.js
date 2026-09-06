@@ -765,12 +765,14 @@ class Home extends React.Component {
                   ) : null}
 
                   {/* ─── Operator health ─── */}
-                  <HealthPanel
-                    health={this.state.operatorHealth}
-                    loading={this.state.operatorHealthLoading}
-                    error={this.state.operatorHealthError}
-                    onRefresh={() => this._refreshOperatorHealth()}
-                  />
+                  {showHomeOperatorLinks ? (
+                    <HealthPanel
+                      health={this.state.operatorHealth}
+                      loading={this.state.operatorHealthLoading}
+                      error={this.state.operatorHealthError}
+                      onRefresh={() => this._refreshOperatorHealth()}
+                    />
+                  ) : null}
 
                   {/* ─── Quick links ─── */}
                   {showHomeOperatorLinks ? (
@@ -831,15 +833,19 @@ class Home extends React.Component {
               Public mesh shoutbox
             </Header>
             <p style={{ color: '#666', marginTop: '-0.25em', marginBottom: '0.75em' }}>
-              {uf.activities ? (
+              {showHomeOperatorLinks && uf.activities ? (
                 <>
                   <Link to="/notifications">Notifications</Link>
                   {' · '}
                   <Link to="/activities">Activity log</Link>
+                  {' · '}
                 </>
               ) : null}
-              {uf.activities ? ' · ' : ''}
-              <Link to="/settings/security">Delegation &amp; signing</Link>
+              {showHomeOperatorLinks ? (
+                <Link to="/settings/security">Delegation &amp; signing</Link>
+              ) : (
+                <span>Cleartext mesh chat — sign in to manage notifications, activity, and delegation.</span>
+              )}
             </p>
             <div style={{ minHeight: '12rem' }}>
               <ActivityStream

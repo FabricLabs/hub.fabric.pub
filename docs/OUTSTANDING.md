@@ -1,7 +1,7 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `500c053` (allowlist lift assert fixed): **build-test + macos green**; **ubuntu Test** still red on one case — `services/email and services/fabric are constructible via package export` hits mocha's **2s** default (~0.7s local email construct; CI cold-load exceeds). Staged: `this.timeout(15000)` on that test. Codacy remains `action_required` (path/SSRF FPs).
+**Last reviewed:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) Codacy pass: moved remaining Semgrep path/SSRF operator helpers into `libs/hub-operator/` (`hubStoreReset`, `hubSetupStores`, `hubDownloadsTree`, `hubManagedBinariesManifest`, `hubManagedBinariesRemoteCheck`, `fabricHttpRebind`, `fabricHttpOptions`, `hubBitcoinSetup`, `hubLightningGate`) with thin `functions/*` re-exports; site-login poll uses same-origin relative `/sessions/:id` (IdentityManager SSRF FP). Tip may already include email-construct `this.timeout(15000)` (`d788571`). Re-run Codacy after commit+push.
 
 **Prior:** 2026-09-05 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip still `f7b425a` (**CI red**): same single mocha failure `allowlist + httpSharedMode re-export http` (Hub local suffix allowlist ≠ http pin `#fe41132`). Fix is **staged locally** (`tests/liftedApis.exports.test.js` collapse-when-ready) — not on GitHub until commit+push. Related suite allowlist work staged in `@fabric/http` + Passport. Codacy remains `action_required` (path/SSRF FPs).
 
@@ -24,12 +24,14 @@ case. Codacy stays `action_required` (path/SSRF FPs on operator helpers under
 `libs/hub-operator/`).
 
 ## Codacy: move operator helpers under `libs/` (default ignore)
-Implementations now live in `libs/hub-operator/*.js`. `functions/<name>.js` are
+Implementations live in `libs/hub-operator/*.js`. `functions/<name>.js` are
 one-line re-exports so Hub/desktop/webpack require paths stay stable and
 `package.json` `files` includes `libs/**/*.js`. `.codacy.yml` also excludes
-`libs/**` explicitly. Non-excluded nits still hardened in-tree:
-`httpSharedMode` (no array walk) and `fabricHttpRebind` (`AbortSignal.any`, no
-`args[0]` throw).
+`libs/**` explicitly (engine `exclude_paths` alone was not enough on PR
+annotations). Coverage lock: `tests/pr16.review.coverage.js`
+`OPERATOR_REEXPORTS`. Remaining UI FPs (e.g. PeerList GiB object-injection)
+are mute/wontfix, not product bugs. `httpSharedMode` stays under `functions/`
+(hardened: no array walk).
 
 ~~The repeated `Could not wipe database: ModuleError: Database is not open` lines~~
 **Resolved by the `ff7c05c52` pin.** The installed `@fabric/core/types/store.js`
@@ -103,11 +105,13 @@ the Hub side.
 - [x] Hub SPA **Log in with Passport** (client-signed `/sessions`) on live Hub HTTP; CDN/HTML-only Identity hides Passport/desktop site-login (no `/sessions` on static hosts — use goon.vc or hub.fabric.pub).
 - [x] Opt-in Hub allowlist extras: exact origins + HTTPS host suffixes (`*.example.com`) via `FABRIC_HUB_ALLOWLIST` / Passport `fabric.hub.allowlist` — no hardcoded CDN hosts.
 - [x] Home **PromoHero** (`uf.promo`) only for **public visitors** after the node is configured; operators / signed-in users never see “someone else's hub / Run your own hub”; dismiss persists in `fabric.hub.promoDismissed`.
+- [x] **Public-visitor Settings/Features/Home** — anonymous browsers on live Hub HTTP no longer see Admin/Bitcoin/operator Settings cards, Features shortcuts, HealthPanel, or shoutbox links to Notifications/Activity/Delegation (`publicHubVisitor` + `hubPv` on security/admin routes).
 
 ## Closed this pass (do not re-open)
 - **`stoppable` was a phantom dependency and it broke the release gate.**
-  `functions/fabricHttpRebind.js` is a **shipped** file (`functions/**/*.js` in
-  `files`) that requires `stoppable`, but this package declared it in neither
+  `libs/hub-operator/fabricHttpRebind.js` (thin re-export at
+  `functions/fabricHttpRebind.js`; both ship via `files`) requires `stoppable`,
+  but this package declared it in neither
   `dependencies` nor `devDependencies` — it only ever resolved by hoisting out of
   `@fabric/http`. Once `@fabric/http` is `npm link`ed, `stoppable` lives in that
   sibling tree and does **not** hoist here, so `npm run test:unit` aborted during

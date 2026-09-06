@@ -14,7 +14,7 @@ const {
 const { useHubHttpAvailable } = require('./hubUiRuntime');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 
-function SettingsHome () {
+function SettingsHome (props) {
   const [, setUiTick] = React.useState(0);
   React.useEffect(() => {
     return subscribeHubUiFeatureFlags(() => setUiTick((t) => t + 1));
@@ -23,11 +23,16 @@ function SettingsHome () {
   /** Same gate as {@link TopPanel}: Peers nav is hub-admin-only. */
   const hasHubAdminPeerNav = !!readHubAdminTokenFromBrowser();
   const hubHttpAvailable = useHubHttpAvailable();
+  const publicHubVisitor = !!(props && props.publicHubVisitor);
+  /** Operator cards need live Hub HTTP and a signed-in (or enrolled) shell. */
+  const showOperatorCards = hubHttpAvailable && !publicHubVisitor;
 
   return (
     <Segment
       style={{ maxWidth: 960, margin: '1em auto' }}
-      data-testid={hubHttpAvailable ? 'hub-settings-home' : 'hub-client-settings'}
+      data-testid={hubHttpAvailable
+        ? (publicHubVisitor ? 'hub-visitor-settings' : 'hub-settings-home')
+        : 'hub-client-settings'}
     >
       <section aria-labelledby="settings-page-heading" aria-describedby="settings-page-summary">
         <Header as="h2" id="settings-page-heading" style={{ marginBottom: '0.35em' }}>
@@ -35,24 +40,31 @@ function SettingsHome () {
           <Header.Content>Settings</Header.Content>
         </Header>
         <p id="settings-page-summary" style={{ color: '#666', margin: '0 0 1.5em', maxWidth: '42rem', lineHeight: 1.45 }}>
-          {hubHttpAvailable
+          {publicHubVisitor
             ? (
               <>
-                Hub configuration uses the <code>/settings</code> HTTP API (JSON). Use the cards below for documents, contracts,
-                the hub activity feed, and identity-related tools: browser ↔ desktop linking, delegation tokens, and per-session audit.
+                Sign in with a Fabric identity to manage this hub. Identity unlock/create and local Bitcoin derivation
+                run in the browser; operator cards stay hidden until you enroll or unlock.
               </>
               )
-            : (
-              <>
-                This origin is serving the HTML client only. Identity unlock/create and local Bitcoin derivation run in the browser.
-                Point the cog at a Hub when you have one; operator cards stay hidden until Hub HTTP is on this origin.
-              </>
-              )}
+            : hubHttpAvailable
+              ? (
+                <>
+                  Hub configuration uses the <code>/settings</code> HTTP API (JSON). Use the cards below for documents, contracts,
+                  the hub activity feed, and identity-related tools: browser ↔ desktop linking, delegation tokens, and per-session audit.
+                </>
+                )
+              : (
+                <>
+                  This origin is serving the HTML client only. Identity unlock/create and local Bitcoin derivation run in the browser.
+                  Point the cog at a Hub when you have one; operator cards stay hidden until Hub HTTP is on this origin.
+                </>
+                )}
         </p>
       </section>
 
       <Card.Group itemsPerRow={1} stackable>
-        {hubHttpAvailable ? (
+        {showOperatorCards ? (
           <Card as={Link} to="/documents" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -64,7 +76,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable ? (
+        {showOperatorCards ? (
           <Card as={Link} to="/contracts" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -76,7 +88,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable && uf.peers && hasHubAdminPeerNav ? (
+        {showOperatorCards && uf.peers && hasHubAdminPeerNav ? (
           <Card as={Link} to="/peers" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -100,7 +112,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable && uf.activities ? (
+        {showOperatorCards && uf.activities ? (
           <Card as={Link} to="/notifications" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -112,7 +124,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable && uf.activities ? (
+        {showOperatorCards && uf.activities ? (
           <Card as={Link} to="/activities" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -164,7 +176,7 @@ function SettingsHome () {
             </Card.Description>
           </Card.Content>
         </Card>
-        {hubHttpAvailable ? (
+        {showOperatorCards ? (
         <Card as={Link} to="/services/bitcoin" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>
@@ -176,7 +188,7 @@ function SettingsHome () {
           </Card.Content>
         </Card>
         ) : null}
-        {hubHttpAvailable && hasHubAdminPeerNav ? (
+        {showOperatorCards && hasHubAdminPeerNav ? (
           <Card as={Link} to="/settings/collaboration" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -188,7 +200,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable ? (
+        {showOperatorCards ? (
         <Card as={Link} to="/settings/security" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>
@@ -201,7 +213,7 @@ function SettingsHome () {
           </Card.Content>
         </Card>
         ) : null}
-        {hubHttpAvailable ? (
+        {showOperatorCards ? (
         <Card as={Link} to="/settings/admin" style={{ cursor: 'pointer' }}>
           <Card.Content>
             <Card.Header>
@@ -214,7 +226,7 @@ function SettingsHome () {
           </Card.Content>
         </Card>
         ) : null}
-        {hubHttpAvailable && uf.sidechain ? (
+        {showOperatorCards && uf.sidechain ? (
           <Card as={Link} to="/sidechains" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -226,7 +238,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable && uf.sidechain ? (
+        {showOperatorCards && uf.sidechain ? (
           <Card as={Link} to="/settings/admin/beacon-federation" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -238,7 +250,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable && uf.sidechain ? (
+        {showOperatorCards && uf.sidechain ? (
           <Card as={Link} to="/federations" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>
@@ -252,7 +264,7 @@ function SettingsHome () {
             </Card.Content>
           </Card>
         ) : null}
-        {hubHttpAvailable && uf.bitcoinResources ? (
+        {showOperatorCards && uf.bitcoinResources ? (
           <Card as={Link} to="/services/bitcoin/resources" style={{ cursor: 'pointer' }}>
             <Card.Content>
               <Card.Header>

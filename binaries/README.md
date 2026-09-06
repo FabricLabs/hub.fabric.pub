@@ -17,4 +17,4 @@ Platform ids match Node: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64
 - **Download every installer platform:** `npm run binaries:fetch:all`
 - First-time setup in the Hub UI calls `POST /services/binaries` and writes here (or under `FABRIC_HUB_USER_DATA/binaries` on the desktop app).
 
-Pinned versions live in `functions/hubManagedBinariesManifest.js`. Verify against official `SHA256SUMS` before bumping.
+Pinned versions live in `libs/hub-operator/hubManagedBinariesManifest.js` (re-exported as `functions/hubManagedBinariesManifest.js`). Verify against official `SHA256SUMS` before bumping.

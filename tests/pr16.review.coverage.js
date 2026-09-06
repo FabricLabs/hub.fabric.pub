@@ -24,8 +24,17 @@ const OPERATOR_REEXPORTS = [
   'desktopOpenAtLogin',
   'desktopUserData',
   'fabricHubSeedProbe',
+  'fabricHttpOptions',
+  'fabricHttpRebind',
+  'hubBitcoinSetup',
   'hubDownloadsIndex',
-  'hubManagedBinaries'
+  'hubDownloadsTree',
+  'hubLightningGate',
+  'hubManagedBinaries',
+  'hubManagedBinariesManifest',
+  'hubManagedBinariesRemoteCheck',
+  'hubSetupStores',
+  'hubStoreReset'
 ];
 
 describe('Hub PR #16 review coverage', function () {

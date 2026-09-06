@@ -23,7 +23,7 @@ const {
   managedBinaryPlatformId,
   artifactsForPlatform,
   lightningSupportForPlatform
-} = require('../../functions/hubManagedBinariesManifest');
+} = require('./hubManagedBinariesManifest');
 
 const LIGHTNING_BIN_RELATIVE = Object.freeze([
   path.join('lightning', 'usr', 'local', 'bin'),

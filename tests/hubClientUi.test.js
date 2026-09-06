@@ -90,6 +90,33 @@ describe('Hub UI client vs hub chrome', function () {
     assert.ok(html.includes('data-testid="hub-client-documents"'));
   });
 
+  it('SettingsHome visitor on live Hub hides operator cards', function () {
+    const html = renderWithRuntime(
+      React.createElement(SettingsHome, { publicHubVisitor: true }),
+      HUB_UI_RUNTIME_HUB,
+      '/settings'
+    );
+    assert.ok(html.includes('data-testid="hub-visitor-settings"'));
+    assert.ok(html.includes('Fabric identity'));
+    assert.ok(html.includes('Bitcoin wallet'));
+    assert.ok(!html.includes('Bitcoin dashboard'), 'visitor settings should hide Hub Bitcoin dashboard');
+    assert.ok(!html.includes('Security &amp; delegation'), 'visitor settings should hide /sessions security');
+    assert.ok(!html.includes('>Admin<') && !html.includes('settings/admin'), 'visitor settings should hide Admin');
+  });
+
+  it('FeaturesPage visitor on live Hub strips operator shortcuts', function () {
+    const FeaturesPage = require('../components/FeaturesPage');
+    const html = renderWithRuntime(
+      React.createElement(FeaturesPage, { publicHubVisitor: true }),
+      HUB_UI_RUNTIME_HUB,
+      '/features'
+    );
+    assert.ok(html.includes('data-testid="hub-visitor-features"'));
+    assert.ok(!html.includes('href="/services/bitcoin"'), 'visitor features should not link Bitcoin dashboard');
+    assert.ok(!html.includes('href="/settings/admin"'), 'visitor features should not link Admin');
+    assert.ok(html.includes('href="/settings/bitcoin-wallet"') || html.includes('Local wallet'));
+  });
+
   it('Home promo hero is for public visitors only (hidden for signed-in operators)', function () {
     const { setHubUiFeatureFlag, saveHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
     const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');

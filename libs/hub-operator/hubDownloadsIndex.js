@@ -11,7 +11,7 @@ const path = require('path');
 const {
   INDEX_META_NAMES,
   normalizeRelativePath
-} = require('../../functions/hubDownloadsTree');
+} = require('./hubDownloadsTree');
 
 const KEEP_DEST_NAMES = new Set(['README.md', '.gitkeep']);
 /** Survives electron-builder `copyDist` wipe so Passport zips stay listed. */

@@ -2442,7 +2442,7 @@ class HubInterface extends React.Component {
                     path="/features"
                     element={(
                       <UiFlagRoute flag="features">
-                        <FeaturesPage />
+                        <FeaturesPage publicHubVisitor={publicHubVisitor} />
                       </UiFlagRoute>
                     )}
                   />
@@ -2980,21 +2980,15 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/admin/beacon-federation"
-                    element={(
-                      <HubHttpRoute>
+                    element={hubPv((
                       <UiFlagRoute flag="sidechain">
                         <BeaconFederationHome />
                       </UiFlagRoute>
-                      </HubHttpRoute>
-                    )}
+                    ))}
                   />
                   <Route
                     path="/settings/admin"
-                    element={(
-                      <HubHttpRoute>
-                        <AdminHome adminToken={this.state.adminToken} />
-                      </HubHttpRoute>
-                    )}
+                    element={hubPv(<AdminHome adminToken={this.state.adminToken} />)}
                   />
                   <Route
                     path="/federation"
@@ -3026,11 +3020,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/security"
-                    element={(
-                      <HubHttpRoute>
-                        <SecurityHome />
-                      </HubHttpRoute>
-                    )}
+                    element={hubPv(<SecurityHome />)}
                   />
                   <Route
                     path="/admin/beacon-federation"
@@ -3061,31 +3051,19 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings"
-                    element={<SettingsHome />}
+                    element={<SettingsHome publicHubVisitor={publicHubVisitor} />}
                   />
                   <Route
                     path="/sessions/:sessionId"
-                    element={(
-                      <HubHttpRoute>
-                        <SecuritySessionHome />
-                      </HubHttpRoute>
-                    )}
+                    element={hubPv(<SecuritySessionHome />)}
                   />
                   <Route
                     path="/sessions"
-                    element={(
-                      <HubHttpRoute>
-                        <Navigate to="/settings/security" replace />
-                      </HubHttpRoute>
-                    )}
+                    element={hubPv(<Navigate to="/settings/security" replace />)}
                   />
                   <Route
                     path="/security"
-                    element={(
-                      <HubHttpRoute>
-                        <Navigate to="/settings/security" replace />
-                      </HubHttpRoute>
-                    )}
+                    element={hubPv(<Navigate to="/settings/security" replace />)}
                   />
                   <Route
                     path="/activity"

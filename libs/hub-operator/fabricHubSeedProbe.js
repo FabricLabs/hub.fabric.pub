@@ -5,7 +5,7 @@ const {
   isFabricHttpApplicationPayload,
   extractFabricHttpApplicationFromOptions,
   fabricHubOptionsFeatures
-} = require('../../functions/fabricHttpOptions');
+} = require('./fabricHttpOptions');
 const { normalizeHttpOrigin, isMixedContentSeed } = require('../../functions/fabricHubSeeds');
 
 const DEFAULT_OPTIONS_TIMEOUT_MS = 3500;
