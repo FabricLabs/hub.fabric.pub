@@ -222,6 +222,9 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
   });
 
   it('services/email and services/fabric are constructible via package export', function () {
+    // Cold require of @fabric/hub/services/email pulls nodemailer + deps; ~0.7s local,
+    // can exceed mocha's 2s default under ubuntu CI load.
+    this.timeout(15000);
     const EmailService = require('@fabric/hub/services/email');
     const FabricService = require('@fabric/hub/services/fabric');
     const email = new EmailService({ host: '127.0.0.1', port: 1025 });

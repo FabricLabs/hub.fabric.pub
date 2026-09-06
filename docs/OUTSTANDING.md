@@ -1,7 +1,9 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-09-05 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip still `f7b425a` (**CI red**): same single mocha failure `allowlist + httpSharedMode re-export http` (Hub local suffix allowlist ≠ http pin `#fe41132`). Fix is **staged locally** (`tests/liftedApis.exports.test.js` collapse-when-ready) — not on GitHub until commit+push. Related suite allowlist work staged in `@fabric/http` + Passport. Codacy remains `action_required` (path/SSRF FPs).
+**Last reviewed:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `500c053` (allowlist lift assert fixed): **build-test + macos green**; **ubuntu Test** still red on one case — `services/email and services/fabric are constructible via package export` hits mocha's **2s** default (~0.7s local email construct; CI cold-load exceeds). Staged: `this.timeout(15000)` on that test. Codacy remains `action_required` (path/SSRF FPs).
+
+**Prior:** 2026-09-05 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip still `f7b425a` (**CI red**): same single mocha failure `allowlist + httpSharedMode re-export http` (Hub local suffix allowlist ≠ http pin `#fe41132`). Fix is **staged locally** (`tests/liftedApis.exports.test.js` collapse-when-ready) — not on GitHub until commit+push. Related suite allowlist work staged in `@fabric/http` + Passport. Codacy remains `action_required` (path/SSRF FPs).
 
 **Prior:** 2026-09-04 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) tip `f7b425a`: mocha red on a single assert — Hub allowlist correctly uses a **local** suffix-capable copy until `@fabric/http` exports `normalizeHttpsHostSuffix` (pin still `#fe41132`), but `tests/liftedApis.exports.test.js` still demanded reference equality. Fix: behaviour assert + collapse-when-ready. Pin/timeout nits from `192960b` already on tip. Codacy remains `action_required` (path/SSRF FPs). Inline review threads resolved / outdated; CodeRabbit auto-paused on the busy branch.
 
@@ -13,15 +15,13 @@ Living queue for this repo. Detail and closed items live in [SECURITY.md](../SEC
 
 **Prior:** 2026-09-03 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip `364b12da`: **tests green** (ubuntu/macos + `build-test`); mergeable but **unstable** only because Codacy is `action_required` (**21** critical · **36** high on the PR summary — mostly Semgrep `path.join` / SSRF FPs). CodeRabbit review comments from Aug (advisory detector, `EditDocument` filter, `.codacy.yml`, shared-mode WS, `parseFilesystemJson` Uint8Array) are **already landed** on the branch. Local uncommitted slice adds Beacon federation sign broadcast/ingest, contracts `merkleRoot`, `FEDERATION_DEPLOYMENT.md`, operator-identity redact, screenshot gallery scripts, and epoch `/services/distributed/epoch/signatures` Hub callbacks (needs http #69 binder).
 
-## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — allowlist lift assert (tip `f7b425a`)
-`build-test` + ubuntu/macos Test: **870–897 pass / 1 fail** —
-`allowlist + httpSharedMode re-export http` demanded
-`hub.isAllowedFabricHub === http.isAllowedFabricHub`. Hub's wrapper
-intentionally keeps a local copy until the http pin exports
-`normalizeHttpsHostSuffix` (suffix allowlist). Test updated to assert
-behaviour + collapse-when-ready. Prior pin SHA / sidechain timeout fixes
-already on tip. Codacy stays `action_required` (path/SSRF FPs on operator
-helpers under `libs/hub-operator/`).
+## Red CI on [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) — email construct timeout (ubuntu, tip `500c053`)
+Allowlist lift assert is fixed on tip. Remaining: ubuntu Test **1 fail** —
+`services/email and services/fabric are constructible via package export`
+(`Timeout of 2000ms exceeded`). Email service cold-require is ~0.7s locally;
+under CI load it exceeds mocha's default. Staged: `this.timeout(15000)` on that
+case. Codacy stays `action_required` (path/SSRF FPs on operator helpers under
+`libs/hub-operator/`).
 
 ## Codacy: move operator helpers under `libs/` (default ignore)
 Implementations now live in `libs/hub-operator/*.js`. `functions/<name>.js` are
