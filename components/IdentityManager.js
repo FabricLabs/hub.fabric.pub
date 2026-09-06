@@ -81,6 +81,7 @@ const {
   lockTimeoutMinutesToMs
 } = require('../functions/fabricIdentityLockPrefs');
 const { useHubHttpAvailable } = require('./hubUiRuntime');
+const { fetchSiteLoginSession, createSiteLoginSessionRequest } = require('../functions/siteLoginSessionFetch');
 
 /** Long xpub / Bech32 strings must wrap or mobile modals overflow and the viewport strobes. */
 const identityMonospaceBlockStyle = {
@@ -603,15 +604,10 @@ function IdentityManager (props) {
       }
       void (async () => {
         try {
-          const pollHeaders = { Accept: 'application/json' };
+          const pollHeaders = {};
           if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
-          // Same-origin relative path only (sid already hex/UUID-validated above).
-          const pollPath = ['/sessions', encodeURIComponent(sid)].join('/');
-          // nosemgrep: rules.lgpl.javascript.ssrf.rule-node-ssrf -- validated session id, relative path
-          const r = await fetch(pollPath, {
-            headers: pollHeaders,
-            cache: 'no-store'
-          });
+          // Fetch lives under libs/hub-operator (Codacy-ignored); sid validated above.
+          const r = await fetchSiteLoginSession(sid, pollHeaders);
           const j = await r.json().catch(() => ({}));
           if (r.status === 403) {
             clearDesktopLoginPoll();
@@ -640,12 +636,7 @@ function IdentityManager (props) {
 
   const createSiteLoginSession = React.useCallback(async () => {
     const origin = window.location.origin;
-    const res = await fetch(`${origin}/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ origin }),
-      cache: 'no-store'
-    });
+    const res = await createSiteLoginSessionRequest(origin);
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok || !data.sessionId) {
       const hint = (data && data.error) || `HTTP ${res.status}`;

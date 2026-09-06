@@ -36,7 +36,9 @@ const OPERATOR_REEXPORTS = [
   'hubManagedBinariesManifest',
   'hubManagedBinariesRemoteCheck',
   'hubSetupStores',
-  'hubStoreReset'
+  'hubStoreReset',
+  'peerIdentity',
+  'siteLoginSessionFetch'
 ];
 
 describe('Hub PR #16 review coverage', function () {

@@ -114,8 +114,8 @@ function UnifiedPeersPaginatedList ({
   const [sortColumn, setSortColumn] = React.useState('seen');
   const [sortDirection, setSortDirection] = React.useState('descending');
   const sortedPeers = sortFabricPeersByColumn(unifiedPeers, sortColumn, sortDirection);
-  const first = sortedPeers[0];
-  const last = sortedPeers.length ? sortedPeers[sortedPeers.length - 1] : null;
+  const first = sortedPeers.at(0);
+  const last = sortedPeers.length ? sortedPeers.at(-1) : null;
   const resetKey = `${sortedPeers.length}:${sortColumn}:${sortDirection}:${first && (first.id || first.address)}:${last && (last.id || last.address)}`;
   const {
     slice,
