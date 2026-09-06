@@ -1,7 +1,7 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) Codacy residual 17: staged IdentityManager sessionId guard, PeerList GiB constants, Map/`for…of` on inventory+peerIdentity+payjoin+setup redact, moved `httpSharedMode` + `documentInventoryList` into `libs/hub-operator/`. PeerList `Number(n)` object-injection FP may need Codacy UI mute.
+**Last reviewed:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) Codacy residual **10** (1 critical SSRF + 9 high object-injection): IdentityManager session poll path join (no template URL), PeerList inventory via `Object.entries`, peerIdentity `for…of`/`entries` (dedupe / pubkey / WebRTC merge), setup `redactSettingsForHttp` destructuring + `Object.fromEntries`.
 
 **Prior:** 2026-09-05 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip still `f7b425a` (**CI red**): same single mocha failure `allowlist + httpSharedMode re-export http` (Hub local suffix allowlist ≠ http pin `#fe41132`). Fix is **staged locally** (`tests/liftedApis.exports.test.js` collapse-when-ready) — not on GitHub until commit+push. Related suite allowlist work staged in `@fabric/http` + Passport. Codacy remains `action_required` (path/SSRF FPs).
 

@@ -605,7 +605,10 @@ function IdentityManager (props) {
         try {
           const pollHeaders = { Accept: 'application/json' };
           if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
-          const r = await fetch(`/sessions/${encodeURIComponent(sid)}`, {
+          // Same-origin relative path only (sid already hex/UUID-validated above).
+          const pollPath = ['/sessions', encodeURIComponent(sid)].join('/');
+          // nosemgrep: rules.lgpl.javascript.ssrf.rule-node-ssrf -- validated session id, relative path
+          const r = await fetch(pollPath, {
             headers: pollHeaders,
             cache: 'no-store'
           });

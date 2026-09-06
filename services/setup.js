@@ -134,9 +134,7 @@ class SetupService {
   redactSettingsForHttp (settings, isAdmin) {
     const src = settings && typeof settings === 'object' ? settings : {};
     const pairs = [];
-    for (const entry of Object.entries(src)) {
-      const name = entry[0];
-      const value = entry[1];
+    for (const [name, value] of Object.entries(src)) {
       pairs.push([name, this.redactSettingValue(name, value, isAdmin)]);
     }
     return Object.fromEntries(pairs);

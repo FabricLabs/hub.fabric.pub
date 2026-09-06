@@ -91,13 +91,11 @@ function formatPeerBytes (n) {
 function inventoryDocCountForFabricPeer (globalPeers, fabricId) {
   if (!globalPeers || typeof globalPeers !== 'object' || !fabricId) return null;
   const fid = String(fabricId).trim();
-  const direct = globalPeers[fid];
-  if (direct && direct.inventory && Array.isArray(direct.inventory.documents)) {
-    return direct.inventory.documents.length;
-  }
-  for (const k of Object.keys(globalPeers)) {
-    const ex = globalPeers[k];
-    if (ex && String(ex.id || '') === fid && ex.inventory && Array.isArray(ex.inventory.documents)) {
+  for (const [key, ex] of Object.entries(globalPeers)) {
+    if (!ex || typeof ex !== 'object') continue;
+    const idMatch = String(key) === fid || String(ex.id || '') === fid;
+    if (!idMatch) continue;
+    if (ex.inventory && Array.isArray(ex.inventory.documents)) {
       return ex.inventory.documents.length;
     }
   }

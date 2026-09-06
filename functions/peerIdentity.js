@@ -42,8 +42,7 @@ function extractPeerXpub (p) {
   if (!p || typeof p !== 'object') return '';
   const m = p.metadata && typeof p.metadata === 'object' ? p.metadata : {};
   const cands = [m.xpub, p.xpub];
-  for (let i = 0; i < cands.length; i++) {
-    const c = cands[i];
+  for (const c of cands) {
     if (c && isLikelyBip32ExtendedKey(String(c))) return String(c).trim();
   }
   return '';
@@ -415,13 +414,13 @@ function dedupeFabricPeers (peers) {
   const arr = Array.isArray(peers) ? peers.filter((p) => p && typeof p === 'object') : [];
   const out = [];
   const consumed = new Set();
-  for (let i = 0; i < arr.length; i++) {
+  for (const [i, seed] of arr.entries()) {
     if (consumed.has(i)) continue;
-    let merged = { ...arr[i] };
-    for (let j = i + 1; j < arr.length; j++) {
-      if (consumed.has(j)) continue;
-      if (sameLogicalFabricPeer(merged, arr[j])) {
-        merged = mergeFabricPeerRows(merged, arr[j]);
+    let merged = Object.assign({}, seed);
+    for (const [j, other] of arr.entries()) {
+      if (j <= i || consumed.has(j)) continue;
+      if (sameLogicalFabricPeer(merged, other)) {
+        merged = mergeFabricPeerRows(merged, other);
         consumed.add(j);
       }
     }
@@ -488,8 +487,8 @@ function fabricPeerPubkeyHex (peer) {
     m.fabricPeerId,
     peer.id
   ];
-  for (let i = 0; i < cands.length; i++) {
-    const c = cands[i] != null ? String(cands[i]).trim() : '';
+  for (const raw of cands) {
+    const c = raw != null ? String(raw).trim() : '';
     if (isLikelyCompressedPubkeyHex(c)) return c.toLowerCase();
   }
   return '';
@@ -602,14 +601,12 @@ function buildWebrtcCombinedRows (signaling, local, selfPeerId) {
   const byId = new Map();
   const sig = Array.isArray(signaling) ? signaling : [];
   const loc = Array.isArray(local) ? local : [];
-  for (let i = 0; i < sig.length; i++) {
-    const p = sig[i];
+  for (const p of sig) {
     const id = p && p.id != null ? String(p.id) : '';
     if (!id || (self && id === self)) continue;
     byId.set(id, { id, signaling: p, local: null });
   }
-  for (let j = 0; j < loc.length; j++) {
-    const p = loc[j];
+  for (const p of loc) {
     const id = p && p.id != null ? String(p.id) : '';
     if (!id) continue;
     const prev = byId.get(id) || { id, signaling: null, local: null };
