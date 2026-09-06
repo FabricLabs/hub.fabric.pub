@@ -75,13 +75,17 @@ function writePrimaryPeerAddress (addr) {
   } catch (e) {}
 }
 
+const PEER_BYTE_KIB = 1024;
+const PEER_BYTE_MIB = PEER_BYTE_KIB * 1024;
+const PEER_BYTE_GIB = PEER_BYTE_MIB * 1024;
+
 function formatPeerBytes (n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v < 0) return '—';
-  if (v < 1024) return `${Math.round(v)} B`;
-  if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
-  if (v < 1073741824) return `${(v / 1048576).toFixed(2)} MiB`;
-  return `${(v / 1073741824).toFixed(2)} GiB`;
+  if (v < PEER_BYTE_KIB) return `${Math.round(v)} B`;
+  if (v < PEER_BYTE_MIB) return `${(v / PEER_BYTE_KIB).toFixed(1)} KiB`;
+  if (v < PEER_BYTE_GIB) return `${(v / PEER_BYTE_MIB).toFixed(2)} MiB`;
+  return `${(v / PEER_BYTE_GIB).toFixed(2)} GiB`;
 }
 
 function inventoryDocCountForFabricPeer (globalPeers, fabricId) {

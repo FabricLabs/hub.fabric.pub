@@ -230,8 +230,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const ourInputIndices = [];
   const usedUtxos = [];
 
-  for (let i = 0; i < pickedSorted.length; i++) {
-    const u = pickedSorted[i];
+  for (const [i, u] of pickedSorted.entries()) {
     const hex = await getPrevTxHex(String(u.txid));
     if (!hex || !/^[0-9a-fA-F]+$/i.test(hex)) throw new Error(`Prev tx hex missing for ${u.txid}`);
     const prev = bitcoin.Transaction.fromHex(hex);

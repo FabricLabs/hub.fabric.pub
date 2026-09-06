@@ -128,8 +128,7 @@ function sameLogicalFabricPeer (a, b) {
 function reclaimSharedAddressAliases (peers) {
   const arr = Array.isArray(peers) ? peers : [];
   const liveAliasByAddr = new Map();
-  for (let i = 0; i < arr.length; i++) {
-    const p = arr[i];
+  for (const p of arr) {
     if (!p || p.status !== 'connected') continue;
     const alias = p.alias && String(p.alias).trim();
     const addr = p.address && String(p.address).trim();
@@ -200,7 +199,7 @@ function coercePeerTimestampMs (value) {
     const n = Number(s);
     return Number.isFinite(n) && n > 0 ? n : 0;
   }
-  const parsed = Date.parse(s);
+  const parsed = new Date(s).getTime();
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
@@ -239,14 +238,16 @@ function fabricPeerRecencyMs (peer) {
  */
 function sortFabricPeersMostRecentFirst (peers) {
   const arr = Array.isArray(peers) ? peers.slice() : [];
-  arr.sort((a, b) => {
-    const rb = fabricPeerRecencyMs(b);
-    const ra = fabricPeerRecencyMs(a);
+  arr.sort((left, right) => {
+    const rb = fabricPeerRecencyMs(right);
+    const ra = fabricPeerRecencyMs(left);
     if (rb !== ra) return rb - ra;
-    const ac = (a && a.status) === 'connected' ? 1 : 0;
-    const bc = (b && b.status) === 'connected' ? 1 : 0;
+    const ac = (left && left.status) === 'connected' ? 1 : 0;
+    const bc = (right && right.status) === 'connected' ? 1 : 0;
     if (ac !== bc) return bc - ac;
-    return fabricPeerPrimaryLabel(a).localeCompare(fabricPeerPrimaryLabel(b));
+    const la = fabricPeerPrimaryLabel(left);
+    const lb = fabricPeerPrimaryLabel(right);
+    return la < lb ? -1 : (la > lb ? 1 : 0);
   });
   return arr;
 }
@@ -257,9 +258,12 @@ function sortFabricPeersMostRecentFirst (peers) {
  * @returns {number}
  */
 function fabricPeerSessionBytes (peer) {
-  const inn = Number(peer && peer.bytesIn);
-  const out = Number(peer && peer.bytesOut);
-  return (Number.isFinite(inn) ? inn : 0) + (Number.isFinite(out) ? out : 0);
+  if (!peer || typeof peer !== 'object') return 0;
+  const inn = Number(peer.bytesIn);
+  const out = Number(peer.bytesOut);
+  const inSafe = Number.isFinite(inn) ? inn : 0;
+  const outSafe = Number.isFinite(out) ? out : 0;
+  return inSafe + outSafe;
 }
 
 /**

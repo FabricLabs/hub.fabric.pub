@@ -582,6 +582,13 @@ function IdentityManager (props) {
     const pollOrigin = (origin && origin === window.location.origin)
       ? origin
       : window.location.origin;
+    // Hub session ids are hex/UUID-shaped; reject anything else before fetch.
+    const sid = String(sessionId || '').trim();
+    if (!/^[0-9a-fA-F-]{8,128}$/.test(sid)) {
+      setBusy(false);
+      setError('Invalid login session id.');
+      return;
+    }
     clearDesktopLoginPoll();
     desktopPollIntervalRef.current = setInterval(() => {
       attempts++;
@@ -598,7 +605,7 @@ function IdentityManager (props) {
         try {
           const pollHeaders = { Accept: 'application/json' };
           if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
-          const r = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, {
+          const r = await fetch(`/sessions/${encodeURIComponent(sid)}`, {
             headers: pollHeaders,
             cache: 'no-store'
           });
@@ -611,7 +618,7 @@ function IdentityManager (props) {
             return;
           }
           if (!j.ok || j.status !== 'signed' || !j.identity) return;
-          const applied = applySignedSiteLogin(j, sessionId, pollOrigin, signerLabel);
+          const applied = applySignedSiteLogin(j, sid, pollOrigin, signerLabel);
           clearDesktopLoginPoll();
           clearPassportWait();
           setBusy(false);

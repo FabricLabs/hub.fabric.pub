@@ -23,9 +23,11 @@ const {
 const OPERATOR_REEXPORTS = [
   'desktopOpenAtLogin',
   'desktopUserData',
+  'documentInventoryList',
   'fabricHubSeedProbe',
   'fabricHttpOptions',
   'fabricHttpRebind',
+  'httpSharedMode',
   'hubBitcoinSetup',
   'hubDownloadsIndex',
   'hubDownloadsTree',
