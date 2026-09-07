@@ -11,15 +11,17 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: hub
-      - uses: actions/checkout@v4
+          persist-credentials: false
+      - uses: actions/checkout@v7
         with:
           repository: FabricLabs/fabric-http
           ref: feature/rsi
           path: fabric-http
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-node@v7
         with:
           node-version-file: 'hub/.nvmrc'
           cache: npm

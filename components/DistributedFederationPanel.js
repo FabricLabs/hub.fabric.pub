@@ -236,6 +236,15 @@ function DistributedFederationPanel (props) {
               — default maturity policy: <strong>{manifest.federationVault.depositMaturityBlocks}</strong> confirmations before treating deposits as matured for withdrawal planning.
             </span>
           ) : null}
+          {manifest.federationVault.internalKeyMode ? (
+            <span>
+              {' '}
+              — internal key: <strong>{manifest.federationVault.internalKeyMode}</strong>
+              {manifest.federationVault.internalKeyMode === 'nums'
+                ? ' (historical NUMS vault; set FABRIC_FEDERATION_INTERNAL_KEY_MODE=musig2 only after sweeping to the new address)'
+                : ' (MuSig2 aggregate; not the pre-#185 NUMS address)'}
+            </span>
+          ) : null}
           <span style={{ display: 'block', marginTop: '0.4em', fontSize: '0.88em', color: '#555' }}>
             Withdraw via <code>PrepareFederationVaultWithdrawalPsbt</code> on <code>POST /services/rpc</code> (admin token): pass <code>fundedTxHex</code> and <code>destinationAddress</code>; validators co-sign the returned PSBT off-node.
           </span>

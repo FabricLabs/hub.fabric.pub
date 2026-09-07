@@ -44,7 +44,7 @@ To restore published packages: `npm install` (overwrites the symlinks with the v
 
 **Major release / downstream apps:** See **[docs/UPSTREAM_MONOREPO.md](docs/UPSTREAM_MONOREPO.md)** for what to align across Hub, `@fabric/http`, and `@fabric/core` before bumping downstream apps.
 
-The Hub passes `bitcoinExtraParams: ['-dnsseed=0']` and `listen: false` for managed regtest so bitcoind avoids DNS in restricted environments. For active UI iteration:
+The Hub passes `bitcoinExtraParams` for managed bitcoind (`-dnsseed=0` on regtest; new setups also get `-blocksonly=1` unless transaction relay is on) and `listen: false` for local-dev. For active UI iteration:
 ```bash
 npm run dev
 ```
@@ -113,7 +113,7 @@ kill <PID>
 To run the Hub on a different P2P port: `FABRIC_PORT=7778 npm start`. (Peers in config may still expect `7777` unless you change them.)
 
 ### Managed Bitcoin Regtest
-Local defaults assume managed regtest bitcoind on RPC `20444`. The Hub starts the Bitcoin service (which may spawn `bitcoind` via `@fabric/core`) and waits for it to become ready (or for the timeout, default 15s). If Bitcoin does not become ready in time, the Hub continues without Bitcoin and logs a warning. Set `FABRIC_BITCOIN_START_TIMEOUT_MS` to change the timeout (min 3s, max 60s). On shutdown, the Hub calls `bitcoin.stop()`; ensure no other bitcoind is using the same datadir or port before starting. For production, use an external bitcoind cluster and set `FABRIC_BITCOIN_MANAGED=false`.
+Local defaults assume managed regtest bitcoind on RPC `20444`. First-time setup downloads pinned Bitcoin Core (and Core Lightning when the platform has an official binary) into `binaries/`. The Hub prepends that tree to `PATH`, starts the Bitcoin service (which may spawn `bitcoind` via `@fabric/core`), and waits for it to become ready (or for the timeout, default 15s). If `bitcoind` is not installed yet, Hub HTTP still comes up so onboarding can fetch binaries. Desktop installers from `npm run build:installers` are copied into `assets/downloads/` for the public `/downloads` FileBrowser. Set `FABRIC_BITCOIN_START_TIMEOUT_MS` to change the timeout (min 3s, max 60s). On shutdown, the Hub calls `bitcoin.stop()`; ensure no other bitcoind is using the same datadir or port before starting. For production, use an external bitcoind cluster and set `FABRIC_BITCOIN_MANAGED=false`.
 
 ## Coding Standards
 - CommonJS only

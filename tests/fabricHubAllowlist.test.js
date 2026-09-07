@@ -23,4 +23,13 @@ describe('fabricHubAllowlist (hub re-export)', function () {
       true
     );
   });
+
+  it('does not hardcode CDN previews; opt-in via allowlist', function () {
+    const preview = 'https://pub-fabric-hub-git-feature-rsi-fabric-labs.vercel.app';
+    assert.strictEqual(isAllowedFabricHub(preview), false);
+    assert.strictEqual(
+      isAllowedFabricHub(preview, { env: { FABRIC_HUB_ALLOWLIST: '*.vercel.app' } }),
+      true
+    );
+  });
 });

@@ -57,7 +57,13 @@ const OUTER_WIRE_TYPES = [
   // Encode aliases (same opcodes) — Message.fromVector accepts these names.
   { name: 'P2P_CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_PUBLISH (0x5f).' },
   { name: 'P2P_CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_MESSAGE (0x60).' },
-  { name: 'P2P_CONTRACT_PROPOSAL', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of ContractProposal / CONTRACT_PROPOSAL (0x8a).' }
+  { name: 'P2P_CONTRACT_PROPOSAL', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of ContractProposal / CONTRACT_PROPOSAL (0x8a).' },
+  { name: 'P2P_MUSIG_START', opcodeDec: 16928, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Directed BIP-327 session open (0x4220). Not mesh-flooded; AMP signer must be a listed pubkey.' },
+  { name: 'P2P_MUSIG_ACCEPT', opcodeDec: 16929, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'First co-signer pubnonce (0x4221).' },
+  { name: 'P2P_MUSIG_RECEIVE_COUNTER', opcodeDec: 16930, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Additional signer pubnonce (0x4222).' },
+  { name: 'P2P_MUSIG_SEND_PROPOSAL', opcodeDec: 16931, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Coordinator aggnonce; receivers recompute nonceAgg (0x4223).' },
+  { name: 'P2P_MUSIG_REPLY_TO_PROPOSAL', opcodeDec: 16932, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: '32-byte partial signature (0x4224).' },
+  { name: 'P2P_MUSIG_ACCEPT_PROPOSAL', opcodeDec: 16933, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: '64-byte aggregated BIP-340 signature (0x4225).' }
 ];
 
 /**

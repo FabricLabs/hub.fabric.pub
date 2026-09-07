@@ -100,5 +100,20 @@ describe('TopPanel identity label behavior', function () {
     assert.ok(html.includes('Unlock for balance'), 'chip should not show sats while locked');
     assert.ok(!html.includes('1,000 sats'), 'balance text hidden until unlock');
   });
+
+  it('lists User profile and Manage identity separately when unlocked', function () {
+    const html = renderTopPanel({
+      auth: null,
+      localIdentity: {
+        id: '02' + 'ab'.repeat(32),
+        xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8',
+        xprv: 'xprv9s21ZrQH143K3...'
+      },
+      hasLocalIdentity: true,
+      hasLockedIdentity: false
+    });
+    assert.ok(html.includes('User profile'), 'User profile menu item');
+    assert.ok(html.includes('Manage identity'), 'Manage identity opens keys modal');
+  });
 });
 

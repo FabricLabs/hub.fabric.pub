@@ -1,6 +1,10 @@
 'use strict';
 
-const crypto = require('crypto');
+const {
+  encryptLocalIdentityMaterial,
+  decryptLocalIdentityMaterial,
+  LOCAL_IDENTITY_AT_REST_V2
+} = require('./fabricLocalIdentityAtRestCrypto');
 const Identity = require('@fabric/core/types/identity');
 const Key = require('@fabric/core/types/key');
 const {
@@ -29,6 +33,8 @@ function buildLocalFabricIdentityPayload (parsed = {}) {
           xpub: parsed.xpub,
           xprv: null,
           passwordProtected: true,
+          atRestEncryption: parsed.atRestEncryption || null,
+          kdfIterations: parsed.kdfIterations != null ? parsed.kdfIterations : undefined,
           fabricIdentityMode: parsed.fabricIdentityMode === 'account' ? 'account' : 'master',
           fabricHdRole: parsed.fabricHdRole === 'accountNode' ? 'accountNode' : undefined,
           fabricAccountIndex:
@@ -199,14 +205,7 @@ function encryptLocalIdentityAtRest (parsed, password) {
   if (parsed.fabricHdRole === 'accountNode') {
     const material = String(parsed.xprv || '').trim();
     if (!material) throw new Error('Missing account signing key.');
-    const salt = crypto.randomBytes(16).toString('hex');
-    const keyBytes = crypto.createHash('sha256')
-      .update(salt + pwd)
-      .digest();
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
-    let enc = cipher.update(material, 'utf8', 'hex');
-    enc += cipher.final('hex');
+    const sealed = encryptLocalIdentityMaterial(material, pwd);
     const fabricAccountIndex =
       parsed.fabricAccountIndex != null && String(parsed.fabricAccountIndex).trim() !== ''
         ? Math.floor(Number(parsed.fabricAccountIndex))
@@ -217,8 +216,10 @@ function encryptLocalIdentityAtRest (parsed, password) {
       fabricAccountIndex,
       id: parsed.id,
       xpub: parsed.xpub,
-      xprvEnc: iv.toString('hex') + ':' + enc,
-      passwordSalt: salt,
+      xprvEnc: sealed.xprvEnc,
+      passwordSalt: sealed.passwordSalt,
+      atRestEncryption: sealed.atRestEncryption,
+      kdfIterations: sealed.kdfIterations,
       passwordProtected: true
     };
     if (parsed.linkedFromDesktop) out.linkedFromDesktop = true;
@@ -237,22 +238,17 @@ function encryptLocalIdentityAtRest (parsed, password) {
       parsed.masterXpub && String(parsed.masterXpub).trim()
         ? String(parsed.masterXpub).trim()
         : fabricRootXpubFromMasterXprv(material);
-    const salt = crypto.randomBytes(16).toString('hex');
-    const keyBytes = crypto.createHash('sha256')
-      .update(salt + pwd)
-      .digest();
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
-    let enc = cipher.update(String(material).trim(), 'utf8', 'hex');
-    enc += cipher.final('hex');
+    const sealed = encryptLocalIdentityMaterial(material, pwd);
     const out = {
       fabricIdentityMode: 'account',
       fabricAccountIndex,
       masterXpub,
       id: dk.id,
       xpub: dk.xpub,
-      xprvEnc: iv.toString('hex') + ':' + enc,
-      passwordSalt: salt,
+      xprvEnc: sealed.xprvEnc,
+      passwordSalt: sealed.passwordSalt,
+      atRestEncryption: sealed.atRestEncryption,
+      kdfIterations: sealed.kdfIterations,
       passwordProtected: true
     };
     if (parsed.linkedFromDesktop) out.linkedFromDesktop = true;
@@ -262,45 +258,26 @@ function encryptLocalIdentityAtRest (parsed, password) {
   const material = String(parsed.masterXprv || parsed.xprv || '').trim();
   if (!material) throw new Error('Missing extended private key.');
   const ident = new Identity({ xprv: material });
-  const salt = crypto.randomBytes(16).toString('hex');
-  const keyBytes = crypto.createHash('sha256')
-    .update(salt + pwd)
-    .digest();
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-cbc', keyBytes, iv);
-  let enc = cipher.update(String(material).trim(), 'utf8', 'hex');
-  enc += cipher.final('hex');
+  const sealed = encryptLocalIdentityMaterial(material, pwd);
   const out = {
     fabricIdentityMode: 'master',
     fabricHdRole: 'master',
     fabricAccountIndex: 0,
     id: ident.id,
     xpub: ident.key.xpub,
-    xprvEnc: iv.toString('hex') + ':' + enc,
-    passwordSalt: salt,
+    xprvEnc: sealed.xprvEnc,
+    passwordSalt: sealed.passwordSalt,
+    atRestEncryption: sealed.atRestEncryption,
+    kdfIterations: sealed.kdfIterations,
     passwordProtected: true
   };
   if (parsed.linkedFromDesktop) out.linkedFromDesktop = true;
   return out;
 }
 
-/** Decrypt stored master/signing key material (same format as IdentityManager unlock). */
+/** Decrypt stored master/signing key material (v2 GCM or legacy CBC). */
 function decryptLocalIdentityMasterMaterial (parsed, password) {
-  if (!parsed || !parsed.passwordProtected || !parsed.xprvEnc || !parsed.passwordSalt) {
-    throw new Error('Stored identity does not use encryption password storage.');
-  }
-  const pwd = String(password || '').trim();
-  const keyBytes = crypto.createHash('sha256')
-    .update(String(parsed.passwordSalt) + pwd)
-    .digest();
-  const parts = String(parsed.xprvEnc).split(':');
-  if (parts.length !== 2) throw new Error('Invalid encrypted key format.');
-  const iv = Buffer.from(parts[0], 'hex');
-  const blob = Buffer.from(parts[1], 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
-  let decrypted = decipher.update(blob, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted.trim();
+  return decryptLocalIdentityMaterial(parsed, password);
 }
 
 module.exports = {
@@ -312,5 +289,6 @@ module.exports = {
   encryptLocalIdentityAtRest,
   decryptLocalIdentityMasterMaterial,
   deriveFabricAccountIdentityKeys,
-  fabricRootXpubFromMasterXprv
+  fabricRootXpubFromMasterXprv,
+  LOCAL_IDENTITY_AT_REST_V2
 };

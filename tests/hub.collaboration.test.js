@@ -121,7 +121,7 @@ describe('hubCollaboration', function () {
         port: p2pPort,
         fs: { path: testFsPath },
         bitcoin: { enable: false, network: 'regtest' },
-        http: { hostname: '127.0.0.1', listen: true, port: httpPort },
+        http: { hostname: '127.0.0.1', interface: '127.0.0.1', listen: true, port: httpPort },
         debug: false
       }));
       await hub.start();

@@ -16,5 +16,6 @@ contextBridge.exposeInMainWorld('fabricDesktop', {
     ipcRenderer.on('fabric-login-prompt', handler);
     return () => ipcRenderer.removeListener('fabric-login-prompt', handler);
   },
-  pullPendingLoginPrompt: () => ipcRenderer.invoke('fabric:get-pending-login-prompt')
+  pullPendingLoginPrompt: () => ipcRenderer.invoke('fabric:get-pending-login-prompt'),
+  getPaths: () => ipcRenderer.invoke('fabric:get-desktop-paths')
 });

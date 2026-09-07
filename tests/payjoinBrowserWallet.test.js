@@ -22,6 +22,13 @@ describe('payjoinBrowserWallet', function () {
     assert.strictEqual(p, null);
   });
 
+  it('parseBitcoinUriForPayjoin returns null on BIP-21 req-* params', function () {
+    const p = parseBitcoinUriForPayjoin(
+      'bitcoin:tb1qexample?pj=https%3A%2F%2Freceiver.test%2Fpayjoin&req-foo=1'
+    );
+    assert.strictEqual(p, null);
+  });
+
   it('chainIndexFromDescriptor parses Core-style wpkh path suffix', function () {
     const d = 'wpkh([deadbeef/84\'/1\'/0\']tpubABC/0/7)#checksum';
     const c = chainIndexFromDescriptor(d);

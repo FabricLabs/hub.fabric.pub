@@ -8,6 +8,12 @@
  * `{ legacySingleLeaf: true }`. Optional hashlock / arbitrary script leaves
  * via `composeTaprootTree` / `hashlock` on policy.
  *
+ * **Internal key:** `@fabric/core` default for n≥2 is MuSig2 (new address).
+ * Hub operators with historical NUMS UTXOs MUST pass `internalKeyMode: 'nums'`
+ * (this module defaults Hub to `nums` via {@link resolveFederationInternalKeyMode}).
+ * Rebuilds do not migrate coins. Set `FABRIC_FEDERATION_INTERNAL_KEY_MODE=musig2`
+ * only after sweeping to the new address.
+ *
  * @see @fabric/core/functions/contractTaproot
  * @see @fabric/core/functions/contractSpend
  */
@@ -16,6 +22,30 @@ const tap = require('@fabric/core/functions/contractTaproot');
 
 /** Default CSV degradation window / deposit maturity (blocks). */
 const DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS = tap.DEFAULT_CSV_BLOCKS;
+
+/**
+ * Hub federation Taproot internal key. Unset / unknown → `nums` (historical vault).
+ * @param {*} raw
+ * @returns {string} `nums` | `musig2`
+ */
+function normalizeFederationInternalKeyMode (raw) {
+  const m = String(raw == null ? 'nums' : raw).trim().toLowerCase();
+  if (m === 'musig2' || m === 'auto') return 'musig2';
+  return 'nums';
+}
+
+/**
+ * Resolve Hub vault / Beacon overlay mode (env wins, then settings, then nums).
+ * @param {object} [settings]
+ * @param {object} [env]
+ * @returns {string} `nums` | `musig2`
+ */
+function resolveFederationInternalKeyMode (settings = {}, env = process.env) {
+  const fromEnv = env && env.FABRIC_FEDERATION_INTERNAL_KEY_MODE;
+  const fromSettings = (settings.federation && settings.federation.internalKeyMode)
+    || (settings.distributed && settings.distributed.internalKeyMode);
+  return normalizeFederationInternalKeyMode(fromEnv || fromSettings || 'nums');
+}
 
 function buildFederationVaultFromPolicy (opts) {
   const built = tap.buildFederationVaultFromPolicy(opts);
@@ -28,6 +58,8 @@ function buildFederationVaultFromPolicy (opts) {
 module.exports = {
   TAPROOT_INTERNAL_NUMS: tap.TAPROOT_INTERNAL_NUMS,
   DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS,
+  normalizeFederationInternalKeyMode,
+  resolveFederationInternalKeyMode,
   networkForFabricName: tap.networkForFabricName,
   buildFederationVaultFromPolicy,
   prepareVaultWithdrawalPsbt: tap.prepareVaultWithdrawalPsbt,

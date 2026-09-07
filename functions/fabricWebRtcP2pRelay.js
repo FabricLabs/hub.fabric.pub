@@ -10,7 +10,7 @@
 
 const Message = require('@fabric/core/types/message');
 const { HEADER_SIZE, MAGIC_BYTES } = require('@fabric/core/constants');
-const { chatTextOf } = require('@fabric/http/functions/fabricChatNormalize');
+const { chatTextOf } = require('@fabric/core/functions/fabricChatText');
 
 /** Inner types that are not first-class outer opcodes — carry as GENERIC_MESSAGE JSON. */
 const GENERIC_CARRIER_TYPES = new Set([

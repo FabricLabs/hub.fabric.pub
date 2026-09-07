@@ -27,16 +27,23 @@ describe('peerIdentity WebRTC → Fabric list merge', function () {
     assert.ok(isWebrtcTransportPeerRow(rows[0]));
   });
 
-  it('mergeTcpAndWebrtcPeerRows sorts by primary TCP then score', function () {
+  it('mergeTcpAndWebrtcPeerRows sorts by most recent activity first', function () {
     const tcp = [
-      { id: 'p1', address: 'hub.fabric.pub:7777', status: 'connected', score: 50 },
-      { id: 'p2', address: '127.0.0.1:7777', status: 'connected', score: 200 }
+      { id: 'p1', address: 'hub.fabric.pub:7777', status: 'connected', score: 50, lastSeen: 1000 },
+      { id: 'p2', address: '127.0.0.1:7777', status: 'connected', score: 200, lastSeen: 3000 }
     ];
     const mesh = [
-      { id: 'w1', address: 'webrtc:w1', status: 'connected', score: 999, misbehavior: 0, metadata: { transport: 'webrtc' } }
+      {
+        id: 'w1',
+        address: 'webrtc:w1',
+        status: 'connected',
+        score: 999,
+        lastSeen: 2000,
+        misbehavior: 0,
+        metadata: { transport: 'webrtc' }
+      }
     ];
     const merged = mergeTcpAndWebrtcPeerRows(tcp, mesh, 'hub.fabric.pub:7777');
-    assert.strictEqual(merged[0].address, 'hub.fabric.pub:7777');
-    assert.ok(merged.some((p) => p.id === 'w1'));
+    assert.deepStrictEqual(merged.map((p) => p.id), ['p2', 'w1', 'p1']);
   });
 });

@@ -22,7 +22,7 @@ const BeaconAdminPanel = require('./BeaconAdminPanel');
  * Operator admin hub: Beacon, federation links, regtest admin token.
  */
 const UI_FLAG_LABELS = {
-  promo: 'Promo hero block on the homepage (what is Hub, install your own node)',
+  promo: 'Promo hero on Home for signed-out public visitors only (install your own node — hidden after you sign in / for operators)',
   advancedMode: 'Advanced Mode (shows power-user navigation and tools)',
   peers: 'Peers & WebRTC (nav, routes, home network card)',
   peersAdmin: 'Peers (hub admin token required in this browser)',
@@ -636,7 +636,7 @@ function AdminHome (props) {
 
       <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-network-http-heading">Network — HTTP bind (hub)</Header>
       <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        <strong>Shared mode</strong> persists in <code>stores/hub/settings.json</code> as <code>HTTP_SHARED_MODE</code>.
+        <strong>Shared mode</strong> persists in <code>stores/hub/STATE</code> as <code>HTTP_SHARED_MODE</code>.
         When enabled, the hub listens on <code>0.0.0.0</code> so other machines on the LAN can open this UI (subject to firewall).
         When disabled, HTTP is bound to <code>127.0.0.1</code> only. Changing this setting <strong>rebinds the HTTP server immediately</strong> (open WebSockets drop and reconnect).
         If <code>FABRIC_HUB_INTERFACE</code> or <code>INTERFACE</code> is set in the environment, the bind address follows that instead; save still persists the flag for when env is unset.

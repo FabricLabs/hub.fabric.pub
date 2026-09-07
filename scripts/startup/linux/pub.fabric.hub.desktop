@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Fabric Hub
+Comment=Start Bitcoin, Fabric, and Lightning with Fabric Hub
+Exec=FabricHub --hidden
+Terminal=false
+Categories=Utility;Network;
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
+Hidden=false

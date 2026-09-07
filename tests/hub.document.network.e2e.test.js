@@ -142,7 +142,11 @@ async function waitForDocumentPayload (baseUrl, docId, wantBase64, timeoutMs) {
     const r = await rpc(baseUrl, 'GetDocument', [{ id: docId }]);
     const doc = r && r.document;
     if (doc && doc.contentBase64 === wantBase64) return doc;
-    lastMsg = (doc && doc.contentBase64) ? 'payload mismatch' : (r && r.message) || 'no document';
+    lastMsg = (doc && typeof doc.contentBase64 === 'string')
+      ? 'payload mismatch'
+      : (r && r.message)
+        || (doc && doc.local === false ? 'peer metadata only' : '')
+        || (doc ? 'document without contentBase64' : 'no document');
     await sleep(400);
   }
   throw new Error(`GetDocument wait timeout (${docId.slice(0, 8)}…): ${lastMsg}`);
@@ -219,6 +223,7 @@ describe('Hub document network (multi-hop P2P + tombstone)', function () {
         beacon: { enable: false },
         http: {
           hostname: '127.0.0.1',
+          interface: '127.0.0.1',
           listen: true,
           port: httpPorts[i]
         },

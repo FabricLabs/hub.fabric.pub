@@ -25,6 +25,7 @@ describe('federationContractInvite', () => {
     assert.strictEqual(p.contractId, 'c1');
     assert.strictEqual(p.note, 'hello');
     assert.strictEqual(p.invitedAt, 99);
+    assert.strictEqual(p.expiresAt, 99 + (7 * 24 * 60 * 60 * 1000));
     assert.strictEqual(p.v, 1);
   });
 
@@ -61,6 +62,25 @@ describe('federationContractInvite', () => {
     assert.strictEqual(p.accept, true);
     assert.strictEqual(p.responderPubkey, '02aa');
     assert.strictEqual(p.respondedAt, 1);
+  });
+
+  it('never stamps non-positive invitedAt / respondedAt', () => {
+    const before = Date.now();
+    const invite = parseFederationContractInvite(buildFederationContractInviteJson({
+      inviteId: 'zero-invited',
+      inviterHubId: 'deadbeef',
+      invitedAt: 0
+    }));
+    const after = Date.now();
+    assert.ok(invite.invitedAt >= before && invite.invitedAt <= after);
+    assert.ok(invite.expiresAt > invite.invitedAt);
+
+    const resp = parseFederationContractInviteResponse(buildFederationContractInviteResponseJson({
+      inviteId: 'resp-zero',
+      accept: false,
+      respondedAt: 0
+    }));
+    assert.ok(resp.respondedAt >= before && resp.respondedAt <= Date.now());
   });
 
   it('rejects malformed payloads', () => {

@@ -19,6 +19,7 @@
 
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('@fabric/core/types/ecc');
+const { sortPsbtInputBags } = require('./psbtFabric');
 const bip341 = require('bitcoinjs-lib/src/payments/bip341');
 const psbtutils = require('bitcoinjs-lib/src/psbt/psbtutils');
 const ecpairMod = require('ecpair');
@@ -182,7 +183,8 @@ function findP2trVoutForAddress (tx, paymentAddress, network) {
 }
 
 /**
- * Unsigned PSBT spending N crowdfund UTXOs (same address) via payout tapscript; enforces sum ≥ goalSats.
+ * Unsigned payout PSBT spending N crowdfund UTXOs (same address) via payout tapscript; enforces sum ≥ goalSats.
+ * Inputs are BIP-69 sorted before they are added (sign after this returns).
  * @param {Object} opts
  * @param {Array<{ txHex: string, vout?: number }>} opts.inputs - vout optional if only one P2TR output per tx
  * @param {string} opts.paymentAddress
@@ -246,10 +248,19 @@ function prepareCrowdfundPayoutPsbt (opts = {}) {
   const destSats = totalIn - fee;
   if (destSats < 546) throw new Error('Amount after fee is below dust; increase funding or lower fee.');
 
+  const sortedRows = sortPsbtInputBags(rows.map((r) => ({
+    txid: r.tx.getId(),
+    vout: r.vout,
+    index: r.vout,
+    tx: r.tx,
+    out: r.out,
+    inputSats: r.inputSats
+  })));
+
   const psbt = new Psbt({ network });
   const controlBlock = buildTapLeafControlBlock(payBuf, refBuf, payBuf);
 
-  for (const r of rows) {
+  for (const r of sortedRows) {
     psbt.addInput({
       hash: r.tx.getId(),
       index: r.vout,

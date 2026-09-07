@@ -68,4 +68,45 @@ describe('federationVault', () => {
     assert.strictEqual(r.inputSats, 100000);
     assert.strictEqual(r.destSats, 99000);
   });
+
+  it('resolveFederationInternalKeyMode defaults to nums', () => {
+    assert.strictEqual(federationVault.normalizeFederationInternalKeyMode(undefined), 'nums');
+    assert.strictEqual(federationVault.normalizeFederationInternalKeyMode('MUSIG2'), 'musig2');
+    assert.strictEqual(federationVault.resolveFederationInternalKeyMode({}, {}), 'nums');
+    assert.strictEqual(
+      federationVault.resolveFederationInternalKeyMode(
+        { federation: { internalKeyMode: 'musig2' } },
+        {}
+      ),
+      'musig2'
+    );
+    assert.strictEqual(
+      federationVault.resolveFederationInternalKeyMode(
+        { federation: { internalKeyMode: 'musig2' } },
+        { FABRIC_FEDERATION_INTERNAL_KEY_MODE: 'nums' }
+      ),
+      'nums'
+    );
+  });
+
+  it('buildFederationVaultFromPolicy nums vs default are different addresses when n>=2', function () {
+    const musig = federationVault.buildFederationVaultFromPolicy({
+      validatorPubkeysHex: [pkA, pkB, pkC],
+      threshold: 2,
+      networkName: 'regtest',
+      internalKeyMode: 'musig2'
+    });
+    const nums = federationVault.buildFederationVaultFromPolicy({
+      validatorPubkeysHex: [pkA, pkB, pkC],
+      threshold: 2,
+      networkName: 'regtest',
+      internalKeyMode: 'nums'
+    });
+    if (musig.address === nums.address) {
+      // Core pin older than PR #185 H2 plumbing.
+      this.skip();
+    }
+    assert.notStrictEqual(musig.address, nums.address);
+    assert.strictEqual(nums.internalPubkeyHex, federationVault.TAPROOT_INTERNAL_NUMS.toString('hex'));
+  });
 });

@@ -1,0 +1,147 @@
+<!-- Copied from @fabric/passport store/privacy.html — keep in lockstep. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy Policy — Fabric Passport</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      line-height: 1.55;
+      background: #0b0f1a;
+      color: #e5e7eb;
+    }
+    main { max-width: 44rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    h1 { font-size: 1.75rem; margin: 0 0 0.35rem; color: #f9fafb; }
+    h2 { font-size: 1.15rem; margin: 2rem 0 0.6rem; color: #f9fafb; }
+    p, li { color: #d1d5db; }
+    .meta { color: #9ca3af; font-size: 0.95rem; }
+    a { color: #2dd4bf; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.92rem; margin: 1rem 0; }
+    th, td { border: 1px solid #1f2937; padding: 0.5rem 0.6rem; vertical-align: top; text-align: left; }
+    th { background: #111827; color: #f9fafb; }
+    .limited {
+      border: 1px solid #134e4a;
+      background: #042f2e;
+      padding: 0.9rem 1rem;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Privacy Policy — Fabric Passport</h1>
+    <p class="meta">
+      Product: Fabric Passport (<code>@fabric/passport</code>), a Chromium extension<br />
+      Operator: Fabric Labs<br />
+      Effective: 15 August 2026<br />
+      Contact: <a href="mailto:security@fabric.pub">security@fabric.pub</a>
+    </p>
+    <p>
+      This policy describes how Fabric Passport handles information on your computer and what, if anything, leaves the extension. It is written to satisfy the Chrome Web Store User Data Policy, including Limited Use.
+    </p>
+    <p class="limited">
+      <strong>The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.</strong>
+    </p>
+
+    <h2>1. What this extension is</h2>
+    <p>
+      Fabric Passport is a local cryptographic identity wallet. It lets you create or restore a Fabric identity, sign in to Fabric websites (client-signed Hub sessions), mutually link devices, and use Bitcoin keys derived from that identity against a Fabric Hub you choose.
+    </p>
+    <p>
+      Fabric Labs does not operate a cloud account for Passport. There is no Passport signup with us. We do not receive your seed phrase, wallet password, or private keys.
+    </p>
+
+    <h2>2. Information handled on this device</h2>
+    <p>
+      The following is stored in Chromium extension storage on your machine (encrypted at rest with AES-GCM where the implementation encrypts wallet material):
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>What</th>
+          <th>Leaves this device?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Authentication information</td>
+          <td>Wallet password verifier; encrypted seed / extended keys</td>
+          <td>No (unless you export a backup yourself)</td>
+        </tr>
+        <tr>
+          <td>Personally identifiable information</td>
+          <td>Fabric public key / identity id; optional display labels you type</td>
+          <td>Public key is sent only to Hubs you connect to or sites you approve</td>
+        </tr>
+        <tr>
+          <td>Financial and payment information</td>
+          <td>Bitcoin addresses and xpub derived from your seed; optional Lightning invoice you choose to pay</td>
+          <td>Sent only to the active Fabric Hub you configured, when you use Wallet features</td>
+        </tr>
+        <tr>
+          <td>User activity</td>
+          <td>Last-activity timestamp; coarse request counts and Content-Length sums for trusted Hub origins only</td>
+          <td>No — kept in memory / local storage for the extension UI</td>
+        </tr>
+        <tr>
+          <td>Web history (narrow)</td>
+          <td>Origins of Fabric Hubs you Connect &amp; register; origin + session id of a site-login or device-link you are asked to approve</td>
+          <td>Shown to you in the approval UI; Hub origin list stays local unless you use that Hub</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Passport does not collect health information, location, general browsing history, page HTML, cookies from unrelated sites, or advertising identifiers.
+    </p>
+    <p>
+      The content script runs on HTTPS pages (and listed loopback Hub ports) so a Fabric site can postMessage a login or device-link request. It does not scrape the page. It ignores messages that are not Fabric site-login, device-link, or Hub mesh-bridge messages.
+    </p>
+
+    <h2>3. Information sent to other computers</h2>
+    <p>Passport talks to the network only when you use a feature that needs it:</p>
+    <ol>
+      <li>A Fabric Hub you choose (default public hub <a href="https://hub.fabric.pub">https://hub.fabric.pub</a>, or a local/self-hosted Hub, or another allowlisted HTTPS hub). Examples: network status, WebRTC peer registration, client-signed session signatures, device-link signatures, optional Bitcoin or Lightning calls through that Hub’s HTTP API.</li>
+      <li>The website that asked you to sign in, only after you click Approve &amp; sign (or Approve &amp; link). The payload is a BIP340 signature plus public identity material — not your seed.</li>
+      <li>Chrome / Google as part of installing or updating the extension from the Chrome Web Store. Fabric Labs does not receive that telemetry.</li>
+    </ol>
+    <p>
+      Cleartext http:// is allowed only for loopback (localhost / 127.0.0.1) so you can develop against a local Hub. Public hubs must be HTTPS.
+    </p>
+    <p>
+      We do not sell user data. We do not use user data for advertising, credit-worthiness, or lending. We do not transfer user data to data brokers.
+    </p>
+    <p>
+      Hubs you connect to are independent operators. Their own privacy practices apply to what they log. Fabric Labs operates hub.fabric.pub; other hosts are not this extension’s publisher.
+    </p>
+
+    <h2>4. Why we request permissions</h2>
+    <p>
+      Permissions exist so Passport can keep keys on-device, show an approval prompt, inject a small content script for Fabric postMessage, keep a WebRTC offscreen document alive for Hub mesh, and (only after Connect &amp; register) attach a public X-Fabric-Identity header on requests to that Hub.
+    </p>
+
+    <h2>5. Retention and deletion</h2>
+    <p>
+      Local data remains until you remove the identity in Passport settings, clear extension storage, or uninstall the extension. Uninstalling Passport deletes Chromium extension storage for this item on that profile. We cannot remotely delete keys we never received.
+    </p>
+
+    <h2>6. Children</h2>
+    <p>Passport is not directed at children under 13 (or the applicable age in your country). Do not use it to store a child’s identity.</p>
+
+    <h2>7. Changes</h2>
+    <p>
+      Canonical source: the <code>@fabric/passport</code> repository (<code>docs/privacy-policy.md</code> and this page). Hosted copy: <a href="https://hub.fabric.pub/passport-privacy.html">https://hub.fabric.pub/passport-privacy.html</a> after Hub deploy.
+    </p>
+
+    <h2>8. Contact</h2>
+    <p>
+      Security and privacy: <a href="mailto:security@fabric.pub">security@fabric.pub</a><br />
+      Source and issues: <a href="https://github.com/FabricLabs/fabric-browser-extension">github.com/FabricLabs/fabric-browser-extension</a>
+    </p>
+  </main>
+</body>
+</html>

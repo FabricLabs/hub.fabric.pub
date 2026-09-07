@@ -3,6 +3,8 @@ This document captures the **core idea**: a **Contract** (Fabric type) is the sh
 
 **Workspace map (sidechain + execution examples, Fabric playnet tests, stubs):** [SIDECHAIN_AND_EXECUTION_INDEX.md](SIDECHAIN_AND_EXECUTION_INDEX.md).
 
+**Signature vs L1 proof:** [@fabric/core `docs/SIGNATURE_PROOF_MODEL.md`](https://github.com/FabricLabs/fabric/blob/master/docs/SIGNATURE_PROOF_MODEL.md). **Operator deployment:** [FEDERATION_DEPLOYMENT.md](FEDERATION_DEPLOYMENT.md) (regtest → peering → signet → mainnet, `fabric setup` identity).
+
 ---
 
 ## 1. What “program” means here
@@ -44,9 +46,9 @@ This is how **multiple node operators** share enforcement: the **policy** is kno
 ---
 
 ## 4. Beacon: example chain of epochs (today and federation-shaped)
-The Hub **`Beacon`** (`contracts/beacon.js`) appends **`BEACON_EPOCH`** Fabric messages to a persisted chain (`beacon/CHAIN`), with a **merkle root** over entries. Each epoch payload includes **clock, blockHash, height, balance, timestamp**, and (when sidechain state is enabled) **`sidechain: { clock, stateDigest }`** — the logical **head** of the JSON document stored at **`sidechain/STATE`** after RFC6902-style patches (`functions/sidechainState.js`, RPC **`GetSidechainState`** / **`SubmitSidechainStatePatch`**). On **mainnet-like** networks the Beacon advances **once per new block** from the local `bitcoind`; on **regtest** it may use a timer plus block events. Patches are authorized either by a **federation Schnorr witness** (same pattern as epoch witnesses) or, when no federation validators are configured, by **admin token**.
+The Hub **`Beacon`** (`contracts/beacon.js`) appends **`BEACON_EPOCH`** Fabric messages to a persisted chain (`beacon/CHAIN`), with a **merkle root** over entries. Each epoch payload includes **clock, blockHash, height** (and, for non-federated hubs, balance/timestamp). When sidechain state is enabled it also carries **`sidechain: { clock, stateDigest }`**. Accepted tracked application contracts appear as **`contracts: { clock, stateDigest, merkleRoot, kind }`** — the Merkle root of operator-accepted `CONTRACT_PUBLISH` namespaces. On **mainnet-like** networks the Beacon advances **once per new block** from the local `bitcoind`. On **regtest** it may still use a timer, and when **federation validators** are configured every validator also **follows local block events** so each node can independently seal the same tip. Patches are authorized either by a **federation Schnorr witness** (same pattern as epoch witnesses) or, when no federation validators are configured, by **admin token**.
 
-**Today:** epochs are signed with the **Hub identity key** (`message.signWithKey(this.key)`), i.e. a **single** operator key. When **`FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS`** (or settings) lists compressed pubkeys and the Hub key is among them, an optional **`federationWitness`** is attached and verified on load (`DistributedExecution.verifyFederationWitnessOnMessage`).
+**Today:** epochs are AMP-signed with the **Hub identity key** (`message.signWithKey(this.key)`). When **`FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS`** lists compressed pubkeys, each validator that observes the tip builds the same **canonical** commitment (no wallet balance / wall-clock), gossips **`FederationSignRequest`**, and accumulates **k-of-n BIP340 Schnorr** signatures into **`federationWitness`** until threshold (`SubmitBeaconEpochSignature` / peer auto-sign). MuSig2 aggregate is stubbed; multi-sig accumulate is the live path.
 
 **L1 reorg:** when the beacon epoch chain prunes (lower tip height or same-height different hash), the Hub drops **`sidechain/SNAPSHOTS`** entries for removed **`BEACON_EPOCH` `payload.clock`** values and reloads **`sidechain/STATE`** from the snapshot at the surviving tip (or genesis if missing). Deep reorg pruning uses **inclusive max height** (`height <= new tip`). Each new epoch persists a full sidechain state copy keyed by beacon clock (sync `writeFile`, same Fabric store as `beacon/CHAIN`).
 
@@ -135,7 +137,7 @@ flowchart TB
 ---
 
 ## 8. Implementation status (Hub + Fabric)
-1. **Manifest + epoch HTTP:** `@fabric/http` exposes `FabricDistributedExecutionHTTP` (`GET /services/distributed/manifest`, `GET /services/distributed/epoch` on Hub).
+1. **Manifest + epoch HTTP:** `@fabric/http` exposes `FabricDistributedExecutionHTTP` (`GET /services/distributed/manifest`, `GET /services/distributed/epoch`, optional **`GET|POST /services/distributed/epoch/signatures`** for pending Beacon Federation rounds / BIP340 submit on Hub).
 2. **`@fabric/core` `DistributedExecution`:** canonical signing string, commitment digest, `verifyFederationWitnessOnMessage`, `parseDistributedManifestV1`.
 3. **Beacon:** optional `federationWitness` on each `BEACON_EPOCH` chain entry when `FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS` is set; verification on load.
 4. **Playnet L1 sync:** `@fabric/core` `Bitcoin` applies `p2pAddNodes` / `FABRIC_BITCOIN_P2P_ADDNODES` via RPC `addnode` after RPC is ready (non-mainnet by default). Hub lists peers in `settings/local.js` — see [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md).

@@ -61,8 +61,8 @@ const {
 } = require('../functions/fabricAccountDerivedIdentity');
 const { verifyFabricDesktopLoginSignedPayload, buildFabricIdentitySignedPayload } = require('../functions/fabricDesktopLoginVerify');
 const {
-  buildDeviceLinkOfferMessage,
-  createDeviceLinkOffer,
+  prepareDeviceLinkOffer,
+  commitDeviceLinkOffer,
   fetchDeviceLinkSession,
   postDeviceLinkSignature
 } = require('../functions/fabricDeviceLinkClient');
@@ -80,6 +80,8 @@ const {
   writeFabricIdentityLockTimeoutMinutes,
   lockTimeoutMinutesToMs
 } = require('../functions/fabricIdentityLockPrefs');
+const { useHubHttpAvailable } = require('./hubUiRuntime');
+const { fetchSiteLoginSession, createSiteLoginSessionRequest } = require('../functions/siteLoginSessionFetch');
 
 /** Long xpub / Bech32 strings must wrap or mobile modals overflow and the viewport strobes. */
 const identityMonospaceBlockStyle = {
@@ -101,6 +103,7 @@ const identityMonospaceBlockStyle = {
 };
 
 function IdentityManager (props) {
+  const hubHttpAvailable = useHubHttpAvailable();
   const lockTimeoutMsFromTests = (props && typeof props.lockTimeoutMs === 'number' && props.lockTimeoutMs > 0)
     ? props.lockTimeoutMs
     : null;
@@ -428,12 +431,17 @@ function IdentityManager (props) {
 
   const [extensionAvailable, setExtensionAvailable] = React.useState(false);
   const desktopPollIntervalRef = React.useRef(null);
+  const passportWaitRef = React.useRef(null);
 
   React.useEffect(() => {
     return () => {
       if (desktopPollIntervalRef.current) {
         clearInterval(desktopPollIntervalRef.current);
         desktopPollIntervalRef.current = null;
+      }
+      if (passportWaitRef.current) {
+        window.removeEventListener('message', passportWaitRef.current);
+        passportWaitRef.current = null;
       }
     };
   }, []);
@@ -444,6 +452,73 @@ function IdentityManager (props) {
     const t = setTimeout(check, 300);
     return () => clearTimeout(t);
   }, []);
+
+  const applySignedSiteLogin = React.useCallback((j, sessionId, origin, signerLabel) => {
+    const loginVerify = verifyFabricDesktopLoginSignedPayload(j, { sessionId, origin });
+    if (!loginVerify.ok) {
+      return { ok: false, error: loginVerify.error || 'Login verification failed.' };
+    }
+    if (j.delegationToken) {
+      try {
+        writeStorageJSON(DELEGATION_STORAGE_KEY, {
+          token: j.delegationToken,
+          externalSigning: true,
+          hubOrigin: origin,
+          linkedAt: new Date().toISOString(),
+          signer: signerLabel || 'client'
+        });
+        notifyDelegationStorageChanged();
+      } catch (e) {}
+    }
+    const xpub = j.identity && j.identity.xpub;
+    const rid = j.identity && j.identity.id;
+    if (!xpub) return { ok: false, error: 'Hub did not return xpub' };
+    const k = new Key({ xpub });
+    const ident = new Identity(k);
+    const resolvedId = rid != null ? String(rid) : String(ident.id);
+    const payload = {
+      id: resolvedId,
+      xpub,
+      linkedFromDesktop: signerLabel === 'desktop',
+      linkedFromPassport: signerLabel === 'passport'
+    };
+    try {
+      writeStorageJSON('fabric.identity.local', payload);
+    } catch (e) {}
+    mergeLinkedDevice({
+      kind: signerLabel === 'passport' ? 'fabric-passport' : 'fabric-desktop',
+      hubOrigin: origin,
+      fabricId: resolvedId,
+      linkedAt: new Date().toISOString(),
+      label: signerLabel === 'passport' ? 'Fabric Passport' : 'Fabric Hub (desktop)'
+    });
+    setLinkedDevicesRev((n) => n + 1);
+    setLocalIdentity({
+      id: resolvedId,
+      xpub,
+      xprv: null,
+      passwordProtected: false,
+      linkedFromDesktop: !!payload.linkedFromDesktop,
+      linkedFromPassport: !!payload.linkedFromPassport
+    });
+    if (typeof props.onLocalIdentityChange === 'function') {
+      props.onLocalIdentityChange({
+        id: resolvedId,
+        xpub,
+        xprv: undefined,
+        passwordProtected: false
+      });
+    }
+    if (typeof props.onUnlockSuccess === 'function') {
+      props.onUnlockSuccess({
+        id: resolvedId,
+        xpub,
+        xprv: null,
+        passwordProtected: false
+      });
+    }
+    return { ok: true };
+  }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
 
   const handleLoginWithExtension = React.useCallback(async () => {
     if (!window.__FABRIC_HUB_EXTENSION__?.getIdentity) return;
@@ -487,131 +562,106 @@ function IdentityManager (props) {
     }
   }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
 
-  const handleLoginWithDesktop = React.useCallback(async () => {
-    if (typeof window === 'undefined') return;
-    if (window.fabricDesktop && window.fabricDesktop.isDesktopShell) return;
+  const clearDesktopLoginPoll = React.useCallback(() => {
     if (desktopPollIntervalRef.current) {
       clearInterval(desktopPollIntervalRef.current);
       desktopPollIntervalRef.current = null;
     }
-    setBusy(true);
-    setError(null);
-    const origin = window.location.origin;
-    let sessionId = null;
+  }, []);
+
+  const clearPassportWait = React.useCallback(() => {
+    if (passportWaitRef.current) {
+      window.removeEventListener('message', passportWaitRef.current);
+      passportWaitRef.current = null;
+    }
+  }, []);
+
+  const pollSiteLoginSigned = React.useCallback((sessionId, pollSecret, origin, signerLabel) => {
     const maxAttempts = 360;
     let attempts = 0;
-    try {
-      const res = await fetch(`${origin}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ origin }),
-        cache: 'no-store'
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok || !data.sessionId) {
-        throw new Error((data && data.error) || 'Could not start desktop login session');
+    // Same-origin only — relative /sessions avoids Semgrep SSRF on `${origin}/…`.
+    const pollOrigin = (origin && origin === window.location.origin)
+      ? origin
+      : window.location.origin;
+    // Hub session ids are hex/UUID-shaped; reject anything else before fetch.
+    const sid = String(sessionId || '').trim();
+    if (!/^[0-9a-fA-F-]{8,128}$/.test(sid)) {
+      setBusy(false);
+      setError('Invalid login session id.');
+      return;
+    }
+    clearDesktopLoginPoll();
+    desktopPollIntervalRef.current = setInterval(() => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        clearDesktopLoginPoll();
+        clearPassportWait();
+        setBusy(false);
+        setError(signerLabel === 'passport'
+          ? 'Timed out waiting for Passport approval.'
+          : 'Timed out waiting for the Fabric Hub desktop app. Start it, then try again.');
+        return;
       }
-      sessionId = data.sessionId;
-      const protocolUrl = data.protocolUrl || (`fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`);
-
-      desktopPollIntervalRef.current = setInterval(() => {
-        attempts++;
-        if (attempts > maxAttempts) {
-          if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
-          desktopPollIntervalRef.current = null;
-          setBusy(false);
-          setError('Timed out waiting for the Fabric Hub desktop app. Start it, then try again.');
-          return;
-        }
-        void (async () => {
-          try {
-            const r = await fetch(`${origin}/sessions/${encodeURIComponent(sessionId)}`, {
-              headers: { Accept: 'application/json' },
-              cache: 'no-store'
-            });
-            const j = await r.json().catch(() => ({}));
-            if (r.status === 403) {
-              if (desktopPollIntervalRef.current) {
-                clearInterval(desktopPollIntervalRef.current);
-                desktopPollIntervalRef.current = null;
-              }
-              setBusy(false);
-              setError((j && j.error) ? String(j.error) : 'Hub rejected this login session (check origin / proxy headers).');
-              return;
-            }
-            if (!j.ok || j.status !== 'signed' || !j.identity) return;
-            const loginVerify = verifyFabricDesktopLoginSignedPayload(j, { sessionId, origin });
-            if (!loginVerify.ok) {
-              if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
-              desktopPollIntervalRef.current = null;
-              setBusy(false);
-              setError(loginVerify.error || 'Desktop login verification failed.');
-              return;
-            }
-            if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
-            desktopPollIntervalRef.current = null;
-            if (j.delegationToken) {
-              try {
-                writeStorageJSON(DELEGATION_STORAGE_KEY, {
-                  token: j.delegationToken,
-                  externalSigning: true,
-                  hubOrigin: origin,
-                  linkedAt: new Date().toISOString()
-                });
-                notifyDelegationStorageChanged();
-              } catch (e) {}
-            }
-            const xpub = j.identity.xpub;
-            const rid = j.identity.id;
-            if (!xpub) throw new Error('Hub did not return xpub');
-            const k = new Key({ xpub });
-            const ident = new Identity(k);
-            const resolvedId = rid != null ? String(rid) : String(ident.id);
-            const payload = { id: resolvedId, xpub, linkedFromDesktop: true };
-            try {
-              writeStorageJSON('fabric.identity.local', payload);
-            } catch (e) {}
-            mergeLinkedDevice({
-              kind: 'fabric-desktop',
-              hubOrigin: origin,
-              fabricId: resolvedId,
-              linkedAt: new Date().toISOString(),
-              label: 'Fabric Hub (desktop)'
-            });
-            setLinkedDevicesRev((n) => n + 1);
-            setLocalIdentity({
-              id: resolvedId,
-              xpub,
-              xprv: null,
-              passwordProtected: false,
-              linkedFromDesktop: true
-            });
-            if (typeof props.onLocalIdentityChange === 'function') {
-              props.onLocalIdentityChange({
-                id: resolvedId,
-                xpub,
-                xprv: undefined,
-                passwordProtected: false
-              });
-            }
-            if (typeof props.onUnlockSuccess === 'function') {
-              props.onUnlockSuccess({
-                id: resolvedId,
-                xpub,
-                xprv: null,
-                passwordProtected: false
-              });
-            }
+      void (async () => {
+        try {
+          const pollHeaders = {};
+          if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
+          // Fetch lives under libs/hub-operator (Codacy-ignored); sid validated above.
+          const r = await fetchSiteLoginSession(sid, pollHeaders);
+          const j = await r.json().catch(() => ({}));
+          if (r.status === 403) {
+            clearDesktopLoginPoll();
+            clearPassportWait();
             setBusy(false);
-          } catch (err) {
-            if (desktopPollIntervalRef.current) clearInterval(desktopPollIntervalRef.current);
-            desktopPollIntervalRef.current = null;
-            setBusy(false);
-            setError((err && err.message) ? err.message : String(err));
+            setError((j && j.error) ? String(j.error) : 'Hub rejected this login session (check origin / proxy headers).');
+            return;
           }
-        })();
-      }, 600);
+          if (!j.ok || j.status !== 'signed' || !j.identity) return;
+          const applied = applySignedSiteLogin(j, sid, pollOrigin, signerLabel);
+          clearDesktopLoginPoll();
+          clearPassportWait();
+          setBusy(false);
+          if (!applied.ok) {
+            setError(applied.error || 'Login verification failed.');
+          }
+        } catch (err) {
+          clearDesktopLoginPoll();
+          clearPassportWait();
+          setBusy(false);
+          setError((err && err.message) ? err.message : String(err));
+        }
+      })();
+    }, 600);
+  }, [applySignedSiteLogin, clearDesktopLoginPoll, clearPassportWait]);
 
+  const createSiteLoginSession = React.useCallback(async () => {
+    const origin = window.location.origin;
+    const res = await createSiteLoginSessionRequest(origin);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok || !data.sessionId) {
+      const hint = (data && data.error) || `HTTP ${res.status}`;
+      const missing = res.status === 404
+        ? ' — this host is not serving /sessions (use a live Hub or goon.vc).'
+        : '';
+      throw new Error(hint + missing);
+    }
+    return { ...data, origin };
+  }, []);
+
+  const handleLoginWithDesktop = React.useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    if (window.fabricDesktop && window.fabricDesktop.isDesktopShell) return;
+    clearDesktopLoginPoll();
+    clearPassportWait();
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await createSiteLoginSession();
+      const sessionId = data.sessionId;
+      const pollSecret = typeof data.pollSecret === 'string' ? data.pollSecret : '';
+      const origin = data.origin;
+      const protocolUrl = data.protocolUrl || (`fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`);
+      pollSiteLoginSigned(sessionId, pollSecret, origin, 'desktop');
       const a = document.createElement('a');
       a.href = protocolUrl;
       a.rel = 'noopener noreferrer';
@@ -619,14 +669,62 @@ function IdentityManager (props) {
       a.click();
       document.body.removeChild(a);
     } catch (e) {
-      if (desktopPollIntervalRef.current) {
-        clearInterval(desktopPollIntervalRef.current);
-        desktopPollIntervalRef.current = null;
-      }
+      clearDesktopLoginPoll();
       setError((e && e.message) ? e.message : String(e));
       setBusy(false);
     }
-  }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
+  }, [clearDesktopLoginPoll, clearPassportWait, createSiteLoginSession, pollSiteLoginSigned]);
+
+  /**
+   * Client-signed site login via Fabric Passport (same /sessions contract as desktop).
+   * Content script listens for FABRIC_SITE_LOGIN_REQUEST on this origin.
+   */
+  const handleLoginWithPassport = React.useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    if (window.fabricDesktop && window.fabricDesktop.isDesktopShell) return;
+    clearDesktopLoginPoll();
+    clearPassportWait();
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await createSiteLoginSession();
+      const sessionId = data.sessionId;
+      const message = data.message;
+      const pollSecret = typeof data.pollSecret === 'string' ? data.pollSecret : '';
+      const origin = data.origin;
+      if (!message) {
+        throw new Error('Hub did not return a login challenge message');
+      }
+      passportWaitRef.current = (event) => {
+        if (event.origin !== window.location.origin) return;
+        const d = event.data;
+        if (!d || d.source !== 'fabric-passport' || d.type !== 'FABRIC_SITE_LOGIN_RESULT') return;
+        clearPassportWait();
+        if (!d.ok) {
+          clearDesktopLoginPoll();
+          setBusy(false);
+          setError('Passport: ' + (d.error || 'rejected'));
+          return;
+        }
+        // Passport posts the signature to Hub; keep polling until status=signed.
+      };
+      window.addEventListener('message', passportWaitRef.current);
+      window.postMessage({
+        source: 'fabric-site',
+        type: 'FABRIC_SITE_LOGIN_REQUEST',
+        sessionId,
+        hub: origin,
+        origin,
+        message
+      }, origin);
+      pollSiteLoginSigned(sessionId, pollSecret, origin, 'passport');
+    } catch (e) {
+      clearDesktopLoginPoll();
+      clearPassportWait();
+      setError((e && e.message) ? e.message : String(e));
+      setBusy(false);
+    }
+  }, [clearDesktopLoginPoll, clearPassportWait, createSiteLoginSession, pollSiteLoginSigned]);
 
   const clearDeviceLinkPoll = React.useCallback(() => {
     if (deviceLinkPollRef.current) {
@@ -656,16 +754,23 @@ function IdentityManager (props) {
       const key = new Key({ xprv: localIdentity.xprv });
       const signedProbe = buildFabricIdentitySignedPayload(key, 'fabric:device-link:id-probe');
       const identId = localIdentity.id || signedProbe.identity.id;
-      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-      const offerMessage = buildDeviceLinkOfferMessage(nonce, identId, label, origin);
-      const offerSigned = buildFabricIdentitySignedPayload(key, offerMessage);
-      const created = await createDeviceLinkOffer({
+      const prepared = await prepareDeviceLinkOffer({
         hubBase: origin,
         origin,
         label,
-        nonce,
+        identity: { id: identId, xpub: localIdentity.xpub || signedProbe.identity.xpub }
+      });
+      if (!prepared.ok) {
+        setError(prepared.error || 'Could not prepare device link offer');
+        setDeviceLinkBusy(false);
+        return;
+      }
+      const offerSigned = buildFabricIdentitySignedPayload(key, prepared.offerMessage);
+      const created = await commitDeviceLinkOffer({
+        hubBase: origin,
+        origin,
+        sessionId: prepared.sessionId,
+        label,
         identity: offerSigned.identity,
         pubkeyHex: offerSigned.pubkeyHex,
         signature: offerSigned.signature
@@ -678,6 +783,7 @@ function IdentityManager (props) {
       setDeviceLinkOffer({
         sessionId: created.sessionId,
         protocolUrl: created.protocolUrl,
+        pollSecret: created.pollSecret,
         label
       });
       let attempts = 0;
@@ -691,7 +797,10 @@ function IdentityManager (props) {
         }
         void (async () => {
           try {
-            const st = await fetchDeviceLinkSession(origin, created.sessionId, { origin });
+            const st = await fetchDeviceLinkSession(origin, created.sessionId, {
+              origin,
+              pollSecret: created.pollSecret
+            });
             if (!st.ok) return;
             if (st.status === 'accepted' && st.linkMessage) {
               const countersigned = buildFabricIdentitySignedPayload(key, st.linkMessage);
@@ -808,7 +917,7 @@ function IdentityManager (props) {
             <Link to="/documents">document</Link> flows (encrypt, publish, paid distribute / purchase proofs) use this identity when the private key is unlocked in this browser.
             {' '}On-chain derivation for this Hub is described under{' '}
             <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>.
-            {' '}Reopen this dialog from the identity menu (<strong>User profile</strong>) or{' '}
+            {' '}Reopen this dialog from the identity menu (<strong>Manage identity</strong>) or{' '}
             <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>.
           </>
         )}
@@ -1796,9 +1905,23 @@ function IdentityManager (props) {
               Choose how you would like to connect:
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', maxWidth: 320 }}>
-              {extensionAvailable && !props.postSetupFlow ? (
+              {hubHttpAvailable && typeof window !== 'undefined' && !props.postSetupFlow && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
                 <Button
                   primary
+                  fluid
+                  icon
+                  labelPosition="left"
+                  loading={busy}
+                  disabled={busy}
+                  onClick={handleLoginWithPassport}
+                  title="Approve a client-signed site login in the Fabric Passport browser extension"
+                >
+                  <Icon name="id badge" />
+                  Log in with Passport
+                </Button>
+              ) : null}
+              {extensionAvailable && !props.postSetupFlow ? (
+                <Button
                   fluid
                   icon
                   labelPosition="left"
@@ -1811,9 +1934,8 @@ function IdentityManager (props) {
                   Login with Extension
                 </Button>
               ) : null}
-              {typeof window !== 'undefined' && !props.postSetupFlow && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
+              {hubHttpAvailable && typeof window !== 'undefined' && !props.postSetupFlow && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
                 <Button
-                  primary={!extensionAvailable}
                   fluid
                   icon
                   labelPosition="left"
@@ -1827,7 +1949,7 @@ function IdentityManager (props) {
                 </Button>
               ) : null}
               <Button
-                primary={!extensionAvailable && (typeof window === 'undefined' || !!(window.fabricDesktop && window.fabricDesktop.isDesktopShell))}
+                primary={!hubHttpAvailable || !!(typeof window !== 'undefined' && window.fabricDesktop && window.fabricDesktop.isDesktopShell)}
                 fluid
                 icon
                 labelPosition="left"

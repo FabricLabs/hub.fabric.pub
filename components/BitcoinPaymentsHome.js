@@ -1628,6 +1628,7 @@ class BitcoinPaymentsHome extends React.Component {
         {!transactionsOnly ? (
           <Segment
           id="wealth-payjoin-board"
+          data-testid="hub-payjoin-board"
           style={{
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
             background: '#0c0c0e',

@@ -25,6 +25,8 @@ describe('httpRouteCatalog', function () {
     assert.ok(routes.length >= 20);
     assert.ok(routes.every((r) => r.path.startsWith('/') && !isParameterizedPath(r.path)));
     assert.ok(routes.some((r) => r.path === '/settings'));
+    assert.ok(routes.some((r) => r.path === '/downloads'));
+    assert.ok(routes.some((r) => r.path === '/services/binaries'));
     assert.ok(routes.some((r) => r.path === '/services/bitcoin'));
     assert.ok(routes.some((r) => r.path === '/services/distributed/sidechain'));
   });

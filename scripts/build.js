@@ -10,7 +10,13 @@ const {
 
 require('../functions/patchLinkedFabricNodePath');
 
-require('@babel/register');
+require('@babel/register')({
+  // Default extensions include .cjs. Compiling bip174/bitcoinjs-lib .cjs under
+  // NODE_ENV=production rewrites `require('./global/globalXpub.cjs')` and the
+  // relative file no longer resolves. SSR only needs JSX in this tree.
+  extensions: ['.js', '.jsx'],
+  ignore: [/node_modules/, /\.cjs$/]
+});
 
 (function ensureConfigLocalJs () {
   const target = path.join(__dirname, '..', 'assets', 'config.local.js');
@@ -38,9 +44,6 @@ const settings = require('../settings/local');
 const Compiler = require('../types/compiler');
 const webpackConfigModule = require('../webpack.config');
 
-// Components
-const HubInterface = require('../components/HubInterface');
-
 function syncSemanticAssetsFromFabricHttp () {
   const root = path.join(__dirname, '..');
   const roots = resolveFabricHttpRoots(root);
@@ -59,36 +62,104 @@ function syncSemanticAssetsFromFabricHttp () {
   }
 }
 
+function resolveWebpackMode () {
+  // `npm start` / `desktop` / `ci` call this script without NODE_ENV=production.
+  // Default minify; `webpack serve --mode development` stays the HMR path.
+  return process.env.NODE_ENV === 'development' ? 'development' : 'production';
+}
+
 function resolveWebpackConfig () {
+  const mode = resolveWebpackMode();
+  console.log('[BUILD:SITE] webpack mode=' + mode);
   return typeof webpackConfigModule === 'function'
-    ? webpackConfigModule({}, { mode: 'development' })
+    ? webpackConfigModule({}, { mode })
     : webpackConfigModule;
 }
 
-// Program Body
+function runWebpack (config) {
+  return new Promise((resolve, reject) => {
+    webpack(config).run((err, stats) => {
+      if (err) return reject(err);
+      if (stats && stats.hasErrors()) {
+        const info = stats.toJson({ all: false, errors: true });
+        const msg = (info.errors || []).map((e) => e.message || e).join('\n');
+        return reject(new Error(msg || stats.toString({ colors: false })));
+      }
+      if (stats) {
+        console.log(stats.toString({ colors: true, chunks: false, modules: false }));
+        try {
+          fs.writeFileSync(
+            '/tmp/hub-webpack-stats.json',
+            JSON.stringify(stats.toJson({
+              all: false,
+              assets: true,
+              chunks: true,
+              modules: true,
+              nestedModules: false,
+              source: false
+            }))
+          );
+          console.log('[BUILD:SITE] wrote webpack stats to /tmp/hub-webpack-stats.json');
+        } catch (writeErr) {
+          console.warn('[BUILD:SITE] could not write webpack stats:', writeErr.message);
+        }
+      }
+      resolve(stats);
+    });
+  });
+}
+
 async function main (input = {}) {
   syncSemanticAssetsFromFabricHttp();
-  const site = new HubInterface(input);
   const buildWebpackConfig = Object.assign({}, resolveWebpackConfig(), { watch: false });
-  const compiler = new Compiler({
-    document: site,
-    webpack: buildWebpackConfig,
-    ...input
-  });
+  await runWebpack(buildWebpackConfig);
 
-  await compiler.compileTo('assets/index.html');
+  try {
+    const { syncDownloadsAssets } = require('../functions/hubDownloadsIndex');
+    const dl = syncDownloadsAssets({ copyDist: false });
+    console.log('[BUILD:SITE] downloads index files=' + dl.fileCount);
+  } catch (dlErr) {
+    console.warn(
+      '[BUILD:SITE] downloads index skipped:',
+      dlErr && dlErr.message ? dlErr.message : dlErr
+    );
+  }
+
+  // HubInterface pulls bitcoinjs-lib at load (Payjoin / Sidechain). Node 24
+  // enforces bip174 package exports, so SSR can fail even when webpack succeeds.
+  let site = null;
+  try {
+    const HubInterface = require('../components/HubInterface');
+    site = new HubInterface(input);
+    // Do not pass the webpack config that just ran: plugins retain circular
+    // `compiler.root`, and Fabric Actor JSON-patch observe cannot clone it.
+    // Do not spread Hub `settings/local.js` into Compiler for the same reason.
+    const compiler = new Compiler({
+      document: site,
+      title: (input && (input.title || input.name)) || 'hub.fabric.pub',
+      skipWebpack: true
+    });
+    compiler.compileBundle = async () => ({ fullhash: 'prebuilt' });
+    await compiler.compileTo('assets/index.html');
+  } catch (ssrErr) {
+    console.warn(
+      '[BUILD:SITE] SPA bundle is ready; HTML SSR skipped:',
+      ssrErr && ssrErr.message ? ssrErr.message : ssrErr
+    );
+  }
 
   return {
-    site: site.id
+    site: site && site.id,
+    webpack: true
   };
 }
 
-// Run Program
-main(settings).catch((exception) => {
+main(settings).then((output) => {
+  console.log('[BUILD:SITE]', '[OUTPUT]', output);
+}).catch((exception) => {
   console.error('[BUILD:SITE]', '[EXCEPTION]', exception);
   if (exception && exception.stack) {
     console.error('[BUILD:SITE]', '[STACK]', exception.stack);
   }
-}).then((output) => {
-  console.log('[BUILD:SITE]', '[OUTPUT]', output);
+  process.exitCode = 1;
 });

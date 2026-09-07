@@ -374,8 +374,9 @@ function PeerDetail (props) {
     ? String(webrtcMeta.xpub).trim()
     : '';
   const bech32Headline = peer ? fabricPeerBech32Id(peer) : '';
-  const title = (bech32Headline ? shortenPublicId(bech32Headline, 18, 14) : null)
-    || (peer && (peer.nickname || peer.alias || peer.id || peer.address))
+  const title = (peer && peer.alias && String(peer.alias).trim())
+    || (bech32Headline ? shortenPublicId(bech32Headline, 18, 14) : null)
+    || (peer && (peer.nickname || peer.id || peer.address))
     || (webrtcXpub ? shortenPublicId(webrtcXpub, 14, 12) : null)
     || (routeLooksLikeXpub && id
       ? (id.length > 40 ? `${id.slice(0, 16)}…${id.slice(-14)}` : id)
@@ -913,6 +914,36 @@ function PeerDetail (props) {
                       <Table.Cell>{peer && peer.score != null ? String(peer.score) : '—'}</Table.Cell>
                     </Table.Row>
                     <Table.Row>
+                      <Table.Cell collapsing>Bandwidth</Table.Cell>
+                      <Table.Cell>
+                        {(() => {
+                          const inn = peer && peer.bytesIn;
+                          const out = peer && peer.bytesOut;
+                          const used = peer && Number.isFinite(Number(peer.windowBytes))
+                            ? Number(peer.windowBytes)
+                            : ((Number(peer && peer.windowBytesIn) || 0) + (Number(peer && peer.windowBytesOut) || 0));
+                          const budget = peer && Number(peer.budgetBytes);
+                          const fmt = (n) => {
+                            const v = Number(n);
+                            if (!Number.isFinite(v) || v < 0) return '—';
+                            if (v < 1024) return `${Math.round(v)} B`;
+                            if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
+                            return `${(v / 1048576).toFixed(2)} MiB`;
+                          };
+                          if (inn == null && out == null && !used) return '—';
+                          const budgetLabel = Number.isFinite(budget) && budget > 0 ? fmt(budget) : '32 KiB';
+                          return (
+                            <span>
+                              {fmt(inn)} in / {fmt(out)} out
+                              <span style={{ color: peer && peer.overBudget ? '#9f3a38' : '#767676', marginLeft: '0.65em' }}>
+                                10m {fmt(used)} / {budgetLabel} L1 share
+                              </span>
+                            </span>
+                          );
+                        })()}
+                      </Table.Cell>
+                    </Table.Row>
+                    <Table.Row>
                       <Table.Cell collapsing>First seen</Table.Cell>
                       <Table.Cell>{formatMaybeDate(peer && peer.firstSeen) || '—'}</Table.Cell>
                     </Table.Row>
@@ -1169,7 +1200,11 @@ function PeerDetail (props) {
                         {doc && doc.purchasePriceSats != null && <> — <strong>{formatSatsDisplay(doc.purchasePriceSats)} sats</strong></>}
                       </List.Description>
                       {doc && doc.htlc && doc.htlc.settlementId && (
-                        <div style={{ marginTop: '0.75em', fontSize: '0.85em', textAlign: 'left' }}>
+                        <div
+                          data-testid="peer-inventory-htlc"
+                          data-settlement-id={doc.htlc.settlementId}
+                          style={{ marginTop: '0.75em', fontSize: '0.85em', textAlign: 'left' }}
+                        >
                           <Label color="orange" size="small">P2TR HTLC</Label>
                           <div style={{ marginTop: '0.35em' }}>
                             <strong>{formatSatsDisplay(doc.htlc.amountSats || 0)} sats</strong>

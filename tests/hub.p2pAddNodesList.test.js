@@ -8,14 +8,24 @@ const settings = require('../settings/local');
 describe('Hub _bitcoinP2pAddNodesList', function () {
   this.timeout(30000);
 
-  it('includes hub.fabric.pub:18444 on regtest by default', function () {
+  it('includes hub.fabric.pub:18444 on regtest when skipPlaynetPeer is off', function () {
     const hub = new Hub(merge({}, settings, {
       port: 0,
-      bitcoin: merge({}, settings.bitcoin, { enable: false, network: 'regtest' }),
+      bitcoin: merge({}, settings.bitcoin, { enable: false, network: 'regtest', skipPlaynetPeer: false }),
       http: { listen: false }
     }));
     const list = hub._bitcoinP2pAddNodesList();
     assert.ok(list.includes('hub.fabric.pub:18444'), list.join(','));
+  });
+
+  it('omits playnet default when settings.bitcoin.skipPlaynetPeer is true', function () {
+    const hub = new Hub(merge({}, settings, {
+      port: 0,
+      bitcoin: merge({}, settings.bitcoin, { enable: false, network: 'regtest', skipPlaynetPeer: true, p2pAddNodes: [] }),
+      http: { listen: false }
+    }));
+    const list = hub._bitcoinP2pAddNodesList();
+    assert.ok(!list.includes('hub.fabric.pub:18444'), list.join(','));
   });
 
   it('omits playnet default when FABRIC_BITCOIN_SKIP_PLAYNET_PEER=1', function () {

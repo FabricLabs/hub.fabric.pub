@@ -2,7 +2,7 @@
 
 // Dependencies
 const React = require('react');
-const { Link, useLocation } = require('react-router-dom');
+const { Link, useLocation, useNavigate } = require('react-router-dom');
 
 // Semantic UI
 const {
@@ -28,9 +28,12 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
 const { buildLocalFabricIdentityPayload } = require('../functions/fabricHubLocalIdentity');
+const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
+const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
 
 function TopPanel (props) {
   const location = useLocation();
+  const navigate = useNavigate();
   const pathname = (location && location.pathname) || '/';
 
   const hubAddress = (props && props.hubAddress) ? String(props.hubAddress) : '';
@@ -40,7 +43,7 @@ function TopPanel (props) {
   const onManageIdentity = props && typeof props.onManageIdentity === 'function' ? props.onManageIdentity : null;
   const onUnlockIdentity = props && typeof props.onUnlockIdentity === 'function' ? props.onUnlockIdentity : null;
   const onLockIdentity = props && typeof props.onLockIdentity === 'function' ? props.onLockIdentity : null;
-  const onProfile = props && typeof props.onProfile === 'function' ? props.onProfile : onManageIdentity;
+  const onProfile = props && typeof props.onProfile === 'function' ? props.onProfile : null;
   const onSignMessage = props && typeof props.onSignMessage === 'function' ? props.onSignMessage : null;
   const onDestroyIdentity = props && typeof props.onDestroyIdentity === 'function' ? props.onDestroyIdentity : null;
   const onRefreshBalance = props && typeof props.onRefreshBalance === 'function' ? props.onRefreshBalance : null;
@@ -105,6 +108,22 @@ function TopPanel (props) {
     }
   }, [hasLocalIdentity, localIdentity && localIdentity.xpub, hasLockedIdentity]);
   const identitySource = localIdentity || auth || persistedIdentity;
+  const profilePeerId = (() => {
+    const id = identitySource && identitySource.id != null ? String(identitySource.id).trim() : '';
+    if (!id || isLikelyBip32ExtendedKey(id)) return '';
+    return id;
+  })();
+  const openUserProfile = () => {
+    if (typeof onProfile === 'function') {
+      onProfile();
+      return;
+    }
+    if (profilePeerId) {
+      navigate(`/peers/${encodeURIComponent(profilePeerId)}`);
+      return;
+    }
+    if (typeof onManageIdentity === 'function') onManageIdentity();
+  };
   const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
   // Password-protected identity without xprv in memory → show Locked (unlock flow).
   // xpub / watch-only (no password) → show Watch-only (upgrade/import path), not "Locked".
@@ -124,8 +143,8 @@ function TopPanel (props) {
   const identityLabel = (() => {
     if (!identitySource) return 'Login';
     if (identitySource.username) return identitySource.username;
-    if (identitySource.xpub) return formatIdentityValue(identitySource.xpub);
     if (identitySource.id) return formatIdentityValue(identitySource.id);
+    if (identitySource.xpub) return formatIdentityValue(identitySource.xpub);
     if (identitySource.address) return formatIdentityValue(identitySource.address);
     return 'Identity';
   })();
@@ -142,6 +161,10 @@ function TopPanel (props) {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
   const uiFlags = loadHubUiFeatureFlags();
   const isAdvancedMode = !!uiFlags.advancedMode;
+  const hubHttpAvailable = useHubHttpAvailable();
+  const meshAvailable = useHubMeshAvailable();
+  const showHubNav = hubHttpAvailable;
+  const showDocumentsNav = hubHttpAvailable || meshAvailable;
   void uiTick;
   const balanceChipHref = '/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel';
   const depositFlowHref = uiFlags.bitcoinPayments
@@ -240,24 +263,32 @@ function TopPanel (props) {
             <Icon name="home" />
             Home
           </Button>
-          {isAdvancedMode && uiFlags.peers && !publicHubVisitor ? (
+          {showHubNav && isAdvancedMode && uiFlags.peers && !publicHubVisitor ? (
             <Button as={Link} to="/peers" basic={!active('/peers')} primary={active('/peers')} aria-current={active('/peers') ? 'page' : undefined}>
               <Icon name="sitemap" />
               Peers
             </Button>
           ) : null}
-          <Button as={Link} to="/documents" basic={!active('/documents')} primary={active('/documents')} aria-current={active('/documents') ? 'page' : undefined}>
+          {showDocumentsNav ? (
+          <Button as={Link} to="/documents" data-testid="hub-nav-documents" basic={!active('/documents')} primary={active('/documents')} aria-current={active('/documents') ? 'page' : undefined}>
             <Icon name="file outline" />
             Documents
           </Button>
-          {!publicHubVisitor && isAdvancedMode ? (
+          ) : null}
+          {!showHubNav ? (
+          <Button as={Link} to="/settings" data-testid="hub-nav-settings" basic={!active('/settings')} primary={active('/settings')} aria-current={active('/settings') ? 'page' : undefined}>
+            <Icon name="setting" />
+            Settings
+          </Button>
+          ) : null}
+          {showHubNav && !publicHubVisitor && isAdvancedMode ? (
             <Button as={Link} to="/contracts" basic={!active('/contracts')} primary={active('/contracts')} aria-current={active('/contracts') ? 'page' : undefined}>
               <Icon name="file code" />
               Contracts
             </Button>
           ) : null}
         </Button.Group>
-        {!publicHubVisitor && isAdvancedMode ? (
+        {showHubNav && !publicHubVisitor && isAdvancedMode ? (
         <Dropdown
           item
           trigger={
@@ -406,7 +437,7 @@ function TopPanel (props) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-        {showSignedInControls && isAdvancedMode ? (
+        {showSignedInControls && isAdvancedMode && showHubNav ? (
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <Button
               as={Link}
@@ -444,7 +475,7 @@ function TopPanel (props) {
             )}
           </div>
         ) : null}
-        {(showSignedInControls || isLockedState) ? (
+        {(showHubNav && (showSignedInControls || isLockedState)) ? (
           <Popup
             on="hover"
             hoverable
@@ -501,7 +532,7 @@ function TopPanel (props) {
             content={walletChipMenu}
           />
         ) : null}
-        {!publicHubVisitor && isAdvancedMode && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0 && (
+        {(!publicHubVisitor && showHubNav && isAdvancedMode && bitcoin && bitcoin.mempoolTxCount != null && Number(bitcoin.mempoolTxCount) > 0) && (
           <Label
             as={Link}
             to="/services/bitcoin"
@@ -520,7 +551,7 @@ function TopPanel (props) {
                 <Button size="small" primary title="Identity — menu or lock">
                   <Icon name="unlock" style={{ marginRight: '0.15em' }} />
                   <Icon name="user circle" />
-                  {identityLabel}
+                  <span data-testid="hub-identity-chip-label">{identityLabel}</span>
                   <Icon name="dropdown" />
                 </Button>
               }
@@ -528,7 +559,21 @@ function TopPanel (props) {
               icon={null}
             >
               <Dropdown.Menu>
-                <Dropdown.Item icon="user" text="User profile" onClick={() => { onProfile && onProfile(); }} />
+                <Dropdown.Item
+                  icon="user"
+                  text="User profile"
+                  disabled={!profilePeerId && typeof onProfile !== 'function'}
+                  title={profilePeerId
+                    ? 'Open your peer profile (same page as clicking your name in chat)'
+                    : 'Unlock identity to open your peer profile'}
+                  onClick={() => { openUserProfile(); }}
+                />
+                <Dropdown.Item
+                  icon="key"
+                  text="Manage identity"
+                  onClick={() => { onManageIdentity && onManageIdentity(); }}
+                  title="Create, restore, lock, or export local Fabric keys"
+                />
                 <Dropdown.Item icon="pencil" text="Sign message" onClick={() => { onSignMessage && onSignMessage(); }} />
                 <Dropdown.Item
                   icon="plug"
@@ -579,7 +624,9 @@ function TopPanel (props) {
             }
           >
             <Icon name={isPasswordLocked ? 'lock' : isWatchOnlyIdentity ? 'eye' : 'user circle'} aria-hidden="true" />
-            {isPasswordLocked ? 'Locked' : isWatchOnlyIdentity ? 'Watch-only' : identityLabel}
+            {isPasswordLocked ? 'Locked' : isWatchOnlyIdentity ? 'Watch-only' : (
+              <span data-testid="hub-identity-chip-label">{identityLabel}</span>
+            )}
           </Button>
         )}
         {onOpenSettings ? (

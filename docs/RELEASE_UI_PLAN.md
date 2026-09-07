@@ -11,6 +11,21 @@ Living document for **hub.fabric.pub** / **Fabric Hub** desktop and web shell. I
 - **Empty / locked / loading** states use plain language and a single primary action where possible.
 - **Library and activity feeds** sort and label consistently (newest-first or documented order).
 
+### 1.1 Large-resolution screenshot rule (atomization)
+Gallery captures (`npm run screenshots`, default **1440×900** in `scripts/capture-user-flows.js`) are a **design probe**, not only marketing assets.
+
+When a shot at a **large viewport** shows unused side gutters, a single stretched column, or one page that scrolls through several unrelated jobs, treat that as a signal to **break the surface out** into smaller atoms that can be recomposed (tabs, side rails, dedicated routes, or independent widgets) — not to stretch the same monolith wider.
+
+| Signal in the shot | Prefer |
+|--------------------|--------|
+| Long vertical stack of unrelated jobs (status + admin tools + forms) | Separate routes or primary/secondary panes by **intent** |
+| Nested “sections” that already have their own refresh / timestamp | Independent widgets with their own lifecycle |
+| Docs / checklist prose mixed with live Accept / Reject actions | Ops board vs reference doc (link out) |
+| Full-bleed bands with sparse content and long crypto strings | Constrain content width; keep ids in compact chips / copy rows |
+| Settings / hub lists as one tall identical card stack | Multi-column grid or grouped hub with a side index |
+
+Concrete break-out candidates from the **2026-09-03** gallery: Home **Node overview** → identity / Bitcoin / health / shoutbox atoms; Bitcoin dashboard → overview vs node console vs wallet vs Payjoin/send; Peers → status vs dangerous flush vs mesh vs roster; Beacon Federation → live policy + tracked contracts vs long-form docs; Settings → grouped multi-column hub. Track as post-RC IA unless an item already has a P1 ID above.
+
 ---
 
 ## 2. Findings (backlog)

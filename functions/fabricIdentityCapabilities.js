@@ -42,7 +42,8 @@ function describeFabricIdentityCapabilities (parsed) {
 
 /**
  * Payload encrypted inside fabric-identity-backup v2 files — Fabric account subtree only (no HD master).
- * Caller must supply signing xprv (protocol node m/44'/7778'/n'/0/0).
+ * Caller must supply signing xprv (protocol node from
+ * `fabricIdentityDerivationPath(n, 0, network)` — 7777 mainnet / 7778 otherwise).
  */
 function buildFabricAccountSubtreeBackupInner ({
   fabricAccountIndex,

@@ -11,23 +11,26 @@ jobs:
     name: Run tests
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os:
         - macos-latest
         - ubuntu-latest
     steps:
     - name: Checkout hub
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         path: hub
+        persist-credentials: false
     - name: Checkout fabric-http (sibling for file:../fabric-http layouts)
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: FabricLabs/fabric-http
         ref: feature/rsi
         path: fabric-http
+        persist-credentials: false
     - name: Install Node.js on ${{ matrix.os }}
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         # Checkout uses path: hub, so .nvmrc is hub/.nvmrc (not repo root).
         node-version-file: 'hub/.nvmrc'
@@ -47,6 +50,12 @@ jobs:
       run: npm run test:smoke-mainnet-rpc
       working-directory: hub
     - name: Send coverage report
-      uses: codecov/codecov-action@v3.1.1
+      # Pin full commit SHA (Codacy: third-party actions must be immutable).
+      # Tag v7 → commit below (codecov/codecov-action@v7.0.0).
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
       with:
         directory: ./hub/reports/
+      # v4+ prefers a token even on public repos, so a tokenless upload can be
+      # rate-limited. Coverage is reporting, not a gate: match the `@fabric/core`
+      # workflows and never fail the build on it.
+      continue-on-error: true

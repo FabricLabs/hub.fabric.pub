@@ -6,7 +6,7 @@ const ecc = require('tiny-secp256k1');
 const Message = require('@fabric/core/types/message');
 const SetupService = require('../services/setup');
 const { mergeFabricPeersWithWebRtcRegistry } = require('./mergeFabricPeersWithWebRtcRegistry');
-const { buildFederationVaultFromPolicy } = require('./federationVault');
+const { buildFederationVaultFromPolicy, resolveFederationInternalKeyMode } = require('./federationVault');
 
 try {
   if (typeof ecc.__initializeContext === 'function') ecc.__initializeContext();
@@ -783,7 +783,11 @@ async function multisigPreview (hub, groupId) {
       const vault = buildFederationVaultFromPolicy({
         validatorPubkeysHex: validatorsCompressedSorted,
         threshold: m,
-        networkName: resolveHubBitcoinNetworkName(hub)
+        networkName: resolveHubBitcoinNetworkName(hub),
+        internalKeyMode: resolveFederationInternalKeyMode(
+          (hub && hub.settings) || {},
+          process.env
+        )
       });
       federationPolicy = {
         ready: true,

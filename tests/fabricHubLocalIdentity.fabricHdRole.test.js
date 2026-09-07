@@ -79,6 +79,7 @@ describe('fabricHubLocalIdentity fabricHdRole', () => {
     };
     const enc = encryptLocalIdentityAtRest(plain, 'correcthorse');
     assert.strictEqual(enc.passwordProtected, true);
+    assert.strictEqual(enc.atRestEncryption, 'aes-256-gcm-pbkdf2-sha256');
     const mat = decryptLocalIdentityMasterMaterial(enc, 'correcthorse');
     assert.strictEqual(mat, master);
   });

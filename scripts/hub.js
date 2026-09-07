@@ -5,6 +5,18 @@ const path = require('path');
 
 require('../functions/patchLinkedFabricNodePath');
 
+let loadFabricHomeEnv;
+try {
+  ({ loadFabricHomeEnv } = require('@fabric/core/functions/fabricHomeEnv'));
+} catch (err) {
+  if (err && err.code !== 'MODULE_NOT_FOUND') throw err;
+}
+if (typeof loadFabricHomeEnv === 'function') loadFabricHomeEnv();
+
+try {
+  require('../functions/hubManagedBinaries').applyManagedNodeBinariesToProcessEnv();
+} catch (_) {}
+
 // Settings
 let settings = require('../settings/local');
 
@@ -21,7 +33,8 @@ const defaultBitcoinRpcPort = (network) => {
 const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
-const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
+const { isHttpSharedModeEnabled, applySharedModeWebsocketGate } = require('../functions/httpSharedMode');
+const { applyHubBitcoinRuntimeFromSetup } = require('../functions/hubBitcoinSetup');
 const { spawnedBitcoindPid } = require('../functions/bitcoinManagedAttach');
 let resolveFabricPeerInterface;
 try {
@@ -79,8 +92,9 @@ try {
       }
       return v;
     };
-    if (setup.BITCOIN_NETWORK) {
-      settings = { ...settings, bitcoin: { ...settings.bitcoin, network: parseVal(setup.BITCOIN_NETWORK) || setup.BITCOIN_NETWORK } };
+    if (setup.BITCOIN_NETWORK || setup.BITCOIN_MANAGED !== undefined || setup.BITCOIN_PRESET || setup.BITCOIN_PRUNE != null) {
+      settings = { ...settings };
+      applyHubBitcoinRuntimeFromSetup(settings, setup);
     }
     if (setup.BITCOIN_MANAGED !== undefined) {
       const managed = parseVal(setup.BITCOIN_MANAGED);
@@ -120,6 +134,9 @@ try {
           interface: bindAll ? '0.0.0.0' : '127.0.0.1'
         }
       };
+      if (typeof applySharedModeWebsocketGate === 'function') {
+        settings = applySharedModeWebsocketGate(settings, { bindAll, env: process.env });
+      }
     }
   }
 } catch (e) {
@@ -192,6 +209,45 @@ if (typeof resolveFabricPeerInterface === 'function') {
   };
 }
 
+function _keyBagEmpty (bag) {
+  if (!bag || typeof bag !== 'object') return true;
+  const xprv = String(bag.xprv || '').trim();
+  const seed = String(bag.seed || '').trim();
+  const mnemonic = String(bag.mnemonic || '').trim();
+  return !(xprv || seed || mnemonic);
+}
+
+try {
+  const { exclusiveOperatorKeySettings, resolveFabricOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+  const exclusive = exclusiveOperatorKeySettings(settings.key);
+  if (exclusive) {
+    settings = { ...settings, key: exclusive };
+  } else if (_keyBagEmpty(settings.key)) {
+    const resolved = resolveFabricOperatorKeySettings(process.env, {
+      allowWalletFallback: true,
+      password: process.env.FABRIC_PASSWORD
+    });
+    if (resolved && resolved.key) {
+      settings = { ...settings, key: resolved.key };
+      console.log('[FABRIC:HUB] Identity from', resolved.source, '(fabric setup Environment)');
+    }
+  }
+} catch (_) {
+  if (_keyBagEmpty(settings.key)) {
+    try {
+      const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
+      const fromWallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
+      if (fromWallet && fromWallet.xprv) {
+        settings = {
+          ...settings,
+          key: { xprv: fromWallet.xprv, xpub: fromWallet.xpub || null }
+        };
+        console.log('[FABRIC:HUB] Identity loaded from ~/.fabric/wallet.json');
+      }
+    } catch (__) { /* older core pin or locked wallet */ }
+  }
+}
+
 // Services
 const Hub = require('../services/hub');
 const { logCrashReportHint } = require('../functions/fabricReportHint');
@@ -230,7 +286,12 @@ async function exitWithHubStop (reason = 'unknown', exitCode = 0) {
 
 // Main process
 async function main (input = {}) {
-  console.log('[FABRIC:HUB]', 'Hub settings:', input);
+  let logSettings = input;
+  try {
+    const { redactHubSettingsForLog } = require('../functions/redactHubSettings');
+    logSettings = redactHubSettingsForLog(input);
+  } catch (_) {}
+  console.log('[FABRIC:HUB]', 'Hub settings:', logSettings);
   const hub = new Hub(input);
   activeHub = hub;
 

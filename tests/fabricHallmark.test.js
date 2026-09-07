@@ -100,6 +100,7 @@ describe('fabricHallmark (Hub)', function () {
         calls.push({ method, args });
         if (method === 'walletcreatefundedpsbt') {
           assert.deepStrictEqual(args[1], [{ data: payload.toString('hex') }]);
+          assert.strictEqual(args[3] && args[3].fee_rate, 1);
           return { psbt: 'cHNidP8BAH0=' };
         }
         if (method === 'walletprocesspsbt') {
