@@ -38,6 +38,7 @@ const OPERATOR_REEXPORTS = [
   'hubSetupStores',
   'hubStoreReset',
   'peerIdentity',
+  'peerListFormat',
   'siteLoginSessionFetch'
 ];
 
