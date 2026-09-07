@@ -8,12 +8,18 @@ const beaconFederationSigning = require('../functions/beaconFederationSigning');
 
 describe('Beacon federation ready-round retry', function () {
   it('finalizes an already-ready round instead of rejecting round not open', async function () {
-    const b = new Beacon({ regtest: true, mineOnStart: false, interval: 0 });
+    const k1 = new Key({ private: '3333333333333333333333333333333333333333333333333333333333333333' });
+    const b = new Beacon({
+      regtest: true,
+      mineOnStart: false,
+      interval: 0,
+      federationValidators: [k1.pubkey],
+      federationThreshold: 1
+    });
     b.fs = {
       readFile: () => null,
       publish: async () => {}
     };
-    const k1 = new Key({ private: '3333333333333333333333333333333333333333333333333333333333333333' });
     const payload = { clock: 3, height: 3, blockHash: 'cc'.repeat(32) };
     const round = beaconFederationSigning.createRound(payload, {
       validators: [k1.pubkey],
@@ -59,19 +65,28 @@ describe('Beacon federation ready-round retry', function () {
   });
 
   it('does not double-append when the ready round is already on the epoch chain', async function () {
-    const b = new Beacon({ regtest: true, mineOnStart: false, interval: 0 });
+    const k1 = new Key({ private: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const b = new Beacon({
+      regtest: true,
+      mineOnStart: false,
+      interval: 0,
+      federationValidators: [k1.pubkey],
+      federationThreshold: 1
+    });
     b.fs = {
       readFile: () => null,
       publish: async () => {}
     };
     const payload = { clock: 4, height: 4, blockHash: 'dd'.repeat(32) };
     const digest = beaconFederationSigning.epochCommitmentDigestHex(payload);
+    const msg = beaconFederationSigning.messageBufferForPayload(payload);
+    const sig = k1.signSchnorr(msg).toString('hex');
     const round = {
       commitmentDigest: digest,
       payload,
-      validators: ['aa'],
+      validators: [k1.pubkey],
       threshold: 1,
-      witness: { version: 1, signatures: { aa: '00' } },
+      witness: { version: 1, signatures: { [k1.pubkey]: sig } },
       status: 'ready',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -81,7 +96,7 @@ describe('Beacon federation ready-round retry', function () {
     ]);
     b._pendingEpochRounds.set(digest, round);
 
-    const result = await b.submitFederationEpochSignature(digest, 'aa', '00');
+    const result = await b.submitFederationEpochSignature(digest, k1.pubkey, '00');
     assert.strictEqual(result.status, 'success');
     assert.strictEqual(result.sealed, true);
     assert.strictEqual(b._epochChain.height, 1);

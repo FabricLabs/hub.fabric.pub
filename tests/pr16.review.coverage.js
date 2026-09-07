@@ -51,10 +51,10 @@ describe('Hub PR #16 review coverage', function () {
     }
   });
 
-  it('lockfile pins fabric #0d128dc and fabric-http #fe41132', function () {
+  it('lockfile pins fabric #f91de931 and fabric-http #9e65927', function () {
     const lock = fs.readFileSync(path.join(__dirname, '..', 'package-lock.json'), 'utf8');
-    assert.ok(lock.includes('0d128dc4fe5dad1df34e4260237548e00fddc58d'), 'core pin');
-    assert.ok(lock.includes('fe4113273122f53845c3f99f4f18850cab125f65'), 'http pin');
+    assert.ok(lock.includes('f91de93181573e46d6370425de1c18e7d8a71eec'), 'core pin');
+    assert.ok(lock.includes('9e65927db253f2dcac635255c6b24855044a0e2e'), 'http pin');
   });
 
   it('declares stoppable so fabricHttpRebind works without http hoisting', function () {
