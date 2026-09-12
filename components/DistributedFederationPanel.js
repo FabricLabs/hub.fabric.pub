@@ -242,11 +242,11 @@ function DistributedFederationPanel (props) {
               — internal key: <strong>{manifest.federationVault.internalKeyMode}</strong>
               {manifest.federationVault.internalKeyMode === 'nums'
                 ? ' (historical NUMS vault; set FABRIC_FEDERATION_INTERNAL_KEY_MODE=musig2 only after sweeping to the new address)'
-                : ' (MuSig2 aggregate; not the pre-#185 NUMS address)'}
+                : ' (aggregate internal key mode — epoch MuSig2 seal is still incomplete; see FEDERATED_SETTLEMENT F4)'}
             </span>
           ) : null}
           <span style={{ display: 'block', marginTop: '0.4em', fontSize: '0.88em', color: '#555' }}>
-            Withdraw via <code>PrepareFederationVaultWithdrawalPsbt</code> on <code>POST /services/rpc</code> (admin token): pass <code>fundedTxHex</code> and <code>destinationAddress</code>; validators co-sign the returned PSBT off-node.
+            Withdraw via <code>PrepareFederationVaultWithdrawalPsbt</code> on <code>POST /services/rpc</code> (admin token): pass tip-bound <code>withdrawalRequest</code> (with <code>amountSats</code>) and <code>fundedTxHex</code>; when threshold ≥ 2 also pass <code>withdrawalWitnesses</code>. Propose burns with <code>ProposeFederationPegOut</code>; credit deposits with <code>CreateFederationPegInCredit</code>. Explicit-amount reserve (F0) is shipped; destination lock and the automatic peg watcher (F1–F2) are not — do not treat digests as peg-out authority.
           </span>
         </p>
       ) : manifest && manifest.federationVault && manifest.federationVault.status === 'no_validators' ? (

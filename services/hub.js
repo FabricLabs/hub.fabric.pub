@@ -8,6 +8,10 @@ const crypto = require('crypto');
 const os = require('os');
 const net = require('net');
 const dns = require('dns').promises;
+const { AsyncLocalStorage } = require('async_hooks');
+
+/** Per-request loopback flag for HTTP JSON-RPC (avoids racing a Hub instance field). */
+const _rpcHttpLocalStore = new AsyncLocalStorage();
 
 const { resolveAppAssetsDir } = require('@fabric/http');
 
@@ -210,6 +214,9 @@ const federationVault = require('../functions/federationVault');
 const federationRegistry = require('../functions/federationRegistry');
 const crowdfundingTaproot = require('../functions/crowdfundingTaproot');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
+const contractSpend = require('@fabric/core/functions/contractSpend');
+const federationReserveLedger = require('@fabric/core/functions/federationReserveLedger');
+const federationValidatorVerify = require('@fabric/core/functions/federationValidatorVerify');
 
 // Hub Services
 const Fabric = require('../services/fabric');
@@ -761,8 +768,6 @@ class Hub extends Service {
     this._delegationRegistry = new Map();
     /** @type {Map<string, Object>} */
     this._delegationSignatureMessages = new Map();
-    /** Set during `POST /services/rpc` dispatch from `req.socket.remoteAddress` (loopback vs LAN). Used by CreateDocument filePath ingest. */
-    this._rpcHttpIsLocal = false;
     /** Previous signed AMP `Message.id` for `_appendFabricMessage` (D-020). */
     this._outboundMessageTip = null;
     this.changes = new Logger({
@@ -3156,6 +3161,7 @@ class Hub extends Service {
       if (!allowed.includes('/namespaces')) allowed.push('/namespaces');
       // RSI service snapshots live under `/services/rsi` (prefix `/services`).
       if (!allowed.includes('/services')) allowed.push('/services');
+      if (!allowed.includes('/federationReserve')) allowed.push('/federationReserve');
       return Object.assign({}, policy, { allowedPathPrefixes: allowed });
     };
 
@@ -3174,8 +3180,31 @@ class Hub extends Service {
     if (maxOps != null && String(maxOps).trim() !== '') {
       return ensureNamespaces(sidechainState.parseStatechainPathPolicy({ maxOps: Math.max(1, Number(maxOps) || 64) }));
     }
-    // null = no path restrictions (`/namespaces` seals allowed).
+    // When federation validators are configured, never leave path policy open (Liquid lesson).
+    if (this._distributedFederationValidatorsFromEnv().length > 0) {
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy(
+        federationReserveLedger.defaultFederationSidechainPolicy()
+      ));
+    }
+    // null = no path restrictions (`/namespaces` seals allowed) — desktop without federation.
     return null;
+  }
+
+  /**
+   * Policy for contract-namespace patches (never null when validators configured).
+   * @param {object} [entry] Accepted tracked contract entry
+   * @returns {object}
+   * @private
+   */
+  _getContractSidechainPathPolicy (entry = null) {
+    const fromDef = entry && entry.definition && entry.definition.sidechainPolicy;
+    if (fromDef && typeof fromDef === 'object') {
+      return sidechainState.parseStatechainPathPolicy(fromDef)
+        || federationReserveLedger.defaultFederationSidechainPolicy();
+    }
+    const root = this._getSidechainPathPolicy();
+    if (root) return root;
+    return federationReserveLedger.defaultFederationSidechainPolicy();
   }
 
   _getSidechainStateJson () {
@@ -3267,22 +3296,38 @@ class Hub extends Service {
   _federationEpochMatchesLocalDigests (epoch) {
     if (!epoch || typeof epoch !== 'object') return false;
     try {
+      const validatorsConfigured = this._distributedFederationValidatorsFromEnv().length > 0;
       const contracts = this._getContractsSnapshotForBeacon();
       const sidechain = this._getSidechainSnapshotForBeacon();
-      if (epoch.contracts && typeof epoch.contracts === 'object') {
-        const remoteRoot = epoch.contracts.merkleRoot || epoch.contracts.stateDigest;
-        const localRoot = contracts.merkleRoot || contracts.stateDigest;
-        if (remoteRoot && localRoot && String(remoteRoot) !== String(localRoot)) return false;
-      }
-      if (epoch.sidechain && typeof epoch.sidechain === 'object') {
-        const remoteDig = epoch.sidechain.stateDigest;
-        const localDig = sidechain.stateDigest;
-        if (remoteDig && localDig && String(remoteDig) !== String(localDig)) return false;
-      }
-      return true;
+      const dig = federationValidatorVerify.verifyLocalEpochDigests(
+        epoch,
+        sidechain,
+        contracts,
+        { failClosed: validatorsConfigured }
+      );
+      return !!dig.ok;
     } catch (_) {
       return false;
     }
+  }
+
+  /**
+   * Production pre-sign gate: digests + reserve conservation (Liquid lesson).
+   * @param {object} [epoch]
+   * @returns {{ ok: true, checks: string[] }|{ ok: false, error: string, checks: string[] }}
+   * @private
+   */
+  _federationValidatorSignGate (epoch = null) {
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    return federationValidatorVerify.evaluateValidatorSignGate({
+      epoch: epoch || null,
+      localSidechain: this._getSidechainSnapshotForBeacon(),
+      localContracts: this._getContractsSnapshotForBeacon(),
+      sidechainContent: (this._sidechainState && this._sidechainState.content) || {},
+      failClosed: this._distributedFederationValidatorsFromEnv().length > 0
+    });
   }
 
   /**
@@ -3301,6 +3346,12 @@ class Hub extends Service {
 
     if (signRequest.epoch && !this._federationEpochMatchesLocalDigests(signRequest.epoch)) {
       console.warn('[HUB:BEACON] Refusing to auto-sign epoch: local digests diverge');
+      return null;
+    }
+
+    const gate = this._federationValidatorSignGate(signRequest.epoch || null);
+    if (!gate.ok) {
+      console.warn('[HUB:BEACON] Refusing to auto-sign epoch: validator gate:', gate.error);
       return null;
     }
 
@@ -3766,6 +3817,12 @@ class Hub extends Service {
       const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
         || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
         || null;
+      if (this._distributedFederationValidatorsFromEnv().length > 0) {
+        const def = publishEntry && publishEntry.definition;
+        if (def && typeof def === 'object' && (!def.sidechainPolicy || typeof def.sidechainPolicy !== 'object')) {
+          def.sidechainPolicy = federationReserveLedger.defaultFederationSidechainPolicy();
+        }
+      }
       const entry = trackedApplicationContracts.acceptContract(state, contractId, {
         acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || null,
         bitcoinBlockHash: tip.blockHash,
@@ -4031,11 +4088,17 @@ class Hub extends Service {
     });
     if (auth.status === 'error') return auth;
 
+    const ledgerCheck = federationReserveLedger.validateLedgerPatch(patches);
+    if (!ledgerCheck.ok) {
+      return { status: 'error', message: ledgerCheck.error || 'federationReserve patch rejected' };
+    }
+
+    const contractPolicy = this._getContractSidechainPathPolicy(tracked.accepted[contractId]);
     const applied = await contractStatechains.applyPatchesToContractStatechain(
       this.fs,
       contractId,
       patches,
-      null
+      contractPolicy
     );
     if (!applied.ok) {
       return { status: 'error', message: applied.error || 'contract statechain patch failed' };
@@ -4112,6 +4175,10 @@ class Hub extends Service {
     }
     if (!Array.isArray(patches) || !patches.length) {
       return { status: 'error', message: 'patches required' };
+    }
+    const ledgerCheckTrusted = federationReserveLedger.validateLedgerPatch(patches);
+    if (!ledgerCheckTrusted.ok) {
+      return { status: 'error', message: ledgerCheckTrusted.error || 'federationReserve patch rejected' };
     }
     const policy = this._getSidechainPathPolicy();
     const state = this._sidechainState || sidechainState.loadState(this.fs);
@@ -4211,6 +4278,11 @@ class Hub extends Service {
       msgBuf
     });
     if (auth.status === 'error') return auth;
+
+    const ledgerCheck = federationReserveLedger.validateLedgerPatch(patches);
+    if (!ledgerCheck.ok) {
+      return { status: 'error', message: ledgerCheck.error || 'federationReserve patch rejected' };
+    }
 
     const applied = sidechainState.applyPatchesToState(state, patches, policy);
     if (!applied.ok) {
@@ -4869,6 +4941,46 @@ class Hub extends Service {
       return { status: 'error', message: 'No federation validators configured' };
     }
     const threshold = this._distributedFederationThresholdEffective();
+    const request = body.withdrawalRequest || body.request || null;
+    if (!request || typeof request !== 'object') {
+      return {
+        status: 'error',
+        message: 'withdrawalRequest required (tip-bound ContractWithdrawalRequest with amountSats)'
+      };
+    }
+    const tip = this._federationVaultTipSnapshot(body.tip);
+    if (!tip.stateDigest || !tip.bitcoinBlockHash) {
+      return { status: 'error', message: 'local tip stateDigest and bitcoinBlockHash required' };
+    }
+
+    const tipCheck = contractSpend.validateWithdrawalRequest(request, tip);
+    if (!tipCheck.ok) {
+      return { status: 'error', message: tipCheck.error || 'withdrawal request invalid vs tip' };
+    }
+
+    if (threshold >= 2) {
+      const witnesses = Array.isArray(body.withdrawalWitnesses)
+        ? body.withdrawalWitnesses
+        : (Array.isArray(body.witnesses) ? body.witnesses : []);
+      const meet = contractSpend.meetWithdrawalWitnessThreshold(
+        request,
+        witnesses,
+        validators,
+        threshold
+      );
+      if (!meet.ok) {
+        return { status: 'error', message: meet.error || 'insufficient withdrawal witnesses' };
+      }
+    }
+
+    const burnGate = this._federationPegOutBurnGate(request, body);
+    if (burnGate.status === 'error') return burnGate;
+
+    const signGate = this._federationValidatorSignGate(null);
+    if (!signGate.ok) {
+      return { status: 'error', message: signGate.error || 'validator sign gate failed' };
+    }
+
     const vaultOpts = this._federationVaultBuildOpts(validators);
     let built;
     try {
@@ -4884,7 +4996,7 @@ class Hub extends Service {
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : String(e) };
     }
-    const vaultAddress = String(body.vaultAddress || built.address).trim();
+    const vaultAddress = String(request.vaultAddress || body.vaultAddress || built.address).trim();
     if (vaultAddress !== built.address) {
       return { status: 'error', message: 'vaultAddress does not match hub federation policy vault' };
     }
@@ -4893,26 +5005,294 @@ class Hub extends Service {
       return { status: 'error', message: 'fundedTxHex is required (full raw tx hex paying the vault)' };
     }
     try {
-      const r = federationVault.prepareVaultWithdrawalPsbt({
-        networkName: bitcoin.network || 'mainnet',
+      const r = contractSpend.prepareWithdrawalFromRequest({
+        request: Object.assign({}, request, { vaultAddress }),
+        tip,
         fundedTxHex,
-        vaultAddress,
-        policy: built.policy,
-        leafId: body.leafId || body.tierId || undefined,
-        action: body.action || undefined,
-        preimage32: body.preimage32 || body.preimageHex || undefined,
-        destinationAddress: body.destinationAddress || body.toAddress,
-        feeSats: body.feeSats,
+        genesis: {
+          validators,
+          threshold,
+          network: bitcoin.network || 'mainnet',
+          spendPolicy: built.policy
+        },
+        spend: {
+          address: built.address,
+          network: bitcoin.network || 'mainnet',
+          policy: built.policy
+        },
+        leafId: body.leafId || body.tierId || request.tierId || undefined,
         ctx: body.ctx && typeof body.ctx === 'object' ? body.ctx : undefined
       });
+      if (Number(r.destSats) !== Number(request.amountSats)) {
+        return {
+          status: 'error',
+          message: `PSBT destSats ${r.destSats} does not match request amountSats ${request.amountSats}`
+        };
+      }
       return {
         type: 'PrepareFederationVaultWithdrawalPsbtResult',
         leaves: built.leaves || [],
+        tip,
+        conservation: burnGate.reserve || null,
         ...r
       };
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : String(e) };
     }
+  }
+
+  /**
+   * Local tip for federation vault / peg-out (Beacon + sidechain digests).
+   * @param {object} [override]
+   * @returns {object}
+   * @private
+   */
+  _federationVaultTipSnapshot (override = null) {
+    const sidechain = this._getSidechainSnapshotForBeacon();
+    const contracts = this._getContractsSnapshotForBeacon();
+    const beacon = this._beaconEpochState || {};
+    const tip = {
+      stateDigest: sidechain.stateDigest || null,
+      clock: sidechain.clock || 0,
+      bitcoinBlockHash: beacon.lastBlockHash || null,
+      bitcoinHeight: beacon.height != null ? Number(beacon.height) : null,
+      contracts
+    };
+    if (override && typeof override === 'object') {
+      if (override.stateDigest) tip.stateDigest = String(override.stateDigest).toLowerCase();
+      if (override.bitcoinBlockHash) tip.bitcoinBlockHash = String(override.bitcoinBlockHash).toLowerCase();
+      if (override.bitcoinHeight != null) tip.bitcoinHeight = Number(override.bitcoinHeight);
+      if (override.clock != null) tip.clock = Number(override.clock);
+    }
+    return tip;
+  }
+
+  /**
+   * Peg-out rate limits (Liquid SideSwap lesson).
+   * @param {number} amountSats
+   * @returns {{ ok: true }|{ ok: false, error: string }}
+   * @private
+   */
+  _federationPegOutLimitsOk (amountSats) {
+    const amount = Math.round(Number(amountSats));
+    const bitcoin = this._getBitcoinService();
+    const network = (bitcoin && bitcoin.network) || 'regtest';
+    const isMain = /^(main|mainnet|livenet|bitcoin)$/i.test(String(network));
+    const maxOne = Number(process.env.FABRIC_FEDERATION_PEGOUT_MAX_SATS)
+      || (this.settings.distributed && this.settings.distributed.pegOutMaxSats)
+      || (isMain ? 100000000 : 2100000000000000); // 1 BTC mainnet default; effectively open on regtest
+    const maxDaily = Number(process.env.FABRIC_FEDERATION_PEGOUT_DAILY_MAX_SATS)
+      || (this.settings.distributed && this.settings.distributed.pegOutDailyMaxSats)
+      || (isMain ? 500000000 : 2100000000000000);
+    if (amount > maxOne) {
+      return { ok: false, error: `amountSats exceeds peg-out max (${maxOne})` };
+    }
+    if (!this._federationPegOutDaily) {
+      this._federationPegOutDaily = { day: '', total: 0 };
+    }
+    const day = new Date().toISOString().slice(0, 10);
+    if (this._federationPegOutDaily.day !== day) {
+      this._federationPegOutDaily = { day, total: 0 };
+    }
+    if (this._federationPegOutDaily.total + amount > maxDaily) {
+      return { ok: false, error: `amountSats exceeds daily peg-out max (${maxDaily})` };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Ensure reserve burn + conservation before vault PSBT.
+   * @param {object} request
+   * @param {object} body
+   * @returns {{ status: 'success', reserve: object }|{ status: 'error', message: string }}
+   * @private
+   */
+  _federationPegOutBurnGate (request, body = {}) {
+    const limits = this._federationPegOutLimitsOk(request.amountSats);
+    if (!limits.ok) return { status: 'error', message: limits.error };
+
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    const content = (this._sidechainState && this._sidechainState.content) || {};
+    const skipBurn = body.skipReserveBurn === true || body.dryRun === true;
+    if (skipBurn) {
+      const reserve = federationReserveLedger.readReserve(content);
+      const cons = federationReserveLedger.assertConservation(reserve);
+      if (!cons.ok) return { status: 'error', message: cons.error };
+      return { status: 'success', reserve };
+    }
+
+    // Prefer already-burned ledger row matching requestId.
+    const reserve = federationReserveLedger.readReserve(content);
+    const existing = reserve.withdrawals.find(
+      (w) => String(w.requestId || '').toLowerCase() === String(request.requestId).toLowerCase()
+    );
+    if (existing) {
+      if (Number(existing.amountSats) !== Number(request.amountSats)) {
+        return { status: 'error', message: 'burned amount does not match withdrawal request' };
+      }
+      const cons = federationReserveLedger.assertConservation(reserve);
+      if (!cons.ok) return { status: 'error', message: cons.error };
+      return { status: 'success', reserve };
+    }
+
+    if (body.requirePriorBurn === true) {
+      return { status: 'error', message: 'peg-out burn required before PrepareFederationVaultWithdrawalPsbt' };
+    }
+
+    const burned = federationReserveLedger.applyPegOutBurn(content, {
+      requestId: request.requestId,
+      amountSats: request.amountSats,
+      destinationAddress: request.destinationAddress
+    }, {
+      vaultConfirmedSats: body.vaultConfirmedSats
+    });
+    if (!burned.ok) return { status: 'error', message: burned.error };
+
+    // Persist burn into in-memory sidechain content (caller may still need federation patch for mesh).
+    this._sidechainState.content = burned.content;
+    if (!this._federationPegOutDaily) this._federationPegOutDaily = { day: '', total: 0 };
+    const day = new Date().toISOString().slice(0, 10);
+    if (this._federationPegOutDaily.day !== day) this._federationPegOutDaily = { day, total: 0 };
+    this._federationPegOutDaily.total += Number(request.amountSats) || 0;
+
+    return { status: 'success', reserve: burned.reserve, content: burned.content };
+  }
+
+  /**
+   * Credit matured L1 deposit into federationReserve (in-memory + optional persist).
+   * @param {object} body
+   * @returns {object}
+   * @private
+   */
+  _rpcCreateFederationPegInCredit (body = {}) {
+    const token = String(body.adminToken || body.token || '').trim();
+    if (!this.setup.verifyAdminToken(token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const validators = this._distributedFederationValidatorsFromEnv();
+    if (!validators.length) {
+      return { status: 'error', message: 'No federation validators configured' };
+    }
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    if (body.vaultConfirmedSats == null) {
+      return {
+        status: 'error',
+        message: 'vaultConfirmedSats required (verified L1 vault total)'
+      };
+    }
+    const maturity = federationVault.DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS;
+    const credited = federationReserveLedger.applyPegInCredit(
+      this._sidechainState.content || {},
+      {
+        txid: body.txid,
+        vout: body.vout,
+        amountSats: body.amountSats,
+        confirmations: body.confirmations
+      },
+      {
+        depositMaturityBlocks: body.depositMaturityBlocks != null
+          ? Number(body.depositMaturityBlocks)
+          : maturity,
+        vaultConfirmedSats: body.vaultConfirmedSats
+      }
+    );
+    if (!credited.ok) return { status: 'error', message: credited.error };
+    this._sidechainState.content = credited.content;
+    const patches = federationReserveLedger.patchesForReserve(credited.reserve);
+    return {
+      status: 'success',
+      type: 'CreateFederationPegInCreditResult',
+      reserve: credited.reserve,
+      patches,
+      stateDigest: sidechainState.stateDigest(this._sidechainState)
+    };
+  }
+
+  /**
+   * Build tip-bound peg-out request + proposed burn patch (does not sign PSBT).
+   * @param {object} body
+   * @returns {object}
+   * @private
+   */
+  _rpcProposeFederationPegOut (body = {}) {
+    const token = String(body.adminToken || body.token || '').trim();
+    if (!this.setup.verifyAdminToken(token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const validators = this._distributedFederationValidatorsFromEnv();
+    if (!validators.length) {
+      return { status: 'error', message: 'No federation validators configured' };
+    }
+    const limits = this._federationPegOutLimitsOk(body.amountSats);
+    if (!limits.ok) return { status: 'error', message: limits.error };
+
+    const tip = this._federationVaultTipSnapshot(body.tip);
+    if (!tip.stateDigest || !tip.bitcoinBlockHash) {
+      return { status: 'error', message: 'local tip stateDigest and bitcoinBlockHash required' };
+    }
+    const vaultOpts = this._federationVaultBuildOpts(validators);
+    const threshold = this._distributedFederationThresholdEffective();
+    const bitcoin = this._getBitcoinService();
+    let built;
+    try {
+      built = federationVault.buildFederationVaultFromPolicy({
+        validators,
+        threshold,
+        networkName: (bitcoin && bitcoin.network) || 'regtest',
+        publisher: vaultOpts.publisher,
+        csvBlocks: vaultOpts.csvBlocks,
+        softMode: vaultOpts.softMode,
+        internalKeyMode: vaultOpts.internalKeyMode
+      });
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : String(e) };
+    }
+
+    let request;
+    try {
+      request = contractSpend.buildWithdrawalRequest({
+        tip: Object.assign({ contractId: body.contractId || tip.stateDigest }, tip),
+        contractId: body.contractId || tip.stateDigest,
+        destinationAddress: body.destinationAddress || body.toAddress,
+        amountSats: body.amountSats,
+        feeSats: body.feeSats,
+        vaultAddress: built.address,
+        tierId: body.tierId || body.leafId,
+        action: 'spend'
+      });
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : String(e) };
+    }
+
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
+    }
+    const preview = federationReserveLedger.applyPegOutBurn(
+      this._sidechainState.content || {},
+      {
+        requestId: request.requestId,
+        amountSats: request.amountSats,
+        destinationAddress: request.destinationAddress
+      },
+      { vaultConfirmedSats: body.vaultConfirmedSats }
+    );
+    if (!preview.ok) return { status: 'error', message: preview.error };
+
+    return {
+      status: 'success',
+      type: 'ProposeFederationPegOutResult',
+      withdrawalRequest: request,
+      burnPatches: federationReserveLedger.patchesForReserve(preview.reserve),
+      reservePreview: preview.reserve,
+      vaultAddress: built.address,
+      tip,
+      threshold,
+      note: 'Apply burnPatches via SubmitSidechainStatePatch (federation witness), collect ContractWithdrawalWitness, then PrepareFederationVaultWithdrawalPsbt'
+    };
   }
 
   /**
@@ -6178,9 +6558,8 @@ class Hub extends Service {
 
     const addr = (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || '';
     const isLocal = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
-    this._rpcHttpIsLocal = isLocal;
     try {
-      const result = await Promise.resolve(fn.apply(this.http, paramArray));
+      const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, paramArray)));
       res.setHeader('Content-Type', 'application/json');
       if (body.jsonrpc === '2.0') {
         return res.status(200).json({ jsonrpc: '2.0', result, id });
@@ -6195,8 +6574,6 @@ class Hub extends Service {
         error: { code: -32603, message: msg },
         id
       });
-    } finally {
-      this._rpcHttpIsLocal = false;
     }
   }
 
@@ -11975,8 +12352,9 @@ class Hub extends Service {
           const tokenOk = token && this.setup && typeof this.setup.verifyAdminToken === 'function'
             ? this.setup.verifyAdminToken(token)
             : false;
-          // Hub owns POST /services/rpc via `_handleHttpJsonRpcRequest`, which sets `_rpcHttpIsLocal`.
-          const loopback = this._rpcHttpIsLocal === true;
+          // HTTP JSON-RPC sets loopback via AsyncLocalStorage (not a shared Hub field).
+          const rpcLocal = _rpcHttpLocalStore.getStore();
+          const loopback = !!(rpcLocal && rpcLocal.isLocal === true);
           if (!tokenOk && !loopback) {
             return { status: 'error', message: 'filePath ingest requires adminToken (or loopback HTTP JSON-RPC)' };
           }
@@ -13455,6 +13833,16 @@ class Hub extends Service {
       this.http._registerMethod('PrepareFederationVaultWithdrawalPsbt', async (...params) => {
         const body = (params[0] && typeof params[0] === 'object') ? params[0] : {};
         return this._rpcPrepareFederationVaultWithdrawalPsbt(body);
+      });
+
+      this.http._registerMethod('CreateFederationPegInCredit', async (...params) => {
+        const body = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._rpcCreateFederationPegInCredit(body);
+      });
+
+      this.http._registerMethod('ProposeFederationPegOut', async (...params) => {
+        const body = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._rpcProposeFederationPegOut(body);
       });
 
       // Params: { validators: string[], threshold?: number, adminToken|token } — blocked when env validators override.

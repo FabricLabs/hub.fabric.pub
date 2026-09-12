@@ -20,7 +20,7 @@ Primary responsibilities:
 - Bitcoin regtest operations and debugging surfaces
 - optional Payjoin (BIP77) deposit negotiation flow
 
-**Distributed execution (design):** multi-operator contracts, **Federation**-signed epochs, **Beacon**, delegation-style signing prompts, and Bitcoin anchoring are described in **[docs/DISTRIBUTED_CONTRACT_EXECUTION.md](docs/DISTRIBUTED_CONTRACT_EXECUTION.md)**. **Code map** (sidechain scan, execution contracts, Fabric `SidechainGenesis` example test, playnet scripts): **[docs/SIDECHAIN_AND_EXECUTION_INDEX.md](docs/SIDECHAIN_AND_EXECUTION_INDEX.md)**.
+**Distributed execution (design):** multi-operator contracts, **Federation**-signed epochs, **Beacon**, delegation-style signing prompts, and Bitcoin anchoring are described in **[docs/DISTRIBUTED_CONTRACT_EXECUTION.md](docs/DISTRIBUTED_CONTRACT_EXECUTION.md)**. **Code map** (sidechain scan, execution contracts, Fabric `SidechainGenesis` example test, playnet scripts): **[docs/SIDECHAIN_AND_EXECUTION_INDEX.md](docs/SIDECHAIN_AND_EXECUTION_INDEX.md)**. **Federated settlement** (explicit reserve / peg tracks F0+): **[docs/FEDERATED_SETTLEMENT.md](docs/FEDERATED_SETTLEMENT.md)**; deploy ladder: **[docs/FEDERATION_DEPLOYMENT.md](docs/FEDERATION_DEPLOYMENT.md)**.
 
 ## Recent Work (Important)
 Recent architecture work concentrated on Bitcoin and Payjoin:
