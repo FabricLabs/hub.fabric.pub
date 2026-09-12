@@ -8,12 +8,12 @@ npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support 
 npm warn deprecated crypto-js@4.2.0: Active development of CryptoJS has been discontinued. This library is no longer maintained.
 npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
-added 1343 packages, and audited 1344 packages in 46s
+added 1344 packages, and audited 1345 packages in 1m
 
 212 packages are looking for funding
   run `npm fund` for details
 
-12 vulnerabilities (6 moderate, 6 high)
+13 vulnerabilities (6 moderate, 7 high)
 
 To address all issues possible (including breaking changes), run:
   npm audit fix --force

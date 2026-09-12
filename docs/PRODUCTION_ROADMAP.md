@@ -1,11 +1,12 @@
 # Production roadmap — hub.fabric.pub
 Living plan for shipping core product themes: **browser Bitcoin wallet**, **crowdfunds + federation**, and **Payjoin + Lightning** with Fabric as the coordination layer. Update this file as work lands.
 
-**Related:** [PRODUCTION.md](PRODUCTION.md) (deploy), [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) (tag gate), [AGENTS.md](../AGENTS.md) (architecture), [PAYMENTS_PROTOCOL.md](../PAYMENTS_PROTOCOL.md), [docs/DISTRIBUTED_CONTRACT_EXECUTION.md](DISTRIBUTED_CONTRACT_EXECUTION.md).
+**Related:** [PRODUCTION.md](PRODUCTION.md) (deploy), [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) (tag gate), [AGENTS.md](../AGENTS.md) (architecture), [PAYMENTS_PROTOCOL.md](../PAYMENTS_PROTOCOL.md), [DISTRIBUTED_CONTRACT_EXECUTION.md](DISTRIBUTED_CONTRACT_EXECUTION.md), [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md).
 
 ---
 
 ## Progress log
+| 2026-09-07 | **Federated settlement tracks:** [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md) + core [FEDERATED_SETTLEMENT.md](https://github.com/FabricLabs/fabric/blob/master/docs/FEDERATED_SETTLEMENT.md) / [PEG_OPERATIONS.md](https://github.com/FabricLabs/fabric/blob/master/docs/PEG_OPERATIONS.md). **F0 shipped** (explicit `amountSats`, reserve ledger, tip-bound vault PSBT, validator pre-sign gate). **Next:** F1 destination lock, F2 peg watcher, F3 emergency path, X1 tag/pin before shared vault. Amount blinding deferred (core [AMOUNT_PRIVACY.md](https://github.com/FabricLabs/fabric/blob/master/docs/AMOUNT_PRIVACY.md)). UI copy on Distributed federation names F0 vs open tracks. |
 | 2026-08-20 | **AMP parent (D-020):** Hub `_appendFabricMessage` originates previous-`id` chains (`tests/hub.fabricMessageParent.test.js`). `GENESIS_MESSAGE` is the chain root; Ping / Pong stay zeros. Inbound zeros still accepted. Needs core `functions/fabricMessageParent` ([#186](https://github.com/FabricLabs/fabric/pull/186) / `npm link @fabric/core`). |
 | 2026-08-20 | **Core [#186](https://github.com/FabricLabs/fabric/pull/186):** handshake-bus + gossip catalog on core `feature/rsi` (HEAD **`9c6ade0`**). Hub lockfile still **`9938917` / live `f63a33f`**. Pin + redeploy before treating playnet RSS/NOISE as fixed. Hub PR [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) CodeRabbit fruit is in tree (operator Accept tests cover `_rootKey` and `agent.key`; playnet home-env only swallows `MODULE_NOT_FOUND`). |
 | 2026-08-20 | **Core features gossip + L1 suite:** `npm run test:e2e-core-features-l1` (`tests/hub.core-features.l1.e2e.test.js`) — three isolated hubs, one managed regtest. Native `fabric-beacon` registry, satellite `CONTRACT_PUBLISH` Accept + Statechain patches + `CONTRACT_MESSAGE` rounds, hallmark OP_RETURN committing the contracts digest, unpriced inventory/`SendPeerFile`, priced inventory HTLC with `VerifyBitcoinL1Payment`. WebRTC spokes on each hub (plus a second on the registry) cover `SendWebRTCSignal`, `RelayFromWebRTC` chat/contract frames, and spoke-origin document fetch. **Still open:** browser walkthroughs (Phase E checkboxes). |
@@ -40,11 +41,16 @@ Living plan for shipping core product themes: **browser Bitcoin wallet**, **crow
 ---
 
 ## Phase C — Crowdfunds + federations (P0 / P1)
-**Goal:** Taproot crowdfund flows stable on regtest; federation policy for sidechain / beacon; docs clarify **multisig** scope (policy keys vs L1 multisig vs crowdfund vault).
+**Goal:** Taproot crowdfund flows stable on regtest; federation policy for sidechain / beacon; docs clarify **multisig** scope (policy keys vs L1 multisig vs crowdfund vault). Settlement ladder: [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md).
 
 - [x] Crowdfunds route + browser smoke (`/services/bitcoin/crowdfunds`)
 - [x] Distributed federation UI (`/settings/federation`, flag `sidechain`)
 - [x] `GetDistributedFederationPolicy` HTTP shape — [`tests/hub.http.js`](../tests/hub.http.js) (JSON-RPC). **Save policy with admin token** remains a manual / playnet integration path (`playnet.beacon.federation.integration.js`).
+- [x] **F0** Explicit reserve + tip-bound vault withdraw (`CreateFederationPegInCredit` / `ProposeFederationPegOut` / `PrepareFederationVaultWithdrawalPsbt` + `federationValidatorVerify`)
+- [ ] **F1** Destination authorization (descriptor / xpub allowlist + delayed updates)
+- [ ] **F2** Peg watcher (maturity credit, burn-then-broadcast, reorg freeze)
+- [ ] **F3** Vault emergency recovery path
+- [ ] **X1** Tag `@fabric/core` + Hub pin before shared-vault funding
 - [ ] End-to-end checklist: signet or mainnet-smoke for crowdfund create → fund → payout
 - [x] Cross-links — [Beacon Federation](/settings/admin/beacon-federation) ↔ [Distributed federation](/settings/federation); manifest / epoch URLs on both pages
 

@@ -1,7 +1,13 @@
 # Outstanding (security-first)
 Living queue for this repo. Detail and closed items live in [SECURITY.md](../SECURITY.md) and [AUDIT.md](../AUDIT.md). Operator deploy: [PRODUCTION.md](PRODUCTION.md). Product roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md). Core class-surface march: [PRODUCTION_MARCH.md](PRODUCTION_MARCH.md).
 
-**Last reviewed:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) Codacy PR still sticky on **4** phantom object-injection fingerprints (PeerList/setup lineText from older commits; tip commit analysis already green). Staged: `SetupService` → `libs/hub-operator/setupService.js`, PeerList byte/inventory helpers → `libs/hub-operator/peerListFormat.js`, plus RELEASE_UI_PLAN screenshot atomization note.
+**Last reviewed:** 2026-09-07 — Settlement tracks documented in [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md) (F0 RPCs shipped; F1–F3 / X1 still open). Requires core tip with `federationValidatorVerify.js` / `programTaprootBind.js` (`npm run link:fabric`). Amount blinding deferred (core [AMOUNT_PRIVACY.md](https://github.com/FabricLabs/fabric/blob/master/docs/AMOUNT_PRIVACY.md)).
+
+**Prior:** 2026-09-07 — Production computational-layer slice: Hub Beacon auto-sign + vault PSBT use `federationValidatorVerify` (digests + reserve conservation). Peg foundation RPCs remain.
+
+**Prior:** 2026-09-07 — Federation-safe peg (F0): tip-bound `PrepareFederationVaultWithdrawalPsbt` (`withdrawalRequest` + `amountSats`), `CreateFederationPegInCredit` / `ProposeFederationPegOut`, fail-closed epoch digest match, default sidechain path policy when validators set, `federationReserveLedger` conservation. Requires Hub pin / `link:fabric` to a core tip that includes `functions/federationReserveLedger.js`.
+
+**Prior:** 2026-09-06 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) Codacy PR still sticky on **4** phantom object-injection fingerprints (PeerList/setup lineText from older commits; tip commit analysis already green). Staged: `SetupService` → `libs/hub-operator/setupService.js`, PeerList byte/inventory helpers → `libs/hub-operator/peerListFormat.js`, plus RELEASE_UI_PLAN screenshot atomization note.
 
 **Prior:** 2026-09-05 — [#16](https://github.com/FabricLabs/hub.fabric.pub/pull/16) remote tip still `f7b425a` (**CI red**): same single mocha failure `allowlist + httpSharedMode re-export http` (Hub local suffix allowlist ≠ http pin `#fe41132`). Fix is **staged locally** (`tests/liftedApis.exports.test.js` collapse-when-ready) — not on GitHub until commit+push. Related suite allowlist work staged in `@fabric/http` + Passport. Codacy remains `action_required` (path/SSRF FPs).
 

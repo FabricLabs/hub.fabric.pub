@@ -69,6 +69,35 @@ describe('federationVault', () => {
     assert.strictEqual(r.destSats, 99000);
   });
 
+  it('prepareVaultWithdrawalPsbt supports partial amountSats with change', () => {
+    const built = federationVault.buildFederationVaultFromPolicy({
+      validatorPubkeysHex: [pkA],
+      threshold: 1,
+      networkName: 'regtest',
+      internalKeyMode: 'nums'
+    });
+    const tx = new bitcoin.Transaction();
+    tx.addInput(Buffer.alloc(32, 0), 0);
+    tx.addOutput(built.output, 100000);
+    const hex = tx.toHex();
+    const dest = bitcoin.payments.p2wpkh({
+      pubkey: ecpair.makeRandom().publicKey,
+      network: bitcoin.networks.regtest
+    }).address;
+    const r = federationVault.prepareVaultWithdrawalPsbt({
+      networkName: 'regtest',
+      fundedTxHex: hex,
+      vaultAddress: built.address,
+      multisigScript: built.multisigScript,
+      destinationAddress: dest,
+      amountSats: 25000,
+      feeSats: 1000
+    });
+    assert.strictEqual(r.destSats, 25000);
+    assert.strictEqual(r.changeSats, 74000);
+    assert.strictEqual(r.amountSats, 25000);
+  });
+
   it('resolveFederationInternalKeyMode defaults to nums', () => {
     assert.strictEqual(federationVault.normalizeFederationInternalKeyMode(undefined), 'nums');
     assert.strictEqual(federationVault.normalizeFederationInternalKeyMode('MUSIG2'), 'musig2');
