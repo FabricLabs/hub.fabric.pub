@@ -59,6 +59,7 @@ const { useHubListPagination } = require('../functions/hubListPagination');
 
 /** Default “primary authority” Fabric TCP peer — long-lived hub, high trust, Bitcoin head reference. */
 const DEFAULT_PRIMARY_FABRIC_HUB = 'hub.fabric.pub:7777';
+const DEFAULT_RELAY_PEER = 'relay.goon.vc:7777';
 const PRIMARY_PEER_STORAGE_KEY = 'fabric.peers.primaryFabricAddress';
 
 function readPrimaryPeerAddress () {
@@ -930,6 +931,17 @@ class PeersPage extends React.Component {
                           <Icon name="star" aria-hidden="true" />
                           Add primary hub ({DEFAULT_PRIMARY_FABRIC_HUB})
                         </Button>
+                        <Button
+                          size="small"
+                          type="button"
+                          onClick={() => {
+                            onAddPeer({ address: DEFAULT_RELAY_PEER });
+                          }}
+                          title="Call AddPeer for relay.goon.vc"
+                        >
+                          <Icon name="add" aria-hidden="true" />
+                          Add relay ({DEFAULT_RELAY_PEER})
+                        </Button>
                         <span style={{ color: '#666', fontSize: '0.88em' }}>
                           Saved primary: <code>{readPrimaryPeerAddress()}</code> — starred in the list (peers are shown most recently seen first).
                         </span>
@@ -1113,7 +1125,7 @@ class PeersPage extends React.Component {
               />
             ) : (
               <p style={{ color: '#666', fontStyle: 'italic', marginTop: '0.5em', lineHeight: 1.45 }}>
-                No TCP or mesh peers yet. Add <code>{DEFAULT_PRIMARY_FABRIC_HUB}</code> or <strong>Add peer</strong> for Fabric <code>host:port</code> (<code>7777</code>). Browsers register for WebRTC; connected mesh rows show <strong>Mesh</strong> and reputation.
+                No TCP or mesh peers yet. Default seeds are <code>{DEFAULT_PRIMARY_FABRIC_HUB}</code> and <code>{DEFAULT_RELAY_PEER}</code>, or <strong>Add peer</strong> for another Fabric <code>host:port</code> (<code>7777</code>). Browsers register for WebRTC; connected mesh rows show <strong>Mesh</strong> and reputation.
               </p>
             )}
           </Segment>

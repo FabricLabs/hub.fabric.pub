@@ -95,10 +95,11 @@ describe('Hub mocha bind isolation', function () {
 
   it('binds HTTP and Peer to loopback even when settings copy a host NIC', function () {
     const path = require('path');
-    const merge = require('lodash.merge');
     const Hub = require('../services/hub');
     const settings = require('../settings/local');
-    const hub = new Hub(merge({}, settings, {
+    const { hubSettingsMerge } = require('../functions/hubSettingsMerge');
+    // lodash.merge cannot clear peers: [] (index-merge). Explicit empty list must win.
+    const hub = new Hub(hubSettingsMerge(settings, {
       bitcoin: { enable: false },
       fs: { path: path.join(__dirname, '..', 'stores', `hub-bind-iso-${process.pid}`) },
       http: {

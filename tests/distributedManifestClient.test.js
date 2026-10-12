@@ -36,6 +36,14 @@ describe('distributedManifestClient', () => {
     assert.strictEqual(s.threshold, 2);
     assert.strictEqual(s.count, 2);
     assert.strictEqual(s.validators.length, 2);
+    assert.strictEqual(s.signatureScheme, 'schnorr');
+  });
+
+  it('federationSummaryFromManifest reads a BLS signature scheme', () => {
+    const s = federationSummaryFromManifest({
+      federation: { validators: ['02aa'], threshold: 1, signatureScheme: 'bls' }
+    });
+    assert.strictEqual(s.signatureScheme, 'bls');
   });
 
   it('beaconEpochWitnessDetail reads last federationWitness signatures', () => {

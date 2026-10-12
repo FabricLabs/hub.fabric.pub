@@ -41,6 +41,7 @@ function DistributedFederationPanel (props) {
     }).catch(() => {});
   }, [hubFabricPeerId]);
 
+  const refreshToken = props && props.refreshToken;
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -60,7 +61,7 @@ function DistributedFederationPanel (props) {
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshToken]);
 
   const fed = federationSummaryFromManifest(manifest);
   const beacon = beaconEpochWitnessDetail(epoch);
@@ -134,7 +135,10 @@ function DistributedFederationPanel (props) {
       <React.Fragment>
         <p style={{ margin: '0.35em 0 0', color: '#444' }}>
           <strong>Federation active on this hub:</strong>{' '}
-          <strong>{fed.threshold}-of-{fed.count}</strong> Schnorr threshold over the configured compressed secp256k1 validator pubkeys.
+          <strong>{fed.threshold}-of-{fed.count}</strong>{' '}
+          {fed.signatureScheme === 'bls'
+            ? 'BLS12-381 threshold. Each witness is a BLS bundle bound to one configured secp256k1 validator key.'
+            : 'Schnorr threshold over the configured compressed secp256k1 validator pubkeys.'}
           <code>SubmitSidechainStatePatch</code> requires a valid <code>federationWitness</code> over the patch signing string (admin token does not bypass when validators are configured).
           The beacon adds a <code>federationWitness</code> on new epochs when the hub&apos;s pubkey is in that set, and on startup the hub checks stored epochs against the same threshold (see <code>verifyFederationWitnessOnMessage</code>).
         </p>
@@ -157,7 +161,9 @@ function DistributedFederationPanel (props) {
             </p>
             <p style={{ margin: '0.35em 0 0', color: hubInValidatorSet ? '#2a6a2a' : '#8a6d3b', fontSize: '0.95em' }}>
               {hubInValidatorSet
-                ? 'This id is in the validator list, so new beacon epochs can attach its Schnorr signature to federationWitness.'
+                ? (fed.signatureScheme === 'bls'
+                  ? 'This id is in the validator list, so new beacon epochs can attach its BLS signature to federationWitness.'
+                  : 'This id is in the validator list, so new beacon epochs can attach its Schnorr signature to federationWitness.')
                 : 'This id is not in the validator list; the beacon will not attach federationWitness until it is included in FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS (or settings.distributed.federation.validators).'}
             </p>
           </React.Fragment>

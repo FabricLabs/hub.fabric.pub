@@ -212,6 +212,7 @@ const documentOfferEscrow = require('../functions/documentOfferEscrow');
 const federationContractInvite = require('../functions/federationContractInvite');
 const federationVault = require('../functions/federationVault');
 const federationRegistry = require('../functions/federationRegistry');
+const { normalizeFederationSignatureScheme } = require('../functions/federationSignatureScheme');
 const crowdfundingTaproot = require('../functions/crowdfundingTaproot');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const contractSpend = require('@fabric/core/functions/contractSpend');
@@ -260,6 +261,9 @@ class Hub extends Service {
 
     // Settings
     // TODO: extract defaults to `settings/default.json`
+    // Public mesh seeds when the caller does not pass `peers`. An explicit list
+    // (including `[]`) is kept. hub.fabric.pub's own settings omit self.
+    const callerSetPeers = !!(settings && Object.prototype.hasOwnProperty.call(settings, 'peers'));
     this.settings = merge({
       alias: '@fabric/hub',
       crawl: false,
@@ -399,7 +403,8 @@ class Hub extends Service {
         programHash: process.env.FABRIC_DISTRIBUTED_PROGRAM_HASH || null,
         federation: {
           threshold: Math.max(1, Number(process.env.FABRIC_DISTRIBUTED_FEDERATION_THRESHOLD || 1)),
-          validators: []
+          validators: [],
+          signatureScheme: 'schnorr'
         }
       },
       beacon: {
@@ -453,6 +458,18 @@ class Hub extends Service {
       workers: 1,
       distributeFeeSats: DEFAULT_DISTRIBUTE_FEE_SATS,
     }, settings);
+
+    if (!callerSetPeers) {
+      const peers = Array.isArray(this.settings.peers) ? this.settings.peers.slice() : [];
+      for (const seed of ['hub.fabric.pub:7777', 'relay.goon.vc:7777']) {
+        const have = peers.some((p) => {
+          const s = String(p || '').replace(/^[^@]+@/, '').trim().toLowerCase();
+          return s === seed;
+        });
+        if (!have) peers.push(seed);
+      }
+      this.settings.peers = peers;
+    }
 
     // Test stability: do not dial production Hub seeds from mocha. Opt in with
     // FABRIC_TEST_ALLOW_DEFAULT_PEERS=1. `merge({}, settings/local.js)` otherwise
@@ -801,6 +818,9 @@ class Hub extends Service {
     this._sidechainSerialize = sidechainState.createSerializeQueue();
     /** Serialize beacon reorg handling so sidechain rewind completes before downstream refresh. */
     this._beaconReorgChain = Promise.resolve();
+
+    // Register Hub UI handles before SPA.define checks the HTTP catalog.
+    require('../components/library');
 
     // HTTP Server
     this.http = new HTTPServer({
@@ -2884,8 +2904,13 @@ class Hub extends Service {
     let threshold = snap.threshold != null ? Number(snap.threshold) : 1;
     if (!Number.isFinite(threshold) || threshold < 1) threshold = 1;
     if (validators.length && threshold > validators.length) threshold = validators.length;
+    const signatureScheme = normalizeFederationSignatureScheme(snap.signatureScheme);
     try {
-      await this.setup.setSetting('DISTRIBUTED_FEDERATION', { validators: validators.slice(), threshold });
+      await this.setup.setSetting('DISTRIBUTED_FEDERATION', {
+        validators: validators.slice(),
+        threshold,
+        signatureScheme
+      });
     } catch (e) {
       console.warn('[HUB:FEDERATION] hydrate from Fabric snapshot failed:', e && e.message ? e.message : e);
       return;
@@ -2894,6 +2919,7 @@ class Hub extends Service {
     if (!this.settings.distributed.federation) this.settings.distributed.federation = {};
     this.settings.distributed.federation.validators = validators.slice();
     this.settings.distributed.federation.threshold = threshold;
+    this.settings.distributed.federation.signatureScheme = signatureScheme;
     console.log('[HUB:FEDERATION] Restored distributed federation policy from Fabric filesystem (federations/POLICY_SNAPSHOT).');
   }
 
@@ -2911,6 +2937,7 @@ class Hub extends Service {
         await federationRegistry.persistPolicySnapshot(this.fs, {
           validators: snap.validators,
           threshold: snap.threshold != null ? Number(snap.threshold) : this._distributedFederationThresholdEffective(),
+          signatureScheme: this._distributedFederationSignatureSchemeEffective(),
           source: this._distributedFederationPolicySource()
         });
       }
@@ -2970,7 +2997,8 @@ class Hub extends Service {
     if (persisted && Array.isArray(persisted.validators)) {
       return persisted.validators.filter((v) => typeof v === 'string' && v.trim()).map((s) => s.trim());
     }
-    const v = this.settings.distributed && this.settings.distributed.federation && this.settings.distributed.federation.validators;
+    const v = this.settings && this.settings.distributed && this.settings.distributed.federation &&
+      this.settings.distributed.federation.validators;
     return Array.isArray(v) ? v.slice() : [];
   }
 
@@ -2990,9 +3018,29 @@ class Hub extends Service {
       return 1;
     }
     return Math.max(1, Number(
-      (this.settings.distributed && this.settings.distributed.federation && this.settings.distributed.federation.threshold) ||
+      (this.settings && this.settings.distributed && this.settings.distributed.federation &&
+        this.settings.distributed.federation.threshold) ||
         process.env.FABRIC_DISTRIBUTED_FEDERATION_THRESHOLD || 1
     ));
+  }
+
+  /**
+   * Witness scheme aligned with {@link #_distributedFederationValidatorsFromEnv} source order.
+   * Env validators honor `FABRIC_DISTRIBUTED_FEDERATION_SIGNATURE_SCHEME` (`schnorr` or `bls`).
+   * @returns {'schnorr'|'bls'}
+   */
+  _distributedFederationSignatureSchemeEffective () {
+    const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
+    if (env && String(env).trim()) {
+      return normalizeFederationSignatureScheme(process.env.FABRIC_DISTRIBUTED_FEDERATION_SIGNATURE_SCHEME);
+    }
+    const persisted = this._distributedFederationPersisted();
+    if (persisted && Array.isArray(persisted.validators)) {
+      return normalizeFederationSignatureScheme(persisted.signatureScheme);
+    }
+    const configured = this.settings && this.settings.distributed && this.settings.distributed.federation
+      && this.settings.distributed.federation.signatureScheme;
+    return normalizeFederationSignatureScheme(configured);
   }
 
   /**
@@ -3002,7 +3050,8 @@ class Hub extends Service {
    */
   _allowTrustedSidechainPatch () {
     if (process.env.FABRIC_SIDECHAIN_TRUSTED_PATCH === '1') return true;
-    const cfg = this.settings.distributed && this.settings.distributed.allowTrustedSidechainPatch;
+    const cfg = this.settings && this.settings.distributed &&
+      this.settings.distributed.allowTrustedSidechainPatch;
     return cfg === true;
   }
 
@@ -3011,7 +3060,7 @@ class Hub extends Service {
    * @returns {boolean}
    */
   _federationWitnessFailClosedEffective () {
-    const beaconCfg = this.settings.beacon || {};
+    const beaconCfg = (this.settings && this.settings.beacon) || {};
     if (beaconCfg.federationWitnessFailClosed === false) return false;
     if (beaconCfg.federationWitnessFailClosed === true) return true;
     return this._distributedFederationValidatorsFromEnv().length > 0;
@@ -3028,6 +3077,7 @@ class Hub extends Service {
         key: this._rootKey,
         federationValidators: validators,
         federationThreshold,
+        federationSignatureScheme: this._distributedFederationSignatureSchemeEffective(),
         federationWitnessFailClosed: this._federationWitnessFailClosedEffective(),
         getSidechainSnapshotForEpoch: () => this._getSidechainSnapshotForBeacon(),
         getContractsSnapshotForEpoch: () => this._getContractsSnapshotForBeacon()
@@ -3041,14 +3091,15 @@ class Hub extends Service {
    * Same validator list + threshold as {@link #_submitSidechainStatePatch} (env + persisted + settings).
    * Used for `/services/distributed/manifest` and epoch JSON so operators see what the hub enforces even when
    * the Beacon has not called {@link Beacon#attach} yet (e.g. Bitcoin RPC not ready).
-   * @returns {{ validators: string[], threshold: number }}
+   * @returns {{ validators: string[], threshold: number, signatureScheme: string }}
    */
   _getEffectiveFederationPolicyForDistributedHttp () {
     const validators = this._distributedFederationValidatorsFromEnv();
     const threshold = this._distributedFederationThresholdEffective();
     return {
       validators,
-      threshold: validators.length ? threshold : 1
+      threshold: validators.length ? threshold : 1,
+      signatureScheme: this._distributedFederationSignatureSchemeEffective()
     };
   }
 
@@ -3082,6 +3133,7 @@ class Hub extends Service {
         publisher: publisher || fp.validators[0] || null,
         csvBlocks: softPolicy.csvBlocks,
         softMode: softPolicy.softMode,
+        signatureScheme: fp.signatureScheme,
         spendPolicy: {
           publisher: publisher || fp.validators[0] || null,
           validators: fp.validators,
@@ -3094,6 +3146,11 @@ class Hub extends Service {
     }
     const parsed = DistributedExecution.parseDistributedManifestV1(manifest);
     const out = parsed.ok ? { ...parsed.manifest } : { ...manifest };
+    if (out.federation && typeof out.federation === 'object') {
+      out.federation = Object.assign({}, out.federation, {
+        signatureScheme: fp.signatureScheme
+      });
+    }
     try {
       out.trackedApplicationContracts = this._getTrackedContractsSummary();
     } catch (_) {
@@ -3165,35 +3222,41 @@ class Hub extends Service {
       return Object.assign({}, policy, { allowedPathPrefixes: allowed });
     };
 
-    const fromSettings = this.settings.distributed && this.settings.distributed.sidechainPolicy;
+    const hasFederation = this._distributedFederationValidatorsFromEnv().length > 0;
+    const federationBase = () => federationReserveLedger.defaultFederationSidechainPolicy();
+
+    const fromSettings = this.settings && this.settings.distributed &&
+      this.settings.distributed.sidechainPolicy;
     if (fromSettings && typeof fromSettings === 'object') {
       return ensureNamespaces(sidechainState.parseStatechainPathPolicy(fromSettings));
     }
     const allowed = process.env.FABRIC_SIDECHAIN_ALLOWED_PATHS;
     if (allowed && String(allowed).trim()) {
-      return ensureNamespaces(sidechainState.parseStatechainPathPolicy({
+      const base = hasFederation ? federationBase() : {};
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy(Object.assign({}, base, {
         allowedPathPrefixes: String(allowed).split(',').map((s) => s.trim()).filter(Boolean),
-        maxOps: Math.max(1, Number(process.env.FABRIC_SIDECHAIN_MAX_OPS) || 64)
-      }));
+        maxOps: Math.max(1, Number(process.env.FABRIC_SIDECHAIN_MAX_OPS) || base.maxOps || 64)
+      })));
     }
     const maxOps = process.env.FABRIC_SIDECHAIN_MAX_OPS;
     if (maxOps != null && String(maxOps).trim() !== '') {
-      return ensureNamespaces(sidechainState.parseStatechainPathPolicy({ maxOps: Math.max(1, Number(maxOps) || 64) }));
+      const base = hasFederation ? federationBase() : {};
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy(Object.assign({}, base, {
+        maxOps: Math.max(1, Number(maxOps) || 64)
+      })));
     }
     // When federation validators are configured, never leave path policy open (Liquid lesson).
-    if (this._distributedFederationValidatorsFromEnv().length > 0) {
-      return ensureNamespaces(sidechainState.parseStatechainPathPolicy(
-        federationReserveLedger.defaultFederationSidechainPolicy()
-      ));
+    if (hasFederation) {
+      return ensureNamespaces(sidechainState.parseStatechainPathPolicy(federationBase()));
     }
     // null = no path restrictions (`/namespaces` seals allowed) — desktop without federation.
     return null;
   }
 
   /**
-   * Policy for contract-namespace patches (never null when validators configured).
+   * Policy for contract-namespace patches (null when unrestricted / no federation).
    * @param {object} [entry] Accepted tracked contract entry
-   * @returns {object}
+   * @returns {object|null}
    * @private
    */
   _getContractSidechainPathPolicy (entry = null) {
@@ -3204,6 +3267,7 @@ class Hub extends Service {
     }
     const root = this._getSidechainPathPolicy();
     if (root) return root;
+    if (this._distributedFederationValidatorsFromEnv().length === 0) return null;
     return federationReserveLedger.defaultFederationSidechainPolicy();
   }
 
@@ -3817,12 +3881,8 @@ class Hub extends Service {
       const network = (this.settings && this.settings.bitcoin && this.settings.bitcoin.network)
         || (this.bitcoin && this.bitcoin.settings && this.bitcoin.settings.network)
         || null;
-      if (this._distributedFederationValidatorsFromEnv().length > 0) {
-        const def = publishEntry && publishEntry.definition;
-        if (def && typeof def === 'object' && (!def.sidechainPolicy || typeof def.sidechainPolicy !== 'object')) {
-          def.sidechainPolicy = federationReserveLedger.defaultFederationSidechainPolicy();
-        }
-      }
+      // Do not mutate publishEntry.definition (definitionDigest/stateDigest stay aligned).
+      // Accept-time federation path policy comes from `_getContractSidechainPathPolicy`.
       const entry = trackedApplicationContracts.acceptContract(state, contractId, {
         acceptedBy: (this.agent && this.agent.identity && this.agent.identity.id) || null,
         bitcoinBlockHash: tip.blockHash,
@@ -5034,6 +5094,7 @@ class Hub extends Service {
         leaves: built.leaves || [],
         tip,
         conservation: burnGate.reserve || null,
+        burnPatches: burnGate.patches || null,
         ...r
       };
     } catch (e) {
@@ -5043,6 +5104,8 @@ class Hub extends Service {
 
   /**
    * Local tip for federation vault / peg-out (Beacon + sidechain digests).
+   * Binding fields (`stateDigest`, `bitcoinBlockHash`) always come from local state;
+   * `override` may only supply non-binding fields such as `clock`.
    * @param {object} [override]
    * @returns {object}
    * @private
@@ -5059,10 +5122,10 @@ class Hub extends Service {
       contracts
     };
     if (override && typeof override === 'object') {
-      if (override.stateDigest) tip.stateDigest = String(override.stateDigest).toLowerCase();
-      if (override.bitcoinBlockHash) tip.bitcoinBlockHash = String(override.bitcoinBlockHash).toLowerCase();
-      if (override.bitcoinHeight != null) tip.bitcoinHeight = Number(override.bitcoinHeight);
       if (override.clock != null) tip.clock = Number(override.clock);
+      if (override.bitcoinHeight != null && tip.bitcoinHeight == null) {
+        tip.bitcoinHeight = Number(override.bitcoinHeight);
+      }
     }
     return tip;
   }
@@ -5078,12 +5141,18 @@ class Hub extends Service {
     const bitcoin = this._getBitcoinService();
     const network = (bitcoin && bitcoin.network) || 'regtest';
     const isMain = /^(main|mainnet|livenet|bitcoin)$/i.test(String(network));
-    const maxOne = Number(process.env.FABRIC_FEDERATION_PEGOUT_MAX_SATS)
-      || (this.settings.distributed && this.settings.distributed.pegOutMaxSats)
-      || (isMain ? 100000000 : 2100000000000000); // 1 BTC mainnet default; effectively open on regtest
-    const maxDaily = Number(process.env.FABRIC_FEDERATION_PEGOUT_DAILY_MAX_SATS)
-      || (this.settings.distributed && this.settings.distributed.pegOutDailyMaxSats)
-      || (isMain ? 500000000 : 2100000000000000);
+    const pick = (envName, settingKey, fallback) => {
+      const raw = process.env[envName];
+      if (raw != null && String(raw).trim() !== '' && Number.isFinite(Number(raw))) {
+        return Number(raw);
+      }
+      const cfg = this.settings && this.settings.distributed && this.settings.distributed[settingKey];
+      if (cfg != null && Number.isFinite(Number(cfg))) return Number(cfg);
+      return fallback;
+    };
+    // 1 BTC mainnet default; effectively open on regtest
+    const maxOne = pick('FABRIC_FEDERATION_PEGOUT_MAX_SATS', 'pegOutMaxSats', isMain ? 100000000 : 2100000000000000);
+    const maxDaily = pick('FABRIC_FEDERATION_PEGOUT_DAILY_MAX_SATS', 'pegOutDailyMaxSats', isMain ? 500000000 : 2100000000000000);
     if (amount > maxOne) {
       return { ok: false, error: `amountSats exceeds peg-out max (${maxOne})` };
     }
@@ -5102,9 +5171,10 @@ class Hub extends Service {
 
   /**
    * Ensure reserve burn + conservation before vault PSBT.
+   * Preview-only for new burns — caller seals via SubmitSidechainStatePatch.
    * @param {object} request
    * @param {object} body
-   * @returns {{ status: 'success', reserve: object }|{ status: 'error', message: string }}
+   * @returns {{ status: 'success', reserve: object, patches?: object[] }|{ status: 'error', message: string }}
    * @private
    */
   _federationPegOutBurnGate (request, body = {}) {
@@ -5150,18 +5220,21 @@ class Hub extends Service {
     });
     if (!burned.ok) return { status: 'error', message: burned.error };
 
-    // Persist burn into in-memory sidechain content (caller may still need federation patch for mesh).
-    this._sidechainState.content = burned.content;
+    // Preview only — do not mutate `_sidechainState.content` (seal via patches).
     if (!this._federationPegOutDaily) this._federationPegOutDaily = { day: '', total: 0 };
     const day = new Date().toISOString().slice(0, 10);
     if (this._federationPegOutDaily.day !== day) this._federationPegOutDaily = { day, total: 0 };
     this._federationPegOutDaily.total += Number(request.amountSats) || 0;
 
-    return { status: 'success', reserve: burned.reserve, content: burned.content };
+    return {
+      status: 'success',
+      reserve: burned.reserve,
+      patches: federationReserveLedger.patchesForReserve(burned.reserve)
+    };
   }
 
   /**
-   * Credit matured L1 deposit into federationReserve (in-memory + optional persist).
+   * Propose matured L1 deposit credit into federationReserve (seal via SubmitSidechainStatePatch).
    * @param {object} body
    * @returns {object}
    * @private
@@ -5201,14 +5274,14 @@ class Hub extends Service {
       }
     );
     if (!credited.ok) return { status: 'error', message: credited.error };
-    this._sidechainState.content = credited.content;
     const patches = federationReserveLedger.patchesForReserve(credited.reserve);
     return {
       status: 'success',
       type: 'CreateFederationPegInCreditResult',
       reserve: credited.reserve,
       patches,
-      stateDigest: sidechainState.stateDigest(this._sidechainState)
+      stateDigest: sidechainState.stateDigest(this._sidechainState),
+      note: 'Apply patches via SubmitSidechainStatePatch (federation witness) to seal the credit'
     };
   }
 
@@ -10965,6 +11038,7 @@ class Hub extends Service {
       key: this._rootKey,
       federationValidators: _fedVals,
       federationThreshold: _fedVals.length ? _fedThrRaw : Math.max(1, _fedThrRaw),
+      federationSignatureScheme: this._distributedFederationSignatureSchemeEffective(),
       federationWitnessFailClosed: this._federationWitnessFailClosedEffective(),
       // Every federation validator observes L1 tips locally (incl. regtest).
       followBlocks: _fedVals.length > 0,
@@ -13810,6 +13884,7 @@ class Hub extends Service {
           source: this._distributedFederationPolicySource(),
           validators: fp.validators,
           threshold: fp.threshold,
+          signatureScheme: fp.signatureScheme,
           filesystem: {
             registryDocument: federationRegistry.REGISTRY_PATH,
             policySnapshotDocument: federationRegistry.POLICY_SNAPSHOT_PATH,
@@ -13845,7 +13920,7 @@ class Hub extends Service {
         return this._rpcProposeFederationPegOut(body);
       });
 
-      // Params: { validators: string[], threshold?: number, adminToken|token } — blocked when env validators override.
+      // Params: { validators: string[], threshold?: number, signatureScheme?: 'schnorr'|'bls', adminToken|token } — blocked when env validators override.
       this.http._registerMethod('SetDistributedFederationPolicy', async (...params) => {
         const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
         const token = String(req.adminToken || req.token || '').trim();
@@ -13867,14 +13942,19 @@ class Hub extends Service {
         let threshold = req.threshold != null ? Number(req.threshold) : 1;
         if (!Number.isFinite(threshold) || threshold < 1) threshold = 1;
         if (validators.length && threshold > validators.length) threshold = validators.length;
+        const signatureScheme = req.signatureScheme != null
+          ? normalizeFederationSignatureScheme(req.signatureScheme)
+          : this._distributedFederationSignatureSchemeEffective();
         if (!this.settings.distributed) this.settings.distributed = {};
         if (!this.settings.distributed.federation) this.settings.distributed.federation = {};
         this.settings.distributed.federation.validators = validators.slice();
         this.settings.distributed.federation.threshold = threshold;
+        this.settings.distributed.federation.signatureScheme = signatureScheme;
         try {
           await this.setup.setSetting('DISTRIBUTED_FEDERATION', {
             validators: validators.slice(),
-            threshold
+            threshold,
+            signatureScheme
           });
         } catch (e) {
           return { status: 'error', message: e && e.message ? e.message : String(e) };
@@ -13883,6 +13963,7 @@ class Hub extends Service {
           await federationRegistry.persistPolicySnapshot(this.fs, {
             validators: validators.slice(),
             threshold,
+            signatureScheme,
             source: 'persisted'
           });
         } catch (e) {
@@ -13892,7 +13973,8 @@ class Hub extends Service {
         try {
           await this._appendFabricMessage('DistributedFederationPolicy', {
             validators: validators.slice(),
-            threshold
+            threshold,
+            signatureScheme
           });
         } catch (e) {
           console.warn('[HUB:FEDERATION] log append failed:', e && e.message ? e.message : e);
@@ -13901,7 +13983,8 @@ class Hub extends Service {
           type: 'SetDistributedFederationPolicyResult',
           status: 'success',
           validators: validators.slice(),
-          threshold
+          threshold,
+          signatureScheme
         };
       });
 
@@ -13935,12 +14018,14 @@ class Hub extends Service {
         let threshold = this._distributedFederationThresholdEffective();
         if (!Number.isFinite(threshold) || threshold < 1) threshold = 1;
         if (cur.length && threshold > cur.length) threshold = cur.length;
+        const signatureScheme = this._distributedFederationSignatureSchemeEffective();
         if (!this.settings.distributed) this.settings.distributed = {};
         if (!this.settings.distributed.federation) this.settings.distributed.federation = {};
         this.settings.distributed.federation.validators = cur;
         this.settings.distributed.federation.threshold = threshold;
+        this.settings.distributed.federation.signatureScheme = signatureScheme;
         try {
-          await this.setup.setSetting('DISTRIBUTED_FEDERATION', { validators: cur, threshold });
+          await this.setup.setSetting('DISTRIBUTED_FEDERATION', { validators: cur, threshold, signatureScheme });
         } catch (e) {
           return { status: 'error', message: e && e.message ? e.message : String(e) };
         }
@@ -13948,6 +14033,7 @@ class Hub extends Service {
           await federationRegistry.persistPolicySnapshot(this.fs, {
             validators: cur,
             threshold,
+            signatureScheme,
             source: 'persisted'
           });
         } catch (e) {

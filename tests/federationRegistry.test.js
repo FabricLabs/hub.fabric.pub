@@ -4,6 +4,31 @@ const assert = require('assert');
 const federationRegistry = require('../functions/federationRegistry');
 
 describe('federationRegistry', () => {
+  it('policy snapshot round-trips signatureScheme', async () => {
+    const store = Object.create(null);
+    const fs = {
+      readFile (p) { return store[p] != null ? store[p] : null; },
+      async publish (p, value) {
+        store[p] = typeof value === 'string' ? value : JSON.stringify(value);
+      }
+    };
+    await federationRegistry.persistPolicySnapshot(fs, {
+      validators: ['02aa'],
+      threshold: 1,
+      signatureScheme: 'bls',
+      source: 'persisted'
+    });
+    const loaded = federationRegistry.loadPolicySnapshot(fs);
+    assert.strictEqual(loaded.signatureScheme, 'bls');
+    assert.strictEqual(loaded.threshold, 1);
+    await federationRegistry.persistPolicySnapshot(fs, {
+      validators: ['02aa'],
+      threshold: 1,
+      source: 'persisted'
+    });
+    assert.strictEqual(federationRegistry.loadPolicySnapshot(fs).signatureScheme, 'schnorr');
+  });
+
   it('parseFabricFederationOpReturn reads fabfed + JSON from asm', () => {
     const payloadHex = Buffer.concat([
       Buffer.from('fabfed', 'utf8'),

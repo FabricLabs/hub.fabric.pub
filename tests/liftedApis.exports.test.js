@@ -67,9 +67,17 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
       assert.strictEqual(typeof hubAllow.normalizeHttpsHostSuffix, 'function');
     }
     assert.strictEqual(hubAllow.assertAllowedFabricHub('https://evil.example').ok, false);
+    const preview = 'https://pub-fabric-hub-git-feature-rsi-fabric-labs.vercel.app';
+    // Shared CDN parents (`*.vercel.app`) are rejected; exact preview origins are opt-in.
     assert.strictEqual(
-      hubAllow.isAllowedFabricHub('https://pub-fabric-hub-git-feature-rsi-fabric-labs.vercel.app', {
+      hubAllow.isAllowedFabricHub(preview, {
         env: { FABRIC_HUB_ALLOWLIST: '*.vercel.app' }
+      }),
+      false
+    );
+    assert.strictEqual(
+      hubAllow.isAllowedFabricHub(preview, {
+        env: { FABRIC_HUB_ALLOWLIST: preview }
       }),
       true
     );
