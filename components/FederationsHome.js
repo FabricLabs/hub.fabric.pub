@@ -5,6 +5,7 @@ const { Link } = require('react-router-dom');
 const {
   Button,
   Container,
+  Checkbox,
   Form,
   Grid,
   Header,
@@ -41,6 +42,8 @@ function FederationsHome (props) {
 
   const [validatorRows, setValidatorRows] = React.useState(['']);
   const [threshold, setThreshold] = React.useState('1');
+  const [useBls, setUseBls] = React.useState(false);
+  const [policyRevision, setPolicyRevision] = React.useState(0);
   const [source, setSource] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [loadError, setLoadError] = React.useState(null);
@@ -65,7 +68,9 @@ function FederationsHome (props) {
       setValidatorRows(v.length ? [...v] : ['']);
       const thr = r && r.threshold != null ? String(r.threshold) : '1';
       setThreshold(thr);
+      setUseBls(!!(r && r.signatureScheme === 'bls'));
       setFederationFs(r && r.filesystem && typeof r.filesystem === 'object' ? r.filesystem : null);
+      setPolicyRevision((n) => n + 1);
     } catch (e) {
       setFederationFs(null);
       setLoadError(e && e.message ? e.message : String(e));
@@ -200,6 +205,7 @@ function FederationsHome (props) {
       const r = await hubJsonRpc('SetDistributedFederationPolicy', [{
         validators: lines,
         threshold: thr,
+        signatureScheme: useBls ? 'bls' : 'schnorr',
         adminToken
       }]);
       if (r && r.status === 'error') {
@@ -309,7 +315,7 @@ function FederationsHome (props) {
         ) : null}
       </Segment>
 
-      <DistributedFederationPanel marginBottom="1.25em" />
+      <DistributedFederationPanel marginBottom="1.25em" refreshToken={policyRevision} />
 
       <Grid stackable>
         <Grid.Column computer={10}>
@@ -349,6 +355,9 @@ function FederationsHome (props) {
               <Label color="blue" size="large" style={{ fontFamily: 'monospace' }}>
                 {mOfNLabel}
               </Label>
+              {useBls ? (
+                <Label color="purple" size="large">BLS12-381</Label>
+              ) : null}
               <Button
                 type="button"
                 size="small"
@@ -473,6 +482,19 @@ function FederationsHome (props) {
                   disabled={source === 'env'}
                   style={{ maxWidth: '8rem' }}
                 />
+              </Form.Field>
+
+              <Form.Field>
+                <Checkbox
+                  id="federation-bls-signatures"
+                  label="Use BLS signatures"
+                  checked={useBls}
+                  disabled={source === 'env'}
+                  onChange={(e, data) => setUseBls(!!(data && data.checked))}
+                />
+                <p style={{ color: '#666', margin: '0.4em 0 0', maxWidth: '40rem', lineHeight: 1.45 }}>
+                  BLS12-381 witnesses for epochs and sidechain patches. Each signer&apos;s BLS key is derived from their Fabric private key and bound to the secp256k1 validator key in the list above. The Taproot vault still uses those secp256k1 keys.
+                </p>
               </Form.Field>
 
               <Button type="submit" primary size="large" disabled={busy || source === 'env'} loading={busy} style={{ marginTop: '0.5em' }}>

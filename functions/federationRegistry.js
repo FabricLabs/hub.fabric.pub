@@ -9,6 +9,8 @@
  * change and can re-hydrate `setup` when the JSON setting is absent (e.g. fresh stores dir).
  */
 
+const { normalizeFederationSignatureScheme } = require('./federationSignatureScheme');
+
 const REGISTRY_PATH = 'federations/REGISTRY';
 const POLICY_SNAPSHOT_PATH = 'federations/POLICY_SNAPSHOT';
 
@@ -59,7 +61,7 @@ function loadRegistry (fs) {
 
 /**
  * @param {*} fs
- * @returns {{ validators: string[], threshold: number, source?: string, updatedAt?: string }|null}
+ * @returns {{ validators: string[], threshold: number, signatureScheme: string, source?: string, updatedAt?: string }|null}
  */
 function loadPolicySnapshot (fs) {
   if (!fs || typeof fs.readFile !== 'function') return null;
@@ -75,6 +77,7 @@ function loadPolicySnapshot (fs) {
     return {
       validators,
       threshold,
+      signatureScheme: normalizeFederationSignatureScheme(parsed.signatureScheme),
       source: typeof parsed.source === 'string' ? parsed.source : undefined,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : undefined
     };
@@ -85,7 +88,7 @@ function loadPolicySnapshot (fs) {
 
 /**
  * @param {*} fs
- * @param {{ validators: string[], threshold: number, source?: string }} policy
+ * @param {{ validators: string[], threshold: number, signatureScheme?: string, source?: string }} policy
  */
 async function persistPolicySnapshot (fs, policy) {
   if (!fs || typeof fs.publish !== 'function') return;
@@ -98,6 +101,7 @@ async function persistPolicySnapshot (fs, policy) {
     version: 1,
     validators: validators.slice(),
     threshold,
+    signatureScheme: normalizeFederationSignatureScheme(policy.signatureScheme),
     source: policy.source != null ? String(policy.source) : undefined,
     updatedAt: new Date().toISOString()
   };

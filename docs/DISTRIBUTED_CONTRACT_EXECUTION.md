@@ -3,7 +3,7 @@ This document captures the **core idea**: a **Contract** (Fabric type) is the sh
 
 **Workspace map (sidechain + execution examples, Fabric playnet tests, stubs):** [SIDECHAIN_AND_EXECUTION_INDEX.md](SIDECHAIN_AND_EXECUTION_INDEX.md).
 
-**Signature vs L1 proof:** [@fabric/core `docs/SIGNATURE_PROOF_MODEL.md`](https://github.com/FabricLabs/fabric/blob/master/docs/SIGNATURE_PROOF_MODEL.md). **Operator deployment:** [FEDERATION_DEPLOYMENT.md](FEDERATION_DEPLOYMENT.md) (regtest → peering → signet → mainnet, `fabric setup` identity).
+**Signature vs L1 proof:** [@fabric/core `docs/SIGNATURE_PROOF_MODEL.md`](https://github.com/FabricLabs/fabric/blob/master/docs/SIGNATURE_PROOF_MODEL.md). **Operator deployment:** [FEDERATION_DEPLOYMENT.md](FEDERATION_DEPLOYMENT.md) (regtest → peering → signet → mainnet, `fabric setup` identity). **Settlement tracks:** [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md).
 
 ---
 

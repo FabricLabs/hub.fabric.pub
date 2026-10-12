@@ -1085,6 +1085,7 @@ describe('@fabric/hub', function () {
         assert.ok(res && res.type === 'DistributedFederationPolicy');
         assert.ok(Array.isArray(res.validators));
         assert.ok(typeof res.threshold === 'number');
+        assert.ok(res.signatureScheme === 'schnorr' || res.signatureScheme === 'bls');
         assert.ok(['env', 'persisted', 'default'].includes(res.source));
         assert.ok(res.filesystem && typeof res.filesystem.registryDocument === 'string');
         assert.ok(typeof res.filesystem.registryEntryCount === 'number');

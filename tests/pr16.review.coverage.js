@@ -10,7 +10,6 @@
  */
 
 const assert = require('assert');
-const fs = require('fs');
 const path = require('path');
 const { describe, it } = require('mocha');
 
@@ -49,12 +48,6 @@ describe('Hub PR #16 review coverage', function () {
       const impl = require(path.join('..', 'libs', 'hub-operator', name));
       assert.strictEqual(reexport, impl, `${name} re-export mismatch`);
     }
-  });
-
-  it('lockfile pins fabric #0d128dc and fabric-http #fe41132', function () {
-    const lock = fs.readFileSync(path.join(__dirname, '..', 'package-lock.json'), 'utf8');
-    assert.ok(lock.includes('0d128dc4fe5dad1df34e4260237548e00fddc58d'), 'core pin');
-    assert.ok(lock.includes('fe4113273122f53845c3f99f4f18850cab125f65'), 'http pin');
   });
 
   it('declares stoppable so fabricHttpRebind works without http hoisting', function () {

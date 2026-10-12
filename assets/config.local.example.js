@@ -21,4 +21,4 @@ window.FABRIC_EDGE_AUTHORITY = 'http://localhost:8080';
 // Optional seed Hubs for HTML-only / CDN builds (comma-separated env: FABRIC_HUB_SEEDS).
 // Used for HTTP OPTIONS feature detection, WebRTC signaling, Fabric peering probes,
 // and document inventories. HTTPS pages cannot reach http:// seeds (mixed content).
-// window.FABRIC_HUB_SEEDS = ['https://hub.fabric.pub'];
+// window.FABRIC_HUB_SEEDS = ['https://hub.fabric.pub', 'https://relay.goon.vc'];

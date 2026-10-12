@@ -26,7 +26,7 @@ These are **intentionally deferred**. When we integrate them, they should live b
 - Add L402 / x402 / MPP as **optional layers** that produce or consume the same Fabric-level invoice/settlement objects.
 - Avoid embedding third-party payment HTTP details into `@fabric/core` defaults; keep explorers and bridges **configured**, not hard-coded.
 
-See also [BITCOIN_NETWORKS.md](BITCOIN_NETWORKS.md) for RPC and LAN mainnet setup, and [docs/PAYMENTS_DOCUMENT_EXCHANGE_PLAN.md](docs/PAYMENTS_DOCUMENT_EXCHANGE_PLAN.md) for Hub UI alignment with document exchange.
+See also [BITCOIN_NETWORKS.md](BITCOIN_NETWORKS.md) for RPC and LAN mainnet setup, [docs/PAYMENTS_DOCUMENT_EXCHANGE_PLAN.md](docs/PAYMENTS_DOCUMENT_EXCHANGE_PLAN.md) for Hub UI alignment with document exchange, and [docs/FEDERATED_SETTLEMENT.md](docs/FEDERATED_SETTLEMENT.md) for federation vault / peg tracks (explicit amounts — not an L402 substitute).
 
 **Stack docs (three core repos):** [fabric](https://github.com/FabricLabs/fabric), [fabric-http](https://github.com/FabricLabs/fabric-http), and **hub.fabric.pub** each ship `docs/PRODUCTION.md`, `docs/MARKETING_OVERVIEW.md`, `docs/RELEASE_CHECKLIST.md`, `CHANGELOG.md`, and **`npm run ci`**.
 

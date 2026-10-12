@@ -624,11 +624,12 @@ class Home extends React.Component {
               />
             ) : null}
 
-            {/* ─── Main content ─── */}
-            <Card fluid data-home-network-tick={this.state.networkStatusRenderTick}>
-              <Card.Content>
+            {/* ─── Main content (Identity, Bitcoin, health, quick links) ─── */}
+            <div data-home-network-tick={this.state.networkStatusRenderTick}>
+              {/* ─── Identity & network ─── */}
+              <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5em', marginBottom: '0.5em' }}>
-                  <Card.Header style={{ margin: 0 }}>Node overview</Card.Header>
+                  <Header as="h4" style={{ margin: 0 }}><Icon name="id badge" /> Identity &amp; network</Header>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
                     {snapshotUpdated ? (
                       <span style={{ fontSize: '0.82em', color: '#888' }}>Updated {snapshotUpdated}</span>
@@ -661,164 +662,158 @@ class Home extends React.Component {
                     ) : null}
                   </div>
                 </div>
-                <Card.Description>
-                  {/* ─── Identity & network ─── */}
-                  <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
-                    <Header as="h4" style={{ margin: '0 0 0.5em' }}><Icon name="id badge" /> Identity &amp; network</Header>
-                    <Grid columns={2} stackable style={{ margin: 0 }}>
-                      <Grid.Row style={{ padding: '0.15em 0' }}>
-                        <Grid.Column>
-                          <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
-                            {fabricPeerId ? (
-                              <div>
-                                <strong>Fabric id:</strong>{' '}
-                                <code style={{ wordBreak: 'break-all', fontSize: '0.88em' }} title={fabricPeerId}>
-                                  {fabricPeerId.length > 20 ? `${fabricPeerId.slice(0, 10)}…${fabricPeerId.slice(-8)}` : fabricPeerId}
-                                </code>
-                              </div>
-                            ) : null}
-                            {hostPort ? (
-                              <div><strong>Listen:</strong> <code style={{ fontSize: '0.88em' }}>{hostPort}</code></div>
-                            ) : null}
-                            {contractShort ? (
-                              <div><strong>Contract:</strong> <code style={{ fontSize: '0.88em' }} title={contractId}>{contractShort}</code></div>
-                            ) : null}
-                          </div>
-                        </Grid.Column>
-                        <Grid.Column>
-                          <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
-                            {uf.peers && hasHubAdminForPeers ? (
-                              <>
-                                <div>
-                                  <strong>Peers:</strong> {connectedPeers.length} connected / {peers.length} known
-                                  {' · '}
-                                  <Link to="/peers" style={{ fontSize: '0.92em' }}>Manage</Link>
-                                </div>
-                                <div>
-                                  <strong>WebRTC registry:</strong> {webrtcPeers.length}
-                                  {meshStatus && Number(meshStatus.connected) > 0 ? ` (${meshStatus.connected} mesh)` : ''}
-                                </div>
-                              </>
-                            ) : null}
-                            <div><strong>Documents:</strong> {publishedCount} published</div>
-                          </div>
-                        </Grid.Column>
-                      </Grid.Row>
-                    </Grid>
-                    {uf.peers && hasHubAdminForPeers && shareableString ? (
-                      <div style={{ marginTop: '0.65em' }}>
-                        <Button
-                          size='mini'
-                          basic
-                          icon
-                          labelPosition='left'
-                          onClick={() => {
-                            try {
-                              if (navigator.clipboard && navigator.clipboard.writeText) {
-                                navigator.clipboard.writeText(shareableString);
-                              }
-                            } catch (e) {}
-                          }}
-                          title="Copy Fabric node ID and listen address"
-                        >
-                          <Icon name='copy' />
-                          Copy node id
-                        </Button>
-                      </div>
-                    ) : null}
-                  </Segment>
-
-                  {/* ─── Bitcoin ─── */}
-                  {bitcoin ? (
-                    <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
-                      <Header as="h4" style={{ margin: '0 0 0.5em' }}>
-                        <Icon name="bitcoin" color="orange" /> Bitcoin
-                      </Header>
-                      {bitcoin.available ? (
-                        <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
+                <Grid columns={2} stackable style={{ margin: 0 }}>
+                  <Grid.Row style={{ padding: '0.15em 0' }}>
+                    <Grid.Column>
+                      <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
+                        {fabricPeerId ? (
                           <div>
-                            <Label size="mini" color="green" style={{ marginRight: '0.5em' }}>Available</Label>
-                            <strong>Network:</strong> {bitcoin.network || '—'}
-                            {bitcoin.height != null ? <span> · <strong>Height:</strong> {bitcoin.height}</span> : null}
+                            <strong>Fabric id:</strong>{' '}
+                            <code style={{ wordBreak: 'break-all', fontSize: '0.88em' }} title={fabricPeerId}>
+                              {fabricPeerId.length > 20 ? `${fabricPeerId.slice(0, 10)}…${fabricPeerId.slice(-8)}` : fabricPeerId}
+                            </code>
                           </div>
-                          {bitcoin.bestBlockHash ? (
-                            <div><strong>Tip:</strong> <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{String(bitcoin.bestBlockHash).slice(0, 16)}…</code></div>
-                          ) : null}
-                          {bitcoin.mempoolTxCount != null ? (
-                            <div><strong>Mempool:</strong> {bitcoin.mempoolTxCount} tx{bitcoin.mempoolBytes ? ` (${formatBytes(bitcoin.mempoolBytes)})` : ''}</div>
-                          ) : null}
-                          {showHomeOperatorLinks ? (
-                            <div style={{ marginTop: '0.35em' }}>
-                              <Link to="/services/bitcoin">Bitcoin dashboard</Link>
-                              {uf.bitcoinLightning ? <>{' · '}<Link to="/services/bitcoin/lightning">Lightning</Link></> : null}
-                              {' · '}
-                              <Link to="/services/bitcoin/transactions?scope=wallet">Wallet</Link>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <div style={{ color: '#888', fontSize: '0.9em' }}>
-                          {bitcoin.message ? String(bitcoin.message) : 'Bitcoin service is not available.'}
-                        </div>
-                      )}
-                    </Segment>
-                  ) : null}
-
-                  {/* ─── Operator health ─── */}
-                  {showHomeOperatorLinks ? (
-                    <HealthPanel
-                      health={this.state.operatorHealth}
-                      loading={this.state.operatorHealthLoading}
-                      error={this.state.operatorHealthError}
-                      onRefresh={() => this._refreshOperatorHealth()}
-                    />
-                  ) : null}
-
-                  {/* ─── Quick links ─── */}
-                  {showHomeOperatorLinks ? (
-                    <Segment style={{ marginTop: '0.85em', padding: '0.85em' }}>
-                      <Header as="h4" style={{ margin: '0 0 0.5em' }}><Icon name="compass outline" /> Quick links</Header>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em' }}>
-                        <Button as={Link} to="/documents" size="small" basic><Icon name="file alternate outline" /> Documents</Button>
-                        {uf.peers ? <Button as={Link} to="/peers" size="small" basic><Icon name="sitemap" /> Peers</Button> : null}
-                        <Button as={Link} to="/settings" size="small" basic><Icon name="setting" /> Settings</Button>
-                        {bitcoin && bitcoin.available ? (
-                          <Button as={Link} to="/services/bitcoin" size="small" basic><Icon name="bitcoin" /> Bitcoin</Button>
                         ) : null}
-                        {uf.sidechain ? (
-                          <Button as={Link} to="/federations" size="small" basic><Icon name="users" /> Federations</Button>
+                        {hostPort ? (
+                          <div><strong>Listen:</strong> <code style={{ fontSize: '0.88em' }}>{hostPort}</code></div>
                         ) : null}
-                        <Button as={Link} to="/contracts" size="small" basic><Icon name="file code outline" /> Contracts</Button>
-                        <Button as={Link} to="/settings/collaboration" size="small" basic><Icon name="handshake outline" /> Collaboration</Button>
-                        {uf.activities ? (
-                          <Button as={Link} to="/activities" size="small" basic><Icon name="list alternate outline" /> Activity log</Button>
+                        {contractShort ? (
+                          <div><strong>Contract:</strong> <code style={{ fontSize: '0.88em' }} title={contractId}>{contractShort}</code></div>
                         ) : null}
-                        <Button as={Link} to="/settings/admin" size="small" basic><Icon name="shield" /> Admin</Button>
                       </div>
-                    </Segment>
-                  ) : null}
+                    </Grid.Column>
+                    <Grid.Column>
+                      <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
+                        {uf.peers && hasHubAdminForPeers ? (
+                          <>
+                            <div>
+                              <strong>Peers:</strong> {connectedPeers.length} connected / {peers.length} known
+                              {' · '}
+                              <Link to="/peers" style={{ fontSize: '0.92em' }}>Manage</Link>
+                            </div>
+                            <div>
+                              <strong>WebRTC registry:</strong> {webrtcPeers.length}
+                              {meshStatus && Number(meshStatus.connected) > 0 ? ` (${meshStatus.connected} mesh)` : ''}
+                            </div>
+                          </>
+                        ) : null}
+                        <div><strong>Documents:</strong> {publishedCount} published</div>
+                      </div>
+                    </Grid.Column>
+                  </Grid.Row>
+                </Grid>
+                {uf.peers && hasHubAdminForPeers && shareableString ? (
+                  <div style={{ marginTop: '0.65em' }}>
+                    <Button
+                      size='mini'
+                      basic
+                      icon
+                      labelPosition='left'
+                      onClick={() => {
+                        try {
+                          if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(shareableString);
+                          }
+                        } catch (e) {}
+                      }}
+                      title="Copy Fabric node ID and listen address"
+                    >
+                      <Icon name='copy' />
+                      Copy node id
+                    </Button>
+                  </div>
+                ) : null}
+              </Segment>
 
-                  {/* ─── Credentials hint (compact) ─── */}
-                  {!hasHubAdminForPeers && showHomeOperatorLinks ? (
-                    <Message size="small" style={{ marginTop: '0.85em' }}>
-                      <Message.Header>Admin token not saved</Message.Header>
-                      <p style={{ margin: '0.25em 0 0', lineHeight: 1.45 }}>
-                        Paste your operator token in <Link to="/settings">Settings</Link> to unlock peer details, full statistics, and operator controls.
-                      </p>
-                    </Message>
-                  ) : null}
+              {/* ─── Bitcoin ─── */}
+              {bitcoin ? (
+                <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
+                  <Header as="h4" style={{ margin: '0 0 0.5em' }}>
+                    <Icon name="bitcoin" color="orange" /> Bitcoin
+                  </Header>
+                  {bitcoin.available ? (
+                    <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
+                      <div>
+                        <Label size="mini" color="green" style={{ marginRight: '0.5em' }}>Available</Label>
+                        <strong>Network:</strong> {bitcoin.network || '—'}
+                        {bitcoin.height != null ? <span> · <strong>Height:</strong> {bitcoin.height}</span> : null}
+                      </div>
+                      {bitcoin.bestBlockHash ? (
+                        <div><strong>Tip:</strong> <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{String(bitcoin.bestBlockHash).slice(0, 16)}…</code></div>
+                      ) : null}
+                      {bitcoin.mempoolTxCount != null ? (
+                        <div><strong>Mempool:</strong> {bitcoin.mempoolTxCount} tx{bitcoin.mempoolBytes ? ` (${formatBytes(bitcoin.mempoolBytes)})` : ''}</div>
+                      ) : null}
+                      {showHomeOperatorLinks ? (
+                        <div style={{ marginTop: '0.35em' }}>
+                          <Link to="/services/bitcoin">Bitcoin dashboard</Link>
+                          {uf.bitcoinLightning ? <>{' · '}<Link to="/services/bitcoin/lightning">Lightning</Link></> : null}
+                          {' · '}
+                          <Link to="/services/bitcoin/transactions?scope=wallet">Wallet</Link>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div style={{ color: '#888', fontSize: '0.9em' }}>
+                      {bitcoin.message ? String(bitcoin.message) : 'Bitcoin service is not available.'}
+                    </div>
+                  )}
+                </Segment>
+              ) : null}
 
-                  {!uf.peers && showHomeOperatorLinks ? (
-                    <Message warning size="small" style={{ marginTop: '0.85em' }}>
-                      <Message.Header>Peers &amp; WebRTC hidden</Message.Header>
-                      <p style={{ margin: '0.25em 0 0', lineHeight: 1.45 }}>
-                        Enable the <strong>peers</strong> flag under <Link to="/settings/admin">Admin → Feature visibility</Link>.
-                      </p>
-                    </Message>
-                  ) : null}
-                </Card.Description>
-              </Card.Content>
-            </Card>
+              {/* ─── Operator health ─── */}
+              {showHomeOperatorLinks ? (
+                <HealthPanel
+                  health={this.state.operatorHealth}
+                  loading={this.state.operatorHealthLoading}
+                  error={this.state.operatorHealthError}
+                  onRefresh={() => this._refreshOperatorHealth()}
+                />
+              ) : null}
+
+              {/* ─── Quick links ─── */}
+              {showHomeOperatorLinks ? (
+                <Segment style={{ marginTop: '0.85em', padding: '0.85em' }}>
+                  <Header as="h4" style={{ margin: '0 0 0.5em' }}><Icon name="compass outline" /> Quick links</Header>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em' }}>
+                    <Button as={Link} to="/documents" size="small" basic><Icon name="file alternate outline" /> Documents</Button>
+                    {uf.peers ? <Button as={Link} to="/peers" size="small" basic><Icon name="sitemap" /> Peers</Button> : null}
+                    <Button as={Link} to="/settings" size="small" basic><Icon name="setting" /> Settings</Button>
+                    {bitcoin && bitcoin.available ? (
+                      <Button as={Link} to="/services/bitcoin" size="small" basic><Icon name="bitcoin" /> Bitcoin</Button>
+                    ) : null}
+                    {uf.sidechain ? (
+                      <Button as={Link} to="/federations" size="small" basic><Icon name="users" /> Federations</Button>
+                    ) : null}
+                    <Button as={Link} to="/contracts" size="small" basic><Icon name="file code outline" /> Contracts</Button>
+                    <Button as={Link} to="/settings/collaboration" size="small" basic><Icon name="handshake outline" /> Collaboration</Button>
+                    {uf.activities ? (
+                      <Button as={Link} to="/activities" size="small" basic><Icon name="list alternate outline" /> Activity log</Button>
+                    ) : null}
+                    <Button as={Link} to="/settings/admin" size="small" basic><Icon name="shield" /> Admin</Button>
+                  </div>
+                </Segment>
+              ) : null}
+
+              {/* ─── Credentials hint (compact) ─── */}
+              {!hasHubAdminForPeers && showHomeOperatorLinks ? (
+                <Message size="small" style={{ marginTop: '0.85em' }}>
+                  <Message.Header>Admin token not saved</Message.Header>
+                  <p style={{ margin: '0.25em 0 0', lineHeight: 1.45 }}>
+                    Paste your operator token in <Link to="/settings">Settings</Link> to unlock peer details, full statistics, and operator controls.
+                  </p>
+                </Message>
+              ) : null}
+
+              {!uf.peers && showHomeOperatorLinks ? (
+                <Message warning size="small" style={{ marginTop: '0.85em' }}>
+                  <Message.Header>Peers &amp; WebRTC hidden</Message.Header>
+                  <p style={{ margin: '0.25em 0 0', lineHeight: 1.45 }}>
+                    Enable the <strong>peers</strong> flag under <Link to="/settings/admin">Admin → Feature visibility</Link>.
+                  </p>
+                </Message>
+              ) : null}
+            </div>
           </>
         )}
 

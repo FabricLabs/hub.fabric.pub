@@ -1,5 +1,7 @@
 'use strict';
 
+const { normalizeFederationSignatureScheme } = require('./federationSignatureScheme');
+
 /**
  * Browser helpers: fetch hub distributed manifest + beacon epoch summary for operator UI.
  * Federation enforcement lives in the hub (sidechain patches, beacon epochs); this module only summarizes public JSON.
@@ -43,7 +45,7 @@ async function fetchDistributedHubPolicy () {
 
 /**
  * @param {object|null} manifest
- * @returns {{ active: boolean, threshold: number, count: number, validators: string[] }}
+ * @returns {{ active: boolean, threshold: number, count: number, validators: string[], signatureScheme?: string }}
  */
 function federationSummaryFromManifest (manifest) {
   const f = manifest && manifest.federation;
@@ -57,7 +59,8 @@ function federationSummaryFromManifest (manifest) {
     active: true,
     threshold: Math.max(1, Number(f.threshold) || 1),
     count: validators.length,
-    validators
+    validators,
+    signatureScheme: normalizeFederationSignatureScheme(f.signatureScheme)
   };
 }
 

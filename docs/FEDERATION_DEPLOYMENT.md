@@ -104,6 +104,11 @@ Hallmark and execution anchors are observability only — not federation proof. 
 When federation validators are configured:
 
 - Sidechain patches: **`federationWitness` required** (no admin token).
-- Beacon: **`federationWitnessFailClosed`** on invalid/missing epoch witnesses.
+- Beacon: **`federationWitnessFailClosed`** on invalid/missing epoch witnesses; epoch auto-sign **fail-closed** if sidechain/contracts digests are missing on either side.
+- Sidechain path policy: default federation policy (deny free-form `/balances`/`/mint`; allow `/federationReserve`) when unset.
 - Trusted internal sidechain apply: disabled unless `FABRIC_SIDECHAIN_TRUSTED_PATCH=1`.
-- Contract Accept: pending publish **signer** must be in contract authority list.
+- Contract Accept: pending publish **signer** must be in contract authority list; missing `sidechainPolicy` is filled from the federation default.
+- **Federation peg (explicit amounts):** credit matured L1 deposits via `CreateFederationPegInCredit`; propose tip-bound peg-out via `ProposeFederationPegOut`; `PrepareFederationVaultWithdrawalPsbt` requires `withdrawalRequest` matching local tip (`amountSats` bound). Threshold ≥ 2 also needs `withdrawalWitnesses`. Limits: `FABRIC_FEDERATION_PEGOUT_MAX_SATS` / `FABRIC_FEDERATION_PEGOUT_DAILY_MAX_SATS` (1 BTC / 5 BTC defaults on mainnet).
+- **Validator pre-sign gate:** Beacon auto-sign and vault PSBT prep run `federationValidatorVerify.evaluateValidatorSignGate` (digest match + `/federationReserve` conservation).
+- **Release hygiene:** tag `@fabric/core` and pin Hub to that SHA **before** funding a mainnet federation vault. A fix on an untagged branch is not what signers run.
+- **Settlement tracks (F1+):** destination lock, peg watcher, emergency path — [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md).

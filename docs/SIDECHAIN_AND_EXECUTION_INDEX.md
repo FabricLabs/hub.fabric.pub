@@ -1,7 +1,7 @@
 # Sidechain & contract execution — code map
 This file is a **navigation index** for “sidechain”, **playnet**, **distributed / federation execution**, and the **sandbox execution machine** across **hub.fabric.pub**, **@fabric/core**, and **@fabric/http**. Use it to find implementations vs. docs vs. examples vs. stubs.
 
-**End-to-end Beacon + sidechain state + reorg design and roadmap (incl. conversation context):** [BEACON_SIDECHAIN_DESIGN_AND_ROADMAP.md](BEACON_SIDECHAIN_DESIGN_AND_ROADMAP.md).
+**End-to-end Beacon + sidechain state + reorg design and roadmap (incl. conversation context):** [BEACON_SIDECHAIN_DESIGN_AND_ROADMAP.md](BEACON_SIDECHAIN_DESIGN_AND_ROADMAP.md). **Peg / reserve / destination lock:** [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md).
 
 For the architectural story, see [DISTRIBUTED_CONTRACT_EXECUTION.md](DISTRIBUTED_CONTRACT_EXECUTION.md). For Bitcoin P2P and optional block scan, see [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md) and [AGENTS.md](../AGENTS.md).
 
@@ -64,6 +64,7 @@ Shared helpers: `scripts/lib/playnetOps.js`. Env: `FABRIC_MNEMONIC`, `FABRIC_HUB
 | **Program + Machine** | Multi-language programs (`fabric-opcodes`, `bitcoin-script`, …); `loadProgram` / `runProgram` / `parseManifest`; L1 redeem scaffold | `types/program.js`, `types/machine.js`, `docs/PROGRAM.md`, `tests/fabric.program.js` |
 | **Protocol helpers (not a type)** | Canonical JSON, beacon epoch signing, contract tip signing, Taproot failover ladder, federation verify, manifest v1 | `functions/fabricCanonicalJson.js`, `functions/beaconFederationSigning.js`, `functions/contractStateSigning.js`, `functions/contractTaproot.js`, `functions/fabricProgramManifest.js` (deprecated thin re-export: `types/distributedExecution.js`) |
 | **Federation / Beacon vault** | Deterministic P2TR from validators (optional publisher CSV + decay migrate) | Core `contractTaproot`; Hub `functions/federationVault.js` |
+| **Federated settlement (F0+)** | Explicit reserve, tip-bound peg-out, validator pre-sign | Core `federationReserveLedger` / `federationValidatorVerify`; Hub [FEDERATED_SETTLEMENT.md](FEDERATED_SETTLEMENT.md) |
 | **Federation (multisig / miniscript)** | Validators, `sign` / `verifyMultiSignature` | `types/federation.js` (see also [DISTRIBUTED_CONTRACT_EXECUTION.md](DISTRIBUTED_CONTRACT_EXECUTION.md) caveats on templates) |
 | **Bitcoin: playnet P2P** | `p2pAddNodes`, `applyP2pAddNodes`, `playnet` datadir case | `services/bitcoin.js`, `tests/bitcoin.p2pAddNodes.test.js` |
 | **Playnet / sidechain **placeholders**** | Global constants (empty strings) | `constants.js` → `FABRIC_PLAYNET_ADDRESS`, `FABRIC_PLAYNET_ORIGIN`, `LIGHTNING_SIDECHAIN_NUM` |

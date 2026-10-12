@@ -24,6 +24,7 @@ class FabricService extends Service {
       name: 'Fabric',
       remotes: [
         { host: 'hub.fabric.pub', port: 443, secure: true },
+        { host: 'relay.goon.vc', port: 443, secure: true },
         { host: 'beta.jeeves.dev', port: 443, secure: true }
       ],
       state: {
