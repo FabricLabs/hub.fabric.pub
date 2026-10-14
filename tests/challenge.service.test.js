@@ -80,7 +80,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
   }
 
   it('issues epoch-stamped challenges and reveals the bounty preimage on a pass', async function () {
-    const { svc, hub, provider, doc, hashes } = fixture(5);
+    const { svc, hub, fs, provider, doc, hashes } = fixture(5);
     assert.strictEqual(svc.epoch(), 5);
     const bounty = svc.createBounty({ contractId: 'c1', merkleRootHex: doc.merkleRootHex, providerPubkeys: [provider.pub], amountSats: 30000, epochs: 3, startEpoch: 5, refundAfterHeight: 1000 });
     assert.strictEqual(bounty.type, 'BountyBond');
@@ -91,6 +91,9 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     assert.strictEqual(challenge.epoch, 5);
     assert.strictEqual(challenge.deadlineEpoch, 7);
     assert.strictEqual(svc.listIssued()[0].status, 'open');
+    await new Promise((resolve) => setImmediate(resolve));
+    const Witness = require('@fabric/core/types/witness');
+    assert.ok(fs.files.get('fabric/storage-challenges.json').includes(Witness.artifactHash(challenge)), 'issued challenge is persisted immediately');
 
     const response = new Challenge().respond(challenge, { blobHashes: hashes, bytes: doc.bytesFor(challenge.blobIndex), epoch: 6, providerPrivateKey: provider.priv });
     const verdict = svc.respond(response, { bytes: doc.bytesFor(challenge.blobIndex) });
@@ -117,6 +120,14 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     assert.ok(verdict.proofHash);
     assert.strictEqual(svc.listProofs().length, 1);
     assert.strictEqual(book.exportTelemetry().providers.find((p) => p.sellerId === 'prov').penalties, 1);
+    // The first verdict is final: an honest answer afterwards cannot unlock the bounty.
+    const retry = svc.respond(honest, { bytes: doc.bytesFor(challenge.blobIndex) });
+    assert.strictEqual(retry.duplicate, true);
+    assert.strictEqual(retry.ok, false);
+    assert.strictEqual(retry.fraud, 'wrong-leaf');
+    assert.ok(!retry.reveal);
+    assert.strictEqual(svc.listProofs().length, 1);
+
     await svc._persist();
     assert.ok(fs.files.get('fabric/storage-challenges.json').includes(verdict.proofHash));
 

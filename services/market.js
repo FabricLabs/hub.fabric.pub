@@ -181,7 +181,7 @@ class MarketService extends Service {
    * @returns {Promise<object|null>}
    */
   async onBitcoinBlock (payload = {}) {
-    const book = this.channels;
+    const book = this._ensureChannels();
     if (!book) return null;
     const bitcoin = this.hub && this.hub.bitcoin;
     let txHexes = Array.isArray(payload.txHexes) ? payload.txHexes.slice() : [];

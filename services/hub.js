@@ -6994,7 +6994,7 @@ class Hub extends Service {
 
       await this._appendFabricMessage('BitcoinBlock', blockPayload);
 
-      if (this.market && this.market.channels && typeof this.market.onBitcoinBlock === 'function') {
+      if (this.market && this.market.channelsEnabled && typeof this.market.onBitcoinBlock === 'function') {
         try {
           await this.market.onBitcoinBlock({ height: blockPayload.height, tip: blockPayload.tip });
         } catch (marketErr) {

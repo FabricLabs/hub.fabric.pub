@@ -384,6 +384,7 @@ class ChallengeService extends Service {
     });
     this._publish('AvailabilityChallenge', challenge);
     this.emit('challenge', challenge);
+    void this._persist();
     return challenge;
   }
 
@@ -398,6 +399,11 @@ class ChallengeService extends Service {
     if (!response || response.type !== 'AvailabilityResponse') return { ok: false, reason: 'not an AvailabilityResponse' };
     const row = this._issued.get(String(response.challengeHash || ''));
     if (!row) return { ok: false, reason: 'unknown challenge' };
+    // First verdict is final: a later honest answer must not flip a recorded
+    // fraud (wrong leaf or swept non-response) into a bounty reveal.
+    if (row.response || (row.verdict && row.verdict.fraud)) {
+      return Object.assign({ duplicate: true }, row.verdict || { ok: false, reason: 'challenge already resolved' });
+    }
     const verdict = this.challenger.validate(row.challenge, response, ctx);
     row.response = response;
     row.verdict = verdict;

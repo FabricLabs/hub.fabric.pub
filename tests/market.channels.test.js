@@ -25,6 +25,14 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     assert.strictEqual(on.channelsStatus().reason, 'unavailable');
   });
 
+  it('creates the channel book on the first block, before any channel call', async function () {
+    const key = new Key({ private: crypto.randomBytes(32).toString('hex') });
+    const m = new MarketService({ channels: { enable: true } }).attach({ hub: { bitcoin: null }, fs: memoryFs(), key });
+    assert.strictEqual(m.channels, null);
+    await m.onBitcoinBlock({ height: 42 });
+    assert.ok(m.channels, 'block hook initializes the book so the tip is recorded');
+  });
+
   it('opens a channel as funder, mirrors the counterparty, routes bodies, persists', async function () {
     const fsA = memoryFs();
     const fsB = memoryFs();

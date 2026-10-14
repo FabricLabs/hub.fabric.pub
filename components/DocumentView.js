@@ -1291,10 +1291,15 @@ function DocumentDetail (props) {
               title="Let this hub's budget agent pick the cheapest / nearest provider per blob (regtest/signet only)"
               onClick={async () => {
                 const record = FabricDocumentRecord.recordFromHubDocument(doc);
+                const token = getAdminTokenFromProps(props);
+                if (!token) {
+                  setAgentNotice('Admin token required to register wants with the budget agent.');
+                  return;
+                }
                 try {
                   const r = await fetch('/services/market/agent/wants', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                     body: JSON.stringify({ documentId: record.documentId, merkleRootHex: record.merkleRootHex, blobTotal: record.blobTotal })
                   });
                   const j = await r.json().catch(() => ({}));
