@@ -120,6 +120,7 @@ const PayjoinService = require('../services/payjoin');
 const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
+const MarketService = require('../services/market');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
 const {
@@ -691,6 +692,10 @@ class Hub extends Service {
 
     this.challenge = new ChallengeService({
       ...this.settings.challenge
+    });
+
+    this.market = new MarketService({
+      ...this.settings.market
     });
 
     this.distributedHttp = new FabricDistributedExecutionHTTP({
@@ -6989,6 +6994,14 @@ class Hub extends Service {
 
       await this._appendFabricMessage('BitcoinBlock', blockPayload);
 
+      if (this.market && this.market.channels && typeof this.market.onBitcoinBlock === 'function') {
+        try {
+          await this.market.onBitcoinBlock({ height: blockPayload.height, tip: blockPayload.tip });
+        } catch (marketErr) {
+          console.warn('[HUB:MARKET] channel block hook:', marketErr && marketErr.message ? marketErr.message : marketErr);
+        }
+      }
+
       if (this.beacon && this.beacon.state && this.beacon.state.status === 'RUNNING') {
         try {
           await this.beacon.recordEpochFromBlock({
@@ -9725,6 +9738,105 @@ class Hub extends Service {
     });
   }
 
+  _getMarketService () {
+    if (!this.market) return null;
+    if (this.settings && this.settings.market && this.settings.market.enable === false) return null;
+    return this.market;
+  }
+
+  _handleMarketServiceRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) {
+        return res.status(503).json({ available: false, service: 'market', message: 'Market service is disabled on this Hub node.' });
+      }
+      return res.json(market.getCapabilities());
+    });
+  }
+
+  _handleMarketProvidersRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      return res.json({ type: 'MarketProviders', providers: market.listProviders() });
+    });
+  }
+
+  _handleMarketChunksRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      const q = req.query || {};
+      const filter = {};
+      if (q.merkleRootHex) filter.merkleRootHex = String(q.merkleRootHex);
+      if (q.documentId) filter.documentId = String(q.documentId);
+      return res.json({ type: 'MarketChunkIndex', filter, chunks: market.chunkIndex(filter) });
+    });
+  }
+
+  _handleMarketAgentRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      return res.json(market.agentStatus());
+    });
+  }
+
+  /** Admin token (Bearer or body) gate shared by the agent write routes. */
+  _marketAgentAdminOk (req) {
+    const header = String((req.headers && req.headers.authorization) || '');
+    const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+    const token = bearer || (req.body && (req.body.adminToken || req.body.token)) || '';
+    return !!(this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(token));
+  }
+
+  _handleMarketAgentConfigureRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to change the market budget.' });
+      try {
+        return res.json(market.agentConfigure(req.body || {}));
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handleMarketAgentWantRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to register wants.' });
+      try {
+        return res.status(201).json({ type: 'MarketWant', want: market.agentWant(req.body || {}) });
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handleMarketChannelsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      return res.json(market.channelsStatus());
+    });
+  }
+
+  _handleMarketChannelOpenRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to open channels.' });
+      try {
+        return res.status(201).json(Object.assign({ type: 'ChannelOpened' }, market.channelOpen(req.body || {})));
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
   _handleChallengeServiceRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const challenge = this._getChallengeService();
@@ -9738,7 +9850,10 @@ class Hub extends Service {
       const caps = challenge.getCapabilities();
       const body = {
         ...caps,
-        challenges: challenge.list()
+        challenges: challenge.list(),
+        issued: challenge.listIssued(),
+        commitments: challenge.listCommitments().length,
+        proofs: challenge.listProofs().length
       };
       if (this._state && this._state.content && this._state.content.services) {
         this._state.content.services.challenge = {
@@ -9747,6 +9862,76 @@ class Hub extends Service {
         };
       }
       return res.json(body);
+    });
+  }
+
+  _handleChallengeIssueRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to issue availability challenges.' });
+      try {
+        const body = req.body || {};
+        const issued = challenge.issue({
+          merkleRootHex: body.merkleRootHex,
+          blobHashes: Array.isArray(body.blobHashes) ? body.blobHashes : undefined,
+          blobTotal: body.blobTotal,
+          providerPubkey: body.providerPubkey,
+          contractId: body.contractId || null,
+          epoch: body.epoch,
+          deadlineHeight: body.deadlineHeight,
+          deposit: body.deposit && body.deposit.txid ? { txid: body.deposit.txid, vout: Number(body.deposit.vout) || 0 } : undefined
+        });
+        return res.status(201).json({ type: 'AvailabilityChallenge', data: issued });
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handleChallengeIssuedRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      const row = challenge.getIssued(req.params && req.params.hash);
+      if (!row) return res.status(404).json({ error: 'unknown challenge' });
+      // The epoch reveal is for the provider that passed; never list it publicly.
+      const copy = Object.assign({}, row);
+      delete copy.reveal;
+      return res.json({ type: 'AvailabilityChallengeRecord', data: copy });
+    });
+  }
+
+  _handleChallengeCommitRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      const out = challenge.commit(req.body || {});
+      if (!out.ok) return res.status(400).json({ error: out.error });
+      await challenge._persist();
+      return res.status(201).json({ type: 'AvailabilityCommitment', data: out });
+    });
+  }
+
+  _handleChallengeRespondRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      const out = challenge.respond(req.body || {});
+      await challenge._persist();
+      return res.status(out.ok ? 200 : 422).json({ type: 'AvailabilityVerdict', data: out });
+    });
+  }
+
+  _handleChallengeProofsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      if (req.method === 'POST') {
+        const out = challenge.recordProof(req.body || {});
+        return res.status(out.ok ? 201 : 422).json({ type: 'FraudProofRecord', data: out });
+      }
+      return res.json({ type: 'FraudProofList', data: challenge.listProofs() });
     });
   }
 
@@ -11640,8 +11825,13 @@ class Hub extends Service {
         console.error('[HUB] Failed to seed documents index from content store:', err);
       }
 
+      if (this.market && !(this.settings.market && this.settings.market.enable === false)) {
+        this.market.attach({ hub: this, fs: this.fs, key: this._rootKey });
+        await this.market.start();
+      }
+
       if (this.challenge && this.settings.challenge && this.settings.challenge.enable !== false) {
-        this.challenge.attach({ hub: this, fs: this.fs });
+        this.challenge.attach({ hub: this, fs: this.fs, book: this.market ? this.market.book : null, key: this._rootKey });
         await this.challenge.start();
         if (this._state.content.services) {
           const caps = this.challenge.getCapabilities();
@@ -11822,6 +12012,22 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/peering', this._handlePeeringServiceRequest.bind(this));
       this.http._addRoute('GET', '/services/peering/attestation', this._handlePeeringAttestationRequest.bind(this));
       this.http._addRoute('GET', '/services/challenges', this._handleChallengeServiceRequest.bind(this));
+      /* Availability market: issue (admin), commitments / responses / fraud proofs (anyone, signature-verified) */
+      this.http._addRoute('POST', '/services/challenges', this._handleChallengeIssueRequest.bind(this));
+      this.http._addRoute('GET', '/services/challenges/proofs', this._handleChallengeProofsRequest.bind(this));
+      this.http._addRoute('POST', '/services/challenges/proofs', this._handleChallengeProofsRequest.bind(this));
+      this.http._addRoute('POST', '/services/challenges/commitments', this._handleChallengeCommitRequest.bind(this));
+      this.http._addRoute('POST', '/services/challenges/responses', this._handleChallengeRespondRequest.bind(this));
+      this.http._addRoute('GET', '/services/challenges/:hash', this._handleChallengeIssuedRequest.bind(this));
+      /* Document Market: ranked chunk index + local provider telemetry (services/market.js) */
+      this.http._addRoute('GET', '/services/market', this._handleMarketServiceRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/providers', this._handleMarketProvidersRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/chunks', this._handleMarketChunksRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/agent', this._handleMarketAgentRequest.bind(this));
+      this.http._addRoute('PUT', '/services/market/agent', this._handleMarketAgentConfigureRequest.bind(this));
+      this.http._addRoute('POST', '/services/market/agent/wants', this._handleMarketAgentWantRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/channels', this._handleMarketChannelsRequest.bind(this));
+      this.http._addRoute('POST', '/services/market/channels', this._handleMarketChannelOpenRequest.bind(this));
       /* Collaboration: contacts, email invitations, multisig-oriented groups (see functions/hubCollaboration.js) */
       hubCollaboration.registerHttp(this);
       /* Distributed execution: manifest + beacon epoch status (@fabric/core + @fabric/http) */
@@ -13325,6 +13531,32 @@ class Hub extends Service {
         const desiredCopies = Math.max(1, Number(pending ? pending.config?.desiredCopies : config.desiredCopies) || 1);
         const ownerId = config.actorId || (this.agent && this.agent.identity && this.agent.identity.id) || null;
 
+        // Phase 3: when the publisher names eligible providers the contract is a
+        // core `Bond` bounty (per-epoch Taproot outputs the publisher funds; no
+        // Hub-wallet custody). Regtest / signet only — Bond refuses mainnet.
+        let bondRecord = null;
+        const providerPubkeys = Array.isArray(config.providerPubkeys) ? config.providerPubkeys : [];
+        if (providerPubkeys.length) {
+          const ch = this._getChallengeService();
+          if (!ch) return fail('Challenge service required for bounty bonds.');
+          try {
+            const epochs = Math.max(1, Math.floor(Number(config.epochs) || 1));
+            const tip = Number(bitcoin && bitcoin.height) || 0;
+            bondRecord = ch.createBounty({
+              contractId: `pending:${documentId}`,
+              merkleRootHex: config.merkleRootHex || null,
+              providerPubkeys,
+              amountSats,
+              epochs,
+              startEpoch: config.startEpoch,
+              refundAfterHeight: Number(config.refundAfterHeight) || (tip + Math.max(144, epochs * 144)),
+              network: (bitcoin && bitcoin.network) || this.settings.network || 'regtest'
+            });
+          } catch (e) {
+            return fail(`bond: ${e && e.message ? e.message : e}`);
+          }
+        }
+
         try {
           // Lightweight in-memory record for now; can later move to a dedicated
           // contracts collection and Bitcoin-backed escrow.
@@ -13339,6 +13571,8 @@ class Hub extends Service {
             responseDeadline,
             desiredCopies,
             created: new Date().toISOString(),
+            ...(config.merkleRootHex ? { merkleRootHex: String(config.merkleRootHex).toLowerCase() } : {}),
+            ...(bondRecord ? { bond: bondRecord, custody: 'taproot-bounty' } : {}),
             ...(txid ? { txid } : {}),
             ...(verifiedInvoiceMeta && verifiedInvoiceMeta.invoiceAddress
               ? {
@@ -13400,6 +13634,11 @@ class Hub extends Service {
 
           try {
             const ch = this._getChallengeService();
+            if (ch && bondRecord) {
+              // Re-key the bounty seed from the pending id to the real contract id.
+              const pendingBond = ch._bonds.get(`pending:${documentId}`);
+              if (pendingBond) { ch._bonds.delete(`pending:${documentId}`); ch._bonds.set(contractId, pendingBond); }
+            }
             if (ch) await ch.registerFromStorageContract(this._state.content.collections.contracts[contractId]);
           } catch (e) {
             console.warn('[HUB] ChallengeService register failed:', e && e.message ? e.message : e);
@@ -14973,6 +15212,15 @@ class Hub extends Service {
               (ev && ev.signer) || body.pubkeyHex
             );
           }
+          if (t === 'AvailabilityCommitment' || t === 'AvailabilityResponse' || t === 'FraudProof' || t === 'DepositPenaltyPreSig') {
+            const ch = this._getChallengeService();
+            // Timelocked non-response proofs need the deposit outpoint looked up on chain.
+            if (ch) Promise.resolve(ch.ingestContractMessageAsync(body)).catch(() => {});
+          }
+          if (typeof t === 'string' && t.startsWith('Channel')) {
+            const market = this._getMarketService();
+            if (market) market.ingestChannelMessage(body, { sellerId: ev && ev.signer ? String(ev.signer) : undefined });
+          }
         } catch (_) { /* ignore unverified cluster gossip */ }
         if (this.settings && this.settings.debug) {
           const body = (ev && ev.object) || {};
@@ -15276,10 +15524,16 @@ class Hub extends Service {
       });
 
       // When this node requested a remote inventory (or relays a response), Fabric delivers a document-offer response here.
-      this.agent.on('inventoryResponse', async ({ message, origin }) => {
+      this.agent.on('inventoryResponse', async ({ message, origin, latencyMs, hops, signerPubkeyHex }) => {
         try {
           if (!message || !isDocumentInventoryResponseType(message.type) || !message.object) return;
           const kind = String((message.object && message.object.kind) || '').trim().toLowerCase();
+          // Ranked chunk index + local RTT telemetry (also for L1 `offerBtc` replies without `kind`).
+          if (this.market) {
+            try {
+              this.market.ingestInventoryResponse({ message, origin, latencyMs, hops, signerPubkeyHex });
+            } catch (_) {}
+          }
           if (!kind) return;
           if (!['documents', 'mainchain', 'mainchain-blocks'].includes(kind)) return;
           const obj = message.object && typeof message.object === 'object' ? message.object : null;
