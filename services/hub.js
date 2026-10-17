@@ -61,6 +61,7 @@ const {
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
 const parseFilesystemJson = require('../functions/parseFilesystemJson');
+const { withDefaultSeedPeers } = require('../functions/hubDefaultPeers');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const hubHeapBounds = require('../functions/hubHeapBounds');
@@ -460,17 +461,7 @@ class Hub extends Service {
       distributeFeeSats: DEFAULT_DISTRIBUTE_FEE_SATS,
     }, settings);
 
-    if (!callerSetPeers) {
-      const peers = Array.isArray(this.settings.peers) ? this.settings.peers.slice() : [];
-      for (const seed of ['hub.fabric.pub:7777', 'relay.goon.vc:7777']) {
-        const have = peers.some((p) => {
-          const s = String(p || '').replace(/^[^@]+@/, '').trim().toLowerCase();
-          return s === seed;
-        });
-        if (!have) peers.push(seed);
-      }
-      this.settings.peers = peers;
-    }
+    if (!callerSetPeers) this.settings.peers = withDefaultSeedPeers(this.settings.peers);
 
     // Test stability: do not dial production Hub seeds from mocha. Opt in with
     // FABRIC_TEST_ALLOW_DEFAULT_PEERS=1. `merge({}, settings/local.js)` otherwise
@@ -9880,7 +9871,9 @@ class Hub extends Service {
           contractId: body.contractId || null,
           epoch: body.epoch,
           deadlineHeight: body.deadlineHeight,
-          deposit: body.deposit && body.deposit.txid ? { txid: body.deposit.txid, vout: Number(body.deposit.vout) || 0 } : undefined
+          deposit: body.deposit && body.deposit.txid ? { txid: body.deposit.txid, vout: Number(body.deposit.vout) || 0 } : undefined,
+          penaltyAddress: body.penaltyAddress || undefined,
+          minPenaltySats: body.minPenaltySats != null ? Number(body.minPenaltySats) : undefined
         });
         return res.status(201).json({ type: 'AvailabilityChallenge', data: issued });
       } catch (e) {
@@ -9928,7 +9921,8 @@ class Hub extends Service {
       const challenge = this._getChallengeService();
       if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
       if (req.method === 'POST') {
-        const out = challenge.recordProof(req.body || {});
+        const body = req.body || {};
+        const out = challenge.recordProof(body, await challenge.chainViewFor(body));
         return res.status(out.ok ? 201 : 422).json({ type: 'FraudProofRecord', data: out });
       }
       return res.json({ type: 'FraudProofList', data: challenge.listProofs() });

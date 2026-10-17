@@ -214,4 +214,79 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     assert.strictEqual(rows[1].status, 'late');
     assert.ok(/check-in/.test(svc.getIssued(rows[1].hash).verdict.reason));
   });
+
+  it('signs the publisher penalty destination into challenges and refuses pre-signatures paying elsewhere', function () {
+    // Destination binding ships with fabric #188; skip until the @fabric/core pin includes it.
+    if (typeof require('@fabric/core/types/witness').FraudProof._penaltyDestination !== 'function') return this.skip();
+    const bitcoinjs = require(require.resolve('bitcoinjs-lib', { paths: [require.resolve('@fabric/core/types/channel')] }));
+    const { signerFromPriv32 } = require('@fabric/core/functions/inventoryHtlc');
+    const compressed = (p) => Buffer.from(signerFromPriv32(p).publicKey).toString('hex');
+    const p2wpkh = (pub) => bitcoinjs.payments.p2wpkh({ pubkey: Buffer.from(pub, 'hex'), network: bitcoinjs.networks.regtest }).address;
+
+    const { svc, hub, provider, doc, hashes } = fixture(20);
+    const pubPriv = Buffer.isBuffer(hub._rootKey.private) ? hub._rootKey.private : Buffer.from(hub._rootKey.private, 'hex');
+    const publisherDest = p2wpkh(compressed(pubPriv));
+    svc.settings.penaltyAddress = publisherDest;
+    svc.settings.minPenaltySats = 25000;
+    svc.settings.deadlineBlocks = 10;
+    svc.attach({ tipHeight: () => 500 });
+
+    const deposit = Bond.buildDeposit({ network: 'regtest', providerPubkey: provider.pub, publisherPubkey: compressed(pubPriv), withdrawAfter: 900, amountSats: 30000 });
+    const fundingTx = new bitcoinjs.Transaction();
+    fundingTx.addInput(crypto.randomBytes(32), 0);
+    fundingTx.addOutput(bitcoinjs.address.toOutputScript(deposit.address, bitcoinjs.networks.regtest), BigInt(30000));
+    svc.registerDeposit({ txid: fundingTx.getId(), vout: 0, providerPubkey: provider.pub });
+
+    const challenge = svc.issue({ merkleRootHex: doc.merkleRootHex, blobHashes: hashes, providerPubkey: provider.xOnly });
+    assert.strictEqual(challenge.deposit.penaltyAddress, publisherDest);
+    assert.strictEqual(challenge.deposit.minPenaltySats, 25000);
+
+    const sign = (destinationAddress, feeSats = 500) => Bond.signPenaltyAsProvider(deposit, Bond.prepareDepositPenalty(deposit, { fundedTxHex: fundingTx.toHex(), deadlineHeight: 510, destinationAddress, feeSats }), provider.priv);
+    const selfPaying = svc.ingestContractMessage(sign(p2wpkh(provider.pub)));
+    assert.strictEqual(selfPaying.ok, false);
+    assert.ok(/penalty does not pay/.test(selfPaying.error), selfPaying.error);
+    assert.strictEqual(svc.ingestContractMessage(sign(publisherDest, 10000)).ok, false, 'fee eats below minPenaltySats');
+    assert.strictEqual(svc.ingestContractMessage(sign(publisherDest)).ok, true);
+  });
+
+  it('resolves the chain view for broadcast-evidence proofs before verifying them', async function () {
+    const bitcoinjs = require('bitcoinjs-lib');
+    const { svc, book } = fixture(5);
+    const header = crypto.randomBytes(80);
+    const once = crypto.createHash('sha256').update(header).digest();
+    const blockHash = Buffer.from(crypto.createHash('sha256').update(once).digest()).reverse().toString('hex');
+    const tx = new bitcoinjs.Transaction();
+    tx.addInput(crypto.randomBytes(32), 0);
+    tx.addOutput(Buffer.from('0014' + '11'.repeat(20), 'hex'), 1000);
+
+    const asked = { headers: [], txids: [] };
+    let onChain = true;
+    svc.attach({
+      headerKnown: async (h) => { asked.headers.push(h); return onChain; },
+      txConfirmed: async (id) => { asked.txids.push(id); return onChain; }
+    });
+
+    const stale = { type: 'FraudProof', kind: 'stale-commitment', artifacts: { staleTxHex: tx.toHex(), inclusion: { txid: tx.getId(), blockHeaderHex: header.toString('hex') } } };
+    const viaHeader = await svc.chainViewFor(stale);
+    assert.deepStrictEqual(asked.headers, [blockHash]);
+    assert.strictEqual(viaHeader.headerKnown(blockHash), true);
+    assert.strictEqual(viaHeader.headerKnown('00'.repeat(32)), false, 'only the asked-for block');
+    assert.strictEqual(viaHeader.txConfirmed, undefined);
+
+    const penalty = { type: 'FraudProof', kind: 'wrongful-penalty', artifacts: { penaltyTxHex: tx.toHex() } };
+    const viaTx = await svc.chainViewFor(penalty);
+    assert.deepStrictEqual(asked.txids, [tx.getId()]);
+    assert.strictEqual(viaTx.txConfirmed(tx.getId()), true);
+    assert.strictEqual(viaTx.headerKnown, undefined);
+
+    onChain = false;
+    assert.strictEqual((await svc.chainViewFor(stale)).headerKnown(blockHash), false);
+    assert.deepStrictEqual(await svc.chainViewFor({ type: 'FraudProof', kind: 'wrong-leaf', artifacts: {} }), {});
+
+    // recordProof hands the resolved callbacks to the book's verifier.
+    let seen = null;
+    book.ingestFraudProof = (proof, view) => { seen = view; return { ok: false, reason: 'test' }; };
+    svc.recordProof(penalty, viaTx);
+    assert.strictEqual(seen.txConfirmed, viaTx.txConfirmed);
+  });
 });

@@ -1504,6 +1504,17 @@ class HubInterface extends React.Component {
       this.setState({ clientBalance: null });
     }
     this.setState({ clientBalanceLoading: true });
+    // Overlapping refreshes resolve out of order: only the latest request for
+    // this wallet (and only while it is still the active wallet) may write state
+    // or feed the Bridge baseline.
+    if (!this._balanceReq) this._balanceReq = {};
+    const requestId = (this._balanceReq[nextWid] || 0) + 1;
+    this._balanceReq[nextWid] = requestId;
+    const isCurrent = () => {
+      if (this._balanceReq[nextWid] !== requestId) return false;
+      const active = getSpendWalletContext(this.state.uiLocalIdentity || {});
+      return String(active.walletId || '') === nextWid;
+    };
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
     const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus);
     const bitcoin = resolveBitcoinFromNetworkStatus(networkStatus);
@@ -1511,6 +1522,7 @@ class HubInterface extends React.Component {
     try {
       const upstream = loadUpstreamSettings();
       const summary = await fetchWalletSummaryWithCache(upstream, wallet, { bypassCache: forceRefresh, network });
+      if (!isCurrent()) return;
       const balanceSats = Number(summary.balanceSats ?? summary.balance ?? 0);
       if (Number.isFinite(balanceSats)) {
         const confirmedSats = Number(summary.confirmedSats ?? balanceSats);
@@ -1539,6 +1551,7 @@ class HubInterface extends React.Component {
         this.setState({ clientBalance: null, clientBalanceLoading: false });
       }
     } catch (e) {
+      if (!isCurrent()) return;
       this.setState((prev) => ({
         clientBalance: prev.clientBalance,
         clientBalanceLoading: false

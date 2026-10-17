@@ -18,6 +18,8 @@ function memoryFs () {
 }
 
 describe('Hub MarketService payment channels (Phase 4)', function () {
+  // Channel opens sign several Taproot PSBTs; slow CI runners exceed mocha's 2s default.
+  this.timeout(20000);
   it('is disabled by default and refuses without a key', function () {
     const m = new MarketService();
     assert.strictEqual(m.channelsStatus().available, false);
@@ -119,6 +121,10 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     const header = Buffer.alloc(80);
     header.writeInt32LE(0x20000000, 0);
     Buffer.from(merkleRootFromTxids(txids), 'hex').reverse().copy(header, 36);
+    header.writeUInt32LE(0x207fffff, 72); // regtest bits: the header must meet its own target
+    const blockHashOf = (h) => Buffer.from(crypto.createHash('sha256').update(crypto.createHash('sha256').update(h).digest()).digest()).reverse().toString('hex');
+    for (let nonce = 0; parseInt(blockHashOf(header).slice(0, 2), 16) > 0x7f; nonce++) header.writeUInt32LE(nonce, 76);
+    const blockHash = blockHashOf(header);
     const breaches = [];
     B.on('channelBreach', (obs) => breaches.push(obs));
     const result = await B.onBitcoinBlock({ height: 120, txHexes: [staleA.txHex], blockHeaderHex: header.toString('hex'), txids });
@@ -129,8 +135,10 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     assert.strictEqual(proof.type, 'FraudProof');
     const Witness = require('@fabric/core/types/witness');
     const fp = Witness.FraudProof.fromBody(proof);
-    assert.strictEqual(fp.verify({}).ok, true, 'inclusion proof alone establishes the broadcast');
-    assert.strictEqual(fp.verify({}).evidence, 'inclusion');
+    // Verifiers must know the header is on their chain (ChallengeService#chainViewFor resolves it via bitcoind).
+    const chainView = { headerKnown: (h) => h === blockHash };
+    assert.strictEqual(fp.verify(chainView).ok, true, 'inclusion proof against a known header establishes the broadcast');
+    assert.strictEqual(fp.verify(chainView).evidence, 'inclusion');
     assert.strictEqual(breaches[0].justice, null, 'no wallet address without a Bitcoin service');
 
     await A._persist();

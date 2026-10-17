@@ -34,6 +34,22 @@ const CADENCE_MS = {
 const MARKET_CONTRACT_ID = crypto.createHash('sha256').update('fabric-document-market').digest('hex');
 
 const INGESTED_TYPES = new Set(['AvailabilityCommitment', 'AvailabilityResponse', 'FraudProof', 'DepositPenaltyPreSig']);
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** @private display-order block hash of an 80-byte header, or null */
+function blockHashFromHeader (headerHex) {
+  const hex = String(headerHex || '').toLowerCase();
+  if (!/^[0-9a-f]{160}$/.test(hex)) return null;
+  const once = crypto.createHash('sha256').update(Buffer.from(hex, 'hex')).digest();
+  return Buffer.from(crypto.createHash('sha256').update(once).digest()).reverse().toString('hex');
+}
+
+/** @private txid of a raw transaction hex, or null */
+function txidFromHex (txHex) {
+  try {
+    return require('bitcoinjs-lib').Transaction.fromHex(String(txHex || '').trim()).getId();
+  } catch (_) { return null; }
+}
 
 class ChallengeService extends Service {
   constructor (settings = {}) {
@@ -76,6 +92,10 @@ class ChallengeService extends Service {
     this._tipHeight = null;
     /** @type {function|null} host chain view `(txid, vout) → boolean` (outpoint still unspent) */
     this._outpointUnspent = null;
+    /** @type {function|null} host chain view `(blockHash) → boolean` (block on our best chain) */
+    this._headerKnown = null;
+    /** @type {function|null} host chain view `(txid) → boolean` (transaction confirmed) */
+    this._txConfirmed = null;
   }
 
   static get MARKET_CONTRACT_ID () { return MARKET_CONTRACT_ID; }
@@ -89,6 +109,8 @@ class ChallengeService extends Service {
     if (!this.key && this.hub && this.hub._rootKey) this.key = this.hub._rootKey;
     if (typeof deps.tipHeight === 'function') this._tipHeight = deps.tipHeight;
     if (typeof deps.outpointUnspent === 'function') this._outpointUnspent = deps.outpointUnspent;
+    if (typeof deps.headerKnown === 'function') this._headerKnown = deps.headerKnown;
+    if (typeof deps.txConfirmed === 'function') this._txConfirmed = deps.txConfirmed;
     return this;
   }
 
@@ -126,17 +148,109 @@ class ChallengeService extends Service {
   }
 
   /**
+   * Whether a block is on our best chain (`attach({ headerKnown })`, else Hub
+   * bitcoind `getblockheader`). `null` when unknown.
+   * @param {string} blockHash display-order hex
+   * @returns {Promise<boolean|null>}
+   */
+  async headerKnown (blockHash) {
+    const hash = String(blockHash || '').toLowerCase();
+    if (!HEX64.test(hash)) return null;
+    try {
+      if (this._headerKnown) return !!(await this._headerKnown(hash));
+      const btc = this.hub && this.hub.bitcoin;
+      if (!btc || typeof btc._makeRPCRequest !== 'function') return null;
+      const header = await btc._makeRPCRequest('getblockheader', [hash, true]);
+      // `confirmations: -1` marks a known header that is not on the best chain.
+      return !!header && Number(header.confirmations) > 0;
+    } catch (e) {
+      return /not found/i.test(String(e && e.message ? e.message : e)) ? false : null;
+    }
+  }
+
+  /**
+   * Whether a transaction is confirmed in our chain view (`attach({ txConfirmed })`,
+   * else Hub bitcoind `getrawtransaction` — wallet / txindex permitting). `null` when unknown.
+   * @param {string} txid
+   * @returns {Promise<boolean|null>}
+   */
+  async txConfirmed (txid) {
+    const id = String(txid || '').toLowerCase();
+    if (!HEX64.test(id)) return null;
+    try {
+      if (this._txConfirmed) return !!(await this._txConfirmed(id));
+      const btc = this.hub && this.hub.bitcoin;
+      if (!btc || typeof btc._makeRPCRequest !== 'function') return null;
+      const tx = await btc._makeRPCRequest('getrawtransaction', [id, true]);
+      return !!tx && Number(tx.confirmations) > 0;
+    } catch (_) { return null; }
+  }
+
+  /**
+   * Resolve the async chain view a `FraudProof` needs into the boolean-returning
+   * callbacks core's synchronous verifier accepts: deposit outpoint (timelocked
+   * absence), inclusion header (stale commitment / wrongful penalty), and
+   * broadcast-tx confirmation.
+   * @param {object} body FraudProof body
+   * @returns {Promise<object>} ctx for {@link ChallengeService#recordProof}
+   */
+  async chainViewFor (body) {
+    const ctx = {};
+    const a = (body && body.artifacts) || {};
+    const dep = a.challenge && a.challenge.deposit;
+    if (body && body.kind === 'non-response' && dep && dep.txid) {
+      const unspent = await this.outpointUnspent(dep.txid, dep.vout);
+      if (unspent != null) ctx.outpointUnspent = () => unspent;
+    }
+    const txHex = body && body.kind === 'stale-commitment' ? a.staleTxHex
+      : (body && body.kind === 'wrongful-penalty' ? a.penaltyTxHex : null);
+    if (!txHex) return ctx;
+    const inclusion = a.inclusion && typeof a.inclusion === 'object' ? a.inclusion : null;
+    const blockHash = inclusion ? blockHashFromHeader(inclusion.blockHeaderHex) : null;
+    if (blockHash) {
+      const known = await this.headerKnown(blockHash);
+      if (known != null) ctx.headerKnown = (h) => known && String(h || '').toLowerCase() === blockHash;
+    }
+    const txid = txidFromHex(txHex);
+    if (txid && !ctx.headerKnown) {
+      const confirmed = await this.txConfirmed(txid);
+      if (confirmed != null) ctx.txConfirmed = (id) => confirmed && String(id || '').toLowerCase() === txid;
+    }
+    return ctx;
+  }
+
+  /**
+   * Publisher-chosen penalty destination for a deposit: per-deposit override,
+   * else `settings.penaltyAddress` / `settings.minPenaltySats`. The provider
+   * never picks where its forfeited deposit goes.
+   * @private
+   * @param {object} [known] registered deposit row
+   * @returns {{ penaltyAddress?: string, minPenaltySats?: number }}
+   */
+  _penaltyTerms (known = {}) {
+    const out = {};
+    const address = (known && known.penaltyAddress) || this.settings.penaltyAddress || null;
+    if (address) out.penaltyAddress = String(address);
+    const min = Number((known && known.minPenaltySats) != null ? known.minPenaltySats : this.settings.minPenaltySats);
+    if (Number.isInteger(min) && min > 0) out.minPenaltySats = min;
+    return out;
+  }
+
+  /**
    * Register a provider's deposit outpoint so challenges can be timelock-bound.
-   * @param {object} dep `{ txid, vout, providerPubkey (x-only or compressed), deposit? }`
+   * @param {object} dep `{ txid, vout, providerPubkey (x-only or compressed), deposit?, penaltyAddress?, minPenaltySats? }`
    * @returns {string} key `txid:vout`
    */
   registerDeposit (dep = {}) {
     const txid = String(dep.txid || '').toLowerCase();
     const vout = Number(dep.vout) || 0;
-    if (!/^[0-9a-f]{64}$/.test(txid)) throw new Error('registerDeposit: txid required');
+    if (!HEX64.test(txid)) throw new Error('registerDeposit: txid required');
     const pk = String(dep.providerPubkey || '').toLowerCase();
     const key = `${txid}:${vout}`;
-    this._deposits.set(key, { txid, vout, providerPubkey: pk.length === 66 ? pk.slice(2) : pk, deposit: dep.deposit || null });
+    const row = { txid, vout, providerPubkey: pk.length === 66 ? pk.slice(2) : pk, deposit: dep.deposit || null };
+    if (dep.penaltyAddress) row.penaltyAddress = String(dep.penaltyAddress);
+    if (Number.isInteger(Number(dep.minPenaltySats)) && Number(dep.minPenaltySats) > 0) row.minPenaltySats = Number(dep.minPenaltySats);
+    this._deposits.set(key, row);
     return key;
   }
 
@@ -161,7 +275,14 @@ class ChallengeService extends Service {
     const key = `${String(dep.txid || '').toLowerCase()}:${Number(dep.vout) || 0}`;
     const known = this._deposits.get(key);
     if (!known) return { ok: false, error: 'pre-signature names an unregistered deposit' };
-    const check = Witness.verifyPenaltyPreSig(body, { providerPubkey: known.providerPubkey, deposit: known, deadlineHeight: body.deadlineHeight });
+    const terms = this._penaltyTerms(known);
+    const check = Witness.verifyPenaltyPreSig(body, {
+      providerPubkey: known.providerPubkey,
+      deposit: known,
+      deadlineHeight: body.deadlineHeight,
+      destinationAddress: terms.penaltyAddress,
+      minValueSats: terms.minPenaltySats
+    });
     if (!check.ok) return { ok: false, error: check.reason };
     const k = `${key}:${Number(body.deadlineHeight)}`;
     this._penaltyPreSigs.set(k, body);
@@ -347,18 +468,30 @@ class ChallengeService extends Service {
    * challenge is **timelock-bound** (`deadlineHeight = tip + deadlineBlocks`,
    * `deposit` outpoint) so silence can be proved from the provider's
    * pre-signed penalty; otherwise it is epoch-only and silence is only `late`.
-   * @param {object} opts `{ merkleRootHex, blobHashes?, blobTotal?, providerPubkey (x-only hex), contractId?, epoch?, deadlineHeight?, deposit? }`
+   * The signed `deposit` names the publisher's penalty destination
+   * (`penaltyAddress` / `minPenaltySats`, from `opts`, the registered deposit, or
+   * settings) so a provider pre-signature paying anywhere else never verifies.
+   * @param {object} opts `{ merkleRootHex, blobHashes?, blobTotal?, providerPubkey (x-only hex), contractId?, epoch?, deadlineHeight?, deposit?, penaltyAddress?, minPenaltySats? }`
    * @returns {object} signed challenge artifact
    */
   issue (opts = {}) {
     const priv = this._priv();
     if (!priv) throw new Error('issue: operator private key required (watch-only hub)');
     const epoch = opts.epoch != null ? Number(opts.epoch) : this.epoch();
-    let deposit = opts.deposit || null;
+    let deposit = opts.deposit ? { txid: opts.deposit.txid, vout: opts.deposit.vout } : null;
     let deadlineHeight = opts.deadlineHeight != null ? Number(opts.deadlineHeight) : null;
     if (!deposit) {
       const known = this._depositFor(opts.providerPubkey);
       if (known) deposit = { txid: known.txid, vout: known.vout };
+    }
+    if (deposit) {
+      const known = this._deposits.get(`${String(deposit.txid || '').toLowerCase()}:${Number(deposit.vout) || 0}`) || {};
+      const terms = this._penaltyTerms({
+        penaltyAddress: opts.penaltyAddress || (opts.deposit && opts.deposit.penaltyAddress) || known.penaltyAddress,
+        minPenaltySats: opts.minPenaltySats != null ? opts.minPenaltySats
+          : (opts.deposit && opts.deposit.minPenaltySats != null ? opts.deposit.minPenaltySats : known.minPenaltySats)
+      });
+      Object.assign(deposit, terms);
     }
     if (deposit && deadlineHeight == null) {
       const tip = this.tipHeight();
@@ -484,6 +617,9 @@ class ChallengeService extends Service {
     // proofs therefore need `ctx.outpointUnspent` from the host (see
     // `ingestContractMessage`), otherwise they are rejected rather than trusted.
     if (typeof ctx.outpointUnspent === 'function') view.outpointUnspent = ctx.outpointUnspent;
+    // Same rule for broadcast evidence: resolved by `chainViewFor` before this call.
+    if (typeof ctx.headerKnown === 'function') view.headerKnown = ctx.headerKnown;
+    if (typeof ctx.txConfirmed === 'function') view.txConfirmed = ctx.txConfirmed;
     const verdict = this.book ? this.book.ingestFraudProof(proof, view) : proof.verify(view);
     if (!verdict.ok) return { ok: false, hash: proof.hash, verdict };
     const hash = proof.hash;
@@ -513,21 +649,16 @@ class ChallengeService extends Service {
 
   /**
    * Like {@link ChallengeService#ingestContractMessage} but resolves the chain
-   * view first so peer-relayed **timelocked** `FraudProof`s can be verified
-   * (deposit outpoint lookup is async on a live Hub).
+   * view first ({@link ChallengeService#chainViewFor}) so peer-relayed
+   * timelocked, stale-commitment, and wrongful-penalty `FraudProof`s can be
+   * verified (bitcoind lookups are async on a live Hub).
    * @param {object} object
    * @returns {Promise<object|null>}
    */
   async ingestContractMessageAsync (object) {
     const body = object && object.object && object.object.type ? object.object : object;
     if (!body || body.type !== 'FraudProof') return this.ingestContractMessage(object);
-    const ctx = {};
-    const dep = body.artifacts && body.artifacts.challenge && body.artifacts.challenge.deposit;
-    if (dep && dep.txid) {
-      const unspent = await this.outpointUnspent(dep.txid, dep.vout);
-      if (unspent != null) ctx.outpointUnspent = () => unspent;
-    }
-    return this.recordProof(body, ctx);
+    return this.recordProof(body, await this.chainViewFor(body));
   }
 
   /** @private x-only → compressed pubkey, using known bounty provider lists. */
