@@ -96,7 +96,7 @@ async function main() {
       } catch (e) {
         return;
       }
-      if (message.type !== 'JSONPatch') return;
+      if (message.type !== 'JSONPatch' && message.type !== 'JSON_PATCH') return;
       const bodyRaw = message.body != null ? message.body : (message.data != null && typeof message.data === 'string' ? message.data : (message.data != null ? Buffer.from(message.data).toString('utf8') : null));
       if (bodyRaw == null) return;
       try {

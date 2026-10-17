@@ -1347,7 +1347,13 @@ class HubInterface extends React.Component {
       const d = e && e.detail;
       if (d && d.operation && d.operation.path === '/bitcoin') {
         const idn = this.state.uiLocalIdentity || null;
-        if (idn && idn.xpub) this._refreshClientBalance();
+        if (!idn || !idn.xpub) return;
+        // One tx raises both `hashtx` and `rawtx` (and a block re-pushes status): coalesce the burst.
+        if (this._bitcoinPatchRefreshTimer) clearTimeout(this._bitcoinPatchRefreshTimer);
+        this._bitcoinPatchRefreshTimer = setTimeout(() => {
+          this._bitcoinPatchRefreshTimer = null;
+          this._refreshClientBalance(true);
+        }, 750);
       }
     };
     this._onClientBalanceUpdate = () => {
@@ -1411,6 +1417,7 @@ class HubInterface extends React.Component {
     if (typeof this._toastUnsub === 'function') this._toastUnsub();
     if (typeof window !== 'undefined') {
       if (this._onGlobalStateUpdate) window.removeEventListener('globalStateUpdate', this._onGlobalStateUpdate);
+      if (this._bitcoinPatchRefreshTimer) clearTimeout(this._bitcoinPatchRefreshTimer);
       if (this._onClientBalanceUpdate) window.removeEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
       if (this._onFabricHubAdminTokenSaved) {
         window.removeEventListener('fabricHubAdminTokenSaved', this._onFabricHubAdminTokenSaved);
@@ -1497,6 +1504,17 @@ class HubInterface extends React.Component {
       this.setState({ clientBalance: null });
     }
     this.setState({ clientBalanceLoading: true });
+    // Overlapping refreshes resolve out of order: only the latest request for
+    // this wallet (and only while it is still the active wallet) may write state
+    // or feed the Bridge baseline.
+    if (!this._balanceReq) this._balanceReq = {};
+    const requestId = (this._balanceReq[nextWid] || 0) + 1;
+    this._balanceReq[nextWid] = requestId;
+    const isCurrent = () => {
+      if (this._balanceReq[nextWid] !== requestId) return false;
+      const active = getSpendWalletContext(this.state.uiLocalIdentity || {});
+      return String(active.walletId || '') === nextWid;
+    };
     const bridgeInstance = this.bridgeRef && this.bridgeRef.current;
     const networkStatus = bridgeInstance && (bridgeInstance.networkStatus || bridgeInstance.lastNetworkStatus);
     const bitcoin = resolveBitcoinFromNetworkStatus(networkStatus);
@@ -1504,6 +1522,7 @@ class HubInterface extends React.Component {
     try {
       const upstream = loadUpstreamSettings();
       const summary = await fetchWalletSummaryWithCache(upstream, wallet, { bypassCache: forceRefresh, network });
+      if (!isCurrent()) return;
       const balanceSats = Number(summary.balanceSats ?? summary.balance ?? 0);
       if (Number.isFinite(balanceSats)) {
         const confirmedSats = Number(summary.confirmedSats ?? balanceSats);
@@ -1519,13 +1538,20 @@ class HubInterface extends React.Component {
         if (identity && String(identity.xprv || '').trim()) {
           try { saveSpendXpubWatchForIdentity(identity, wallet); } catch (_) {}
         }
-        /* Do not dispatch clientBalanceUpdate here: Bitcoin/Payments screens already emit it for Bridge
-         * wallet notices. Re-dispatching after refresh echoed the same logical update twice and could
-         * shift confirmed/unconfirmed split between duplicate fetches → duplicate “incoming” toasts. */
+        /* Feed the Bridge directly, not via a `clientBalanceUpdate` event: this component listens to that
+         * event and would refetch in a loop. Cached rows are skipped so a stale fallback cannot rewind
+         * the baseline and re-announce the same receive. */
+        if (!summary._fromCache) {
+          const bridge = this.bridgeRef && this.bridgeRef.current;
+          if (bridge && typeof bridge.noteClientWalletBalance === 'function') {
+            bridge.noteClientWalletBalance({ walletId: wallet.walletId, balanceSats, confirmedSats, unconfirmedSats });
+          }
+        }
       } else {
         this.setState({ clientBalance: null, clientBalanceLoading: false });
       }
     } catch (e) {
+      if (!isCurrent()) return;
       this.setState((prev) => ({
         clientBalance: prev.clientBalance,
         clientBalanceLoading: false

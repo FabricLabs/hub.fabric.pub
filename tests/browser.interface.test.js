@@ -530,6 +530,9 @@ describe('Browser Interface', function () {
   });
 
   describe('navigation (requires main UI)', function () {
+    // Each case drives a real browser click + route render; CI runners exceed mocha's 2s default.
+    this.timeout(30000);
+
     before(async function () {
       const hasMainUI = await waitForMainUI(sandbox.browser, 8000);
       if (!hasMainUI) this.skip();

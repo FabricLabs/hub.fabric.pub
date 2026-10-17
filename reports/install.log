@@ -8,7 +8,7 @@ npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support 
 npm warn deprecated crypto-js@4.2.0: Active development of CryptoJS has been discontinued. This library is no longer maintained.
 npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
-added 1386 packages, and audited 1387 packages in 59s
+added 1362 packages, and audited 1363 packages in 1m
 
 211 packages are looking for funding
   run `npm fund` for details
@@ -22,8 +22,7 @@ Some issues need review, and may require choosing
 a different dependency.
 
 Run `npm audit` for details.
-npm warn install-scripts 5 packages had install scripts blocked because they are not covered by allowScripts:
-npm warn install-scripts   @fabric/core@0.1.0-RC1 (install: node scripts/install-native.js)
+npm warn install-scripts 4 packages had install scripts blocked because they are not covered by allowScripts:
 npm warn install-scripts   @fabric/core@0.1.0-RC1 (install: node scripts/install-native.js)
 npm warn install-scripts   puppeteer@24.37.5 (postinstall: node install.mjs)
 npm warn install-scripts   electron-winstaller@5.4.0 (install: node ./script/select-7z-arch.js)

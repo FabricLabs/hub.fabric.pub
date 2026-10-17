@@ -51,7 +51,7 @@ Cross-checks: `tests/fabric.message.js` (expected header hashes, `fromBuffer` pr
 ## Wire format
 
 - **Header**: 208 bytes = magic(4) + version(4) + parent(32) + author(32) + type(4) + size(4) + hash(32) + preimage(32) + signature(64). **preimage** is all-zero for public messages (optional secret on wire otherwise).
-- **Body**: variable, bounded by `MAX_MESSAGE_SIZE` in JS (`constants.js`), i.e. 3888 bytes for a 4096-byte frame with the v2 header.
+- **Body**: variable, bounded by `MAX_MESSAGE_SIZE` in JS (`constants.js`), i.e. 32768 bytes (32 KiB) for a 32976-byte frame with the 208-byte header (`MAX_FRAME_BYTES`). Before 2026-10-14 the cap was 3888 bytes / a 4096-byte frame; Hubs on that pin drop larger frames before parse, so upgrade hubs before clients.
 
 ---
 

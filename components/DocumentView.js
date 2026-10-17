@@ -23,6 +23,7 @@ const {
 } = require('semantic-ui-react');
 const Invoice = require('./Invoice');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
+const FabricDocumentRecord = require('./FabricDocumentRecord');
 const { formatSatsDisplay } = require('../functions/formatSats');
 const { loadUpstreamSettings, fetchTransactionByHash, sendBridgePayment } = require('../functions/bitcoinClient');
 const {
@@ -95,6 +96,7 @@ function DocumentDetail (props) {
   const id = rawId ? decodeURIComponent(rawId) : '';
 
   const [doc, setDoc] = React.useState(null);
+  const [agentNotice, setAgentNotice] = React.useState(null);
   const [decryptedContent, setDecryptedContent] = React.useState(null);
   const [unlocked, setUnlocked] = React.useState(false);
   const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);
@@ -1270,6 +1272,49 @@ function DocumentDetail (props) {
               </List.Item>
             </List>
           </Message>
+        )}
+
+        {doc && FabricDocumentRecord.recordFromHubDocument(doc) && (
+          <Segment>
+            <Header as="h3">
+              <Icon name="sitemap" />
+              Sealed blob tree
+            </Header>
+            <p style={{ color: '#666', marginTop: 0 }}>
+              Hash-only record: Tree root, per-blob payment hashes, and the cheapest / fastest chunk providers this hub has seen.
+            </p>
+            <FabricDocumentRecord document={doc} />
+            <Button
+              size="mini"
+              basic
+              style={{ marginTop: '0.75em' }}
+              title="Let this hub's budget agent pick the cheapest / nearest provider per blob (regtest/signet only)"
+              onClick={async () => {
+                const record = FabricDocumentRecord.recordFromHubDocument(doc);
+                const token = getAdminTokenFromProps(props);
+                if (!token) {
+                  setAgentNotice('Admin token required to register wants with the budget agent.');
+                  return;
+                }
+                try {
+                  const r = await fetch('/services/market/agent/wants', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ documentId: record.documentId, merkleRootHex: record.merkleRootHex, blobTotal: record.blobTotal })
+                  });
+                  const j = await r.json().catch(() => ({}));
+                  if (r.status === 503) throw new Error('Budget agent is disabled (settings.market.agent.enable).');
+                  if (!r.ok) throw new Error(j.error || 'Budget agent refused the want');
+                  setAgentNotice(`Budget agent will acquire ${record.blobTotal} blob(s) when a plan fits its cap.`);
+                } catch (e) {
+                  setAgentNotice(e.message);
+                }
+              }}
+            >
+              Want with budget agent
+            </Button>
+            {agentNotice && <p style={{ color: '#666', marginTop: '0.5em' }}>{agentNotice}</p>}
+          </Segment>
         )}
 
         {doc && Array.isArray(doc.offers) && doc.offers.length > 0 && (
