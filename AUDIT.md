@@ -12,7 +12,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
 | Electron | **`39.8.10`** (clears Electron ≤39.8.9 advisory set on prior 36.x pin) |
 | electron-builder | **`26.15.7`** + overrides `tar@7.5.22`, `builder-util-runtime@9.7.0` |
-| nodemailer | **`9.0.4`** |
+| nodemailer | **`10.1.7`** (clears the 9.0.4 advisory set; 9.1.1 still left the addressparser DoS and cross-transport TLS `servername` reuse) |
 | webpack / webpack-dev-server | **`5.109.2`** / **`5.2.6`**; `uuid@11.1.1` override (sockjs / jayson) |
 | React Router | **`react-router-dom@7.18.2`** — see residual below; webpack pins CJS entrypoints (see Recommendations) |
 | npm audit (this tree) | **6 high** — `extract-zip` symlink traversal ([GHSA-jmr9-qjv8-65gv](https://github.com/advisories/GHSA-jmr9-qjv8-65gv) / CVE-2026-56876) via `puppeteer` / `@puppeteer/browsers` (`@fabric/http`) and `electron`. **No upstream patched release.** Build/dev extraction only; do not pass untrusted zips to those tools. |

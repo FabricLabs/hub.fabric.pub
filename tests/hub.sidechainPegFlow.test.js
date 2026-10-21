@@ -27,6 +27,7 @@ const ecpair = ECPairFactory(ecc);
 
 const BLOCK_HASH = 'aa'.repeat(32);
 const DEPOSIT_TXID = 'ab'.repeat(32);
+const PAYOUT_TXID = 'cd'.repeat(32);
 const DEPOSIT_SATS = 100000;
 const WITHDRAW_SATS = 25000;
 const FEE_SATS = 1000;
@@ -232,7 +233,16 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
     const settled = federationReserveLedger.settlePegOutPayout(
       afterBurn.content,
       proposed.withdrawalRequest.requestId,
-      { vaultConfirmedSats: settledVault }
+      {
+        vaultConfirmedSats: settledVault,
+        payout: {
+          txid: PAYOUT_TXID,
+          vout: 0,
+          amountSats: WITHDRAW_SATS,
+          destinationAddress: dest,
+          confirmations: 1
+        }
+      }
     );
     assert.strictEqual(settled.ok, true, settled.error);
     assert.strictEqual(settled.reserve.pendingBurnsSats, 0);

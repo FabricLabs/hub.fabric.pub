@@ -4540,6 +4540,8 @@ class Bridge extends React.Component {
               if (doc.id && doc.contentBase64) {
                 if (doc.part && doc.part.transferId != null && doc.part.total != null) {
                   this._handleP2pFileChunk(doc, doc.part);
+                } else if (doc.htlcFileV1) {
+                  this._handleP2pFileChunk(doc, { transferId: `${doc.id}:${doc.merkleRootHex || 'whole'}`, index: 0, total: 1 });
                 } else {
                   const targetId = this._resolveDocumentTargetId(doc.id, doc);
                   this._storeDocument(targetId, { ...doc, receivedFromPeer: true });

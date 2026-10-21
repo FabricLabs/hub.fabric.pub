@@ -158,8 +158,6 @@ const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SAT
 const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
-const P2P_FILE_CHUNK_BYTES = 1024 * 1024; // exact 1 MiB binary chunks
-const P2P_FILE_CHUNK_TTL_MS = 10 * 60 * 1000; // expire incomplete inbound transfers after 10 minutes
 const FABRIC_PEERING_OFFER_INTERVAL_MS = Number(process.env.FABRIC_PEERING_OFFER_INTERVAL_MS || 30000);
 const INVENTORY_HTLC_MAX_SETTLEMENTS = 2000;
 const INVENTORY_HTLC_TTL_MS = 48 * 3600 * 1000;
@@ -184,6 +182,7 @@ const {
 } = require('../functions/fabricHallmarkBitcoin');
 const { validateEnvelopeV1, buildGenericMessageFromEnvelope } = require('../functions/fabricMessageEnvelope');
 const inventoryRelay = require('../functions/inventoryRelay');
+const documentFileShare = require('../functions/documentFileShare');
 const {
   FABRIC_DOCUMENT_OFFER,
   FABRIC_DOCUMENT_OFFER_RESPONSE,
@@ -5883,9 +5882,6 @@ class Hub extends Service {
       }
     }
 
-    const totalChunks = Math.max(1, Math.ceil(buf.length / P2P_FILE_CHUNK_BYTES));
-    const transferId = `${doc.id || (doc.sha256 || 'document')}:${Date.now()}:${crypto.randomBytes(4).toString('hex')}`;
-
     let relayExtras = null;
     if (fileRelayMeta && fileRelayMeta.deliveryFabricId) {
       let ttl = Number(fileRelayMeta.fileRelayTtl);
@@ -5897,29 +5893,24 @@ class Hub extends Service {
       };
     }
 
-    for (let index = 0; index < totalChunks; index++) {
-      const start = index * P2P_FILE_CHUNK_BYTES;
-      const end = start + P2P_FILE_CHUNK_BYTES;
-      const chunkContentBase64 = buf.subarray(start, end).toString('base64');
-      const filePayload = {
-        type: 'P2P_FILE_SEND',
-        actor: { id: this.agent.identity.id },
-        object: {
-          id: doc.id,
-          name: doc.name,
-          mime: doc.mime || 'application/octet-stream',
-          size: doc.size,
-          sha256: doc.sha256 || doc.id,
-          contentBase64: chunkContentBase64,
-          created: doc.created || new Date().toISOString(),
-          target: address,
-          htlcSettlement: true,
-          ...(index === 0 && htlcFileV1Header ? { htlcFileV1: htlcFileV1Header } : {}),
-          ...(relayExtras || {}),
-          part: { transferId, index, total: totalChunks }
-        }
-      };
-      this._sendVectorToPeer(address, ['P2P_FILE_SEND', JSON.stringify(filePayload)]);
+    let share;
+    try {
+      share = documentFileShare.buildFileShareFrames(buf, {
+        documentId: doc.id || doc.sha256,
+        actorId: this.agent.identity.id,
+        fileName: doc.name,
+        mime: doc.mime || 'application/octet-stream',
+        size: doc.size,
+        sha256: doc.sha256 || doc.id,
+        created: doc.created || new Date().toISOString(),
+        htlcFileV1: htlcFileV1Header,
+        relay: relayExtras
+      });
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : 'file share failed' };
+    }
+    for (const frame of share.frames) {
+      this._sendVectorToPeer(address, ['P2P_FILE_SEND', frame]);
     }
 
     this.recordActivity({
@@ -5930,12 +5921,19 @@ class Hub extends Service {
         name: doc.name,
         mime: doc.mime || 'application/octet-stream',
         size: doc.size,
-        sha256: doc.sha256 || doc.id
+        sha256: doc.sha256 || doc.id,
+        merkleRootHex: share.merkleRootHex,
+        blobTotal: share.blobTotal
       },
       target: address
     });
 
-    return { status: 'success', document: { id: doc.id, name: doc.name } };
+    return {
+      status: 'success',
+      document: { id: doc.id, name: doc.name },
+      merkleRootHex: share.merkleRootHex,
+      blobTotal: share.blobTotal
+    };
   }
 
   async _attachHtlcToInventoryItems (items, message, htlcDirectConn, requesterFabricId, relayReturnHop = null) {
@@ -12543,7 +12541,7 @@ class Hub extends Service {
           if (!sendRes || sendRes.status !== 'success') {
             return { status: 'error', message: (sendRes && sendRes.message) || 'send failed' };
           }
-          return { status: 'success' };
+          return { status: 'success', merkleRootHex: sendRes.merkleRootHex, blobTotal: sendRes.blobTotal };
         } catch (err) {
           console.error('[HUB] SendPeerFile error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'send failed' };
@@ -14981,9 +14979,12 @@ class Hub extends Service {
         }
       });
 
-      const inboundFileTransfers = new Map();
-
       const persistIncomingDocument = async (doc, origin) => {
+        const docId = String((doc && doc.id) || '').trim();
+        if (!docId || /[\\/]/.test(docId) || docId.includes('..')) {
+          console.warn('[HUB] Dropping incoming file with unsafe id:', docId);
+          return;
+        }
         const incomingBuffer = Buffer.from(doc.contentBase64, 'base64');
         if (this._validateDocumentSize(incomingBuffer)) {
           console.warn('[HUB] Dropping incoming file (too large):', doc.id);
@@ -15002,7 +15003,9 @@ class Hub extends Service {
           sha256: doc.sha256 || doc.id,
           contentBase64: doc.contentBase64,
           created: doc.created || new Date().toISOString(),
-          receivedFrom: origin && origin.name
+          receivedFrom: origin && origin.name,
+          ...(doc.merkleRootHex ? { merkleRootHex: doc.merkleRootHex } : {}),
+          ...(doc.htlcFileV1 ? { htlcFileV1: doc.htlcFileV1 } : {})
         };
 
         await this.fs.publish(`documents/${normalized.id}.json`, normalized);
@@ -15272,10 +15275,12 @@ class Hub extends Service {
       this.agent.on('peeringOffer', broadcastPeeringMessage);
 
       // Handle files received from peers via P2P_FILE_SEND. Store and broadcast to clients.
-      this.agent.on('file', async ({ message, origin }) => {
+      // Per-blob frames are verified and reassembled by the core Peer (Tree root + contentSha256).
+      this.agent.on('file', async ({ message, origin, status, buffer, merkleRootHex, error }) => {
         try {
           const obj = message && message.object;
-          if (!obj || !obj.contentBase64 || !obj.id) return;
+          const treeFrame = documentFileShare.isFileShareFrame(obj);
+          if (!obj || (!treeFrame && (!obj.contentBase64 || !obj.id))) return;
 
           const myFabricId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
           if (inventoryRelay.shouldForwardP2pFileChunk(obj, myFabricId)) {
@@ -15301,76 +15306,25 @@ class Hub extends Service {
             return;
           }
 
-          // Best-effort cleanup of stale/incomplete transfers.
-          const now = Date.now();
-          for (const [transferId, state] of inboundFileTransfers.entries()) {
-            if (!state || !state.updatedAt || (now - state.updatedAt) > P2P_FILE_CHUNK_TTL_MS) {
-              inboundFileTransfers.delete(transferId);
+          if (treeFrame) {
+            if (status === 'reject') {
+              console.warn('[HUB] Dropping P2P_FILE_SEND blob:', obj.name, error);
+              return;
             }
-          }
-
-          const part = obj.part;
-          const isChunked = part &&
-            part.transferId &&
-            Number.isInteger(part.index) &&
-            Number.isInteger(part.total) &&
-            part.total > 0;
-
-          if (!isChunked) {
-            await persistIncomingDocument(obj, origin);
+            if (status !== 'complete' || !Buffer.isBuffer(buffer)) return;
+            await persistIncomingDocument(
+              documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex),
+              origin
+            );
             return;
           }
 
-          const transferId = String(part.transferId);
-          if (part.total > 65536 || part.index < 0 || part.index >= part.total) {
-            console.warn('[HUB] Dropping invalid file chunk metadata:', transferId, part);
+          // Legacy whole-file frame (only files small enough to fit one AMP body ever arrive).
+          if (obj.part && Number(obj.part.total) > 1) {
+            console.warn('[HUB] Dropping legacy multi-part P2P_FILE_SEND chunk:', obj.id);
             return;
           }
-
-          let transfer = inboundFileTransfers.get(transferId);
-          if (!transfer) {
-            transfer = {
-              id: obj.id,
-              name: obj.name,
-              mime: obj.mime,
-              size: obj.size,
-              sha256: obj.sha256,
-              created: obj.created,
-              total: part.total,
-              chunks: new Array(part.total),
-              received: 0,
-              updatedAt: now
-            };
-            inboundFileTransfers.set(transferId, transfer);
-          }
-
-          if (transfer.total !== part.total) {
-            console.warn('[HUB] Dropping inconsistent file chunk transfer metadata:', transferId);
-            inboundFileTransfers.delete(transferId);
-            return;
-          }
-
-          transfer.updatedAt = now;
-          if (typeof transfer.chunks[part.index] === 'undefined') {
-            transfer.chunks[part.index] = String(obj.contentBase64);
-            transfer.received += 1;
-          }
-
-          if (transfer.received < transfer.total) return;
-
-          const completeBuffer = Buffer.concat(transfer.chunks.map((chunk) => Buffer.from(chunk, 'base64')));
-          const completeContentBase64 = completeBuffer.toString('base64');
-          inboundFileTransfers.delete(transferId);
-
-          await persistIncomingDocument({
-            id: transfer.id || obj.id,
-            name: transfer.name || obj.name,
-            mime: transfer.mime || obj.mime,
-            size: transfer.size || obj.size,
-            sha256: transfer.sha256 || obj.sha256 || obj.id,
-            created: transfer.created || obj.created,
-            contentBase64: completeContentBase64
-          }, origin);
+          await persistIncomingDocument(obj, origin);
         } catch (err) {
           console.error('[HUB] Failed to handle received file:', err);
         }

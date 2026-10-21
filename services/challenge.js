@@ -276,8 +276,11 @@ class ChallengeService extends Service {
     const known = this._deposits.get(key);
     if (!known) return { ok: false, error: 'pre-signature names an unregistered deposit' };
     const terms = this._penaltyTerms(known);
+    const bond = known.deposit || {};
     const check = Witness.verifyPenaltyPreSig(body, {
       providerPubkey: known.providerPubkey,
+      publisherPubkey: bond.publisherPubkey || this.publisherPubkey(),
+      depositAddress: bond.address || null,
       deposit: known,
       deadlineHeight: body.deadlineHeight,
       destinationAddress: terms.penaltyAddress,
