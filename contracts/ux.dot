@@ -102,7 +102,7 @@ digraph UX {
     ChatInput [label="ChatInput", fillcolor="#e1bee7"];
     Invoice [label="Invoice component", fillcolor="#e1bee7"];
     DistributeProposalsList [label="DistributeProposalsList", fillcolor="#e1bee7"];
-    LoginGate [label="LoginGate\n(gated routes)", fillcolor="#e1bee7"];
+    PublicVisitorGate [label="PublicVisitorGate\n(operator routes, no identity)", fillcolor="#e1bee7"];
   }
 
   // ========== Identity Flows ==========
@@ -111,7 +111,7 @@ digraph UX {
     style=filled;
     fillcolor="#e8f5e9";
 
-    Login [label="Login\n(no identity)", fillcolor="#a5d6a7"];
+    Login [label="Log in\n(no identity)", fillcolor="#a5d6a7"];
     Unlock [label="Unlock\n(password)", fillcolor="#a5d6a7"];
     Lock [label="Lock\n(clear xprv)", fillcolor="#a5d6a7"];
     CreateIdentity [label="Create Identity\n(generate seed)", fillcolor="#a5d6a7"];
@@ -211,7 +211,7 @@ digraph UX {
   TopPanel -> ContractList;
 
   // ========== Edges: Modals from TopPanel ==========
-  TopPanel -> IdentityManagerModal [label="Login / Profile"];
+  TopPanel -> IdentityManagerModal [label="Log in / Your profile"];
   TopPanel -> SettingsModal [label="Settings"];
   TopPanel -> SignVerifyModal [label="Sign message"];
   TopPanel -> DestroyIdentityModal [label="Destroy identity"];
@@ -299,9 +299,10 @@ digraph UX {
 
   InvoiceListHome -> CreateInvoice;
 
-  // ========== Edges: Login gate ==========
-  DocumentView -> LoginGate [label="encrypted doc\n!identity"];
-  ActivityStream -> LoginGate [label="!identity"];
+  // ========== Edges: identity prompts ==========
+  PublicVisitorGate -> IdentityManagerModal [label="Log in"];
+  DocumentView -> IdentityManagerModal [label="encrypted doc\nLocked / Watch-only / none"];
+  ActivityStream -> IdentityManagerModal [label="chat\nLocked / Watch-only / none"];
 
   // ========== Legend ==========
   subgraph cluster_legend {

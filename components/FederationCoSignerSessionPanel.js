@@ -16,6 +16,10 @@ const {
   normalizeProposedPolicy,
   normalizeSpendingTerms
 } = require('../functions/federationContractInvite');
+const { fabricIdentityNeedFullKeyPlain } = require('../functions/hubIdentityUiHints');
+const t = require('../locales/en');
+
+const cs = t.federation.coSignerSession;
 
 const DRAFT_KEY = 'fabric.federation.coSignerSessionDraft';
 
@@ -103,7 +107,7 @@ function FederationCoSignerSessionPanel (props) {
   }, [spendMode, spendValue, termsSummary, shortNote]);
 
   React.useEffect(() => {
-    const bump = () => setTick((t) => t + 1);
+    const bump = () => setTick((n) => n + 1);
     if (typeof window === 'undefined') return undefined;
     window.addEventListener('networkStatusUpdate', bump);
     return () => window.removeEventListener('networkStatusUpdate', bump);
@@ -121,47 +125,47 @@ function FederationCoSignerSessionPanel (props) {
   const insertMyWirePubkey = () => {
     setMsg(null);
     if (!bridge || typeof bridge.getHtlcRefundPublicKeyHex !== 'function') {
-      setMsg('Bridge is not ready.');
+      setMsg(cs.notReady);
       return;
     }
     if (!bridge.hasLocalWireSigningKey || !bridge.hasLocalWireSigningKey()) {
-      setMsg('Unlock your identity first (Log in & unlock).');
+      setMsg(fabricIdentityNeedFullKeyPlain(bridge.props && bridge.props.auth));
       return;
     }
     const pk = bridge.getHtlcRefundPublicKeyHex();
     if (!pk || !(PUBKEY_RE && PUBKEY_RE.test(pk))) {
-      setMsg('Could not read a compressed secp256k1 pubkey from this session.');
+      setMsg(cs.keyUnreadable);
       return;
     }
     const lower = pk.toLowerCase();
     setValidatorRows((rows) => {
       const cur = normalizePubkeyRows(rows);
       if (cur.some((k) => k.toLowerCase() === lower)) {
-        setMsg('Your wire pubkey is already listed.');
+        setMsg(cs.keyListed);
         return rows;
       }
       return [...cur, pk];
     });
-    setMsg('Inserted this browser’s wire signing pubkey as a validator row.');
+    setMsg(cs.keyAdded);
   };
 
   const publishToPeers = async () => {
     setMsg(null);
     if (!bridge || typeof bridge.sendPeerMessageRequest !== 'function') {
-      setMsg('Bridge is not ready.');
+      setMsg(cs.notReady);
       return;
     }
     if (!bridge.hasLocalWireSigningKey || !bridge.hasLocalWireSigningKey()) {
-      setMsg('Unlock your identity to send P2P invites.');
+      setMsg(fabricIdentityNeedFullKeyPlain(bridge.props && bridge.props.auth));
       return;
     }
     const lines = normalizePubkeyRows(validatorRows);
     if (lines.length === 0) {
-      setMsg('Add at least one validator public key before publishing.');
+      setMsg(cs.needValidator);
       return;
     }
     if (lines.some((k) => !(PUBKEY_RE && PUBKEY_RE.test(k)))) {
-      setMsg('Fix invalid validator rows (need 02/03 + 64 hex).');
+      setMsg(cs.invalidKeys);
       return;
     }
     let thr = Number(thresholdStr);
@@ -169,7 +173,7 @@ function FederationCoSignerSessionPanel (props) {
     if (thr > lines.length) thr = lines.length;
     const proposedPolicy = normalizeProposedPolicy({ validators: lines, threshold: thr });
     if (!proposedPolicy) {
-      setMsg('Could not build proposed policy.');
+      setMsg(cs.policyFailed);
       return;
     }
     const sv = Number(spendValue);
@@ -178,7 +182,7 @@ function FederationCoSignerSessionPanel (props) {
       value: sv
     });
     if (!spendingTerms) {
-      setMsg('Enter a valid spending limit (percent 0–100 or sats ≥ 0).');
+      setMsg(cs.invalidLimit);
       return;
     }
 
@@ -188,14 +192,14 @@ function FederationCoSignerSessionPanel (props) {
     const targets = [];
     if (peerChoice === '__all__') {
       for (const p of fabricPeers) {
-        const t = peerSendTarget(p);
-        if (t) targets.push(t);
+        const target = peerSendTarget(p);
+        if (target) targets.push(target);
       }
     } else if (peerChoice) {
       targets.push(peerChoice);
     }
     if (targets.length === 0) {
-      setMsg('Pick a connected peer or “All Fabric peers” to publish the session.');
+      setMsg(cs.needPeer);
       return;
     }
 
@@ -222,11 +226,11 @@ function FederationCoSignerSessionPanel (props) {
     setBusy(true);
     try {
       let n = 0;
-      for (const t of targets) {
-        bridge.sendPeerMessageRequest(t, json);
+      for (const target of targets) {
+        bridge.sendPeerMessageRequest(target, json);
         n++;
       }
-      setMsg(`Published pending federation session to ${n} peer(s). Co-signers will see a hub notification, then can review and accept.`);
+      setMsg(cs.sent(n));
     } catch (e) {
       setMsg(e && e.message ? e.message : String(e));
     } finally {
@@ -235,30 +239,26 @@ function FederationCoSignerSessionPanel (props) {
   };
 
   const peerOptions = [
-    { key: 'x', value: '', text: 'Select peer…' },
+    { key: 'x', value: '', text: cs.peerSelect },
     ...fabricPeers.map((p, i) => {
-      const t = peerSendTarget(p);
+      const target = peerSendTarget(p);
       const nick = p.nickname ? String(p.nickname) : '';
       return {
-        key: `${t}-${i}`,
-        value: t,
-        text: nick ? `${nick} (${t.slice(0, 14)}…)` : t
+        key: `${target}-${i}`,
+        value: target,
+        text: nick ? `${nick} (${target.slice(0, 14)}…)` : target
       };
     }),
-    { key: 'all', value: '__all__', text: 'All connected Fabric peers' }
+    { key: 'all', value: '__all__', text: cs.peerAll }
   ];
 
   return (
     <Segment style={{ marginTop: '1rem' }}>
       <Header as="h3" style={{ marginTop: 0 }}>
-        <Icon name="paper plane" color="violet" />
-        Co-signer session (publish)
+        <Icon name="paper plane" color="violet" aria-hidden="true" />
+        {cs.title}
       </Header>
-      <p style={{ color: '#666', lineHeight: 1.5, marginBottom: '0.85rem' }}>
-        Draft a <strong>pending federation</strong> with UI-visible spending rules, then publish over P2P chat so other operators can
-        join the same session from their phone or browser. They get an in-app notification first; accepting opens a detail modal and
-        only then sends their pubkey back.
-      </p>
+      <p style={{ color: '#666', lineHeight: 1.5, marginBottom: '0.85rem' }}>{cs.intro}</p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
         <Button
@@ -269,36 +269,36 @@ function FederationCoSignerSessionPanel (props) {
           icon
           labelPosition="left"
         >
-          <Icon name="sign in" />
-          Log in (security)
+          <Icon name="shield" aria-hidden="true" />
+          {cs.security}
         </Button>
         <Button type="button" basic icon labelPosition="left" onClick={openIdentityModal}>
-          <Icon name="user secret" />
-          Unlock identity…
+          <Icon name="user secret" aria-hidden="true" />
+          {cs.manageIdentity}
         </Button>
         <Button type="button" primary icon labelPosition="left" onClick={insertMyWirePubkey}>
-          <Icon name="key" />
-          Import my wire pubkey
+          <Icon name="key" aria-hidden="true" />
+          {cs.addMyKey}
         </Button>
       </div>
 
       <Form onSubmit={(e) => { e.preventDefault(); }}>
         <Form.Group widths="equal">
           <Form.Field>
-            <label htmlFor="fed-cosign-spend-mode">Spending limit type</label>
+            <label htmlFor="fed-cosign-spend-mode">{cs.spendMode}</label>
             <Dropdown
               id="fed-cosign-spend-mode"
               selection
               options={[
-                { value: 'percent', text: 'Percent of treasury' },
-                { value: 'sats', text: 'Exact sats' }
+                { value: 'percent', text: cs.spendPercent },
+                { value: 'sats', text: cs.spendSats }
               ]}
               value={spendMode}
               onChange={(_, d) => setSpendMode(String(d.value))}
             />
           </Form.Field>
           <Form.Field>
-            <label htmlFor="fed-cosign-spend-value">{spendMode === 'percent' ? 'Percent (0–100)' : 'Sats'}</label>
+            <label htmlFor="fed-cosign-spend-value">{spendMode === 'percent' ? cs.percentLabel : cs.satsLabel}</label>
             <Form.Input
               id="fed-cosign-spend-value"
               type="number"
@@ -311,31 +311,31 @@ function FederationCoSignerSessionPanel (props) {
           </Form.Field>
         </Form.Group>
         <Form.Field>
-          <label htmlFor="fed-cosign-terms">Contract terms (shown to co-signers)</label>
+          <label htmlFor="fed-cosign-terms">{cs.terms}</label>
           <Form.TextArea
             id="fed-cosign-terms"
             rows={4}
-            placeholder="Human-readable agreement: roles, review windows, emergency contacts, etc."
+            placeholder={cs.termsPlaceholder}
             value={termsSummary}
             onChange={(e) => setTermsSummary(e.target.value)}
           />
         </Form.Field>
         <Form.Field>
-          <label htmlFor="fed-cosign-note">Short note (optional, P2P invite)</label>
+          <label htmlFor="fed-cosign-note">{cs.note}</label>
           <Form.Input
             id="fed-cosign-note"
-            placeholder="e.g. Regtest treasury — please review by Friday"
+            placeholder={cs.notePlaceholder}
             value={shortNote}
             onChange={(e) => setShortNote(e.target.value)}
           />
         </Form.Field>
         <Form.Field>
-          <label htmlFor="fed-cosign-peer">Send session to</label>
+          <label htmlFor="fed-cosign-peer">{cs.peer}</label>
           <Dropdown
             id="fed-cosign-peer"
             selection
             search
-            placeholder={fabricPeers.length ? 'Choose peer or broadcast' : 'No Fabric peers yet — open Peers'}
+            placeholder={fabricPeers.length ? cs.peerPlaceholder : cs.peerPlaceholderEmpty}
             options={peerOptions}
             value={peerChoice || undefined}
             onChange={(_, d) => setPeerChoice(d.value != null ? String(d.value) : '')}
@@ -350,13 +350,13 @@ function FederationCoSignerSessionPanel (props) {
           disabled={busy}
           onClick={() => void publishToPeers()}
         >
-          <Icon name="send" />
-          Publish pending federation
+          <Icon name="send" aria-hidden="true" />
+          {cs.publish}
         </Button>
       </Form>
 
       {msg ? (
-        <Message info size="small" style={{ marginTop: '1rem' }} onDismiss={() => setMsg(null)}>
+        <Message info size="small" role="status" style={{ marginTop: '1rem' }} onDismiss={() => setMsg(null)}>
           {msg}
         </Message>
       ) : null}

@@ -66,6 +66,33 @@ describe('documentInventoryMarket', function () {
     assert.strictEqual(catalog[0].purchasePriceSats, 10);
   });
 
+  it('drops address-only offers once their session closes and keeps signed and local ones', function () {
+    const map = {
+      a: { peerAddress: '127.0.0.1:50001' },
+      b: { peerAddress: '127.0.0.1:50002' },
+      c: { peerAddress: '127.0.0.1:50003', peerPubkey: '02' + 'ab'.repeat(32) },
+      d: { local: true }
+    };
+    const dropped = market.dropClosedSessionOffers(map, (addr) => addr === '127.0.0.1:50002');
+    assert.strictEqual(dropped, 1);
+    assert.deepStrictEqual(Object.keys(map), ['b', 'c', 'd']);
+  });
+
+  it('keeps every page of one paged inventory and drops the previous snapshot', function () {
+    const map = {};
+    const peer = { peerPubkey: '02' + 'ab'.repeat(32), peerAlias: 'Relay' };
+    const doc = (n) => ({ id: String(n).repeat(64).slice(0, 64), name: `build-${n}`, purchasePriceSats: 716, published: true });
+    market.replacePeerOffers(map, peer, [doc(1), doc(2)], { inventoryId: 'aaaa' });
+    market.replacePeerOffers(map, peer, [doc(3)], { inventoryId: 'aaaa' });
+    assert.deepStrictEqual(market.listOffers(map).map((o) => o.name).sort(), ['build-1', 'build-2', 'build-3']);
+
+    market.replacePeerOffers(map, peer, [doc(4)], { inventoryId: 'bbbb' });
+    assert.deepStrictEqual(market.listOffers(map).map((o) => o.name), ['build-4'], 'a new snapshot replaces the old pages');
+
+    market.replacePeerOffers(map, peer, [doc(5)]);
+    assert.deepStrictEqual(market.listOffers(map).map((o) => o.name), ['build-5'], 'an unpaged response still replaces everything');
+  });
+
   it('decorates a local catalog row with cheapest remote without dropping the local listing', function () {
     const fileId = 'cd'.repeat(32);
     const map = {};

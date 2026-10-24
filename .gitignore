@@ -130,6 +130,7 @@ stores/screenshot-runs/
 
 # Local playnet regtest mesh (launcher-generated state)
 stores/playnet-mesh-runtime/
+stores/local-network/
 
 # MacOS garbage
 .DS_Store

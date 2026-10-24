@@ -19,11 +19,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const { spawn } = require('child_process');
-const { promisify } = require('util');
+const localNetwork = require('./lib/localNetwork');
 
-const sleep = promisify(setTimeout);
+const sleep = localNetwork.sleep;
 
 const REPO = path.join(__dirname, '..');
 const RUNTIME = path.join(REPO, 'stores', 'playnet-mesh-runtime');
@@ -45,54 +44,11 @@ function resolveMeshSeedKey () {
 }
 
 function httpJson (hostname, port, method, pathname, body = null) {
-  return new Promise((resolve, reject) => {
-    const opts = {
-      hostname,
-      port,
-      path: pathname,
-      method,
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' }
-    };
-    const req = http.request(opts, (res) => {
-      let raw = '';
-      res.on('data', (c) => { raw += c; });
-      res.on('end', () => {
-        let j = {};
-        try {
-          j = raw ? JSON.parse(raw) : {};
-        } catch (_) {}
-        resolve({ status: res.statusCode, body: j, raw });
-      });
-    });
-    req.on('error', reject);
-    if (body) req.write(JSON.stringify(body));
-    req.end();
-  });
+  return localNetwork.httpJson(port, method, pathname, body);
 }
 
-async function waitHttp (port, timeoutMs = 120000) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    try {
-      const r = await httpJson('127.0.0.1', port, 'GET', '/settings', null);
-      if (r.status === 200 || r.status === 403) return;
-    } catch (_) {}
-    await sleep(400);
-  }
-  throw new Error(`HTTP 127.0.0.1:${port} did not respond in time`);
-}
-
-async function waitBitcoinOnline (port, timeoutMs = 120000) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    try {
-      const r = await httpJson('127.0.0.1', port, 'GET', '/services/bitcoin', null);
-      if (r.status === 200 && r.body && r.body.available) return;
-    } catch (_) {}
-    await sleep(500);
-  }
-  throw new Error(`Bitcoin not online on HTTP port ${port}`);
-}
+const waitHttp = (port, timeoutMs) => localNetwork.waitHttp(port, timeoutMs);
+const waitBitcoinOnline = (port, timeoutMs) => localNetwork.waitBitcoinOnline(port, timeoutMs);
 
 function meshPortsFromBase (base) {
   const b = Number(base);

@@ -4,7 +4,7 @@ const assert = require('assert');
 const crypto = require('crypto');
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('@fabric/core/types/ecc');
-const inventoryHtlc = require('../functions/inventoryHtlc');
+const Htlc = require('@fabric/core/types/htlc');
 const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelope');
 
 bitcoin.initEccLib(ecc);
@@ -20,9 +20,9 @@ function randomKeyPair () {
   };
 }
 
-describe('inventoryHtlc', function () {
-  it('buildHtlcFundingHints produces BIP21 bitcoin: URI', function () {
-    const h = inventoryHtlc.buildHtlcFundingHints({
+describe('Htlc (inventory)', function () {
+  it('fundingHints produces BIP21 bitcoin: URI', function () {
+    const h = Htlc.fundingHints({
       paymentAddress: 'bcrt1pv25g0waah5e7rhkdcrmnanexxsng93uew5xe8tzzpuq5ckkwzltsalzjxr',
       amountSats: 100_000,
       label: 'Test doc'
@@ -51,7 +51,7 @@ describe('inventoryHtlc', function () {
     const paymentHashHex = crypto.createHash('sha256').update(preimage).digest('hex');
     const purchaseContentHashHex = publishedDocumentEnvelope.purchaseContentHashHex(docId, parsed);
     assert.strictEqual(paymentHashHex, purchaseContentHashHex);
-    const paymentHash32 = inventoryHtlc.hash256(preimage);
+    const paymentHash32 = Htlc.sha256(preimage);
     assert.strictEqual(paymentHash32.toString('hex'), paymentHashHex);
   });
 
@@ -60,38 +60,38 @@ describe('inventoryHtlc', function () {
     const seller = Buffer.concat([Buffer.from([0x02]), crypto.randomBytes(32)]);
     const buyer = Buffer.concat([Buffer.from([0x03]), crypto.randomBytes(32)]);
     const h = crypto.randomBytes(32);
-    const built = inventoryHtlc.buildInventoryHtlcP2tr({
-      networkName: 'regtest',
-      sellerPubkeyCompressed: seller,
-      buyerRefundPubkeyCompressed: buyer,
-      paymentHash32: h,
-      refundLocktimeHeight: 1000
+    const built = new Htlc({
+      network: 'regtest',
+      claimPubkey: seller,
+      refundPubkey: buyer,
+      paymentHash: h,
+      refundLocktime: 1000
     });
     assert.ok(built.address && built.address.startsWith('bcrt1'), 'expect regtest bech32m');
     assert.strictEqual(built.paymentHashHex, h.toString('hex'));
   });
 
-  it('prepareInventoryHtlcSellerClaimPsbt + sign extracts valid claim tx hex', function () {
+  it('prepareClaimPsbt + signClaim extracts valid claim tx hex', function () {
     const seller = randomKeyPair();
     const buyer = randomKeyPair();
     const preimage = crypto.randomBytes(32);
-    const paymentHash32 = inventoryHtlc.hash256(preimage);
-    const built = inventoryHtlc.buildInventoryHtlcP2tr({
-      networkName: 'regtest',
-      sellerPubkeyCompressed: seller.publicKey,
-      buyerRefundPubkeyCompressed: buyer.publicKey,
-      paymentHash32,
-      refundLocktimeHeight: 1_000_000
+    const paymentHash32 = Htlc.sha256(preimage);
+    const built = new Htlc({
+      network: 'regtest',
+      claimPubkey: seller.publicKey,
+      refundPubkey: buyer.publicKey,
+      paymentHash: paymentHash32,
+      refundLocktime: 1_000_000
     });
     const fundingTx = new bitcoin.Transaction();
     fundingTx.version = 2;
     fundingTx.addInput(Buffer.alloc(32, 1), 0, 0xffffffff);
-    fundingTx.addOutput(built.output, 50_000);
+    fundingTx.addOutput(built.output, 50_000n);
     const destAddr = bitcoin.payments.p2wpkh({
       pubkey: buyer.publicKey,
       network: bitcoin.networks.regtest
     }).address;
-    const bundle = inventoryHtlc.prepareInventoryHtlcSellerClaimPsbt({
+    const bundle = Htlc.prepareClaimPsbt({
       networkName: 'regtest',
       fundedTxHex: fundingTx.toHex(),
       paymentAddress: built.address,
@@ -101,7 +101,7 @@ describe('inventoryHtlc', function () {
       destinationAddress: destAddr,
       feeSats: 1500
     });
-    const { txHex, txid } = inventoryHtlc.signAndExtractInventoryHtlcSellerClaim(bundle, seller.privateKey);
+    const { txHex, txid } = Htlc.signClaim(bundle, seller.privateKey);
     assert.ok(/^[0-9a-f]{64}$/i.test(txid), 'txid hex');
     assert.ok(txHex.length > 100, 'serialized tx');
     const parsed = bitcoin.Transaction.fromHex(txHex);
@@ -109,28 +109,28 @@ describe('inventoryHtlc', function () {
     assert.strictEqual(parsed.outs.length, 1);
   });
 
-  it('prepareInventoryHtlcBuyerRefundPsbt + sign extracts valid refund tx hex', function () {
+  it('prepareRefundPsbt + signRefund extracts valid refund tx hex', function () {
     const seller = randomKeyPair();
     const buyer = randomKeyPair();
     const preimage = crypto.randomBytes(32);
-    const paymentHash32 = inventoryHtlc.hash256(preimage);
+    const paymentHash32 = Htlc.sha256(preimage);
     const lockHeight = 500_000;
-    const built = inventoryHtlc.buildInventoryHtlcP2tr({
-      networkName: 'regtest',
-      sellerPubkeyCompressed: seller.publicKey,
-      buyerRefundPubkeyCompressed: buyer.publicKey,
-      paymentHash32,
-      refundLocktimeHeight: lockHeight
+    const built = new Htlc({
+      network: 'regtest',
+      claimPubkey: seller.publicKey,
+      refundPubkey: buyer.publicKey,
+      paymentHash: paymentHash32,
+      refundLocktime: lockHeight
     });
     const fundingTx = new bitcoin.Transaction();
     fundingTx.version = 2;
     fundingTx.addInput(Buffer.alloc(32, 2), 0, 0xffffffff);
-    fundingTx.addOutput(built.output, 80_000);
+    fundingTx.addOutput(built.output, 80_000n);
     const destAddr = bitcoin.payments.p2wpkh({
       pubkey: seller.publicKey,
       network: bitcoin.networks.regtest
     }).address;
-    const bundle = inventoryHtlc.prepareInventoryHtlcBuyerRefundPsbt({
+    const bundle = Htlc.prepareRefundPsbt({
       networkName: 'regtest',
       fundedTxHex: fundingTx.toHex(),
       paymentAddress: built.address,
@@ -140,7 +140,7 @@ describe('inventoryHtlc', function () {
       destinationAddress: destAddr,
       feeSats: 2000
     });
-    const { txHex, txid } = inventoryHtlc.signAndExtractInventoryHtlcBuyerRefund(bundle, buyer.privateKey);
+    const { txHex, txid } = Htlc.signRefund(bundle, buyer.privateKey);
     assert.ok(/^[0-9a-f]{64}$/i.test(txid), 'txid hex');
     const parsed = bitcoin.Transaction.fromHex(txHex);
     assert.strictEqual(parsed.locktime, lockHeight);

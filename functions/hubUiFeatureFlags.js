@@ -40,16 +40,26 @@ const FLAG_KEYS = [
 /** @deprecated No keys are forced on; kept as an empty list for older callers. */
 const ALWAYS_ON_FLAG_KEYS = [];
 
-/** Document-market profile: peers + invoices/explorer; unrelated surfaces off. */
+/** True inside the Electron shell (preload exposes `window.fabricDesktop`). */
+function isDesktopShell () {
+  return typeof window !== 'undefined' && !!window.fabricDesktop;
+}
+
+/**
+ * Document-market profile: peers + invoices/explorer; unrelated surfaces off.
+ * The desktop also opens Federations (`sidechain`) and Send (`bitcoinPayments`):
+ * its operator holds the Hub wallet that funds and co-signs federations.
+ */
 function defaultFlags () {
+  const desktop = isDesktopShell();
   return {
     promo: false,
     advancedMode: false,
     peers: true,
     activities: false,
     features: false,
-    sidechain: false,
-    bitcoinPayments: false,
+    sidechain: desktop,
+    bitcoinPayments: desktop,
     bitcoinInvoices: true,
     bitcoinResources: false,
     bitcoinExplorer: true,
@@ -58,9 +68,9 @@ function defaultFlags () {
   };
 }
 
-/** Alias for Admin preset / callers that want an explicit name. */
+/** Admin "Document market" preset: the web defaults, on any shell. */
 function documentMarketUiFlags () {
-  return defaultFlags();
+  return Object.assign(defaultFlags(), { sidechain: false, bitcoinPayments: false });
 }
 
 function hasStoredUiFlagShape (raw) {

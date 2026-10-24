@@ -1,5 +1,9 @@
 'use strict';
 
+const t = require('../locales/en');
+
+const id = t.common.identity;
+
 /**
  * Browser identity classification for copy (matches TopPanel: password-locked vs watch-only).
  * @param {object|null|undefined} authLike Hub `auth` / identity: xprv, private, xpub, id, passwordProtected
@@ -22,21 +26,23 @@ function classifyHubBrowserIdentity (authLike) {
  */
 function fabricIdentityUnlockSuffixPlain (authLike) {
   const c = classifyHubBrowserIdentity(authLike);
-  if (c === 'password_locked') {
-    return ' Use Settings → Fabric identity or the top-bar Locked control to enter your encryption password.';
-  }
-  if (c === 'watch_only') {
-    return ' Use Settings → Fabric identity or the top-bar identity menu to import a full key or use desktop signing (watch-only cannot sign).';
-  }
-  return ' Use Settings → Fabric identity or Log in in the top bar to create or restore a key.';
+  if (c === 'password_locked') return ` ${id.howToUnlock}`;
+  if (c === 'watch_only') return ` ${id.howToImport}`;
+  return ` ${id.howToLogIn}`;
+}
+
+function disabledReason (authLike, reasons) {
+  const c = classifyHubBrowserIdentity(authLike);
+  const reason = c === 'password_locked' ? reasons.locked : (c === 'watch_only' ? reasons.watchOnly : reasons.none);
+  return `${reason}${fabricIdentityUnlockSuffixPlain(authLike)}`;
 }
 
 function fabricIdentityChatDisabledReasonPlain (authLike) {
-  return `Unlock identity to send chat messages.${fabricIdentityUnlockSuffixPlain(authLike)}`;
+  return disabledReason(authLike, { locked: id.chatLocked, watchOnly: id.chatWatchOnly, none: id.chatNone });
 }
 
 function fabricIdentityPeerDisabledReasonPlain (authLike) {
-  return `Unlock identity to send peer messages.${fabricIdentityUnlockSuffixPlain(authLike)}`;
+  return disabledReason(authLike, { locked: id.peerLocked, watchOnly: id.peerWatchOnly, none: id.peerNone });
 }
 
 /**
@@ -46,13 +52,9 @@ function fabricIdentityPeerDisabledReasonPlain (authLike) {
  */
 function fabricIdentityNeedFullKeyPlain (authLike) {
   const c = classifyHubBrowserIdentity(authLike);
-  if (c === 'password_locked') {
-    return 'Unlock with your encryption password (Settings → Fabric identity or top-bar Locked).';
-  }
-  if (c === 'watch_only') {
-    return 'Import a full key or use desktop signing (Settings → Fabric identity or top-bar identity menu — watch-only cannot sign).';
-  }
-  return 'Create or restore a Fabric identity (Settings → Fabric identity or Log in).';
+  if (c === 'password_locked') return id.needUnlock;
+  if (c === 'watch_only') return id.needFullKey;
+  return id.needIdentity;
 }
 
 /**
@@ -67,15 +69,15 @@ function featuresPageIdentityButtonLabelFromStorage (local, sessionUnlocked) {
   if (sessXprv && sessXpub) {
     return `${sessXpub.slice(0, 8)}…${sessXpub.slice(-8)}`;
   }
-  if (!local || typeof local !== 'object') return 'Log in';
+  if (!local || typeof local !== 'object') return id.login;
   const locXprv = local.xprv && String(local.xprv).trim();
   const locXpub = local.xpub ? String(local.xpub) : '';
   if (locXprv && !local.passwordProtected && locXpub) {
     return `${locXpub.slice(0, 8)}…${locXpub.slice(-8)}`;
   }
-  if (local.passwordProtected) return 'Locked';
-  if (local.xpub || local.id) return 'Watch-only';
-  return 'Log in';
+  if (local.passwordProtected) return id.locked;
+  if (local.xpub || local.id) return id.watchOnly;
+  return id.login;
 }
 
 module.exports = {

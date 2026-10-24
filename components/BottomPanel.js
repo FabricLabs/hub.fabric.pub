@@ -12,6 +12,7 @@ const {
 } = require('semantic-ui-react');
 const { HubUiRuntimeContext } = require('./hubUiRuntime');
 const { HUB_UI_RUNTIME_CLIENT } = require('../functions/hubClientEnvironment');
+const t = require('../locales/en');
 
 class BottomPanel extends React.Component {
   constructor (props) {
@@ -73,7 +74,7 @@ class BottomPanel extends React.Component {
     return (
       <Segment
         role="contentinfo"
-        aria-label="Hub status footer"
+        aria-label={t.shell.footer.label}
         style={{
           flexShrink: 0,
           marginTop: '1em',
@@ -108,13 +109,13 @@ class BottomPanel extends React.Component {
                   <code>{pubkeyText}</code>
                 </Link>
               ) : (
-                <code title={publicHubVisitor ? 'Hub node identity (sign in to use peer tools)' : 'Open Peers from the top bar'}>
+                <code title={publicHubVisitor ? t.shell.footer.visitorKeyTitle : t.shell.footer.keyTitle}>
                   {pubkeyText}
                 </code>
               )}
             </span>
           ) : (
-            <code>hub.fabric.pub</code>
+            <code>{t.BRAND_MARK}</code>
           )}
         </div>
         <div

@@ -10,7 +10,7 @@ Overview of the three repos and how peer management flows between them, plus how
 |--------------|---------------|------|
 | **fabric**   | `@fabric/core` | Core P2P runtime: Peer type, NOISE handshake, connections, `publicPeers`, messaging. |
 | **fabric-http** | `@fabric/http` | HTTP/WS server and browser tooling; can use Fabric types and has its own peer UI components. |
-| **hub.fabric.pub** | `@fabric/hub` | Hub app: server (Hub service + Peer agent) + browser UI (Bridge, Dashboard). Depends on `@fabric/http` (which depends on `@fabric/core`). |
+| **hub.fabric.pub** | `@fabric/hub` | Hub app: server (Hub service + Peer agent) + browser UI (Bridge, HubInterface). Depends on `@fabric/http` (which depends on `@fabric/core`). |
 
 ---
 

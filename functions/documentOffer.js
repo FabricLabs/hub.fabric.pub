@@ -6,7 +6,7 @@ const { DOCUMENT_OFFER } = require('./messageTypes');
  * L1-funded document delivery reward offers on logical sidechain `content.documentOffers`,
  * signaled with {@link DOCUMENT_OFFER} (see `components/SidechainHome.js`).
  *
- * On-chain escrow uses the same P2TR two-leaf HTLC as inventory (`functions/inventoryHtlc.js`):
+ * On-chain escrow uses the same P2TR two-leaf HTLC as inventory (`@fabric/core/types/htlc`):
  * **deliverer** = seller leaf (hashlock + deliverer Schnorr); **initiator** = buyer leaf (CLTV + initiator Schnorr).
  * Phases advance via RFC6902 patches; `revealedPreimageHex` is published only after delivery (claim path).
  */

@@ -1,12 +1,20 @@
 'use strict';
 
 /**
- * `fabric:` protocol — opaque **fabric:&lt;hex&gt;** carries only a serialized {@link Message} (no `//` host).
+ * `fabric:` protocol — opaque **fabric:&lt;frame&gt;** (base64url or hex) carries only a serialized {@link Message} (no `//` host).
  * Legacy: `fabric://login?…`, `fabric://message?hex=…` (see `scripts/desktop.js`).
  * @see `functions/fabricMessageEnvelope.js` for JSON body envelope v1.
  */
 
 const Message = require('@fabric/core/types/message');
+
+function loadFabricUri () {
+  try {
+    return require('@fabric/core/functions/fabricUri');
+  } catch (_) {
+    return null;
+  }
+}
 
 function normalizeHex (s) {
   if (typeof s !== 'string') return '';
@@ -143,7 +151,40 @@ function parseOpaqueFabricMessageHex (urlStr) {
   return hex;
 }
 
+/**
+ * Decode an opaque `fabric:<frame>` (base64url or hex). With a current
+ * `@fabric/core` this runs `decodeFabricUri`: magic, size, body hash, known
+ * type, and the author's BIP340 signature when the frame is signed. Unsigned
+ * frames pass with `signed: false` so the prompt can say who (no one) sent it.
+ * An older core falls back to hex parsing with `verified: false`.
+ * @param {string} urlStr
+ * @returns {{ ok: true, hex: string, summary: object, signed: boolean|null, author: string|null, verified: boolean }|{ ok: false, error: string }}
+ */
+function decodeOpaqueFabricUri (urlStr) {
+  const text = typeof urlStr === 'string' ? urlStr.trim() : '';
+  if (!/^fabric:(?!\/\/)/i.test(text)) return { ok: false, error: 'not an opaque fabric: message' };
+  const core = loadFabricUri();
+  if (core && typeof core.decodeFabricUri === 'function') {
+    const out = core.decodeFabricUri(text, { allowUnsigned: true });
+    if (!out.ok) return { ok: false, error: out.error };
+    return {
+      ok: true,
+      hex: Buffer.from(out.buffer).toString('hex'),
+      summary: summarizeFabricMessage(out.message),
+      signed: out.signed,
+      author: out.author,
+      verified: true
+    };
+  }
+  const hex = parseOpaqueFabricMessageHex(text);
+  if (!hex) return { ok: false, error: 'not an opaque fabric: message' };
+  const fm = fabricMessageSummaryFromHex(hex);
+  if (!fm.ok) return fm;
+  return Object.assign(fm, { signed: null, author: null, verified: false });
+}
+
 module.exports = {
+  decodeOpaqueFabricUri,
   normalizeHex,
   parseHexFabricMessage,
   summarizeFabricMessage,

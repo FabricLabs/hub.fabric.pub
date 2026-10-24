@@ -2,22 +2,33 @@
 
 const React = require('react');
 const { Link } = require('react-router-dom');
-const { Message, Icon, Button } = require('semantic-ui-react');
+const { Message, Icon, Button, List } = require('semantic-ui-react');
 const {
   fetchDistributedHubPolicy,
   federationSummaryFromManifest,
   beaconEpochWitnessDetail
 } = require('../functions/distributedManifestClient');
+const t = require('../locales/en');
 
 /**
  * Operator-facing summary of federation policy from live hub endpoints.
  * Clarifies what the hub enforces vs execution-contract registry/run (L1 + deterministic commitment only).
+ * @param {object} props
+ * @param {string} [props.size]
+ * @param {object} [props.style]
+ * @param {string} [props.marginBottom]
+ * @param {boolean} [props.hideSidechainNavLink] Omit the Statechain link (used on /sidechains).
+ * @param {boolean} [props.hideEndpointLinks] Omit the whole link row when the page lists the same links itself.
+ * @param {*} [props.refreshToken] Reload when this changes.
  */
 function DistributedFederationPanel (props) {
   const size = props && props.size ? props.size : 'small';
   const style = props && props.style ? props.style : undefined;
   const marginBottom = props && props.marginBottom != null ? props.marginBottom : '1em';
   const hideSidechainNavLink = !!(props && props.hideSidechainNavLink);
+  const hideEndpointLinks = !!(props && props.hideEndpointLinks);
+  const c = t.federation.distributedFederationPanel;
+  const links = t.federation.shared.links;
 
   const [loading, setLoading] = React.useState(true);
   const [manifest, setManifest] = React.useState(null);
@@ -69,6 +80,26 @@ function DistributedFederationPanel (props) {
     (v) => String(v).toLowerCase() === hubFabricPeerId.toLowerCase()
   ));
 
+  const linkRow = hideEndpointLinks ? null : (
+    <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
+      {!hideSidechainNavLink ? (
+        <React.Fragment>
+          <Link to="/sidechains">{links.statechain}</Link>
+          {' · '}
+        </React.Fragment>
+      ) : null}
+      <Link to="/settings/admin/beacon-federation">{links.beaconFederation}</Link>
+      {' · '}
+      <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">{links.manifest}</a>
+      {' · '}
+      <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">{links.epoch}</a>
+      {' · '}
+      <a href="/services/distributed/vault" target="_blank" rel="noopener noreferrer">{links.vault}</a>
+      {' · '}
+      <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">{links.vaultUtxos}</a>
+    </p>
+  );
+
   if (loading) {
     return (
       <Message
@@ -76,31 +107,15 @@ function DistributedFederationPanel (props) {
         size={size}
         style={{ ...style, marginBottom }}
         role="region"
-        aria-label="Federation policy loading"
+        aria-label={c.title}
       >
         <Message.Header>
           <Icon name="circle notched" loading aria-hidden="true" />
           {' '}
-          Federation policy (this hub)
+          {c.title}
         </Message.Header>
-        <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-          Loading <code>/services/distributed/manifest</code>, <code>/services/distributed/epoch</code>, and federation vault JSON…
-        </p>
-        <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
-          {!hideSidechainNavLink ? (
-            <React.Fragment>
-              <Link to="/sidechains">Statechain</Link>
-              {' · '}
-            </React.Fragment>
-          ) : null}
-          <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>
-          {' · '}
-          <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">Distributed manifest</a>
-          {' · '}
-          <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">Beacon epoch (JSON)</a>
-          {' · '}
-          <a href="/services/distributed/vault" target="_blank" rel="noopener noreferrer">Vault</a>
-        </p>
+        <p style={{ margin: '0.35em 0 0', color: '#444' }}>{c.loading}</p>
+        {linkRow}
       </Message>
     );
   }
@@ -108,109 +123,71 @@ function DistributedFederationPanel (props) {
   const warnOnly = warnings.length > 0 && !manifest && !epoch;
   if (warnOnly) {
     return (
-      <Message negative size={size} style={{ ...style, marginBottom }} role="region" aria-label="Federation policy error">
-        <Message.Header>Federation policy (this hub)</Message.Header>
-        <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-          Could not load distributed endpoints: {warnings.join('; ')}.
-        </p>
+      <Message negative size={size} style={{ ...style, marginBottom }} role="region" aria-label={c.title}>
+        <Message.Header>{c.title}</Message.Header>
+        <p style={{ margin: '0.35em 0 0', color: '#444' }}>{c.loadError(warnings.join('; '))}</p>
       </Message>
     );
   }
 
   const witnessLine = !beacon.hasBeacon
-    ? 'Beacon epoch summary not available from this hub (epoch endpoint missing or empty).'
+    ? c.witnessNone
     : beacon.lastWitnessPresent
-      ? `Latest recorded beacon epoch carries a federation witness (${beacon.signatureCount} signature(s) in the last message).`
-      : 'Latest recorded beacon epoch has no federation witness (expected when no validators are configured, or the hub key is not in the set).';
+      ? c.witnessSigned(beacon.signatureCount)
+      : c.witnessUnsigned;
 
-  const scopeLine = (
-    <span>
-      <strong>Execution contracts:</strong> registry publish and <code>RunExecutionContract</code> use L1 invoice verification (when Bitcoin is on). Runs emit forward <code>FabricProgramRun</code> digests (<code>programHash</code> + <code>runCommitmentHex</code>) plus legacy <code>executionRunCommitmentHex</code>; they do <strong>not</strong> use federation witnesses.
-    </span>
+  const copyButton = (
+    <React.Fragment>
+      <Button
+        type="button"
+        size="mini"
+        basic
+        icon="copy"
+        aria-label={c.copyHubId}
+        title={c.copyHubId}
+        onClick={() => copyHubFabricPeerId()}
+      />
+      {hubIdCopied ? <span role="status" style={{ marginLeft: '0.35em', color: '#2185d0' }}>{t.common.actions.copied}</span> : null}
+    </React.Fragment>
   );
+
+  const hubIdLine = hubFabricPeerId ? (
+    <p style={{ margin: '0.5em 0 0', color: '#444', fontSize: '0.9em' }}>
+      <strong>{c.hubId}</strong>{' '}
+      <code style={{ wordBreak: 'break-all' }}>{hubFabricPeerId}</code>
+      {' '}
+      {copyButton}
+      {!fed.active ? <span style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>{c.hubIdInactiveHint}</span> : null}
+    </p>
+  ) : null;
 
   let body;
   if (fed.active) {
     body = (
       <React.Fragment>
         <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-          <strong>Federation active on this hub:</strong>{' '}
-          <strong>{fed.threshold}-of-{fed.count}</strong>{' '}
-          {fed.signatureScheme === 'bls'
-            ? 'BLS12-381 threshold. Each witness is a BLS bundle bound to one configured secp256k1 validator key.'
-            : 'Schnorr threshold over the configured compressed secp256k1 validator pubkeys.'}
-          <code>SubmitSidechainStatePatch</code> requires a valid <code>federationWitness</code> over the patch signing string (admin token does not bypass when validators are configured).
-          The beacon adds a <code>federationWitness</code> on new epochs when the hub&apos;s pubkey is in that set, and on startup the hub checks stored epochs against the same threshold (see <code>verifyFederationWitnessOnMessage</code>).
+          <strong>{c.active(fed.threshold, fed.count)}</strong>{' '}
+          {fed.signatureScheme === 'bls' ? c.schemeBls : c.schemeSchnorr}{' '}
+          {c.activeEffect}
         </p>
+        {hubIdLine}
         {hubFabricPeerId ? (
-          <React.Fragment>
-            <p style={{ margin: '0.5em 0 0', color: '#444', fontSize: '0.9em' }}>
-              <strong>Hub Fabric peer id:</strong>{' '}
-              <code style={{ wordBreak: 'break-all' }}>{hubFabricPeerId}</code>
-              {' '}
-              <Button
-                type="button"
-                size="mini"
-                basic
-                icon="copy"
-                aria-label="Copy hub Fabric peer id"
-                title="Copy pubkey"
-                onClick={() => copyHubFabricPeerId()}
-              />
-              {hubIdCopied ? <span style={{ marginLeft: '0.35em', color: '#2185d0' }}>Copied</span> : null}
-            </p>
-            <p style={{ margin: '0.35em 0 0', color: hubInValidatorSet ? '#2a6a2a' : '#8a6d3b', fontSize: '0.95em' }}>
-              {hubInValidatorSet
-                ? (fed.signatureScheme === 'bls'
-                  ? 'This id is in the validator list, so new beacon epochs can attach its BLS signature to federationWitness.'
-                  : 'This id is in the validator list, so new beacon epochs can attach its Schnorr signature to federationWitness.')
-                : 'This id is not in the validator list; the beacon will not attach federationWitness until it is included in FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS (or settings.distributed.federation.validators).'}
-            </p>
-          </React.Fragment>
+          <p style={{ margin: '0.35em 0 0', color: hubInValidatorSet ? '#2a6a2a' : '#8a6d3b', fontSize: '0.95em' }}>
+            {hubInValidatorSet ? c.inSet : c.notInSet}
+          </p>
         ) : null}
-        <p style={{ margin: '0.5em 0 0', color: '#555', fontSize: '0.95em' }}>
-          {witnessLine}
-        </p>
-        <p style={{ margin: '0.5em 0 0', color: '#555', fontSize: '0.95em' }}>
-          {scopeLine}
-        </p>
       </React.Fragment>
     );
   } else {
     body = (
       <React.Fragment>
-        <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-          <strong>Federation not configured</strong> (distributed manifest has no validator pubkeys).
-          <code>SubmitSidechainStatePatch</code> requires a valid <strong>admin token</strong> only.
-          Beacon epochs are still anchored to Bitcoin; the hub signs each epoch <code>Message</code> with its identity key, but no k-of-n <code>federationWitness</code> is produced until validators and threshold are configured.
-        </p>
-        {hubFabricPeerId ? (
-          <p style={{ margin: '0.5em 0 0', color: '#444', fontSize: '0.9em' }}>
-            <strong>Hub Fabric peer id</strong> (compressed pubkey hex — include when you enable federation):
-            {' '}
-            <code style={{ wordBreak: 'break-all' }}>{hubFabricPeerId}</code>
-            {' '}
-            <Button
-              type="button"
-              size="mini"
-              basic
-              icon="copy"
-              aria-label="Copy hub Fabric peer id"
-              title="Copy pubkey"
-              onClick={() => copyHubFabricPeerId()}
-            />
-            {hubIdCopied ? <span style={{ marginLeft: '0.35em', color: '#2185d0' }}>Copied</span> : null}
-          </p>
-        ) : null}
-        <p style={{ margin: '0.5em 0 0', color: '#555', fontSize: '0.95em' }}>
-          {witnessLine}
-        </p>
-        <p style={{ margin: '0.5em 0 0', color: '#555', fontSize: '0.95em' }}>
-          {scopeLine}
-        </p>
+        <p style={{ margin: '0.35em 0 0', color: '#444' }}>{c.inactive}</p>
+        {hubIdLine}
       </React.Fragment>
     );
   }
+
+  const vault = manifest && manifest.federationVault ? manifest.federationVault : null;
 
   return (
     <Message
@@ -219,68 +196,39 @@ function DistributedFederationPanel (props) {
       size={size}
       style={{ ...style, marginBottom }}
       role="region"
-      aria-label="Federation guarantees for this hub"
+      aria-label={c.title}
     >
-      <Message.Header>Federation guarantees (this hub)</Message.Header>
+      <Message.Header>{c.title}</Message.Header>
       {warnings.length > 0 && (manifest || epoch) ? (
         <p style={{ margin: '0.35em 0 0', color: '#666', fontSize: '0.9em' }}>
-          Partial load: {warnings.join('; ')}.
+          {c.partial(warnings.join('; '))}
         </p>
       ) : null}
       {body}
-      {manifest && manifest.federationVault && manifest.federationVault.address ? (
+      <p style={{ margin: '0.5em 0 0', color: '#555', fontSize: '0.95em' }}>{witnessLine}</p>
+      <p style={{ margin: '0.5em 0 0', color: '#555', fontSize: '0.95em' }}>{c.scope}</p>
+      {vault && vault.address ? (
         <p style={{ margin: '0.55em 0 0', color: '#2c5c2c', fontSize: '0.95em', lineHeight: 1.45 }}>
-          <strong>L1 federation vault (Taproot):</strong>{' '}
-          <code style={{ wordBreak: 'break-all' }}>{manifest.federationVault.address}</code>
-          {' · '}
-          <a href="/services/distributed/vault" target="_blank" rel="noopener noreferrer">Vault JSON</a>
-          {' · '}
-          <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">UTXOs</a>
-          {manifest.federationVault.depositMaturityBlocks != null ? (
-            <span>
-              {' '}
-              — default maturity policy: <strong>{manifest.federationVault.depositMaturityBlocks}</strong> confirmations before treating deposits as matured for withdrawal planning.
-            </span>
+          <strong>{c.vault}</strong>{' '}
+          <code style={{ wordBreak: 'break-all' }}>{vault.address}</code>
+          {vault.depositMaturityBlocks != null ? (
+            <span>{' '}{c.maturity(vault.depositMaturityBlocks)}</span>
           ) : null}
-          {manifest.federationVault.internalKeyMode ? (
-            <span>
-              {' '}
-              — internal key: <strong>{manifest.federationVault.internalKeyMode}</strong>
-              {manifest.federationVault.internalKeyMode === 'nums'
-                ? ' (historical NUMS vault; set FABRIC_FEDERATION_INTERNAL_KEY_MODE=musig2 only after sweeping to the new address)'
-                : ' (aggregate internal key mode — epoch MuSig2 seal is still incomplete; see FEDERATED_SETTLEMENT F4)'}
-            </span>
-          ) : null}
-          <span style={{ display: 'block', marginTop: '0.4em', fontSize: '0.88em', color: '#555' }}>
-            Withdraw via <code>PrepareFederationVaultWithdrawalPsbt</code> on <code>POST /services/rpc</code> (admin token): pass tip-bound <code>withdrawalRequest</code> (with <code>amountSats</code>) and <code>fundedTxHex</code>; when threshold ≥ 2 also pass <code>withdrawalWitnesses</code>. Propose burns with <code>ProposeFederationPegOut</code>; credit deposits with <code>CreateFederationPegInCredit</code>. Explicit-amount reserve (F0) is shipped; destination lock and the automatic peg watcher (F1–F2) are not — do not treat digests as peg-out authority.
-          </span>
+          <span style={{ display: 'block', marginTop: '0.4em', fontSize: '0.9em', color: '#555' }}>{c.withdraw}</span>
         </p>
-      ) : manifest && manifest.federationVault && manifest.federationVault.status === 'no_validators' ? (
-        <p style={{ margin: '0.55em 0 0', color: '#666', fontSize: '0.9em' }}>
-          <strong>On-chain vault:</strong> add validator pubkeys to derive a deterministic Taproot deposit address (<code>GET /services/distributed/vault</code>).
-        </p>
+      ) : vault && vault.status === 'no_validators' ? (
+        <p style={{ margin: '0.55em 0 0', color: '#666', fontSize: '0.9em' }}>{c.vaultNoValidators}</p>
       ) : null}
-      <p style={{ margin: '0.6em 0 0', fontSize: '0.82em', color: '#777' }}>
-        The distributed manifest&apos;s validator list and threshold match what this hub enforces for <code>SubmitSidechainStatePatch</code> (environment and settings), including when the beacon has not attached yet.
-        Beacon epochs use the same style of witness over a deterministic signing string; sidechain patches use <code>signingStringForSidechainStatePatch</code> — both verifiable offline with <code>@fabric/core</code>.
-      </p>
-      <p style={{ margin: '0.75em 0 0', fontSize: '0.9em', color: '#666' }}>
-        {!hideSidechainNavLink ? (
-          <React.Fragment>
-            <Link to="/sidechains">Statechain</Link>
-            {' · '}
-          </React.Fragment>
-        ) : null}
-        <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>
-        {' · '}
-        <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">Distributed manifest</a>
-        {' · '}
-        <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">Beacon epoch (JSON)</a>
-        {' · '}
-        <a href="/services/distributed/vault" target="_blank" rel="noopener noreferrer">Federation vault</a>
-        {' · '}
-        <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">Vault UTXOs</a>
-      </p>
+      <details className="hub-developer-details" style={{ margin: '0.6em 0 0', fontSize: '0.85em', color: '#666' }}>
+        <summary>{t.common.developerDetails}</summary>
+        <List bulleted>
+          {c.developer.map((line) => <List.Item key={line}>{line}</List.Item>)}
+          {vault && vault.address && vault.internalKeyMode ? (
+            <List.Item>{c.internalKey(String(vault.internalKeyMode))}</List.Item>
+          ) : null}
+        </List>
+      </details>
+      {linkRow}
     </Message>
   );
 }

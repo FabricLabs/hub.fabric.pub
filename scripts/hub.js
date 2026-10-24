@@ -138,6 +138,9 @@ try {
         settings = applySharedModeWebsocketGate(settings, { bindAll, env: process.env });
       }
     }
+    if (setup.BITCOIN_ADDNODES || setup.FABRIC_PEERS) {
+      settings = require('../functions/hubNetworkJoin').applyNetworkJoinFromSetup({ ...settings }, setup);
+    }
   }
 } catch (e) {
   // Ignore; use defaults from local.js

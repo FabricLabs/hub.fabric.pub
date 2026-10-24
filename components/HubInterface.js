@@ -1,8 +1,8 @@
 'use strict';
 
 // Constants
+const t = require('../locales/en');
 const {
-  BRAND_NAME,
   BROWSER_DATABASE_NAME,
   BROWSER_DATABASE_TOKEN_TABLE
 } = require('../constants');
@@ -290,9 +290,9 @@ function UnknownRouteShell () {
   const hubHttpAvailable = useHubHttpAvailable();
   return (
     <Segment style={{ marginTop: '2em' }}>
-      <Header as="h3">Page not found</Header>
+      <Header as="h3">{t.shell.notFound.title}</Header>
       <p style={{ color: '#666', marginBottom: '0.75em', lineHeight: 1.45 }}>
-        No hub UI for{' '}
+        {t.shell.notFound.body}{' '}
         <code style={{ wordBreak: 'break-all' }}>{full}</code>
         .
       </p>
@@ -300,20 +300,16 @@ function UnknownRouteShell () {
         {hubHttpAvailable
           ? (
             <>
-              Use the <strong>top navigation</strong> (Home, Documents, Contracts, and <strong>More</strong>) — it lists the same places without duplicating them here.
-              {uf.activities ? ' The bell opens Notifications (toasts); the activity log is under More → Activity log.' : ''}
+              {t.shell.notFound.hubHint}
+              {uf.activities ? ` ${t.shell.notFound.activityHint}` : ''}
             </>
             )
-          : (
-            <>
-              This origin is the HTML client. Use <strong>Home</strong> and <strong>Settings</strong> for identity and local wallet tools.
-            </>
-            )}
+          : t.shell.notFound.clientHint}
       </p>
       <p style={{ color: '#666', lineHeight: 1.45 }}>
-        <Link to="/">Go to Home</Link>
+        <Link to="/">{t.shell.notFound.goHome}</Link>
         {' · '}
-        <Link to="/settings">Settings</Link>
+        <Link to="/settings">{t.shell.notFound.settings}</Link>
         {hubHttpAvailable && (uf.bitcoinPayments || uf.bitcoinLightning) ? (
           <>
             {' · '}
@@ -323,14 +319,14 @@ function UnknownRouteShell () {
                 hash: uf.bitcoinPayments ? 'fabric-bitcoin-payjoin' : 'fabric-bitcoin-lightning'
               }}
             >
-              Treasury (Payjoin / Lightning)
+              {t.shell.notFound.treasury}
             </Link>
           </>
         ) : null}
         {hubHttpAvailable && uf.sidechain ? (
           <>
             {' · '}
-            <Link to="/sidechains">Statechain</Link>
+            <Link to="/sidechains">{t.shell.notFound.statechain}</Link>
           </>
         ) : null}
       </p>
@@ -348,6 +344,7 @@ function NavigatePayjoinSpaAlias () {
 }
 
 const BitcoinResourcesHome = require('./BitcoinResourcesHome');
+const CoinjoinHome = require('./CoinjoinHome');
 const BitcoinTransactionView = require('./BitcoinTransactionView');
 const ChannelView = require('./ChannelView');
 const InvoiceListHome = require('./InvoiceListHome');
@@ -486,33 +483,6 @@ function CrowdfundingHomeWithNav (props) {
     }
   }, [location.pathname, location.hash]);
   return <CrowdfundingHome {...props} navigate={navigate} />;
-}
-
-/**
- * Login wall: shown when user tries to access a gated route without a local identity.
- */
-function LoginGate (props) {
-  const onLogin = props && typeof props.onLogin === 'function' ? props.onLogin : null;
-  return (
-    <Segment placeholder style={{ marginTop: '2em', textAlign: 'center' }}>
-      <Header icon>
-        <Icon name="lock" />
-        Log in required
-      </Header>
-      <p style={{ color: '#666', maxWidth: '32rem', margin: '0 auto 0.75em', lineHeight: 1.45 }}>
-        Create or restore a local Fabric identity to access this feature (encrypt documents, sign publishes, and use the browser Bitcoin account tied to your keys).
-      </p>
-      <p style={{ color: '#666', maxWidth: '32rem', margin: '0 auto 1em', lineHeight: 1.45 }}>
-        Use <strong>Log in</strong> below, the top-bar identity menu, or open{' '}
-        <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> for the same unlock/import flow.{' '}
-        <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> explains on-chain addresses for this identity.
-      </p>
-      <Button primary onClick={() => onLogin && onLogin()}>
-        <Icon name="user circle" />
-        Log in
-      </Button>
-    </Segment>
-  );
 }
 
 /**
@@ -827,7 +797,7 @@ class HubInterface extends React.Component {
   async _verifySetupUiSecret () {
     const pwd = String(this.state.setupUiGatePassword || '').trim();
     if (!pwd) {
-      this.setState({ setupUiGateError: 'Enter the setup secret from the operator.' });
+      this.setState({ setupUiGateError: t.shell.setupGate.missing });
       return;
     }
     const base = typeof window !== 'undefined' && window.location
@@ -845,7 +815,7 @@ class HubInterface extends React.Component {
         body: JSON.stringify({ setupUiSecret: pwd })
       });
       const text = await res.text();
-      let errMsg = 'Invalid setup secret.';
+      let errMsg = t.shell.setupGate.invalid;
       if (!res.ok) {
         try {
           if (!text.trim().startsWith('<')) {
@@ -870,7 +840,7 @@ class HubInterface extends React.Component {
     } catch (e) {
       this.setState({
         setupUiGateBusy: false,
-        setupUiGateError: e && e.message ? String(e.message) : 'Request failed.'
+        setupUiGateError: e && e.message ? String(e.message) : t.shell.setupGate.failed
       });
     }
   }
@@ -1243,17 +1213,17 @@ class HubInterface extends React.Component {
   _handleFederationInviteResponse (d) {
     if (!d || typeof d.accept !== 'boolean') return;
     if (!d.accept) {
-      toastify.info('A peer declined your federation contract invite.', { transition: Slide });
+      toastify.info(t.shell.federationInvite.declined, { transition: Slide });
       return;
     }
     const admin = this.state.adminToken || (typeof window !== 'undefined' && readStorageString('fabric.hub.adminToken'));
     const pk = d.responderPubkey;
     if (!pk) {
-      toastify.warning('Federation invite accepted but no responder pubkey was included.', { transition: Slide });
+      toastify.warning(t.shell.federationInvite.acceptedNoKey, { transition: Slide });
       return;
     }
     if (!admin) {
-      toastify.info(`Peer accepted federation invite (pubkey ${pk.slice(0, 10)}…). Add their pubkey under More → Federations (or Settings → Distributed federation).`, { transition: Slide, autoClose: 8000 });
+      toastify.info(t.shell.federationInvite.acceptedNoAdmin(pk.slice(0, 10)), { transition: Slide, autoClose: 8000 });
       return;
     }
     const self = this;
@@ -1261,7 +1231,7 @@ class HubInterface extends React.Component {
     toastify.info(
       ({ closeToast }) => (
         <div>
-          <p style={{ margin: '0 0 0.6em', fontSize: '0.95rem' }}>Federation invite accepted.</p>
+          <p style={{ margin: '0 0 0.6em', fontSize: '0.95rem' }}>{t.shell.federationInvite.accepted}</p>
           <button
             type="button"
             style={{
@@ -1277,7 +1247,7 @@ class HubInterface extends React.Component {
               void self._addFederationMemberFromInvite(pk, token, closeToast);
             }}
           >
-            Add to validators
+            {t.shell.federationInvite.addValidator}
           </button>
           <button
             type="button"
@@ -1290,7 +1260,7 @@ class HubInterface extends React.Component {
             }}
             onClick={() => (typeof closeToast === 'function' ? closeToast() : null)}
           >
-            Dismiss
+            {t.shell.federationInvite.dismiss}
           </button>
         </div>
       ),
@@ -1315,10 +1285,10 @@ class HubInterface extends React.Component {
       });
       const body = await res.json().catch(() => ({}));
       if (body.error || !res.ok) {
-        toastify.error((body.error && body.error.message) || 'Add member failed', { transition: Slide });
+        toastify.error((body.error && body.error.message) || t.shell.federationInvite.addFailed, { transition: Slide });
         return;
       }
-      toastify.success('Validator added to federation policy.', { transition: Slide });
+      toastify.success(t.shell.federationInvite.added, { transition: Slide });
       if (typeof closeToast === 'function') closeToast();
     } catch (e) {
       toastify.error(e && e.message ? e.message : String(e), { transition: Slide });
@@ -1478,7 +1448,7 @@ class HubInterface extends React.Component {
         markAutoFaucetDone();
         try {
           toast.success(
-            `Funded local key with ${funded.amountSats.toLocaleString()} sats from the Hub faucet.`
+            t.shell.faucetFunded(funded.amountSats.toLocaleString())
           );
         } catch (_) {}
         await this._refreshClientBalance(true);
@@ -1816,6 +1786,7 @@ class HubInterface extends React.Component {
             <FederationContractInviteModal
               open={this.state.federationInviteModalOpen}
               detail={this.state.federationInviteDetail}
+              auth={effectiveAuth}
               onClose={() => this.setState({ federationInviteModalOpen: false, federationInviteDetail: null })}
               getResponderPubkey={() => {
                 const b = this.bridgeRef && this.bridgeRef.current;
@@ -1838,20 +1809,20 @@ class HubInterface extends React.Component {
             {(this.props.auth && this.props.auth.loading) ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '0.75em' }}>
                 <Loader active inline="centered" size='huge' />
-                <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>Loading session…</p>
+                <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>{t.shell.bootstrap.loadingSession}</p>
               </div>
             ) : !this.state.setupChecked ? (
               <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '1em' }}>
                 <Loader active={!this.state.setupStatusTimedOut} inline="centered" size='large' />
                 <p style={{ color: '#666', margin: 0, textAlign: 'center', maxWidth: '22rem', lineHeight: 1.45 }}>
                   {this.state.setupStatusTimedOut
-                    ? 'Could not confirm whether this origin is a live Hub.'
-                    : 'Checking this origin…'}
+                    ? t.shell.bootstrap.timedOut
+                    : t.shell.bootstrap.checking}
                 </p>
                 <p style={{ color: '#888', margin: 0, fontSize: '0.9em', textAlign: 'center', maxWidth: '24rem', lineHeight: 1.45 }}>
                   {this.state.setupStatusTimedOut
-                    ? 'Still waiting on /settings JSON — retry when a Hub is reachable. Onboarding is not skipped on timeout.'
-                    : 'Probing GET /settings (JSON vs HTML client / CDN). This is not the WebSocket path.'}
+                    ? t.shell.bootstrap.timedOutDetail
+                    : t.shell.bootstrap.checkingDetail}
                 </p>
                 {this.state.setupStatusTimedOut ? (
                   <Button
@@ -1870,7 +1841,7 @@ class HubInterface extends React.Component {
                       });
                     }}
                   >
-                    Retry
+                    {t.shell.bootstrap.retry}
                   </Button>
                 ) : null}
               </div>
@@ -1878,10 +1849,14 @@ class HubInterface extends React.Component {
               this.state.requiresSetupUiSecret && !this.state.setupUiVerified ? (
                 <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '1.5em', boxSizing: 'border-box' }}>
                   <Message warning style={{ maxWidth: '28rem', width: '100%' }}>
-                    <Message.Header>Operator setup</Message.Header>
+                    <Message.Header>{t.shell.setupGate.title}</Message.Header>
                     <p style={{ marginTop: '0.5em', marginBottom: 0, lineHeight: 1.5 }}>
-                      Enter the value of <code>FABRIC_HUB_SETUP_UI_SECRET</code> from the server environment to open first-time Hub configuration.
+                      {t.shell.setupGate.body}
                     </p>
+                    <details style={{ marginTop: '0.5em', fontSize: '0.9em' }}>
+                      <summary>{t.common.developerDetails}</summary>
+                      {t.shell.setupGate.developerHint}
+                    </details>
                   </Message>
                   <Form
                     style={{ maxWidth: '22rem', width: '100%', marginTop: '1em' }}
@@ -1891,7 +1866,7 @@ class HubInterface extends React.Component {
                     }}
                   >
                     <Form.Field>
-                      <label htmlFor="hub-setup-ui-secret">Setup secret</label>
+                      <label htmlFor="hub-setup-ui-secret">{t.shell.setupGate.label}</label>
                       <Input
                         id="hub-setup-ui-secret"
                         type="password"
@@ -1904,7 +1879,7 @@ class HubInterface extends React.Component {
                       <Message negative size="small" style={{ marginBottom: '0.75em' }}>{this.state.setupUiGateError}</Message>
                     ) : null}
                     <Button primary type="submit" loading={this.state.setupUiGateBusy} disabled={this.state.setupUiGateBusy}>
-                      Continue to setup
+                      {t.shell.setupGate.submit}
                     </Button>
                   </Form>
                 </div>
@@ -2061,9 +2036,7 @@ class HubInterface extends React.Component {
                           onFabricAccountChange={this._fabricAccountChange}
                         />
                         <p style={{ margin: '0.6em 0 0', color: '#666', fontSize: '0.9em', lineHeight: 1.45 }}>
-                          On-chain balance in the top bar and Bitcoin receive/spend paths use the same BIP44 account
-                          index as the Fabric account you select here (<code>m/44&apos;/0&apos;/n&apos;</code> under your
-                          master key).
+                          {t.shell.identityModal.accountNote} (<code>m/44&apos;/0&apos;/n&apos;</code> {t.shell.identityModal.accountPath}).
                         </p>
                       </div>
                     ) : null}
@@ -2079,7 +2052,7 @@ class HubInterface extends React.Component {
                   </Modal.Content>
                   <Modal.Actions>
                     <Button basic onClick={this._closeHubIdentityModal}>
-                      Close
+                      {t.shell.identityModal.close}
                     </Button>
                   </Modal.Actions>
                 </Modal>
@@ -2091,30 +2064,31 @@ class HubInterface extends React.Component {
                 >
                   <Header icon>
                     <Icon name="cog" />
-                    Settings
+                    {t.shell.settingsModal.title}
                   </Header>
                   <Modal.Content>
                     <Form>
                       <Form.Field>
                         <Checkbox
                           toggle
-                          label="Advanced Mode"
+                          label={t.shell.settingsModal.advanced}
                           checked={!!this.state.uiAdvancedModeDraft}
                           onChange={(e, data) => this.setState({ uiAdvancedModeDraft: !!(data && data.checked) })}
                         />
                         <div style={{ marginTop: '0.5em', color: '#666' }}>
-                          Shows advanced Hub surfaces (Peers, Contracts, More tools, activity/nav extras) when this origin has Hub HTTP. On an HTML-only host those extras stay hidden until you point at a live Hub.
+                          {t.shell.settingsModal.advancedHint}
                         </div>
                       </Form.Field>
                       <Form.Field>
-                        <label>Hub address</label>
+                        <label htmlFor="hub-settings-address">{t.shell.settingsModal.address}</label>
                         <Input
-                          placeholder="host:port (e.g. localhost:7777) or https://host:port"
+                          id="hub-settings-address"
+                          placeholder={t.shell.settingsModal.addressPlaceholder}
                           value={this.state.uiHubAddressDraft || ''}
                           onChange={(e) => this.setState({ uiHubAddressDraft: e.target.value, uiHubAddressError: null })}
                         />
                         <div style={{ marginTop: '0.5em', color: '#666' }}>
-                          This updates the WebSocket endpoint used by the UI.
+                          {t.shell.settingsModal.addressHint}
                         </div>
                         {this.state.uiHubAddressError ? (
                           <Message negative size="small" style={{ marginTop: '0.75em' }}>
@@ -2126,14 +2100,14 @@ class HubInterface extends React.Component {
                   </Modal.Content>
                   <Modal.Actions>
                     <Button basic onClick={() => this.setState({ uiSettingsOpen: false, uiHubAddressError: null })}>
-                      Cancel
+                      {t.shell.settingsModal.cancel}
                     </Button>
                     <Button
                       primary
                       onClick={() => {
                         const raw = (this.state.uiHubAddressDraft || '').trim();
                         if (!raw) {
-                          this.setState({ uiHubAddressError: 'Hub address is required.' });
+                          this.setState({ uiHubAddressError: t.shell.settingsModal.addressRequired });
                           return;
                         }
 
@@ -2150,13 +2124,13 @@ class HubInterface extends React.Component {
                           try {
                             if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.setHubAddress === 'function') {
                               const ok = this.bridgeRef.current.setHubAddress(raw);
-                              if (!ok) this.setState({ uiHubAddressError: 'Invalid hub address format.' });
+                              if (!ok) this.setState({ uiHubAddressError: t.shell.settingsModal.addressInvalid });
                             }
                           } catch (e) {}
                         });
                       }}
                     >
-                      Save
+                      {t.shell.settingsModal.save}
                     </Button>
                   </Modal.Actions>
                 </Modal>
@@ -2176,14 +2150,15 @@ class HubInterface extends React.Component {
                 >
                   <Header icon>
                     <Icon name="pencil" />
-                    Sign & verify message
+                    {t.shell.signModal.title}
                   </Header>
                   <Modal.Content>
                     <Form>
                       <Form.Field>
-                        <label>Message to sign</label>
+                        <label htmlFor="hub-sign-message">{t.shell.signModal.messageToSign}</label>
                         <Input
-                          placeholder="Enter message to sign"
+                          id="hub-sign-message"
+                          placeholder={t.shell.signModal.messageToSignPlaceholder}
                           value={this.state.uiSignMessageText || ''}
                           onChange={(e) => this.setState({ uiSignMessageText: e.target.value, uiSignMessageResult: null })}
                         />
@@ -2191,7 +2166,7 @@ class HubInterface extends React.Component {
                       {this.state.uiSignMessageResult && (
                         <Message className="fade-in">
                           <Form.Field>
-                            <label>Public key (hex)</label>
+                            <label>{t.shell.signModal.publicKey}</label>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', fontFamily: 'monospace', wordBreak: 'break-all' }}>
                               <span>{this.state.uiSignMessageResult.publicKey}</span>
                               <Icon
@@ -2203,7 +2178,7 @@ class HubInterface extends React.Component {
                             </div>
                           </Form.Field>
                           <Form.Field>
-                            <label>Signature</label>
+                            <label>{t.shell.signModal.signature}</label>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', fontFamily: 'monospace', wordBreak: 'break-all' }}>
                               <span>{this.state.uiSignMessageResult.signature}</span>
                               <Icon
@@ -2218,31 +2193,34 @@ class HubInterface extends React.Component {
                       )}
 
                       <Header as="h4" dividing style={{ marginTop: '1.5em' }}>
-                        Verify signature
+                        {t.shell.signModal.verifyTitle}
                       </Header>
                       <p style={{ color: '#666', fontSize: '0.95em', marginBottom: '1em' }}>
-                        When you use <strong>external signing</strong> (desktop delegation), the Hub records a Fabric message and the same message, public key, and signature appear here for verification—same flow as local signing.
+                        {t.shell.signModal.verifyIntro}
                       </p>
                       <Form.Field>
-                        <label>Message</label>
+                        <label htmlFor="hub-verify-message">{t.shell.signModal.message}</label>
                         <Input
-                          placeholder="Message that was signed"
+                          id="hub-verify-message"
+                          placeholder={t.shell.signModal.messagePlaceholder}
                           value={this.state.uiVerifyMessageText || ''}
                           onChange={(e) => this.setState({ uiVerifyMessageText: e.target.value, uiVerifyResult: null })}
                         />
                       </Form.Field>
                       <Form.Field>
-                        <label>Public key (hex)</label>
+                        <label htmlFor="hub-verify-pubkey">{t.shell.signModal.publicKey}</label>
                         <Input
-                          placeholder="Compressed public key (66 hex chars)"
+                          id="hub-verify-pubkey"
+                          placeholder={t.shell.signModal.publicKeyPlaceholder}
                           value={this.state.uiVerifyPublicKey || ''}
                           onChange={(e) => this.setState({ uiVerifyPublicKey: e.target.value, uiVerifyResult: null })}
                         />
                       </Form.Field>
                       <Form.Field>
-                        <label>Signature (hex)</label>
+                        <label htmlFor="hub-verify-signature">{t.shell.signModal.signatureHex}</label>
                         <Input
-                          placeholder="Signature (128 hex chars)"
+                          id="hub-verify-signature"
+                          placeholder={t.shell.signModal.signaturePlaceholder}
                           value={this.state.uiVerifySignature || ''}
                           onChange={(e) => this.setState({ uiVerifySignature: e.target.value, uiVerifyResult: null })}
                         />
@@ -2250,13 +2228,13 @@ class HubInterface extends React.Component {
                       {this.state.uiVerifyResult === true && (
                         <Message success className="fade-in">
                           <Icon name="check" color="green" size="large" />
-                          Signature is valid
+                          {t.shell.signModal.valid}
                         </Message>
                       )}
                       {this.state.uiVerifyResult === false && (
                         <Message negative className="fade-in">
                           <Icon name="close" color="red" size="large" />
-                          Signature is invalid
+                          {t.shell.signModal.invalid}
                         </Message>
                       )}
                     </Form>
@@ -2271,7 +2249,7 @@ class HubInterface extends React.Component {
                       uiVerifyPublicKey: '',
                       uiVerifyResult: null
                     })}>
-                      Close
+                      {t.shell.signModal.close}
                     </Button>
                     <Button
                       primary
@@ -2284,7 +2262,7 @@ class HubInterface extends React.Component {
                           bridge && typeof bridge.signArbitraryTextDelegated === 'function';
                         if (useDelegation) {
                           this.setState({ uiSignMessageBusy: true, uiSignMessageResult: null });
-                          toast.info('Confirm signing in the Fabric Hub desktop app…', { duration: 12000, header: 'External signing' });
+                          toast.info(t.shell.signModal.externalConfirm, { duration: 12000, header: t.shell.signModal.externalHeader });
                           void (async () => {
                             let result = null;
                             try {
@@ -2301,7 +2279,7 @@ class HubInterface extends React.Component {
                               uiVerifyResult: null
                             });
                             if (!result) {
-                              toast.warning('Signing was cancelled or timed out.', { header: 'External signing' });
+                              toast.warning(t.shell.signModal.externalCancelled, { header: t.shell.signModal.externalHeader });
                             }
                           })();
                           return;
@@ -2318,7 +2296,7 @@ class HubInterface extends React.Component {
                       disabled={!((this.state.uiSignMessageText || '').trim())}
                     >
                       <Icon name="pencil" />
-                      Sign
+                      {t.shell.signModal.sign}
                     </Button>
                     <Button
                       onClick={() => {
@@ -2335,7 +2313,7 @@ class HubInterface extends React.Component {
                       disabled={!((this.state.uiVerifyMessageText || '').trim()) || !((this.state.uiVerifySignature || '').trim()) || !((this.state.uiVerifyPublicKey || '').trim())}
                     >
                       <Icon name="check" />
-                      Verify
+                      {t.shell.signModal.verify}
                     </Button>
                   </Modal.Actions>
                 </Modal>
@@ -2347,14 +2325,14 @@ class HubInterface extends React.Component {
                 >
                   <Header icon>
                     <Icon name="trash" color="red" />
-                    Destroy identity
+                    {t.shell.destroyModal.title}
                   </Header>
                   <Modal.Content>
-                    <p>This will remove your local identity and all documents from this browser. This cannot be undone. Make sure you have backed up your seed phrase.</p>
+                    <p>{t.shell.destroyModal.body}</p>
                   </Modal.Content>
                   <Modal.Actions>
                     <Button basic onClick={() => this.setState({ uiDestroyIdentityConfirmOpen: false })}>
-                      Cancel
+                      {t.shell.destroyModal.cancel}
                     </Button>
                     <Button
                       negative
@@ -2386,7 +2364,7 @@ class HubInterface extends React.Component {
                       }}
                     >
                       <Icon name="trash" />
-                      Destroy
+                      {t.shell.destroyModal.confirm}
                     </Button>
                   </Modal.Actions>
                 </Modal>
@@ -2498,7 +2476,7 @@ class HubInterface extends React.Component {
                     path="/notifications"
                     element={hubPv((
                       <UiFlagRoute flag="activities">
-                        <NotificationsHome />
+                        <NotificationsHome adminToken={this.state.adminToken} />
                       </UiFlagRoute>
                     ))}
                   />
@@ -2587,6 +2565,14 @@ class HubInterface extends React.Component {
                           bridgeRef={this.bridgeRef}
                           {...this.props}
                         />
+                      </UiFlagRoute>
+                    ))}
+                  />
+                  <Route
+                    path="/services/coinjoin"
+                    element={hubPv((
+                      <UiFlagRoute flag="bitcoinPayments">
+                        <CoinjoinHome adminToken={this.state.adminToken} />
                       </UiFlagRoute>
                     ))}
                   />
@@ -2947,11 +2933,11 @@ class HubInterface extends React.Component {
                         }}
                         onUnlockHtlcDocument={async (docId, preimageHex) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) {
-                            return { ok: false, error: 'Bridge not ready.' };
+                            return { ok: false, error: t.shell.bridgeErrors.notReady };
                           }
                           const bridgeInstance = this.bridgeRef.current;
                           if (typeof bridgeInstance.unlockHtlcEncryptedDocument !== 'function') {
-                            return { ok: false, error: 'HTLC unlock not available.' };
+                            return { ok: false, error: t.shell.bridgeErrors.htlcUnavailable };
                           }
                           return bridgeInstance.unlockHtlcEncryptedDocument(docId, preimageHex);
                         }}
@@ -2974,7 +2960,7 @@ class HubInterface extends React.Component {
                           const bridgeInstance = this.bridgeRef.current;
                           return typeof bridgeInstance.sendClaimPurchaseRequest === 'function'
                             ? bridgeInstance.sendClaimPurchaseRequest(id, txid)
-                            : Promise.resolve({ error: 'Claim not available' });
+                            : Promise.resolve({ error: t.shell.bridgeErrors.claimUnavailable });
                         }}
                         onRequestDistributeInvoice={(id, config) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;

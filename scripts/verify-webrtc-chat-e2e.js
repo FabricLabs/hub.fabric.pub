@@ -88,10 +88,10 @@ async function getAuthButtonState (page) {
       title: String(button.getAttribute('title') || '').trim()
     }));
 
-    const preferred = candidates.find((c) => c.title === 'Manage identity' || c.title === 'Log in' || c.title === 'Unlock identity');
+    const preferred = candidates.find((c) => c.title === 'Identity menu' || c.title === 'Manage identity' || c.title === 'Log in' || c.title === 'Unlock your identity with your password');
     if (preferred) return preferred;
 
-    const fallback = candidates.find((c) => c.text.includes('Login') || c.text.includes('Locked') || c.text.includes('xpub'));
+    const fallback = candidates.find((c) => c.text.includes('Log in') || c.text.includes('Locked') || c.text.includes('Watch-only') || c.text.includes('xpub'));
     return fallback || null;
   });
 }

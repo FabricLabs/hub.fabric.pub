@@ -12,12 +12,14 @@ const {
   STORAGE_KEY
 } = require('../functions/uiNotifications');
 const { inAppNotificationOpenHref } = require('../functions/inAppNotificationOpenHref');
+const t = require('../locales/en');
 
 /**
- * Wallet / Payjoin / hub toasts from localStorage (same source as the top-bar badge).
+ * Wallet / Payjoin / Hub toasts from localStorage (same source as the top-bar badge).
  * @param {{ uf?: object, showHeader?: boolean, showClearAll?: boolean }} props
  */
 function InAppNotificationsList (props) {
+  const c = t.home.inApp;
   const uf = props.uf || {};
   const showHeader = props.showHeader !== false;
   const showClearAll = props.showClearAll !== false;
@@ -41,7 +43,7 @@ function InAppNotificationsList (props) {
   if (list.length === 0) {
     return (
       <p style={{ color: '#888', fontSize: '0.9em', margin: '0.25em 0 0' }}>
-        No in-app notifications. Wallet, Payjoin, and hub toasts appear here when triggered.
+        {c.empty}
       </p>
     );
   }
@@ -51,7 +53,7 @@ function InAppNotificationsList (props) {
       {showHeader ? (
         <Header as="h4" style={{ marginTop: 0, marginBottom: '0.5em' }}>
           <Icon name="bell outline" />
-          In-app notifications
+          {c.title}
         </Header>
       ) : null}
       <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -93,7 +95,7 @@ function InAppNotificationsList (props) {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', alignItems: 'center', flexShrink: 0 }}>
                 {openTo ? (
                   <Button as={Link} to={openTo} size="mini" compact primary>
-                    Open
+                    {t.common.actions.open}
                   </Button>
                 ) : null}
                 {n.copyText ? (
@@ -102,7 +104,8 @@ function InAppNotificationsList (props) {
                     compact
                     basic
                     icon
-                    title="Copy to clipboard"
+                    title={c.copy}
+                    aria-label={c.copy}
                     onClick={() => copyToClipboard(n.copyText)}
                   >
                     <Icon name="copy outline" />
@@ -113,7 +116,8 @@ function InAppNotificationsList (props) {
                   compact
                   basic
                   icon
-                  title="Dismiss"
+                  title={c.dismiss}
+                  aria-label={c.dismiss}
                   onClick={() => removeUiNotification(n.id)}
                 >
                   <Icon name="close" />
@@ -126,7 +130,7 @@ function InAppNotificationsList (props) {
       {showClearAll ? (
         <Button size="small" basic icon labelPosition="left" style={{ marginTop: '0.65em' }} onClick={() => clearUiNotifications()}>
           <Icon name="trash" />
-          Clear all
+          {c.clearAll}
         </Button>
       ) : null}
     </div>

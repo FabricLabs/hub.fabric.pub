@@ -33,19 +33,23 @@ const {
 } = require('semantic-ui-react');
 
 const ActivityStream = require('./ActivityStream');
-const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
+const { isHubNetworkStatusShape, bridgeConnectionPhase, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageString, writeStorageString } = require('../functions/fabricBrowserState');
 const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
+const t = require('../locales/en');
+
+const hc = t.home.home;
+const nav = t.shell.nav;
 
 /** Persist visitor promo dismiss across reloads (session-only React state was not enough). */
 const PROMO_DISMISSED_STORAGE_KEY = 'fabric.hub.promoDismissed';
 
 function formatBytes (n) {
   const v = Number(n);
-  if (!Number.isFinite(v) || v < 0) return 'n/a';
+  if (!Number.isFinite(v) || v < 0) return t.common.none;
   if (v < 1024) return `${v} B`;
   const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
   let idx = -1;
@@ -59,7 +63,7 @@ function formatBytes (n) {
 
 function formatDuration (secIn) {
   const sec = Number(secIn);
-  if (!Number.isFinite(sec) || sec < 0) return 'n/a';
+  if (!Number.isFinite(sec) || sec < 0) return t.common.none;
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -89,8 +93,8 @@ function PromoHero ({ onDismiss }) {
           basic
           inverted
           size="mini"
-          title="Dismiss promo"
-          aria-label="Dismiss promo"
+          title={hc.promo.dismiss}
+          aria-label={hc.promo.dismiss}
           style={{ position: 'absolute', top: '0.75em', right: '0.75em', opacity: 0.6 }}
           onClick={onDismiss}
         >
@@ -100,44 +104,39 @@ function PromoHero ({ onDismiss }) {
       <div style={{ maxWidth: '52rem' }}>
         <Header as="h1" inverted style={{ marginTop: 0, fontSize: '1.75em', lineHeight: 1.3 }}>
           <Icon name="cube" style={{ fontSize: '0.85em', marginRight: '0.35em', verticalAlign: 'middle' }} />
-          This is a Fabric Hub
+          {hc.promo.title}
         </Header>
         <p style={{ fontSize: '1.1em', lineHeight: 1.65, marginBottom: '1em', color: '#d4d4d4' }}>
-          A <strong style={{ color: '#fff' }}>Fabric Hub</strong> is a self-sovereign node that connects you to the
-          Fabric network — peer-to-peer messaging, document storage, Bitcoin integration, and cooperative multisig
-          vaults, all running on your own hardware.
+          {hc.promo.intro}
         </p>
         <p style={{ fontSize: '1em', lineHeight: 1.65, marginBottom: '1.25em', color: '#bbb' }}>
-          You are viewing <strong style={{ color: '#ccc' }}>someone else's hub</strong> right now. Everything here
-          runs on their node. To own your data and identity, install your own.
+          {hc.promo.visiting}
         </p>
 
         <Header as="h3" inverted style={{ marginBottom: '0.65em', fontSize: '1.15em' }}>
-          Run your own hub
+          {hc.promo.runYourOwn}
         </Header>
         <Grid columns={3} stackable doubling style={{ marginBottom: '1em' }}>
           <Grid.Column>
             <Segment inverted style={{ background: 'rgba(255,255,255,0.08)', height: '100%' }}>
               <Header as="h4" inverted style={{ marginTop: 0 }}>
-                <Icon name="desktop" /> Desktop
+                <Icon name="desktop" /> {hc.promo.desktop}
               </Header>
               <p style={{ fontSize: '0.92em', lineHeight: 1.5, color: '#ccc' }}>
-                Download the Fabric Hub desktop app. One click installs the hub,
-                Bitcoin node, and browser UI on macOS, Windows, or Linux.
+                {hc.promo.desktopBody}
               </p>
               <Button as={Link} to="/downloads" size="small" primary>
-                <Icon name="download" /> Get the desktop app
+                <Icon name="download" /> {hc.promo.desktopCta}
               </Button>
             </Segment>
           </Grid.Column>
           <Grid.Column>
             <Segment inverted style={{ background: 'rgba(255,255,255,0.08)', height: '100%' }}>
               <Header as="h4" inverted style={{ marginTop: 0 }}>
-                <Icon name="code" /> Developer
+                <Icon name="code" /> {hc.promo.developer}
               </Header>
               <p style={{ fontSize: '0.92em', lineHeight: 1.5, color: '#ccc' }}>
-                Clone the repo and start hacking. The hub is a Node.js service with
-                a React UI, Bitcoin RPC, and Fabric P2P built in.
+                {hc.promo.developerBody}
               </p>
               <code style={{ fontSize: '0.85em', color: '#8ec8e8' }}>git clone &amp;&amp; npm start</code>
             </Segment>
@@ -145,11 +144,10 @@ function PromoHero ({ onDismiss }) {
           <Grid.Column>
             <Segment inverted style={{ background: 'rgba(255,255,255,0.08)', height: '100%' }}>
               <Header as="h4" inverted style={{ marginTop: 0 }}>
-                <Icon name="server" /> Production
+                <Icon name="server" /> {hc.promo.production}
               </Header>
               <p style={{ fontSize: '0.92em', lineHeight: 1.5, color: '#ccc' }}>
-                Deploy on a VPS or home server for always-on peering, document
-                hosting, and Bitcoin services with LAN or public access.
+                {hc.promo.productionBody}
               </p>
               <code style={{ fontSize: '0.85em', color: '#8ec8e8' }}>npm run start:production</code>
             </Segment>
@@ -165,7 +163,7 @@ function PromoHero ({ onDismiss }) {
             primary
             size="small"
           >
-            <Icon name="github" /> View on GitHub
+            <Icon name="github" /> {hc.promo.github}
           </Button>
           <Button
             as={Link}
@@ -174,7 +172,7 @@ function PromoHero ({ onDismiss }) {
             inverted
             size="small"
           >
-            <Icon name="file alternate outline" /> Browse documents
+            <Icon name="file alternate outline" /> {hc.promo.browseDocuments}
           </Button>
           <Button
             as={Link}
@@ -183,7 +181,7 @@ function PromoHero ({ onDismiss }) {
             inverted
             size="small"
           >
-            <Icon name="setting" /> Explore this hub
+            <Icon name="setting" /> {hc.promo.explore}
           </Button>
         </div>
       </div>
@@ -197,7 +195,7 @@ function StatCard ({ icon, color, label, value, sub }) {
       <Statistic size="mini" style={{ margin: 0 }}>
         <Statistic.Value>
           <Icon name={icon} color={color || 'grey'} style={{ marginRight: '0.2em', fontSize: '0.85em' }} />
-          {value != null ? value : '—'}
+          {value != null ? value : t.common.none}
         </Statistic.Value>
         <Statistic.Label style={{ fontSize: '0.78em', marginTop: '0.35em' }}>{label}</Statistic.Label>
       </Statistic>
@@ -207,27 +205,34 @@ function StatCard ({ icon, color, label, value, sub }) {
 }
 
 function HealthPanel ({ health, loading, error, onRefresh }) {
+  const c = hc.health;
   if (error) {
     return (
       <Segment secondary style={{ padding: '0.85em' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.35em' }}>
-          <Header as="h4" style={{ margin: 0 }}><Icon name="heartbeat" /> Node health</Header>
-          <Button basic size="mini" icon="refresh" onClick={onRefresh} loading={loading} />
+          <Header as="h4" style={{ margin: 0 }}><Icon name="heartbeat" /> {c.title}</Header>
+          <Button basic size="mini" icon="refresh" onClick={onRefresh} loading={loading} aria-label={c.refresh} title={c.refresh} />
         </div>
-        <Message negative size="small" style={{ margin: '0.5em 0 0' }}>{error}</Message>
+        <Message negative size="small" style={{ margin: '0.5em 0 0' }}>
+          {c.loadFailed}
+          <details className="hub-developer-details">
+            <summary>{t.common.developerDetails}</summary>
+            {error}
+          </details>
+        </Message>
       </Segment>
     );
   }
   const node = health && health.node;
   const disk = health && health.disk;
   const net = health && health.network;
-  const uptime = node ? formatDuration(node.uptimeSec) : '—';
+  const uptime = node ? formatDuration(node.uptimeSec) : t.common.none;
   const cpuPct = node && node.cpu && Number.isFinite(Number(node.cpu.processPercent))
     ? `${Number(node.cpu.processPercent).toFixed(1)}%`
     : null;
   const memRss = node && node.memory ? formatBytes(node.memory.rss) : null;
-  const diskUsed = disk ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.usedBytes + (disk.availableBytes || 0))}` : null;
   const diskPct = disk && Number.isFinite(Number(disk.usedPercent)) ? `${Number(disk.usedPercent).toFixed(1)}%` : null;
+  const diskUsed = disk ? c.diskValue(formatBytes(disk.usedBytes), formatBytes(disk.usedBytes + (disk.availableBytes || 0)), diskPct) : null;
   const dns = net && net.dnsProbe;
   const probes = net && Array.isArray(net.localProbes) ? net.localProbes : [];
   const probeOk = probes.filter((p) => p.ok).length;
@@ -235,44 +240,44 @@ function HealthPanel ({ health, loading, error, onRefresh }) {
   return (
     <Segment secondary style={{ padding: '0.85em' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.35em', marginBottom: '0.5em' }}>
-        <Header as="h4" style={{ margin: 0 }}><Icon name="heartbeat" /> Node health</Header>
+        <Header as="h4" style={{ margin: 0 }}><Icon name="heartbeat" /> {c.title}</Header>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
           {health && health.now ? (
-            <span style={{ fontSize: '0.82em', color: '#888' }}>{new Date(health.now).toLocaleTimeString()}</span>
+            <span style={{ fontSize: '0.82em', color: '#888' }}>{c.checkedAt(new Date(health.now).toLocaleTimeString())}</span>
           ) : null}
-          <Button basic size="mini" icon="refresh" onClick={onRefresh} loading={loading} />
+          <Button basic size="mini" icon="refresh" onClick={onRefresh} loading={loading} aria-label={c.refresh} title={c.refresh} />
         </div>
       </div>
       {!health ? (
-        <div style={{ color: '#888', fontSize: '0.9em' }}>Loading health data…</div>
+        <div style={{ color: '#888', fontSize: '0.9em' }}>{c.loading}</div>
       ) : (
         <Grid columns={2} stackable style={{ margin: 0 }}>
           <Grid.Row style={{ padding: '0.25em 0' }}>
             <Grid.Column>
               <div style={{ fontSize: '0.9em', lineHeight: 1.65 }}>
-                <div><Icon name="server" color="blue" /> <strong>Host:</strong> {node && node.hostname ? node.hostname : '—'}</div>
-                <div><Icon name="clock outline" color="blue" /> <strong>Uptime:</strong> {uptime}</div>
-                {cpuPct ? <div><Icon name="microchip" color="blue" /> <strong>CPU:</strong> {cpuPct} ({node.cpu.cores} core{node.cpu.cores !== 1 ? 's' : ''})</div> : null}
+                <div><Icon name="server" color="blue" /> <strong>{c.host}:</strong> {node && node.hostname ? node.hostname : t.common.none}</div>
+                <div title={c.uptimeTitle}><Icon name="clock outline" color="blue" /> <strong>{c.uptime}:</strong> {uptime}</div>
+                {cpuPct ? <div title={c.cpuTitle}><Icon name="microchip" color="blue" /> <strong>{c.cpu}:</strong> {c.cpuValue(cpuPct, node.cpu.cores)}</div> : null}
                 {node && Array.isArray(node.loadAverage) ? (
-                  <div><Icon name="tachometer alternate" color="blue" /> <strong>Load:</strong> {node.loadAverage.map((v) => Number(v || 0).toFixed(2)).join(' / ')}</div>
+                  <div title={c.loadTitle}><Icon name="tachometer alternate" color="blue" /> <strong>{c.load}:</strong> {node.loadAverage.map((v) => Number(v || 0).toFixed(2)).join(' / ')}</div>
                 ) : null}
-                {memRss ? <div><Icon name="database" color="blue" /> <strong>Memory:</strong> {memRss}</div> : null}
+                {memRss ? <div title={c.memoryTitle}><Icon name="database" color="blue" /> <strong>{c.memory}:</strong> {memRss}</div> : null}
               </div>
             </Grid.Column>
             <Grid.Column>
               <div style={{ fontSize: '0.9em', lineHeight: 1.65 }}>
-                {diskUsed ? <div><Icon name="hdd outline" color="teal" /> <strong>Disk:</strong> {diskUsed} ({diskPct})</div> : null}
+                {diskUsed ? <div><Icon name="hdd outline" color="teal" /> <strong>{c.disk}:</strong> {diskUsed}</div> : null}
                 {disk && disk.availableBytes != null ? (
-                  <div><Icon name="hdd outline" color="teal" /> <strong>Free:</strong> {formatBytes(disk.availableBytes)}</div>
+                  <div><Icon name="hdd outline" color="teal" /> <strong>{c.free}:</strong> {formatBytes(disk.availableBytes)}</div>
                 ) : null}
-                <div>
+                <div title={c.dnsTitle}>
                   <Icon name="signal" color={dns && dns.ok ? 'green' : 'red'} />
-                  <strong>DNS:</strong> {dns ? (dns.ok ? 'ok' : 'failed') : '—'}
+                  <strong>{c.dns}:</strong> {dns ? (dns.ok ? t.common.states.ok : t.common.states.failed) : t.common.none}
                 </div>
                 {probes.length > 0 ? (
                   <div>
                     <Icon name="plug" color={probeOk === probes.length ? 'green' : 'yellow'} />
-                    <strong>Services:</strong> {probeOk}/{probes.length} reachable
+                    <strong>{c.services}:</strong> {c.servicesValue(probeOk, probes.length)}
                   </div>
                 ) : null}
               </div>
@@ -286,18 +291,16 @@ function HealthPanel ({ health, loading, error, onRefresh }) {
 
 function ClientHomePanel () {
   const meshAvailable = useHubMeshAvailable();
+  const c = hc.client;
   return (
     <Card fluid data-testid="hub-client-home">
       <Card.Content>
         <Header as="h2" id="hub-client-home-heading" style={{ marginTop: 0 }}>
-          Fabric Hub client
+          {c.title}
         </Header>
         <p style={{ color: '#666', lineHeight: 1.5, maxWidth: '40rem' }}>
-          This origin is serving the HTML client only — no Hub HTTP API on this host.
-          Identity, keys, and local wallet derivation run in the browser.
-          {meshAvailable
-            ? ' Seed Hubs are used for OPTIONS feature detection, WebRTC mesh, and document inventories.'
-            : ''}
+          {c.body}
+          {meshAvailable ? ` ${c.bodyMesh}` : ''}
         </p>
         <Button
           primary
@@ -311,31 +314,35 @@ function ClientHomePanel () {
           }}
         >
           <Icon name="user circle" />
-          Identity
+          {c.identity}
         </Button>
         <Button as={Link} to="/downloads" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }} data-testid="hub-client-downloads">
           <Icon name="download" />
-          Downloads
+          {c.downloads}
         </Button>
         <Button as={Link} to="/settings" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }}>
           <Icon name="setting" />
-          Settings
+          {c.settings}
         </Button>
         <Button as={Link} to="/settings/bitcoin-wallet" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }}>
           <Icon name="bitcoin" />
-          Local wallet
+          {c.localWallet}
         </Button>
         {meshAvailable ? (
           <Button as={Link} to="/documents" basic icon labelPosition="left" style={{ marginLeft: '0.5em' }} data-testid="hub-client-documents">
             <Icon name="file outline" />
-            Documents
+            {c.documents}
           </Button>
         ) : null}
         <p style={{ color: '#888', fontSize: '0.9em', marginTop: '1.25em', lineHeight: 1.45 }}>
-          {meshAvailable
-            ? 'Documents lists files advertised by seed and mesh peers. Set extra seed origins in config.local.js (FABRIC_HUB_SEEDS).'
-            : 'When you have a Hub, set its address from the cog (Settings and UI mode).'}
+          {meshAvailable ? c.footerMesh : c.footerNoHub}
         </p>
+        {meshAvailable ? (
+          <details className="hub-developer-details">
+            <summary>{t.common.developerDetails}</summary>
+            {c.footerMeshDeveloper}
+          </details>
+        ) : null}
       </Card.Content>
     </Card>
   );
@@ -538,24 +545,21 @@ class Home extends React.Component {
       ? networkStatus.publishedDocuments
       : {};
     const publishedCount = Object.values(publishedMap).filter((d) => d && d.id).length;
+    const transportPhase = bridgeConnectionPhase(current);
     const transportHint = bridgeWebSocketLoadingHint(current);
+    const loadingCopy = hc.loading;
     const dataStatusLine = (() => {
-      if (!transportHint) return 'Preparing a connection to this hub.';
-      if (/waiting for network status/i.test(transportHint)) {
-        return 'Next: the hub sends your network snapshot (peers, documents, node id).';
-      }
-      if (/Opening WebSocket|Reconnecting/i.test(transportHint)) {
-        return 'The browser bridge must connect before status can load.';
-      }
-      return null;
+      if (!transportPhase) return loadingCopy.preparing;
+      if (transportPhase === 'connected') return loadingCopy.nextStatus;
+      return loadingCopy.bridgeFirst;
     })();
     const hubLoadingHeader = (() => {
-      if (transportHint && /waiting for network status/i.test(transportHint)) return 'Connected — waiting for hub data';
-      if (transportHint && /Opening WebSocket/i.test(transportHint)) return 'Opening WebSocket…';
-      if (transportHint && /Reconnecting/i.test(transportHint)) return 'Reconnecting…';
-      return 'Waiting for hub snapshot…';
+      if (transportPhase === 'connected') return loadingCopy.headerWaitingData;
+      if (transportPhase === 'opening') return loadingCopy.headerConnecting;
+      if (transportPhase === 'reconnecting') return loadingCopy.headerReconnecting;
+      return loadingCopy.headerDefault;
     })();
-    const hubLoadingLead = transportHint || 'Opening a connection to the hub…';
+    const hubLoadingLead = transportHint || loadingCopy.lead;
     const bitcoin = networkStatus && networkStatus.bitcoin && typeof networkStatus.bitcoin === 'object'
       ? networkStatus.bitcoin
       : null;
@@ -598,10 +602,10 @@ class Home extends React.Component {
                       <div style={{ marginTop: '1.1em' }}>
                         <Button type="button" size="small" basic icon labelPosition="left" onClick={() => { try { this.props.onRefreshNetworkStatus(); } catch (e) {} }}>
                           <Icon name="refresh" />
-                          Request status again
+                          {loadingCopy.retry}
                         </Button>
                         <p style={{ color: '#888', fontSize: '0.85em', marginTop: '0.75em', marginBottom: 0, lineHeight: 1.45 }}>
-                          If this stays here, confirm the hub is up and the WebSocket bridge is connected.
+                          {loadingCopy.stuckHint}
                         </p>
                       </div>
                     )}
@@ -629,10 +633,10 @@ class Home extends React.Component {
               {/* ─── Identity & network ─── */}
               <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5em', marginBottom: '0.5em' }}>
-                  <Header as="h4" style={{ margin: 0 }}><Icon name="id badge" /> Identity &amp; network</Header>
+                  <Header as="h4" style={{ margin: 0 }}><Icon name="id badge" /> {hc.network.title}</Header>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
                     {snapshotUpdated ? (
-                      <span style={{ fontSize: '0.82em', color: '#888' }}>Updated {snapshotUpdated}</span>
+                      <span style={{ fontSize: '0.82em', color: '#888' }}>{hc.network.updated(snapshotUpdated)}</span>
                     ) : null}
                     {typeof this.props.onRefreshNetworkStatus === 'function' ? (
                       <Button
@@ -640,7 +644,8 @@ class Home extends React.Component {
                         size="mini"
                         basic
                         icon
-                        aria-label="Refresh hub network snapshot"
+                        aria-label={hc.network.refresh}
+                        title={hc.network.refresh}
                         disabled={this.state.snapshotRefreshPending}
                         loading={this.state.snapshotRefreshPending}
                         onClick={() => {
@@ -668,17 +673,17 @@ class Home extends React.Component {
                       <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
                         {fabricPeerId ? (
                           <div>
-                            <strong>Fabric id:</strong>{' '}
+                            <strong>{hc.network.fabricId}:</strong>{' '}
                             <code style={{ wordBreak: 'break-all', fontSize: '0.88em' }} title={fabricPeerId}>
                               {fabricPeerId.length > 20 ? `${fabricPeerId.slice(0, 10)}…${fabricPeerId.slice(-8)}` : fabricPeerId}
                             </code>
                           </div>
                         ) : null}
                         {hostPort ? (
-                          <div><strong>Listen:</strong> <code style={{ fontSize: '0.88em' }}>{hostPort}</code></div>
+                          <div><strong>{hc.network.listen}:</strong> <code style={{ fontSize: '0.88em' }}>{hostPort}</code></div>
                         ) : null}
                         {contractShort ? (
-                          <div><strong>Contract:</strong> <code style={{ fontSize: '0.88em' }} title={contractId}>{contractShort}</code></div>
+                          <div><strong>{hc.network.contract}:</strong> <code style={{ fontSize: '0.88em' }} title={contractId}>{contractShort}</code></div>
                         ) : null}
                       </div>
                     </Grid.Column>
@@ -687,17 +692,17 @@ class Home extends React.Component {
                         {uf.peers && hasHubAdminForPeers ? (
                           <>
                             <div>
-                              <strong>Peers:</strong> {connectedPeers.length} connected / {peers.length} known
+                              <strong>{hc.network.peers}:</strong> {hc.network.peersValue(connectedPeers.length, peers.length)}
                               {' · '}
-                              <Link to="/peers" style={{ fontSize: '0.92em' }}>Manage</Link>
+                              <Link to="/peers" style={{ fontSize: '0.92em' }}>{hc.network.managePeers}</Link>
                             </div>
                             <div>
-                              <strong>WebRTC registry:</strong> {webrtcPeers.length}
-                              {meshStatus && Number(meshStatus.connected) > 0 ? ` (${meshStatus.connected} mesh)` : ''}
+                              <strong>{hc.network.browserPeers}:</strong> {webrtcPeers.length}
+                              {meshStatus && Number(meshStatus.connected) > 0 ? ` (${hc.network.browserPeersMesh(meshStatus.connected)})` : ''}
                             </div>
                           </>
                         ) : null}
-                        <div><strong>Documents:</strong> {publishedCount} published</div>
+                        <div><strong>{hc.network.documents}:</strong> {hc.network.documentsValue(publishedCount)}</div>
                       </div>
                     </Grid.Column>
                   </Grid.Row>
@@ -716,10 +721,10 @@ class Home extends React.Component {
                           }
                         } catch (e) {}
                       }}
-                      title="Copy Fabric node ID and listen address"
+                      title={hc.network.copyNodeIdTitle}
                     >
                       <Icon name='copy' />
-                      Copy node id
+                      {hc.network.copyNodeId}
                     </Button>
                   </div>
                 ) : null}
@@ -729,33 +734,33 @@ class Home extends React.Component {
               {bitcoin ? (
                 <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
                   <Header as="h4" style={{ margin: '0 0 0.5em' }}>
-                    <Icon name="bitcoin" color="orange" /> Bitcoin
+                    <Icon name="bitcoin" color="orange" /> {hc.bitcoin.title}
                   </Header>
                   {bitcoin.available ? (
                     <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
                       <div>
-                        <Label size="mini" color="green" style={{ marginRight: '0.5em' }}>Available</Label>
-                        <strong>Network:</strong> {bitcoin.network || '—'}
-                        {bitcoin.height != null ? <span> · <strong>Height:</strong> {bitcoin.height}</span> : null}
+                        <Label size="mini" color="green" style={{ marginRight: '0.5em' }}>{hc.bitcoin.available}</Label>
+                        <strong>{hc.bitcoin.network}:</strong> {bitcoin.network || t.common.none}
+                        {bitcoin.height != null ? <span> · <strong>{hc.bitcoin.height}:</strong> {bitcoin.height}</span> : null}
                       </div>
                       {bitcoin.bestBlockHash ? (
-                        <div><strong>Tip:</strong> <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{String(bitcoin.bestBlockHash).slice(0, 16)}…</code></div>
+                        <div><strong>{hc.bitcoin.tip}:</strong> <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{String(bitcoin.bestBlockHash).slice(0, 16)}…</code></div>
                       ) : null}
                       {bitcoin.mempoolTxCount != null ? (
-                        <div><strong>Mempool:</strong> {bitcoin.mempoolTxCount} tx{bitcoin.mempoolBytes ? ` (${formatBytes(bitcoin.mempoolBytes)})` : ''}</div>
+                        <div><strong>{hc.bitcoin.mempool}:</strong> {hc.bitcoin.mempoolValue(bitcoin.mempoolTxCount, bitcoin.mempoolBytes ? formatBytes(bitcoin.mempoolBytes) : null)}</div>
                       ) : null}
                       {showHomeOperatorLinks ? (
                         <div style={{ marginTop: '0.35em' }}>
-                          <Link to="/services/bitcoin">Bitcoin dashboard</Link>
-                          {uf.bitcoinLightning ? <>{' · '}<Link to="/services/bitcoin/lightning">Lightning</Link></> : null}
+                          <Link to="/services/bitcoin">{hc.bitcoin.dashboard}</Link>
+                          {uf.bitcoinLightning ? <>{' · '}<Link to="/services/bitcoin/lightning">{hc.bitcoin.lightning}</Link></> : null}
                           {' · '}
-                          <Link to="/services/bitcoin/transactions?scope=wallet">Wallet</Link>
+                          <Link to="/services/bitcoin/transactions?scope=wallet">{hc.bitcoin.wallet}</Link>
                         </div>
                       ) : null}
                     </div>
                   ) : (
                     <div style={{ color: '#888', fontSize: '0.9em' }}>
-                      {bitcoin.message ? String(bitcoin.message) : 'Bitcoin service is not available.'}
+                      {bitcoin.message ? String(bitcoin.message) : hc.bitcoin.unavailable}
                     </div>
                   )}
                 </Segment>
@@ -774,23 +779,23 @@ class Home extends React.Component {
               {/* ─── Quick links ─── */}
               {showHomeOperatorLinks ? (
                 <Segment style={{ marginTop: '0.85em', padding: '0.85em' }}>
-                  <Header as="h4" style={{ margin: '0 0 0.5em' }}><Icon name="compass outline" /> Quick links</Header>
+                  <Header as="h4" style={{ margin: '0 0 0.5em' }}><Icon name="compass outline" /> {hc.quickLinks.title}</Header>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em' }}>
-                    <Button as={Link} to="/documents" size="small" basic><Icon name="file alternate outline" /> Documents</Button>
-                    {uf.peers ? <Button as={Link} to="/peers" size="small" basic><Icon name="sitemap" /> Peers</Button> : null}
-                    <Button as={Link} to="/settings" size="small" basic><Icon name="setting" /> Settings</Button>
+                    <Button as={Link} to="/documents" size="small" basic><Icon name="file alternate outline" /> {nav.documents}</Button>
+                    {uf.peers ? <Button as={Link} to="/peers" size="small" basic><Icon name="sitemap" /> {nav.peers}</Button> : null}
+                    <Button as={Link} to="/settings" size="small" basic><Icon name="setting" /> {nav.settings}</Button>
                     {bitcoin && bitcoin.available ? (
-                      <Button as={Link} to="/services/bitcoin" size="small" basic><Icon name="bitcoin" /> Bitcoin</Button>
+                      <Button as={Link} to="/services/bitcoin" size="small" basic><Icon name="bitcoin" /> {nav.bitcoin}</Button>
                     ) : null}
                     {uf.sidechain ? (
-                      <Button as={Link} to="/federations" size="small" basic><Icon name="users" /> Federations</Button>
+                      <Button as={Link} to="/federations" size="small" basic><Icon name="users" /> {nav.federations}</Button>
                     ) : null}
-                    <Button as={Link} to="/contracts" size="small" basic><Icon name="file code outline" /> Contracts</Button>
-                    <Button as={Link} to="/settings/collaboration" size="small" basic><Icon name="handshake outline" /> Collaboration</Button>
+                    <Button as={Link} to="/contracts" size="small" basic><Icon name="file code outline" /> {nav.contracts}</Button>
+                    <Button as={Link} to="/settings/collaboration" size="small" basic><Icon name="handshake outline" /> {nav.collaboration}</Button>
                     {uf.activities ? (
-                      <Button as={Link} to="/activities" size="small" basic><Icon name="list alternate outline" /> Activity log</Button>
+                      <Button as={Link} to="/activities" size="small" basic><Icon name="list alternate outline" /> {nav.activityLog}</Button>
                     ) : null}
-                    <Button as={Link} to="/settings/admin" size="small" basic><Icon name="shield" /> Admin</Button>
+                    <Button as={Link} to="/settings/admin" size="small" basic><Icon name="shield" /> {nav.admin}</Button>
                   </div>
                 </Segment>
               ) : null}
@@ -798,18 +803,18 @@ class Home extends React.Component {
               {/* ─── Credentials hint (compact) ─── */}
               {!hasHubAdminForPeers && showHomeOperatorLinks ? (
                 <Message size="small" style={{ marginTop: '0.85em' }}>
-                  <Message.Header>Admin token not saved</Message.Header>
+                  <Message.Header>{hc.adminToken.title}</Message.Header>
                   <p style={{ margin: '0.25em 0 0', lineHeight: 1.45 }}>
-                    Paste your operator token in <Link to="/settings">Settings</Link> to unlock peer details, full statistics, and operator controls.
+                    {hc.adminToken.before} <Link to="/settings">{hc.adminToken.link}</Link> {hc.adminToken.after}
                   </p>
                 </Message>
               ) : null}
 
               {!uf.peers && showHomeOperatorLinks ? (
                 <Message warning size="small" style={{ marginTop: '0.85em' }}>
-                  <Message.Header>Peers &amp; WebRTC hidden</Message.Header>
+                  <Message.Header>{hc.peersHidden.title}</Message.Header>
                   <p style={{ margin: '0.25em 0 0', lineHeight: 1.45 }}>
-                    Enable the <strong>peers</strong> flag under <Link to="/settings/admin">Admin → Feature visibility</Link>.
+                    {hc.peersHidden.before} <Link to="/settings/admin">{hc.peersHidden.link}</Link>.
                   </p>
                 </Message>
               ) : null}
@@ -825,21 +830,19 @@ class Home extends React.Component {
             aria-labelledby="home-global-chat-heading"
           >
             <Header as="h2" id="home-global-chat-heading" style={{ marginTop: 0 }}>
-              Public mesh shoutbox
+              {hc.shoutbox.title}
             </Header>
             <p style={{ color: '#666', marginTop: '-0.25em', marginBottom: '0.75em' }}>
               {showHomeOperatorLinks && uf.activities ? (
                 <>
-                  <Link to="/notifications">Notifications</Link>
-                  {' · '}
-                  <Link to="/activities">Activity log</Link>
+                  <Link to="/notifications">{hc.shoutbox.notifications}</Link>
                   {' · '}
                 </>
               ) : null}
               {showHomeOperatorLinks ? (
-                <Link to="/settings/security">Delegation &amp; signing</Link>
+                <Link to="/settings/security">{nav.security}</Link>
               ) : (
-                <span>Cleartext mesh chat — sign in to manage notifications, activity, and delegation.</span>
+                <span>{hc.shoutbox.visitor}</span>
               )}
             </p>
             <div style={{ minHeight: '12rem' }}>
@@ -858,11 +861,11 @@ class Home extends React.Component {
 
         {/* ─── WebRTC connect modal ─── */}
         <Modal open={this.state.connectModalOpen} size="tiny" onClose={this._closeConnectModal} closeOnEscape closeOnDimmerClick>
-          <Modal.Header>Connect to WebRTC peer</Modal.Header>
+          <Modal.Header>{hc.connect.title}</Modal.Header>
           <Modal.Content>
             <Form onSubmit={(e) => { e.preventDefault(); this._submitConnectPeerId(); }}>
               <Form.Field>
-                <label htmlFor="home-webrtc-peer-id">Peer ID</label>
+                <label htmlFor="home-webrtc-peer-id">{hc.connect.peerId}</label>
                 <Input
                   id="home-webrtc-peer-id"
                   placeholder="fabric-bridge-…"
@@ -873,10 +876,10 @@ class Home extends React.Component {
             </Form>
           </Modal.Content>
           <Modal.Actions>
-            <Button type="button" onClick={this._closeConnectModal}>Cancel</Button>
+            <Button type="button" onClick={this._closeConnectModal}>{t.common.actions.cancel}</Button>
             <Button type="button" primary onClick={this._submitConnectPeerId}>
               <Icon name="plug" />
-              Connect
+              {hc.connect.submit}
             </Button>
           </Modal.Actions>
         </Modal>
@@ -899,8 +902,8 @@ function HomeWithLocation (props) {
       if (isHubNetworkStatusShape(n)) setNetworkStatusFromEvent(n);
     };
     seed();
-    const t = setTimeout(seed, 0);
-    return () => clearTimeout(t);
+    const timer = setTimeout(seed, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   React.useEffect(() => {

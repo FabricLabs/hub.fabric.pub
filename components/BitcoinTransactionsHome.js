@@ -13,7 +13,6 @@ const {
 } = require('../functions/bitcoinClient');
 const txContractLabels = require('../functions/txContractLabels');
 const invoiceStore = require('../functions/invoiceStore');
-const { formatSatsDisplay } = require('../functions/formatSats');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   loadFederationSpendingPrefs,
@@ -21,6 +20,15 @@ const {
   subscribeFederationSpendingPrefs
 } = require('../functions/federationSpendingPrefs');
 const FederationWalletMultisigPanel = require('./FederationWalletMultisigPanel');
+const { SATS_PER_BTC } = require('../constants');
+const t = require('../locales/en');
+
+const c = t.bitcoin.transactions;
+
+function btcText (value) {
+  if (value == null || !Number.isFinite(Number(value))) return t.common.none;
+  return t.common.sats(Math.round(Number(value) * SATS_PER_BTC));
+}
 
 class BitcoinTransactionsHome extends React.Component {
   constructor (props) {
@@ -109,11 +117,11 @@ class BitcoinTransactionsHome extends React.Component {
     const paymentTo = String(this.state.paymentTo || '').trim();
     const paymentAmountSats = Number(this.state.paymentAmountSats || 0);
     if (!paymentTo) {
-      this.setState({ paymentResult: { error: 'Recipient is required.' } });
+      this.setState({ paymentResult: { error: t.bitcoin.home.errors.recipientRequired } });
       return;
     }
     if (!Number.isFinite(paymentAmountSats) || paymentAmountSats <= 0) {
-      this.setState({ paymentResult: { error: 'Amount (sats) must be greater than zero.' } });
+      this.setState({ paymentResult: { error: t.bitcoin.home.errors.amountPositive } });
       return;
     }
 
@@ -121,7 +129,7 @@ class BitcoinTransactionsHome extends React.Component {
     if (!adminToken) {
       this.setState({
         paymentResult: {
-          error: 'Admin token required. Hub wallet spends use the setup token (same as Generate Block / broadcast).'
+          error: t.bitcoin.home.errors.adminSpend
         }
       });
       return;
@@ -158,34 +166,34 @@ class BitcoinTransactionsHome extends React.Component {
     const unconfirmedSats = Number(summary.unconfirmedSats || 0);
     const lastUpdated = this.state.lastUpdatedAt
       ? new Date(this.state.lastUpdatedAt).toLocaleTimeString()
-      : '-';
+      : t.common.none;
 
     return (
       <div className="fade-in">
         <Segment loading={this.state.loading}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75em', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-              <Button as={Link} to="/services/bitcoin" basic size="small">
+              <Button as={Link} to="/services/bitcoin" basic size="small" title={t.bitcoin.shared.backToBitcoinTitle}>
                 <Icon name="arrow left" />
-                Bitcoin
+                {t.bitcoin.shared.backToBitcoin}
               </Button>
               <Header as="h2" style={{ margin: 0 }}>
                 <Icon name="exchange" />
-                <Header.Content>Transactions</Header.Content>
+                <Header.Content>{c.title}</Header.Content>
               </Header>
             </div>
             <Button basic size="small" onClick={() => this.refresh()}>
               <Icon name="refresh" />
-              Refresh
+              {t.common.actions.refresh}
             </Button>
           </div>
 
           {this.state.error ? <Message negative style={{ marginTop: '0.75em' }} content={this.state.error} /> : null}
 
           <Message info size="small" style={{ marginTop: '0.85em' }}>
-            <div><strong>User wallet:</strong> {formatSatsDisplay(balanceSats)} sats</div>
+            <div><strong>{c.yourWallet}</strong> {t.common.sats(balanceSats)}</div>
             <div style={{ marginTop: '0.2em', color: '#555' }}>
-              confirmed {formatSatsDisplay(confirmedSats)} · unconfirmed {formatSatsDisplay(unconfirmedSats)} · updated {lastUpdated}
+              {c.breakdown(t.common.sats(confirmedSats), t.common.sats(unconfirmedSats), lastUpdated)}
             </div>
           </Message>
         </Segment>
@@ -198,35 +206,35 @@ class BitcoinTransactionsHome extends React.Component {
         />
 
         <Segment>
-          <Header as="h3">Send Payment (Layer 1)</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <strong>Bridge (Hub node):</strong> payment is executed by the Hub node wallet.
-          </p>
+          <Header as="h3">{c.sendTitle}</Header>
+          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.sendIntro}</p>
           <Form>
             <Form.Group widths="equal">
               <Form.Field>
-                <label>Recipient address</label>
+                <label htmlFor="tx-send-to">{c.recipient}</label>
                 <Input
-                  placeholder="bcrt1... or m/44'/0'/0'/0/0"
+                  id="tx-send-to"
+                  placeholder={c.recipientPlaceholder}
                   value={this.state.paymentTo}
                   onChange={(e) => this.setState({ paymentTo: e.target.value })}
                 />
               </Form.Field>
               <Form.Field width={4}>
-                <label>Amount (sats)</label>
+                <label htmlFor="tx-send-amount">{c.amount}</label>
                 <Input
+                  id="tx-send-amount"
                   type="number"
                   min="1"
                   step="1"
-                  placeholder="1000"
                   value={this.state.paymentAmountSats}
                   onChange={(e) => this.setState({ paymentAmountSats: e.target.value })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Memo (optional)</label>
+                <label htmlFor="tx-send-memo">{c.memo}</label>
                 <Input
-                  placeholder="Note for your records (optional)"
+                  id="tx-send-memo"
+                  placeholder={c.memoPlaceholder}
                   value={this.state.paymentMemo}
                   onChange={(e) => this.setState({ paymentMemo: e.target.value })}
                 />
@@ -234,7 +242,7 @@ class BitcoinTransactionsHome extends React.Component {
             </Form.Group>
             <Button primary onClick={() => this.handleSendPayment()}>
               <Icon name="send" />
-              Send
+              {c.send}
             </Button>
           </Form>
           {this.state.paymentResult ? (
@@ -243,37 +251,39 @@ class BitcoinTransactionsHome extends React.Component {
               negative={!!this.state.paymentResult.error}
               positive={!this.state.paymentResult.error}
             >
-              <Message.Header>{this.state.paymentResult.error ? 'Payment failed' : 'Payment response'}</Message.Header>
+              <Message.Header>{this.state.paymentResult.error ? c.sendFailed : c.sent}</Message.Header>
               {!this.state.paymentResult.error ? (() => {
                 const pr = this.state.paymentResult;
                 const txid = (pr && pr.payment && pr.payment.txid) || (pr && pr.txid);
                 return txid ? (
                   <p style={{ marginTop: '0.5em' }}>
-                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid))}`}>Open transaction details</Link>
+                    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid))}`}>{t.bitcoin.shared.viewTransaction}</Link>
                   </p>
                 ) : null;
               })() : null}
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.paymentResult, null, 2)}</pre>
+              {this.state.paymentResult.error ? <p>{this.state.paymentResult.error}</p> : null}
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.paymentResult, null, 2)}</pre>
+              </details>
             </Message>
           ) : null}
         </Segment>
 
         <Segment>
-          <Header as="h3" id="fabric-btc-tx-client-h3">My Wallet Activity</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            Only transactions tied to your wallet context are listed here.
-          </p>
+          <Header as="h3" id="fabric-btc-tx-client-h3">{c.activityTitle}</Header>
+          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.activityIntro}</p>
           {this.state.transactions.length === 0 ? (
-            <p style={{ color: '#666' }}>No transactions found for this wallet.</p>
+            <p style={{ color: '#666' }}>{c.activityEmpty}</p>
           ) : (
             <Table compact="very" celled>
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Txid</Table.HeaderCell>
-                  <Table.HeaderCell>Contract</Table.HeaderCell>
-                  <Table.HeaderCell>Amount</Table.HeaderCell>
-                  <Table.HeaderCell>Confirmations</Table.HeaderCell>
-                  <Table.HeaderCell>Time</Table.HeaderCell>
+                  <Table.HeaderCell>{c.txid}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.contract}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.amountHeader}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.confirmations}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.time}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -283,7 +293,7 @@ class BitcoinTransactionsHome extends React.Component {
                   const isOutgoing = Number.isFinite(amtNum) ? amtNum < 0 : false;
                   const isIncoming = Number.isFinite(amtNum) ? amtNum > 0 : false;
                   const time = tx.blocktime != null ? tx.blocktime : tx.time;
-                  const dateStr = time ? new Date(time * 1000).toLocaleString() : '-';
+                  const dateStr = time ? new Date(time * 1000).toLocaleString() : t.common.none;
                   return (
                     <Table.Row key={`${tx.txid || 'tx'}:${idx}`}>
                       <Table.Cell>
@@ -293,29 +303,29 @@ class BitcoinTransactionsHome extends React.Component {
                               {`${tx.txid.slice(0, 8)}...${tx.txid.slice(-8)}`}
                             </code>
                           </Link>
-                        ) : <code>-</code>}
+                        ) : <code>{t.common.none}</code>}
                       </Table.Cell>
                       <Table.Cell>
                         {tx.fabricContract && tx.fabricContract.label ? (
                           <Label size="small" color="blue" title={JSON.stringify(tx.fabricContract.meta || {})}>
                             {tx.fabricContract.label}
                           </Label>
-                        ) : <span style={{ color: '#999' }}>-</span>}
+                        ) : <span style={{ color: '#999' }}>{t.common.none}</span>}
                       </Table.Cell>
                       <Table.Cell>
-                        {amt != null ? `${Number(amt).toFixed(8)} BTC` : '-'}
-                        {isOutgoing ? <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>sent</Label> : null}
-                        {isIncoming ? <Label size="mini" color="green" style={{ marginLeft: '0.35em' }}>received</Label> : null}
+                        {amt != null ? btcText(amt) : t.common.none}
+                        {isOutgoing ? <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>{c.sentLabel}</Label> : null}
+                        {isIncoming ? <Label size="mini" color="green" style={{ marginLeft: '0.35em' }}>{c.receivedLabel}</Label> : null}
                       </Table.Cell>
                       <Table.Cell>
                         {tx.confirmations != null ? (
                           <>
                             {tx.confirmations}
                             {Number(tx.confirmations) === 0 ? (
-                              <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>mempool</Label>
+                              <Label size="mini" color="orange" style={{ marginLeft: '0.35em' }}>{t.bitcoin.shared.unconfirmed}</Label>
                             ) : null}
                           </>
-                        ) : '-'}
+                        ) : t.common.none}
                       </Table.Cell>
                       <Table.Cell>{dateStr}</Table.Cell>
                     </Table.Row>
@@ -327,19 +337,17 @@ class BitcoinTransactionsHome extends React.Component {
         </Segment>
 
         <Segment>
-          <Header as="h3" id="fabric-btc-tx-live-h3">Live Raw Transaction Stream</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            Raw transaction feed from the Hub payment/mempool surface (auto-refresh every 10 seconds).
-          </p>
+          <Header as="h3" id="fabric-btc-tx-live-h3">{c.liveTitle}</Header>
+          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.liveIntro}</p>
           {this.state.rawPayments.length === 0 ? (
-            <p style={{ color: '#666' }}>No live transactions currently visible.</p>
+            <p style={{ color: '#666' }}>{c.liveEmpty}</p>
           ) : (
             <Table compact="very" celled>
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Txid</Table.HeaderCell>
-                  <Table.HeaderCell>Fee</Table.HeaderCell>
-                  <Table.HeaderCell>Value</Table.HeaderCell>
+                  <Table.HeaderCell>{c.txid}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.fee}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.value}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -352,10 +360,10 @@ class BitcoinTransactionsHome extends React.Component {
                             {`${p.txid.slice(0, 8)}...${p.txid.slice(-8)}`}
                           </code>
                         </Link>
-                      ) : <code>-</code>}
+                      ) : <code>{t.common.none}</code>}
                     </Table.Cell>
-                    <Table.Cell>{p.fee != null ? p.fee : '-'}</Table.Cell>
-                    <Table.Cell>{p.value != null ? `${p.value} BTC` : '-'}</Table.Cell>
+                    <Table.Cell>{p.fee != null ? btcText(Math.abs(Number(p.fee))) : t.common.none}</Table.Cell>
+                    <Table.Cell>{p.value != null ? btcText(p.value) : t.common.none}</Table.Cell>
                   </Table.Row>
                 ))}
               </Table.Body>

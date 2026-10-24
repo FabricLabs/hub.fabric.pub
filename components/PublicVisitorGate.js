@@ -3,6 +3,9 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 const { Container, Message, Header, Button, Icon } = require('semantic-ui-react');
+const t = require('../locales/en');
+
+const s = t.shell.visitorGate;
 
 /**
  * Soft gate: browsers without an unlocked signing identity see a sign-in prompt instead of operator pages.
@@ -18,19 +21,19 @@ function PublicVisitorGate (props) {
       <Message info icon>
         <Icon name="user circle outline" aria-hidden="true" />
         <Message.Content>
-          <Header as="h3" style={{ marginTop: 0 }}>Sign in with a Fabric identity</Header>
+          <Header as="h3" style={{ marginTop: 0 }}>{s.title}</Header>
           <p style={{ lineHeight: 1.55, marginBottom: '1rem' }}>
-            This area uses your local keys and hub wallet tools. Create or unlock an identity to continue.
+            {s.body}
           </p>
           <Button type="button" primary onClick={() => (onOpenIdentity ? onOpenIdentity() : null)}>
             <Icon name="sign in" />
-            Open identity
+            {s.openIdentity}
           </Button>
           <Button type="button" as={Link} to="/settings/security" basic style={{ marginLeft: '0.5rem' }}>
-            Security &amp; identity
+            {s.security}
           </Button>
           <Button type="button" as={Link} to="/" basic style={{ marginLeft: '0.5rem' }}>
-            Home
+            {s.home}
           </Button>
         </Message.Content>
       </Message>

@@ -17,10 +17,14 @@ const {
   Step
 } = require('semantic-ui-react');
 const { hubJsonRpc } = require('../functions/hubJsonRpc');
-const { fetchDistributedHubPolicy } = require('../functions/distributedManifestClient');
 const DistributedFederationPanel = require('./DistributedFederationPanel');
+const NamedFederationsPanel = require('./NamedFederationsPanel');
 const FederationSpendingCriteriaDraft = require('./FederationSpendingCriteriaDraft');
 const FederationCoSignerSessionPanel = require('./FederationCoSignerSessionPanel');
+const t = require('../locales/en');
+
+const fh = t.federation.federationsHome;
+const shared = t.federation.shared;
 
 const KNOWN_FEDERATIONS = [
   require('../contracts/beaconFederation'),
@@ -53,7 +57,7 @@ function FederationsHome (props) {
   const [hubKeyBusy, setHubKeyBusy] = React.useState(false);
   const [hubKeyMsg, setHubKeyMsg] = React.useState(null);
   const [collabGroupId, setCollabGroupId] = React.useState('');
-  const [collabGroupName, setCollabGroupName] = React.useState('Federation validators');
+  const [collabGroupName, setCollabGroupName] = React.useState(fh.collabDefaultName);
   const [collabBusy, setCollabBusy] = React.useState(false);
   const [collabMsg, setCollabMsg] = React.useState('');
   const [collabErr, setCollabErr] = React.useState('');
@@ -87,7 +91,7 @@ function FederationsHome (props) {
   if (!Number.isFinite(thrNum) || thrNum < 1) thrNum = 1;
   if (n && thrNum > n) thrNum = n;
   const invalidKeys = normalizedKeys.filter((k) => !PUBKEY_RE.test(k));
-  const mOfNLabel = n ? `${thrNum}-of-${n}` : '—';
+  const mOfNLabel = n ? shared.mOfN(thrNum, n) : t.common.none;
 
   const addRow = () => setValidatorRows((rows) => [...rows, '']);
   const removeRow = (index) => {
@@ -108,14 +112,15 @@ function FederationsHome (props) {
     setHubKeyMsg(null);
     setHubKeyBusy(true);
     try {
-      const { manifest } = await fetchDistributedHubPolicy();
-      const pk = manifest && manifest.hubFabricPeerId ? String(manifest.hubFabricPeerId).trim() : '';
+      // The federation key is the Hub root key (what it signs attestations with), not its Fabric Peer id.
+      const identity = await hubJsonRpc('GetHubIdentity', []);
+      const pk = identity && identity.pubkey ? String(identity.pubkey).trim() : '';
       if (!pk) {
-        setHubKeyMsg('Manifest did not include hubFabricPeerId.');
+        setHubKeyMsg(fh.hubIdMissing);
         return;
       }
       if (!PUBKEY_RE.test(pk)) {
-        setHubKeyMsg('Hub id from manifest is not a compressed secp256k1 hex pubkey.');
+        setHubKeyMsg(fh.hubIdInvalid);
         return;
       }
       const lower = pk.toLowerCase();
@@ -124,7 +129,7 @@ function FederationsHome (props) {
         if (cur.some((k) => k.toLowerCase() === lower)) return rows;
         return [...cur, pk];
       });
-      setHubKeyMsg('Added this hub’s validator pubkey from the distributed manifest.');
+      setHubKeyMsg(fh.hubIdAdded);
     } catch (e) {
       setHubKeyMsg(e && e.message ? e.message : String(e));
     } finally {
@@ -136,16 +141,16 @@ function FederationsHome (props) {
     setCollabErr('');
     setCollabMsg('');
     if (!adminToken) {
-      setCollabErr('Admin token required (complete hub setup and keep the token in this browser).');
+      setCollabErr(t.common.errors.adminTokenRequired);
       return;
     }
     const lines = normalizePubkeyRows(validatorRows);
     if (lines.length === 0) {
-      setCollabErr('Add at least one validator public key.');
+      setCollabErr(fh.needValidator);
       return;
     }
     if (lines.some((k) => !PUBKEY_RE.test(k))) {
-      setCollabErr('Each validator must be a 33-byte compressed secp256k1 public key (66 hex chars, prefix 02 or 03).');
+      setCollabErr(fh.invalidKey);
       return;
     }
     let thr = Number(threshold);
@@ -164,15 +169,15 @@ function FederationsHome (props) {
       if (nm) payload.name = nm;
       const r = await hubJsonRpc('UpsertCollaborationGroupFromFederationValidators', [payload]);
       if (r && r.status === 'error') {
-        setCollabErr(r.message || 'Collaboration group sync failed.');
+        setCollabErr(r.message || fh.collabFailed);
         return;
       }
       const id = r && r.groupId ? String(r.groupId) : '';
       const updated = !!(r && r.updated);
       setCollabMsg(
         updated
-          ? `Updated collaboration group ${id} to match this federation signer set.`
-          : `Created collaboration group ${id} from this federation signer set.`
+          ? fh.collabUpdated(id)
+          : fh.collabCreated(id)
       );
     } catch (e) {
       setCollabErr(e && e.message ? e.message : String(e));
@@ -185,16 +190,16 @@ function FederationsHome (props) {
     setSaveError(null);
     setSaveOk(null);
     if (!adminToken) {
-      setSaveError('Admin token required (complete hub setup and keep the token in this browser).');
+      setSaveError(t.common.errors.adminTokenRequired);
       return;
     }
     const lines = normalizePubkeyRows(validatorRows);
     if (lines.length === 0) {
-      setSaveError('Add at least one validator public key.');
+      setSaveError(fh.needValidator);
       return;
     }
     if (lines.some((k) => !PUBKEY_RE.test(k))) {
-      setSaveError('Each validator must be a 33-byte compressed secp256k1 public key (66 hex chars, prefix 02 or 03).');
+      setSaveError(fh.invalidKey);
       return;
     }
     let thr = Number(threshold);
@@ -209,10 +214,10 @@ function FederationsHome (props) {
         adminToken
       }]);
       if (r && r.status === 'error') {
-        setSaveError(r.message || 'Save failed');
+        setSaveError(r.message || fh.saveFailed);
         return;
       }
-      setSaveOk('Federation policy saved. Sidechain patches and beacon epochs use this M-of-N set when env does not override.');
+      setSaveOk(fh.saved);
       void refresh();
     } catch (e) {
       setSaveError(e && e.message ? e.message : String(e));
@@ -222,16 +227,16 @@ function FederationsHome (props) {
   };
 
   const backTo = settingsLayout ? '/settings' : '/';
-  const backLabel = settingsLayout ? 'Settings' : 'Home';
+  const backLabel = settingsLayout ? shared.settings : shared.home;
   const headingId = settingsLayout ? 'settings-federation-heading' : 'federations-page-heading';
-  const title = settingsLayout ? 'Distributed federation' : 'Federations';
+  const title = settingsLayout ? fh.titleSettings : fh.title;
   const maxWidth = settingsLayout ? 720 : 980;
 
   return (
     <Container style={{ maxWidth, margin: '1em auto 2em', padding: '0 0.75em' }}>
-      <Button as={Link} to={backTo} basic size="small" style={{ marginBottom: '1em' }} aria-label={`Back to ${backLabel}`}>
+      <Button as={Link} to={backTo} basic size="small" style={{ marginBottom: '1em' }}>
         <Icon name="arrow left" aria-hidden="true" />
-        {backLabel}
+        {shared.backTo(backLabel)}
       </Button>
 
       <Segment
@@ -248,59 +253,58 @@ function FederationsHome (props) {
             {title}
             {!settingsLayout ? (
               <Header.Subheader style={{ marginTop: '0.35em', fontWeight: 400, color: '#666' }}>
-                Create a small <strong>shared control group</strong> for this hub: you pick who can co-sign, and how many signatures are needed (M-of-N).
-                That powers safer sidechain updates and beacon checkpoints, and gives you a <strong>shared Bitcoin vault address</strong> for treasury funds.
+                {fh.subheader}
               </Header.Subheader>
             ) : null}
           </Header.Content>
         </Header>
 
         {!settingsLayout ? (
-          <Step.Group fluid size="small" style={{ marginTop: '1rem', flexWrap: 'wrap' }}>
+          <Step.Group fluid size="small" style={{ marginTop: '1rem', flexWrap: 'wrap' }} aria-label={fh.steps.label}>
             <Step active>
-              <Icon name="add user" />
+              <Icon name="add user" aria-hidden="true" />
               <Step.Content>
-                <Step.Title>Who signs</Step.Title>
-                <Step.Description>Paste each co-owner’s public key (one row per person)</Step.Description>
+                <Step.Title>{fh.steps.who}</Step.Title>
+                <Step.Description>{fh.steps.whoHelp}</Step.Description>
               </Step.Content>
             </Step>
             <Step active>
-              <Icon name="balance scale" />
+              <Icon name="balance scale" aria-hidden="true" />
               <Step.Content>
-                <Step.Title>How many agree</Step.Title>
-                <Step.Description>Pick M-of-N (e.g. 2-of-3 needs two signatures)</Step.Description>
+                <Step.Title>{fh.steps.howMany}</Step.Title>
+                <Step.Description>{fh.steps.howManyHelp}</Step.Description>
               </Step.Content>
             </Step>
             <Step active>
-              <Icon name="save" />
+              <Icon name="save" aria-hidden="true" />
               <Step.Content>
-                <Step.Title>Save on hub</Step.Title>
-                <Step.Description>Operator token applies this group to this hub</Step.Description>
+                <Step.Title>{fh.steps.save}</Step.Title>
+                <Step.Description>{fh.steps.saveHelp}</Step.Description>
               </Step.Content>
             </Step>
           </Step.Group>
         ) : null}
 
         <p style={{ color: '#666', marginBottom: 0, maxWidth: '48rem', lineHeight: 1.5 }}>
-          Each signer shares a <strong>33-byte hex public key</strong> (starts with <code>02</code> or <code>03</code>) — not a secret.
-          Together they form an M-of-N <strong>multisig policy</strong> for this hub’s distributed features and on-chain vault.
-          When <code>FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS</code> is set on the server, it overrides what you save here.
+          {fh.intro}{' '}
+          {fh.envOverride}
           {source ? (
-            <span> Current source: <strong>{source}</strong>.</span>
+            <span>{' '}{fh.source(shared.policySource(source))}</span>
           ) : null}
         </p>
         {settingsLayout ? (
           <p style={{ margin: '0.75em 0 0', fontSize: '0.95em' }}>
-            <Link to="/federations">Open full Federations workspace</Link>
-            {' '}(wider layout, same controls).
+            <Link to="/federations">{fh.openFull}</Link>
+            {' '}{fh.openFullHint}
           </p>
         ) : null}
         <FederationSpendingCriteriaDraft />
         <Message info size="small" style={{ marginTop: '0.75em' }}>
-          <Message.Header>Hub alerts vs activity</Message.Header>
+          <Message.Header>{fh.alertsTitle}</Message.Header>
           <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
-            <Link to="/notifications">Notifications</Link> lists wallet and Payjoin toasts (same as the bell). The full hub message log, chat, and Bitcoin blocks are on the{' '}
-            <Link to="/activities">activity log</Link>. Federation-related group chat may appear on this page when you hold a member key; hub-wide chat still mirrors the activity log.
+            <Link to="/notifications">{shared.links.notifications}</Link>{' '}{fh.alertsNotifications}{' '}
+            {fh.alertsActivityBefore}{' '}
+            <Link to="/activities">{fh.alertsActivityLink}</Link>.
           </p>
         </Message>
         {props.bridgeRef ? (
@@ -315,38 +319,41 @@ function FederationsHome (props) {
         ) : null}
       </Segment>
 
+      <NamedFederationsPanel adminToken={adminToken} />
+
       <DistributedFederationPanel marginBottom="1.25em" refreshToken={policyRevision} />
 
       <Grid stackable>
         <Grid.Column computer={10}>
           <Segment style={{ borderRadius: 10 }}>
             <Header as="h3" style={{ marginTop: 0 }}>
-              <Icon name="shield alternate" color="teal" />
-              Multi-sig contract (this hub)
+              <Icon name="shield alternate" color="teal" aria-hidden="true" />
+              {fh.policyTitle}
             </Header>
             <p style={{ color: '#666', lineHeight: 1.5, marginBottom: '1rem' }}>
-              After you save, the hub uses this signer set for <strong>sidechain updates</strong>, <strong>beacon checkpoints</strong>, and the{' '}
-              <strong>Taproot federation vault</strong> address. Co-signers keep private keys off this UI; they only share pubkeys here.
-              To pay from the vault, use <Link to="/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel">Wallet → Federation multisig</Link>{' '}
-              to build a PSBT. For day-to-day hub wallet sends, you can still tag payments with your optional spending criteria (checkbox on that page).
-              Invite peers from <Link to="/peers">Peers</Link> when you are ready to coordinate.
+              {fh.policyBody}{' '}
+              {fh.policyVaultBefore}{' '}
+              <Link to="/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel">{fh.policyVaultLink}</Link>.{' '}
+              {fh.policyVaultAfter}{' '}
+              {fh.policyPeersBefore}{' '}
+              <Link to="/peers">{shared.links.peers}</Link>.
             </p>
 
             {loadError ? (
               <Message negative>
-                <Message.Header>Could not load policy</Message.Header>
+                <Message.Header>{fh.loadErrorTitle}</Message.Header>
                 <p>{loadError}</p>
               </Message>
             ) : null}
             {saveError ? (
               <Message negative onDismiss={() => setSaveError(null)}>
-                <Message.Header>Save failed</Message.Header>
+                <Message.Header>{fh.saveErrorTitle}</Message.Header>
                 <p>{saveError}</p>
               </Message>
             ) : null}
             {saveOk ? (
               <Message success onDismiss={() => setSaveOk(null)}>
-                <Message.Header>Saved</Message.Header>
+                <Message.Header>{fh.savedTitle}</Message.Header>
                 <p>{saveOk}</p>
               </Message>
             ) : null}
@@ -356,7 +363,7 @@ function FederationsHome (props) {
                 {mOfNLabel}
               </Label>
               {useBls ? (
-                <Label color="purple" size="large">BLS12-381</Label>
+                <Label color="purple" size="large">{fh.blsBadge}</Label>
               ) : null}
               <Button
                 type="button"
@@ -368,12 +375,12 @@ function FederationsHome (props) {
                 disabled={hubKeyBusy || source === 'env'}
                 onClick={() => void includeHubValidator()}
               >
-                <Icon name="plus" />
-                Include this hub’s pubkey
+                <Icon name="plus" aria-hidden="true" />
+                {fh.includeHub}
               </Button>
               <Button type="button" size="small" basic icon labelPosition="left" onClick={() => void refresh()}>
-                <Icon name="refresh" />
-                Reload from hub
+                <Icon name="refresh" aria-hidden="true" />
+                {fh.reload}
               </Button>
             </div>
             {hubKeyMsg ? (
@@ -383,10 +390,11 @@ function FederationsHome (props) {
             ) : null}
 
             <Message info size="small" style={{ marginTop: '0.85em' }}>
-              <Message.Header>Collaboration group (same signer set)</Message.Header>
+              <Message.Header>{fh.collabTitle}</Message.Header>
               <p style={{ margin: '0.35em 0 0.65em', lineHeight: 1.45 }}>
-                Mirror these federation validators into a <Link to="/settings/collaboration">Collaboration</Link> group
-                so invitations, previews, and the federation vault stay aligned on one pubkey list and threshold.
+                {fh.collabBefore}{' '}
+                <Link to="/settings/collaboration">{shared.links.collaboration}</Link>{' '}
+                {fh.collabAfter}
               </p>
               {collabErr ? (
                 <Message negative size="small" onDismiss={() => setCollabErr('')} style={{ marginBottom: '0.65em' }}>
@@ -396,11 +404,11 @@ function FederationsHome (props) {
               {collabMsg ? (
                 <Message success size="small" onDismiss={() => setCollabMsg('')} style={{ marginBottom: '0.65em' }}>
                   {collabMsg}{' '}
-                  <Link to="/settings/collaboration">Open Collaboration</Link>.
+                  <Link to="/settings/collaboration">{fh.collabOpen}</Link>
                 </Message>
               ) : null}
               <Form.Field>
-                <label htmlFor="fed-collab-group-id">Existing group id (optional — leave empty to create)</label>
+                <label htmlFor="fed-collab-group-id">{fh.collabGroupId}</label>
                 <Form.Input
                   id="fed-collab-group-id"
                   placeholder="grp_…"
@@ -410,10 +418,10 @@ function FederationsHome (props) {
                 />
               </Form.Field>
               <Form.Field>
-                <label htmlFor="fed-collab-group-name">New group name (when creating)</label>
+                <label htmlFor="fed-collab-group-name">{fh.collabGroupName}</label>
                 <Form.Input
                   id="fed-collab-group-name"
-                  placeholder="Federation validators"
+                  placeholder={fh.collabDefaultName}
                   value={collabGroupName}
                   onChange={(e, { value }) => setCollabGroupName(value != null ? String(value) : '')}
                 />
@@ -428,21 +436,21 @@ function FederationsHome (props) {
                 disabled={collabBusy || !normalizedKeys.length || invalidKeys.length > 0}
                 onClick={() => void saveCollaborationGroupFromFederation()}
               >
-                <Icon name="users" />
-                Save signer set to Collaboration group
+                <Icon name="users" aria-hidden="true" />
+                {fh.collabSave}
               </Button>
             </Message>
 
             <Form onSubmit={(e) => { e.preventDefault(); void save(); }}>
-              <Header as="h4">Signers</Header>
+              <Header as="h4">{fh.signersTitle}</Header>
               {validatorRows.map((row, index) => (
                 <Form.Field key={index}>
-                  <label htmlFor={`fed-pk-${index}`}>Validator {index + 1}</label>
+                  <label htmlFor={`fed-pk-${index}`}>{fh.validatorLabel(index + 1)}</label>
                   <div style={{ display: 'flex', gap: '0.35em', alignItems: 'stretch', flexWrap: 'wrap' }}>
                     <Form.Input
                       id={`fed-pk-${index}`}
                       fluid
-                      placeholder="02… or 03… (66 hex chars)"
+                      placeholder={fh.validatorPlaceholder}
                       value={row}
                       onChange={(e, { value }) => setRow(index, value != null ? String(value) : '')}
                       style={{ flex: '1 1 16rem', minWidth: '12rem', fontFamily: 'monospace', fontSize: '0.9em' }}
@@ -454,24 +462,25 @@ function FederationsHome (props) {
                       negative
                       disabled={validatorRows.length <= 1}
                       onClick={() => removeRow(index)}
-                      aria-label={`Remove signer ${index + 1}`}
+                      aria-label={fh.removeValidator(index + 1)}
+                      title={fh.removeValidator(index + 1)}
                     />
                   </div>
                 </Form.Field>
               ))}
               <Button type="button" basic icon labelPosition="left" onClick={addRow} disabled={source === 'env'}>
-                <Icon name="add" />
-                Add signer
+                <Icon name="add" aria-hidden="true" />
+                {fh.addValidator}
               </Button>
 
               {invalidKeys.length > 0 ? (
                 <Message warning size="small" style={{ marginTop: '1em' }}>
-                  {invalidKeys.length} entr{invalidKeys.length === 1 ? 'y' : 'ies'} do not match compressed pubkey hex (02/03 + 64 hex).
+                  {fh.invalidCount(invalidKeys.length)}
                 </Message>
               ) : null}
 
               <Form.Field style={{ marginTop: '1.25em' }}>
-                <label htmlFor="federation-threshold-input">Signature threshold (M-of-N)</label>
+                <label htmlFor="federation-threshold-input">{fh.thresholdLabel}</label>
                 <Form.Input
                   id="federation-threshold-input"
                   type="number"
@@ -487,95 +496,102 @@ function FederationsHome (props) {
               <Form.Field>
                 <Checkbox
                   id="federation-bls-signatures"
-                  label="Use BLS signatures"
+                  label={fh.useBls}
+                  aria-describedby="federation-bls-help"
                   checked={useBls}
                   disabled={source === 'env'}
                   onChange={(e, data) => setUseBls(!!(data && data.checked))}
                 />
-                <p style={{ color: '#666', margin: '0.4em 0 0', maxWidth: '40rem', lineHeight: 1.45 }}>
-                  BLS12-381 witnesses for epochs and sidechain patches. Each signer&apos;s BLS key is derived from their Fabric private key and bound to the secp256k1 validator key in the list above. The Taproot vault still uses those secp256k1 keys.
+                <p id="federation-bls-help" style={{ color: '#666', margin: '0.4em 0 0', maxWidth: '40rem', lineHeight: 1.45 }}>
+                  {fh.blsHelp}
                 </p>
               </Form.Field>
 
               <Button type="submit" primary size="large" disabled={busy || source === 'env'} loading={busy} style={{ marginTop: '0.5em' }}>
-                <Icon name="save" />
-                Save federation policy
+                <Icon name="save" aria-hidden="true" />
+                {fh.save}
               </Button>
             </Form>
           </Segment>
 
           <Segment style={{ marginTop: '1.25em' }}>
-            <Header as="h3" style={{ marginTop: 0 }}>Discovery &amp; APIs</Header>
-            <p style={{ color: '#666', fontSize: '0.95em', lineHeight: 1.45, marginBottom: '0.75em' }}>
-              <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>
-              {' — '}L1 binding of <code>BEACON_EPOCH</code> and witness verification.
-              {' '}
-              <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">GET manifest</a>
-              {' · '}
-              <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">GET epoch</a>
-              {' · '}
-              <a href="/services/distributed/federation-registry" target="_blank" rel="noopener noreferrer">Federation registry</a>
-            </p>
+            <Header as="h3" style={{ marginTop: 0 }}>{fh.relatedTitle}</Header>
             {federationFs ? (
               <p style={{ color: '#555', fontSize: '0.92em', lineHeight: 1.45 }}>
-                On-chain registry mirror (this node):{' '}
-                <strong>{Number(federationFs.registryEntryCount) || 0}</strong>
-                {' '}entr{Number(federationFs.registryEntryCount) === 1 ? 'y' : 'ies'}
+                {fh.registry(Number(federationFs.registryEntryCount) || 0)}{' '}
                 {federationFs.lastScannedHeight != null && Number.isFinite(Number(federationFs.lastScannedHeight))
-                  ? (
-                    <span>
-                      {', '}last L1 scan height <strong>{Number(federationFs.lastScannedHeight)}</strong>
-                    </span>
-                    )
-                  : ', last L1 scan height —'}
-                {federationFs.registryDocument ? (
-                  <span style={{ color: '#888' }}>
-                    {' '}(<code>{String(federationFs.registryDocument)}</code>)
-                  </span>
-                ) : null}
+                  ? fh.registryHeight(Number(federationFs.lastScannedHeight))
+                  : fh.registryNoHeight}
               </p>
+            ) : null}
+            <p style={{ color: '#666', fontSize: '0.95em', lineHeight: 1.45, marginBottom: 0 }}>
+              <a href="/services/distributed/federation-registry" target="_blank" rel="noopener noreferrer">{shared.links.registry}</a>
+            </p>
+            {federationFs && federationFs.registryDocument ? (
+              <details className="hub-developer-details" style={{ marginTop: '0.5em', fontSize: '0.85em', color: '#666' }}>
+                <summary>{t.common.developerDetails}</summary>
+                <code>{fh.registryDocument(String(federationFs.registryDocument))}</code>
+              </details>
             ) : null}
           </Segment>
         </Grid.Column>
 
         <Grid.Column computer={6}>
-          <Segment secondary style={{ position: 'sticky', top: '5.5rem' }}>
-            <Header as="h4" style={{ marginTop: 0 }}>Reference federations</Header>
-            <p style={{ color: '#666', fontSize: '0.9em', lineHeight: 1.45, marginBottom: '0.75em' }}>
-              Examples and public rosters (read-only). Your hub policy above is independent.
-            </p>
-            {KNOWN_FEDERATIONS.map((fed) => {
-              const id = fed && fed.id ? String(fed.id) : 'unknown';
-              const name = fed && fed.name ? String(fed.name) : id;
-              const urls = fed && fed.urls ? fed.urls : {};
-              const desc = fed && typeof fed.description === 'string' ? fed.description.trim() : '';
-              return (
-                <Segment key={id} size="small" style={{ marginBottom: '0.65em' }}>
-                  <Header as="h5" style={{ marginTop: 0 }}>
-                    {name}
-                    <span style={{ color: '#888', fontWeight: 'normal', marginLeft: '0.35em', fontSize: '0.9em' }}>
-                      ({fed && fed.networkId ? String(fed.networkId) : '—'})
-                    </span>
-                  </Header>
-                  {desc ? <p style={{ color: '#555', fontSize: '0.88em', lineHeight: 1.4, marginBottom: '0.5em' }}>{desc}</p> : null}
-                  <List relaxed size="small">
-                    {urls.homepage ? (
-                      <List.Item
-                        icon="linkify"
-                        content={<a href={urls.homepage} target="_blank" rel="noopener noreferrer">Site</a>}
-                      />
+          <section aria-labelledby="federations-reference-heading">
+            <Segment secondary style={{ position: 'sticky', top: '5.5rem' }}>
+              <Header as="h4" id="federations-reference-heading" style={{ marginTop: 0 }}>{fh.reference.title}</Header>
+              <p style={{ color: '#666', fontSize: '0.9em', lineHeight: 1.45, marginBottom: '0.75em' }}>
+                {fh.reference.intro}
+              </p>
+              {KNOWN_FEDERATIONS.map((fed) => {
+                const id = fed && fed.id ? String(fed.id) : 'unknown';
+                const name = fed && fed.name ? String(fed.name) : id;
+                const urls = fed && fed.urls ? fed.urls : {};
+                const desc = fh.reference.descriptions[id] || '';
+                const networkLabel = id === 'beacon-federation'
+                  ? fh.reference.thisHub
+                  : (fed && fed.networkId ? String(fed.networkId) : t.common.none);
+                const functionaries = fed && fed.governanceFederation ? fed.governanceFederation.functionaryOperatorCount : null;
+                const pegDepth = fed && fed.l1Bitcoin ? fed.l1Bitcoin.peginMinDepthBlocks : null;
+                return (
+                  <Segment
+                    key={id}
+                    as="section"
+                    size="small"
+                    aria-label={fh.reference.region(name)}
+                    style={{ marginBottom: '0.65em' }}
+                  >
+                    <Header as="h5" style={{ marginTop: 0 }}>
+                      {name}
+                      <span style={{ color: '#888', fontWeight: 'normal', marginLeft: '0.35em', fontSize: '0.9em' }}>
+                        ({networkLabel})
+                      </span>
+                    </Header>
+                    {desc ? <p style={{ color: '#555', fontSize: '0.88em', lineHeight: 1.4, marginBottom: '0.5em' }}>{desc}</p> : null}
+                    {id === 'liquid' && functionaries != null && pegDepth != null ? (
+                      <p style={{ color: '#555', fontSize: '0.88em', lineHeight: 1.4, marginBottom: '0.5em' }}>
+                        {fh.reference.liquidSummary(functionaries, pegDepth)}
+                      </p>
                     ) : null}
-                    {urls.federation ? (
-                      <List.Item
-                        icon="users"
-                        content={<a href={urls.federation} target="_blank" rel="noopener noreferrer">Roster</a>}
-                      />
-                    ) : null}
-                  </List>
-                </Segment>
-              );
-            })}
-          </Segment>
+                    <List relaxed size="small">
+                      {urls.homepage ? (
+                        <List.Item
+                          icon="linkify"
+                          content={<a href={urls.homepage} target="_blank" rel="noopener noreferrer">{fh.reference.website(name)}</a>}
+                        />
+                      ) : null}
+                      {urls.federation ? (
+                        <List.Item
+                          icon="users"
+                          content={<a href={urls.federation} target="_blank" rel="noopener noreferrer">{fh.reference.members(name)}</a>}
+                        />
+                      ) : null}
+                    </List>
+                  </Segment>
+                );
+              })}
+            </Segment>
+          </section>
         </Grid.Column>
       </Grid>
     </Container>

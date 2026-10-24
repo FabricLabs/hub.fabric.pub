@@ -10,12 +10,21 @@ const { isDelegationSignatureRequestActivity } = require('../functions/messageTy
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
-const {
-  classifyHubBrowserIdentity,
-  fabricIdentityChatDisabledReasonPlain
-} = require('../functions/hubIdentityUiHints');
+const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const t = require('../locales/en');
 
 const MESSAGE_PAGE_SIZE = 10;
+const sc = t.home.stream;
+
+/**
+ * Chat-disabled reason for the current identity state (Locked / Watch-only / none).
+ * @param {object|null|undefined} authLike
+ * @returns {string}
+ */
+function chatDisabledReasonFor (authLike) {
+  const mode = classifyHubBrowserIdentity(authLike);
+  return sc.chatDisabled[mode] || sc.chatDisabled.none;
+}
 
 /**
  * @param {object} entry
@@ -212,9 +221,7 @@ class ActivityStreamElement extends React.Component {
     const adminToken = readHubAdminTokenFromBrowser(this.props && this.props.adminToken);
     if (!adminToken || !entry || !entry.messageKey) return null;
     const docId = this._tombstoneDocumentId(entry);
-    const title = docId
-      ? 'Remove this activity row and unpublish the document from the hub catalog (requires admin)'
-      : 'Purge this entry from the hub activity log (requires admin)';
+    const title = docId ? sc.purgeDocumentTitle : sc.purgeTitle;
     return (
       <Button
         type="button"
@@ -223,13 +230,14 @@ class ActivityStreamElement extends React.Component {
         size="mini"
         compact
         title={title}
+        aria-label={sc.purge}
         style={{ marginLeft: '0.5em', verticalAlign: 'middle' }}
         onClick={(e) => {
           e.stopPropagation();
           this._handlePurgeEntry(entry.messageKey, docId || undefined);
         }}
       >
-        <Icon name="trash" />
+        <Icon name="trash" aria-hidden="true" />
       </Button>
     );
   }
@@ -329,7 +337,7 @@ class ActivityStreamElement extends React.Component {
       event.detail &&
       typeof event.detail.message === 'string' &&
       event.detail.message.trim()
-    ) || fabricIdentityChatDisabledReasonPlain(this.props.identity || this.props.auth);
+    ) || chatDisabledReasonFor(this.props.identity || this.props.auth);
 
     this.setState({ chatWarning: message });
 
@@ -398,9 +406,10 @@ class ActivityStreamElement extends React.Component {
       typeof bridgeInstance.hasUnlockedIdentity === 'function'
     ) ? bridgeInstance.hasUnlockedIdentity() : true;
     const idHint = this.props.identity || this.props.auth;
+    const identityMode = classifyHubBrowserIdentity(idHint);
     const chatDisabledReason = canSubmitChat
       ? null
-      : fabricIdentityChatDisabledReasonPlain(idHint);
+      : chatDisabledReasonFor(idHint);
     const streamPreset = this.props.streamPreset || 'default';
     const hasComposeChannel = (
       (typeof this.props.onSubmitChat === 'function') ||
@@ -413,7 +422,7 @@ class ActivityStreamElement extends React.Component {
     );
     const headerTitle = typeof this.props.headerTitle === 'string' && this.props.headerTitle.trim()
       ? this.props.headerTitle.trim()
-      : (streamPreset === 'notifications' ? 'Delegation & signing' : 'Activity Stream');
+      : (streamPreset === 'notifications' ? sc.signingTitle : sc.title);
     const showChatChrome = streamPreset !== 'notifications';
     return (
       <fabric-activity-stream className='activity-stream'>
@@ -440,7 +449,7 @@ class ActivityStreamElement extends React.Component {
                 textAlign: 'center'
               }}
             >
-              ↑ Scroll up for older messages ({total - displayLimit} more)
+              {sc.olderMessages(total - displayLimit)}
             </div>
           )}
           {entries.length > 0 && (
@@ -466,10 +475,10 @@ class ActivityStreamElement extends React.Component {
                               to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid).trim())}`}
                               style={{ color: '#2185d0' }}
                             >
-                              Transaction
+                              {sc.viewTransaction}
                             </Link>
                           ) : (
-                            <code style={{ fontSize: '0.88em', color: '#666' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">
+                            <code style={{ fontSize: '0.88em', color: '#666' }} title={sc.transactionPagesOff}>
                               {String(txid).slice(0, 16)}…
                             </code>
                           )}
@@ -500,20 +509,20 @@ class ActivityStreamElement extends React.Component {
                     >
                       <Label size="small" color="teal" style={{ marginRight: '0.35em' }}>
                         <Icon name="key" />
-                        Signing
+                        {sc.signing}
                       </Label>
-                      <Label size="small" basic title="Same activity stream as public chat; delegation channel">
+                      <Label size="small" basic title={sc.delegationChannelTitle}>
                         #delegation
                       </Label>
                       {' '}
                       <strong>@{actorId}</strong>
                       {purpose ? <> · {purpose}</> : null}
-                      {isPending ? ' — waiting for Fabric Hub desktop…' : null}
-                      {!isPending && ost === 'approved' ? ' — approved' : null}
-                      {!isPending && ost === 'rejected' ? ' — rejected' : null}
-                      {!isPending && ost === 'timeout' ? ' — timed out' : null}
+                      {isPending ? ` ${sc.waitingDesktop}` : null}
+                      {!isPending && ost === 'approved' ? ` ${sc.approved}` : null}
+                      {!isPending && ost === 'rejected' ? ` ${sc.rejected}` : null}
+                      {!isPending && ost === 'timeout' ? ` ${sc.timedOut}` : null}
                       <div style={{ marginTop: '0.25em', color: '#444', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                        {content || '(no preview)'}
+                        {content || sc.noPreview}
                       </div>
                     </div>
                   );
@@ -565,7 +574,7 @@ class ActivityStreamElement extends React.Component {
                               <strong>@{actorId}</strong>
                             </Link>
                             )
-                          : <strong title={!uf.peers ? 'Peers disabled — enable Peers in Admin → Feature visibility' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
+                          : <strong title={!uf.peers ? sc.peersOff : sc.extendedKey}>@{actorId}</strong>
                       )
                     : <strong>@{actorId}</strong>;
                   const isLast = index === entries.length - 1;
@@ -576,22 +585,22 @@ class ActivityStreamElement extends React.Component {
                       style={style}
                     >
                       {actorNode}
-                      {isPending && ' (sending…)'}
-                      {isQueued && ' (!)'}: {content}
+                      {isPending && ` ${sc.sending}`}
+                      {isQueued && ` ${sc.queued}`}: {content}
                       {transport === 'webrtc' && (
                         <span style={{ marginLeft: '0.5em' }}>
-                          <Label size='tiny' basic color='teal' title='Delivered via WebRTC mesh'>
+                          <Label size='tiny' basic color='teal' title={sc.webrtcTitle}>
                             <Icon name='exchange' />
-                            WebRTC
+                            {sc.webrtc}
                           </Label>
                           {deliveredTo != null && (
-                            <Label size='tiny' basic color='blue' title='Peers this message was delivered to'>
-                              delivered: {deliveredTo}
+                            <Label size='tiny' basic color='blue' title={sc.deliveredToTitle}>
+                              {sc.deliveredTo(deliveredTo)}
                             </Label>
                           )}
                           {fromPeerId && (
-                            <Label size='tiny' basic color='grey' title='Source mesh peer'>
-                              from: {fromPeerId}
+                            <Label size='tiny' basic color='grey' title={sc.fromTitle}>
+                              {sc.from(fromPeerId)}
                             </Label>
                           )}
                         </span>
@@ -609,9 +618,9 @@ class ActivityStreamElement extends React.Component {
                   const net = o.network ? String(o.network) : '';
                   const isLast = index === entries.length - 1;
                   const bbCreated = o.created || null;
-                  const heightLabel = height != null && Number.isFinite(Number(height)) ? `#${height}` : 'block';
+                  const heightLabel = height != null && Number.isFinite(Number(height)) ? `#${height}` : sc.block;
                   const txLabel = txCount != null && Number.isFinite(Number(txCount))
-                    ? `${Number(txCount)} tx${Number(txCount) === 1 ? '' : 's'}`
+                    ? sc.transactions(Number(txCount))
                     : null;
                   return (
                     <div
@@ -619,9 +628,9 @@ class ActivityStreamElement extends React.Component {
                       ref={isLast ? this._lastEntryRef : null}
                       style={{ marginBottom: '0.4em', fontSize: '0.95em' }}
                     >
-                      <Icon name='cube' color='yellow' title='New chain tip' />
+                      <Icon name='cube' color='yellow' title={sc.newChainTip} />
                       {' '}
-                      <strong>New block</strong>
+                      <strong>{sc.newBlock}</strong>
                       {' '}
                       {hash
                         ? (
@@ -633,7 +642,7 @@ class ActivityStreamElement extends React.Component {
                               {heightLabel}
                             </Link>
                           ) : (
-                            <span title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the block viewer">{heightLabel}</span>
+                            <span title={sc.blockPagesOff}>{heightLabel}</span>
                           )
                           )
                         : <span>{heightLabel}</span>}
@@ -704,7 +713,7 @@ class ActivityStreamElement extends React.Component {
                                 <strong>@{actorId}</strong>
                               </Link>
                               )
-                            : <strong title={!peerDetailNav && actorRouteId && !isLikelyBip32ExtendedKey(actorRouteId) ? 'Peers detail requires hub admin token in this browser' : 'BIP32 extended key — not a TCP peer route'}>@{actorId}</strong>
+                            : <strong title={!peerDetailNav && actorRouteId && !isLikelyBip32ExtendedKey(actorRouteId) ? sc.peersNeedAdmin : sc.extendedKey}>@{actorId}</strong>
                         )
                       : <strong>@{actorId}</strong>}{' '}
                     {verb}{' '}
@@ -739,46 +748,48 @@ class ActivityStreamElement extends React.Component {
           )}
           {entries.length === 0 && streamPreset === 'notifications' && (
             <div style={{ color: '#888', fontSize: '0.9em', padding: '0.35em 0', lineHeight: 1.45 }}>
-              No delegation signature requests in this feed yet.
+              {sc.signingEmpty}
               {uf.activities ? (
                 <>
-                  {' '}Wallet, Payjoin, and other short toasts are listed on the{' '}
-                  <Link to="/notifications">Notifications</Link>
-                  {' '}page (bell in the top bar).
+                  {' '}{sc.signingEmptyAlertsBefore}{' '}
+                  <Link to="/notifications">{sc.signingEmptyAlertsLink}</Link>
+                  {' '}{sc.signingEmptyAlertsAfter}
                 </>
               ) : (
-                <> Enable “Activities” in Admin → Feature visibility to open the full feed and bell toasts.</>
+                <> {sc.signingEmptyActivitiesOff}</>
               )}
-              {' '}Open{' '}
-              <Link to="/settings/security">Security &amp; delegation</Link>
-              {' '}to list or revoke desktop signing sessions.
+              {' '}{sc.signingEmptySecurityBefore}{' '}
+              <Link to="/settings/security">{sc.signingEmptySecurityLink}</Link>
+              {' '}{sc.signingEmptySecurityAfter}
             </div>
           )}
           {entries.length === 0 && streamPreset !== 'notifications' && (
             <div style={{ color: '#888', fontSize: '0.9em', padding: '0.35em 0' }}>
               {entryTypeFilter === 'all'
-                ? 'No activity yet. Chat, document events, and Bitcoin blocks show here when the hub and network are active.'
-                : `No ${entryTypeFilter} activity matches this filter yet.`}
+                ? sc.empty
+                : sc.emptyFiltered(entryTypeFilter)}
             </div>
           )}
         </div>
         <div style={{ marginTop: '0.5em' }}>
           {showChatChrome && (
             <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
-              <strong>Public mesh shoutbox</strong>
-              {' — '}
-              cleartext <code>P2P_CHAT_MESSAGE</code> flood (relays can read).
-              Confidential traffic uses onion-sealed <code>SendOnion</code> or sealed GroupChat on contracts;
-              peering/gossip stays the primary mesh fabric.
-            </div>
-          )}
-          {showChatChrome && (meshStatus || chatDebug) && (
-            <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
-              WebRTC Debug: mesh connected {meshStatus && Number.isFinite(meshStatus.connected) ? meshStatus.connected : 0}
-              {' '}| self {toShortId(chatDebug && chatDebug.peerId)}
-              {' '}| peers [{connectedPeerLabel}]
-              {' '}| last deliveredTo {lastDeliveredTo != null ? lastDeliveredTo : '-'}
-              {' '}| recipients [{recipientPeerLabel}]
+              {sc.shoutboxNote}
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                {sc.shoutboxDeveloper}
+                {(meshStatus || chatDebug) ? (
+                  <div style={{ marginTop: '0.35em' }}>
+                    {sc.meshDebug({
+                      connected: meshStatus && Number.isFinite(meshStatus.connected) ? meshStatus.connected : 0,
+                      self: toShortId(chatDebug && chatDebug.peerId),
+                      peers: connectedPeerLabel,
+                      lastDelivered: lastDeliveredTo != null ? lastDeliveredTo : '-',
+                      recipients: recipientPeerLabel
+                    })}
+                  </div>
+                ) : null}
+              </details>
             </div>
           )}
           {this.state.chatWarning && (
@@ -795,7 +806,7 @@ class ActivityStreamElement extends React.Component {
                   style={{ marginLeft: '0.5em' }}
                   onClick={() => this.props.onRequireUnlock()}
                 >
-                  Unlock
+                  {sc.chatAction[identityMode] || sc.chatAction.none}
                 </Button>
               )}
             </div>
@@ -806,24 +817,11 @@ class ActivityStreamElement extends React.Component {
               style={{ marginBottom: '0.5em', fontSize: '0.85em', color: '#666', lineHeight: 1.45 }}
             >
               {(() => {
-                const mode = classifyHubBrowserIdentity(idHint);
-                if (mode === 'password_locked') {
-                  return (
-                    <>
-                      <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, or the top-bar <strong>Locked</strong> control, unlocks chat signing (encryption password).
-                    </>
-                  );
-                }
-                if (mode === 'watch_only') {
-                  return (
-                    <>
-                      Chat needs a signing key in this browser. Open <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or the top-bar identity menu to import a full key or use desktop signing (watch-only cannot sign).
-                    </>
-                  );
-                }
+                const hint = sc.composeHint[identityMode] || sc.composeHint.none;
                 return (
                   <>
-                    Create or restore a key: <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, or <strong>Log in</strong> in the top bar.
+                    {chatDisabledReason}{' '}{hint.before}{' '}
+                    <Link to="/settings">{sc.composeHint.settings}</Link>{' '}{hint.after}
                   </>
                 );
               })()}
@@ -847,8 +845,8 @@ class ActivityStreamElement extends React.Component {
                   this.setState({ chatInput: '' });
                 }
               }}
-              placeholder="Type a message…"
-              title={chatDisabledReason || 'Send chat message'}
+              placeholder={t.home.chatInput.placeholder}
+              title={chatDisabledReason || undefined}
               disabled={!canSubmitChat}
             />
           )}

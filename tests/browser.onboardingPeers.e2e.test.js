@@ -2,7 +2,7 @@
 
 /**
  * Full-stack optional E2E: fresh hub datadir → finish first-time setup **via the Onboarding modal**
- * (unchecked managed Bitcoin/LN on the Bitcoin stage → Complete Setup), then open /peers and assert hooks.
+ * (unchecked managed Bitcoin/LN on the Bitcoin stage → Complete setup), then open /peers and assert hooks.
  *
  * Run (after `npm run build:browser`): `HUB_E2E_UI_ONBOARDING=1 npx mocha tests/browser.onboardingPeers.e2e.test.js --exit --timeout 120000`
  */

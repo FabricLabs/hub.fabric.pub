@@ -97,7 +97,7 @@ class Compiler extends HTTPCompiler {
         },
         resolve: {
           fallback: {
-            crypto: require.resolve('crypto-browserify'),
+            crypto: require.resolve('@fabric/http/functions/browserCrypto'),
             path: require.resolve('path-browserify'),
             buffer: require.resolve('buffer'),
             process: require.resolve('process/browser')

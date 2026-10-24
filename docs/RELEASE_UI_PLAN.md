@@ -26,6 +26,21 @@ When a shot at a **large viewport** shows unused side gutters, a single stretche
 
 Concrete break-out candidates from the **2026-09-03** gallery: Home **Node overview** → identity / Bitcoin / health / shoutbox atoms; Bitcoin dashboard → overview vs node console vs wallet vs Payjoin/send; Peers → status vs dangerous flush vs mesh vs roster; Beacon Federation → live policy + tracked contracts vs long-form docs; Settings → grouped multi-column hub. Track as post-RC IA unless an item already has a P1 ID above.
 
+### 1.2 Copy standard
+Every user-facing string lives in [`locales/en/`](../locales/en/) (one module per area, gathered by `index.js`; `tests/locales.test.js` checks the tree). Components read them as `const t = require('../locales/en')`. Plain strings for fixed text; small functions for counts and values (`t.common.plural(n, 'peer')`, `t.common.sats(n)`).
+
+- **Names.** The product is **Fabric Hub**. Capitalize **Hub** whenever it names the product or a node ("your Hub", "this Hub", "a seed Hub"). **Fabric** names the network and protocol. **Passport** is the browser extension.
+- **Identity states.** Exactly three, never mixed:
+  - **Locked**: the key is password-encrypted; unlock with your password.
+  - **Watch-only**: only the public key (xpub) is loaded; import the full key to sign.
+  - **Unlocked**: ready to sign.
+  With no identity at all, the action is **Log in**.
+- **Writing style.** Headings and menu items use sentence case ("Bitcoin wallet", not "Bitcoin Wallet"); proper nouns keep their capitals (Payjoin, Lightning, Beacon, Federation). Buttons start with a verb ("Create invoice", "Publish document"). Say "you" to the reader. Amounts are in **sats** unless BTC is clearer (pool sizes, large balances).
+- **Errors** say what happened and what to do next ("Could not reach this Hub. Check that it is running, then try again."). **Loading** text names the step being waited on ("Checking Hub configuration…", "Waiting for network status…"), never a transport detail.
+- **Developer detail.** No RPC method names, environment variables, `localStorage`, settings keys, or file paths in end-user copy. Admin and operator panels may show them, collapsed under **Developer details** or in a tooltip.
+- **Labels and links.** Every control has a real label, never its value or a placeholder (UI-48, UI-81). A control's `aria-label`, when present, matches its visible text (UI-93, UI-102). Each in-page destination gets one link (UI-32).
+- **Regtest and demo.** Say "regtest" where a tool only works on regtest (faucet, block generation). Do not label shipping features "demo".
+
 ---
 
 ## 2. Findings (backlog)
@@ -183,6 +198,19 @@ Manual run after **`npm run build`**; hub **`http://127.0.0.1:18080`**. **Identi
 | UI-90 | P2 | **Shipped (404 parity):** **`UnknownRouteShell`** adds **Treasury (Payjoin / Lightning)** when **`bitcoinPayments` || `bitcoinLightning`**. (**TopPanel** **More** already had Treasury — plan row was stale.) |
 | UI-92 | P2 | **Shipped:** **`!setupChecked`** shell copy **“Checking hub configuration…”** + subline clarifying setup fetch vs WebSocket. |
 | UI-95 | P2 | **Shipped:** **`auth.loading`** full-screen loader + **“Loading session…”** caption (matches setup gate style). |
+
+### 2.17 Resolved (Unreleased) — prose pass
+Every live component now takes its user-facing text from `locales/en/*` (one module per area, all required by `locales/en/index.js` and checked by `tests/locales.test.js`), written to the copy standard in §1.2. RPC names, env vars, and storage paths moved into **Developer details** blocks.
+
+- **Closed:** UI-04, UI-12, UI-13, UI-21, UI-22, UI-31, UI-32, UI-43, UI-44, UI-45, UI-46, UI-47, UI-48, UI-49, UI-51, UI-52, UI-53, UI-54, UI-55, UI-57, UI-59, UI-61, UI-65, UI-66, UI-67, UI-70, UI-71, UI-72, UI-73, UI-75, UI-76, UI-80, UI-81, UI-83, UI-88, UI-94, UI-97, UI-98, UI-99, UI-102.
+- **Partly closed:**
+  - **UI-03:** the copy is fixed, but a failed Bitcoin status fetch still reads as “off” instead of “not reachable”.
+  - **UI-84** and **UI-93:** the 404 shortcuts are fixed; the remaining nav parity is part of UI-10.
+  - **UI-89:** the copy is fixed; the layout is not.
+- **Identity hints** (UI-61 / UI-80): chat and peer controls give a different reason for Locked, Watch-only, and no identity (`functions/hubIdentityUiHints.js`, strings in `t.common.identity`).
+- **Connection status** (UI-02 copy): `bridgeConnectionPhase` in `functions/hubNetworkStatus.js` replaces matching on hint text; `t.shell.connection` holds the wording.
+- **Dead code** (UI-71 / UI-72): `Splash`, `FrontPage`, `HeaderBar`, `Dashboard`, `AccountCreator`, `LoginGate`, `ActivitiesUiNotifications`, and `interface.js.bak` are gone; `contracts/ux.dot` shows `PublicVisitorGate` and the identity modal instead.
+- **Still open:** layout and navigation (UI-10), route gating (UI-58, UI-100, UI-103), server log and REST error text, and an i18n runtime.
 
 ---
 

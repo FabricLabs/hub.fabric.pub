@@ -2,6 +2,9 @@
 
 const React = require('react');
 const { Button } = require('semantic-ui-react');
+const t = require('../locales/en');
+
+const gp = t.documents.graphPreview;
 
 let GraphvizWasm = null;
 try {
@@ -54,7 +57,7 @@ function GraphDocumentPreview (props) {
       if (!GraphvizWasm) {
         revokeCurrentUrl();
         setStatus('error');
-        setError('Graph preview needs graphviz-wasm (bundle or install).');
+        setError(gp.unavailable);
         return;
       }
       setStatus('loading');
@@ -67,7 +70,7 @@ function GraphDocumentPreview (props) {
         if (cancelled) return;
         if (typeof svg !== 'string' || !svg.trim()) {
           setStatus('error');
-          setError('Graphviz returned empty output.');
+          setError(gp.empty);
           return;
         }
         const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
@@ -78,7 +81,7 @@ function GraphDocumentPreview (props) {
       } catch (e) {
         if (cancelled) return;
         setStatus('error');
-        setError((e && e.message) ? String(e.message) : 'Graph layout failed.');
+        setError((e && e.message) ? `${gp.failed} (${String(e.message)})` : gp.failed);
         revokeCurrentUrl();
       }
     };
@@ -88,14 +91,14 @@ function GraphDocumentPreview (props) {
       cancelled = true;
       revokeCurrentUrl();
     };
-  }, [dotSource, mayRender, revokeCurrentUrl]);
+  }, [dotSource, mayRender, revokeCurrentUrl, renderNonce]);
 
   if (!dotSource || !mayRender) return null;
 
   if (status === 'loading' || status === 'idle') {
     return (
       <div style={{ padding: '1rem', color: '#666' }} aria-busy="true">
-        Rendering graph…
+        {gp.rendering}
       </div>
     );
   }
@@ -112,7 +115,7 @@ function GraphDocumentPreview (props) {
         }}
         role="alert"
       >
-        <strong>Graph preview</strong>
+        <strong>{gp.errorTitle}</strong>
         <div style={{ marginTop: '0.35rem', whiteSpace: 'pre-wrap' }}>{error}</div>
         <Button
           type="button"
@@ -121,7 +124,7 @@ function GraphDocumentPreview (props) {
           style={{ marginTop: '0.65rem' }}
           onClick={() => setRenderNonce((n) => n + 1)}
         >
-          Retry render
+          {gp.retry}
         </Button>
       </div>
     );
@@ -132,7 +135,7 @@ function GraphDocumentPreview (props) {
       <div style={{ overflow: 'auto', maxHeight: 560, textAlign: 'center', background: '#fafafa', borderRadius: 6, padding: '0.5rem' }}>
         <img
           src={objectUrl}
-          alt="Graphviz diagram"
+          alt={gp.alt}
           style={{ maxWidth: '100%', height: 'auto', verticalAlign: 'middle' }}
         />
       </div>

@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const Message = require('@fabric/core/types/message');
-const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
+const { isHubNetworkStatusShape, bridgeConnectionPhase, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 
 describe('hubNetworkStatus', function () {
   it('accepts typical GetNetworkStatus payloads', function () {
@@ -32,12 +32,20 @@ describe('hubNetworkStatus', function () {
     assert.strictEqual(bridgeWebSocketLoadingHint({}), null);
     assert.ok(String(bridgeWebSocketLoadingHint({
       getConnectionStatus: () => ({ websocket: { connected: true, readyState: 1 } })
-    })).includes('WebSocket connected'));
+    })).includes('Waiting for the Hub'));
     assert.ok(String(bridgeWebSocketLoadingHint({
       getConnectionStatus: () => ({ websocket: { connected: false, readyState: 0 } })
-    })).includes('Opening WebSocket'));
+    })).includes('Connecting to the Hub'));
     assert.ok(String(bridgeWebSocketLoadingHint({
       getConnectionStatus: () => ({ websocket: { connected: false, readyState: 3 } })
     })).includes('Reconnecting'));
+  });
+
+  it('bridgeConnectionPhase names the WebSocket phase', function () {
+    const phase = (websocket) => bridgeConnectionPhase({ getConnectionStatus: () => ({ websocket }) });
+    assert.strictEqual(bridgeConnectionPhase(null), null);
+    assert.strictEqual(phase({ connected: true, readyState: 1 }), 'connected');
+    assert.strictEqual(phase({ connected: false, readyState: 0 }), 'opening');
+    assert.strictEqual(phase({ connected: false, readyState: 3 }), 'reconnecting');
   });
 });

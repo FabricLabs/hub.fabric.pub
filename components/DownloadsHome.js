@@ -6,6 +6,7 @@
 
 const React = require('react');
 const FileBrowser = require('./FileBrowser');
+const t = require('../locales/en');
 
 function DownloadsHome (props) {
   return (
@@ -13,8 +14,8 @@ function DownloadsHome (props) {
       <FileBrowser
         rootPath="/downloads"
         indexUrl="/downloads/index.json"
-        title="Downloads"
-        description="Desktop installers for this Hub. Folders are browsable in the app; files are served from this origin."
+        title={t.home.downloads.title}
+        description={t.home.downloads.description}
         {...props}
       />
     </div>

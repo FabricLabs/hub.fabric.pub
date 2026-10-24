@@ -3,6 +3,7 @@
 const React = require('react');
 const { Button, Icon, Message } = require('semantic-ui-react');
 const { formatFederationInviteSpendingSummary } = require('../functions/federationContractInvite');
+const t = require('../locales/en');
 
 /**
  * In-app notice for incoming federation invites (review before opening security modal).
@@ -37,20 +38,20 @@ function FederationInviteNotificationBanner (props) {
         }}
       >
         <div style={{ flex: '1 1 12rem', lineHeight: 1.45, fontSize: '0.93rem' }}>
-          <strong>Federation co-signer invite</strong>
-          {' — '}
-          review terms before you accept (your compressed pubkey is only sent if you approve).
+          <strong>{t.federation.inviteBanner.title}</strong>
+          {' '}
+          {t.federation.inviteBanner.body}
           {cap ? (
             <span style={{ display: 'block', marginTop: '0.35em', color: '#555' }}>{cap}</span>
           ) : null}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
           <Button type="button" primary size="small" onClick={() => onReview()}>
-            <Icon name="eye" />
-            Review &amp; sign
+            <Icon name="eye" aria-hidden="true" />
+            {t.federation.inviteBanner.review}
           </Button>
           <Button type="button" basic size="small" onClick={() => onDismiss()}>
-            Dismiss
+            {t.common.actions.dismiss}
           </Button>
         </div>
       </Message>

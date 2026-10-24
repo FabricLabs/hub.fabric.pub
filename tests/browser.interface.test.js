@@ -492,7 +492,7 @@ describe('Browser Interface', function () {
       };
     });
     assert.strictEqual(result.hasApp, true, 'App root should exist');
-    assert.ok(result.title.includes('fabric') || result.title.includes('hub'), 'Title should mention fabric or hub');
+    assert.ok(/fabric|hub/i.test(result.title), 'Title should mention fabric or hub');
     assert.ok(result.hasContent, 'Page should have body content');
   });
 
@@ -521,7 +521,7 @@ describe('Browser Interface', function () {
       settings: !!document.querySelector('[data-testid="hub-nav-settings"]'),
       documents: !!document.querySelector('[data-testid="hub-nav-documents"]'),
       downloads: !!document.querySelector('[data-testid="hub-nav-downloads"]'),
-      snapshot: /Waiting for hub snapshot/i.test(document.body && document.body.innerText ? document.body.innerText : '')
+      snapshot: /Waiting for network status/i.test(document.body && document.body.innerText ? document.body.innerText : '')
     }));
     assert.strictEqual(nav.settings, true, 'client chrome should show Settings in the top nav');
     assert.strictEqual(nav.documents, false, 'client chrome should hide Documents');
@@ -646,8 +646,8 @@ describe('Browser Interface', function () {
         if (!footer || !/Fabric Peer ID/i.test(body)) return false;
         return (
           /Fabric peers/i.test(body) ||
-          /Connecting to hub/i.test(body) ||
-          /No TCP or mesh peers yet/i.test(body)
+          /Connecting to the Hub/i.test(body) ||
+          /No peers yet/i.test(body)
         );
       });
       assert.ok(layoutOk, 'Peers page should show protocol footer and Peer ID copy (table block when hub is connected)');
@@ -893,10 +893,12 @@ describe('Browser Interface', function () {
         const hasExecForm =
           !!document.getElementById('fabric-exec-name') &&
           !!document.getElementById('fabric-exec-program-json');
+        const storageIntro = document.getElementById('contracts-storage-intro');
+        const storageText = storageIntro ? String(storageIntro.textContent || '') : '';
         const hasStorageSection =
           !!document.getElementById('contracts-storage-h4') &&
-          body.includes('CreateDistributeInvoice') &&
-          body.includes('CreateStorageContract');
+          storageText.includes('CreateDistributeInvoice') &&
+          storageText.includes('CreateStorageContract');
         const hasApplication =
           !!document.getElementById('contracts-application-h4') &&
           /Tracked application|CONTRACT_PUBLISH|Application contracts/i.test(body);

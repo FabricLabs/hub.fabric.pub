@@ -17,7 +17,7 @@ const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SE
 const FILE_SHARE_FRAME_RESERVE = 2048;
 /** Raw bytes per blob: base64 fills the rest of the body (23,040 B → 30,720 base64 chars). */
 const FILE_SHARE_BLOB_BYTES = Math.floor((MAX_MESSAGE_SIZE - FILE_SHARE_FRAME_RESERVE) * 3 / 4);
-/** Theoretical maximum shared file: MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (94,371,840 B = 90 MiB). */
+/** Theoretical maximum shared file: MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (188,743,680 B = 180 MiB). */
 const FILE_SHARE_MAX_BYTES = MAX_DOCUMENT_BLOBS * FILE_SHARE_BLOB_BYTES;
 const FILE_NAME_MAX_CHARS = 255;
 const MIME_MAX_CHARS = 127;

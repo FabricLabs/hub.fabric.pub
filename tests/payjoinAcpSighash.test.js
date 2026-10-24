@@ -28,10 +28,10 @@ describe('payjoin ACP helpers', () => {
     psbt.addInput({
       hash: Buffer.alloc(32, 1),
       index: 0,
-      witnessUtxo: { script: pay.output, value: 50000 },
+      witnessUtxo: { script: pay.output, value: 50000n },
       sighashType: SIGHASH_ALL_ANYONECANPAY
     });
-    psbt.addOutput({ script: pay.output, value: 10000 });
+    psbt.addOutput({ script: pay.output, value: 10000n });
     psbt.signInput(0, kp, [SIGHASH_ALL_ANYONECANPAY]);
     const psig = psbt.data.inputs[0].partialSig && psbt.data.inputs[0].partialSig[0];
     assert.ok(psig && psig.signature && psig.signature.length >= 1);

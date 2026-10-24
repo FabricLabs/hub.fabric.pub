@@ -323,13 +323,13 @@ function buildThresholdTapscriptFromXOnly (xOnlyHexList, threshold) {
   }
   if (!keys.length) throw new Error('at least one x-only key is required');
   const k = Math.max(1, Math.min(Number(threshold) || 1, keys.length));
-  if (keys.length === 1) return bitcoin.script.compile([keys[0], bitcoin.script.OPS.OP_CHECKSIG]);
+  if (keys.length === 1) return Buffer.from(bitcoin.script.compile([keys[0], bitcoin.script.OPS.OP_CHECKSIG]));
   const chunks = [keys[0], bitcoin.script.OPS.OP_CHECKSIG];
   for (let i = 1; i < keys.length; i++) {
     chunks.push(keys[i], bitcoin.script.OPS.OP_CHECKSIGADD);
   }
   chunks.push(bitcoin.script.number.encode(k), bitcoin.script.OPS.OP_NUMEQUAL);
-  return bitcoin.script.compile(chunks);
+  return Buffer.from(bitcoin.script.compile(chunks));
 }
 
 function descriptorForThresholdPolicy (threshold, xOnlyHexList) {

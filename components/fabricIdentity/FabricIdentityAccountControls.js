@@ -10,6 +10,9 @@ const {
   plaintextMasterFromStored
 } = require('../../functions/fabricHubLocalIdentity');
 const { readStorageJSON } = require('../../functions/fabricBrowserState');
+const t = require('../../locales/en');
+
+const copy = t.identity.accountControls;
 
 /** Highest Fabric BIP44 account index shown in Hub quick-switch UI (still one HD wallet). */
 const MAX_VISIBLE_ACCOUNT_INDEX = 24;
@@ -51,15 +54,19 @@ function FabricIdentityAccountControls (props) {
 
   if (!modeOk || !onChange) return null;
 
+  let blockedTitle = copy.blockedWatchOnly;
+  if (switchBlocked) blockedTitle = copy.blockedAccountKey;
+  else if (stored && stored.passwordProtected) blockedTitle = copy.blockedLocked;
+
   const options = [];
   for (let i = 0; i <= MAX_VISIBLE_ACCOUNT_INDEX; i++) {
-    options.push({ key: `fab-acct-${i}`, text: `Account ${i}`, value: i });
+    options.push({ key: `fab-acct-${i}`, text: copy.option(i), value: i });
   }
 
   return (
     <>
       <Header as="label" htmlFor="fabric-hub-fabric-account-select" style={{ marginRight: '0.5em', marginBottom: 0 }}>
-        Fabric account
+        {copy.label}
       </Header>
       <Dropdown
         id="fabric-hub-fabric-account-select"
@@ -69,9 +76,7 @@ function FabricIdentityAccountControls (props) {
         options={options}
         disabled={!canSwitch}
         title={
-          !canSwitch
-            ? 'Unlock your identity (master key) first to switch Fabric accounts.'
-            : 'Fabric BIP44 account index — same mnemonic, distinct protocol signing subtree (Hub default is account 0).'
+          !canSwitch ? blockedTitle : copy.title
         }
         onChange={(e, d) => {
           const v = d && (d.value != null ? Number(d.value) : NaN);

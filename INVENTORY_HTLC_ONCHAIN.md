@@ -4,14 +4,14 @@ This supplements [PAYMENTS_PROTOCOL.md](PAYMENTS_PROTOCOL.md). The Hub’s **pha
 
 ## Output structure
 
-- **Internal key (NUMS):** fixed x-only pubkey `50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0` (same as `inventoryHtlc.TAPROOT_INTERNAL_NUMS` in code). Key-path spends are not used for the happy path.
+- **Internal key (NUMS):** fixed x-only pubkey `50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0` (same as `TAPROOT_INTERNAL_NUMS` in `@fabric/core/types/policy`). Key-path spends are not used for the happy path.
 - **Script tree (two tapleaves):**
   1. **Claim (seller):** `OP_SHA256 <32-byte hash> OP_EQUALVERIFY <seller_xonly_32> OP_CHECKSIG`
      Witness stack order for script satisfaction: `[schnorr_sig_64_or_65, preimage_32, ...controlBlock]`.
   2. **Refund (buyer):** `<lockheight> OP_CHECKLOCKTIMEVERIFY OP_DROP <buyer_xonly_32> OP_CHECKSIG`
      Spending tx **nLockTime** must be ≥ `lockheight` (block height mode).
 
-Construction matches `functions/inventoryHtlc.js` (`buildInventoryHtlcP2tr`).
+Construction matches `@fabric/core/types/htlc` (`new Htlc({ network, claimPubkey, refundPubkey, paymentHash, refundLocktime })`).
 
 ## Funding (buyer)
 

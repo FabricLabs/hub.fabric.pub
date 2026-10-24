@@ -14,6 +14,10 @@ const {
   Table
 } = require('semantic-ui-react');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const strings = require('../locales/en');
+
+const common = strings.common;
+const co = strings.network.collaboration;
 
 /**
  * Hub operator UI: contacts, groups (nested members + multisig preview), invitations.
@@ -45,7 +49,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
   const rpc = React.useCallback(async (method, params = {}) => {
     const b = bridgeRef && bridgeRef.current;
     if (!b || typeof b.callHubJsonRpc !== 'function') {
-      throw new Error('Bridge is not ready yet.');
+      throw new Error(co.notReady);
     }
     const out = await b.callHubJsonRpc(method, Object.assign({}, params, { adminToken: token }));
     if (out.error) throw new Error(out.error);
@@ -103,19 +107,19 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
     const exp = Number(inv && inv.expiresAt);
     const expired = Number.isFinite(exp) && exp > 0 && now > exp && String(inv.status || '') === 'pending';
     const raw = expired ? 'expired' : String((inv && inv.status) || 'pending').toLowerCase();
-    if (raw === 'accepted') return { text: 'accepted', color: 'green' };
-    if (raw === 'declined') return { text: 'declined', color: 'red' };
-    if (raw === 'expired') return { text: 'expired', color: 'grey' };
-    return { text: 'pending', color: 'blue' };
+    if (raw === 'accepted') return { text: co.invitations.status.accepted, color: 'green' };
+    if (raw === 'declined') return { text: co.invitations.status.declined, color: 'red' };
+    if (raw === 'expired') return { text: co.invitations.status.expired, color: 'grey' };
+    return { text: co.invitations.status.pending, color: 'blue' };
   }, []);
 
   const formatTs = React.useCallback((ts) => {
     const n = Number(ts);
-    if (!Number.isFinite(n) || n <= 0) return '—';
+    if (!Number.isFinite(n) || n <= 0) return common.none;
     try {
       return new Date(n).toLocaleString();
     } catch (_) {
-      return '—';
+      return common.none;
     }
   }, []);
 
@@ -123,8 +127,11 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
     return (
       <Segment style={{ maxWidth: 720, margin: '1em auto' }}>
         <Message warning>
-          <Message.Header>Admin token required</Message.Header>
-          <p>Save the hub admin token from first-time setup, then open <Link to="/settings/admin">Admin</Link>.</p>
+          <Message.Header>{co.noToken.heading}</Message.Header>
+          <p>
+            {co.noToken.bodyBefore}{' '}
+            <Link to="/settings/admin">{co.noToken.link}</Link>{co.noToken.bodyAfter}
+          </p>
         </Message>
       </Segment>
     );
@@ -136,21 +143,21 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
         <Header as="h2">
           <Icon name="users" />
           <Header.Content>
-            Collaboration
-            <Header.Subheader>Contacts, multisig-oriented groups, email invitations</Header.Subheader>
+            {co.title}
+            <Header.Subheader>{co.subtitle}</Header.Subheader>
           </Header.Content>
         </Header>
       </div>
 
       {error ? (
-        <Message negative onDismiss={() => setError(null)} content={error} />
+        <Message negative onDismiss={() => setError(null)} content={error} role="alert" />
       ) : null}
 
-      <Button primary icon="refresh" content="Refresh" loading={busy} disabled={busy} onClick={() => refresh()} />
+      <Button primary icon="refresh" content={common.actions.refresh} loading={busy} disabled={busy} onClick={() => refresh()} />
 
       <Divider />
 
-      <Header as="h3">Contacts</Header>
+      <Header as="h3">{co.contacts.heading}</Header>
       <Form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -162,7 +169,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
             if (newPeerId.trim()) body.fabricPeerId = newPeerId.trim();
             if (newPub.trim()) body.publicKeyHex = newPub.trim();
             if (!body.email && !body.fabricPeerId) {
-              throw new Error('Enter an email and/or pick a Fabric peer id.');
+              throw new Error(co.contacts.needEmailOrPeer);
             }
             await rpc('AddCollaborationContact', body);
             setNewEmail('');
@@ -177,35 +184,40 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
         }}
       >
         <Form.Group widths="equal">
-          <Form.Input id="collab-input-contact-email" label="Email" placeholder="friend@example.com" value={newEmail} onChange={(e, d) => setNewEmail(d.value)} />
+          <Form.Input id="collab-input-contact-email" label={co.contacts.email} placeholder={co.contacts.emailPlaceholder} value={newEmail} onChange={(e, d) => setNewEmail(d.value)} />
           <Form.Input
             id="collab-input-contact-peerid"
-            label="Fabric peer id (from list)"
-            placeholder="id1… or webrtc:…"
+            label={co.contacts.peerId}
+            placeholder={co.contacts.peerIdPlaceholder}
             value={newPeerId}
             onChange={(e, d) => setNewPeerId(d.value)}
           />
-          <Form.Input id="collab-input-contact-pubkey" label="Public key hex (optional)" placeholder="02… or x-only 64 hex" value={newPub} onChange={(e, d) => setNewPub(d.value)} />
+          <Form.Input id="collab-input-contact-pubkey" label={co.contacts.publicKey} placeholder={co.contacts.publicKeyPlaceholder} value={newPub} onChange={(e, d) => setNewPub(d.value)} />
         </Form.Group>
-        <Form.Button id="collab-btn-contact-add" primary type="submit" loading={busy} disabled={busy}>Add contact</Form.Button>
+        <Form.Button id="collab-btn-contact-add" primary type="submit" loading={busy} disabled={busy}>{co.contacts.add}</Form.Button>
       </Form>
       <Table compact celled size="small">
         <Table.Header>
           <Table.Row>
-            <Table.HeaderCell>Label</Table.HeaderCell>
-            <Table.HeaderCell>Email</Table.HeaderCell>
-            <Table.HeaderCell>Fabric id</Table.HeaderCell>
-            <Table.HeaderCell>Pubkey (x-only / hex)</Table.HeaderCell>
-            <Table.HeaderCell />
+            <Table.HeaderCell>{co.contacts.columns.name}</Table.HeaderCell>
+            <Table.HeaderCell>{co.contacts.columns.email}</Table.HeaderCell>
+            <Table.HeaderCell>{co.contacts.columns.peerId}</Table.HeaderCell>
+            <Table.HeaderCell>{co.contacts.columns.publicKey}</Table.HeaderCell>
+            <Table.HeaderCell>{co.contacts.columns.actions}</Table.HeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
+          {(contacts || []).length === 0 ? (
+            <Table.Row>
+              <Table.Cell colSpan={5} style={{ color: '#666' }}>{co.contacts.empty}</Table.Cell>
+            </Table.Row>
+          ) : null}
           {(contacts || []).map((c) => (
             <Table.Row key={c.id}>
-              <Table.Cell>{c.label || '—'}</Table.Cell>
-              <Table.Cell>{c.email || '—'}</Table.Cell>
-              <Table.Cell style={{ wordBreak: 'break-all' }}>{c.fabricPeerId || '—'}</Table.Cell>
-              <Table.Cell style={{ wordBreak: 'break-all' }}>{c.publicKeyHex || '—'}</Table.Cell>
+              <Table.Cell>{c.label || common.none}</Table.Cell>
+              <Table.Cell>{c.email || common.none}</Table.Cell>
+              <Table.Cell style={{ wordBreak: 'break-all' }}>{c.fabricPeerId || common.none}</Table.Cell>
+              <Table.Cell style={{ wordBreak: 'break-all' }}>{c.publicKeyHex || common.none}</Table.Cell>
               <Table.Cell collapsing>
                 <Button
                   size="mini"
@@ -225,7 +237,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                     }
                   }}
                 >
-                  Remove
+                  {co.remove}
                 </Button>
               </Table.Cell>
             </Table.Row>
@@ -233,16 +245,17 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
         </Table.Body>
       </Table>
       <p style={{ color: '#666', fontSize: '0.9em' }}>
-        Known peers (for paste):{' '}
+        {co.contacts.knownPeers}{' '}
         {(peers || []).slice(0, 12).map((p) => (
           <code key={String(p.id)} style={{ marginRight: '0.5em' }}>{String(p.id).slice(0, 18)}…</code>
         ))}
-        {(!peers || peers.length === 0) ? <em>none yet</em> : null}
+        {(!peers || peers.length === 0) ? <em>{co.contacts.noKnownPeers}</em> : null}
       </p>
 
       <Divider />
 
-      <Header as="h3">Groups</Header>
+      <Header as="h3">{co.groups.heading}</Header>
+      <p style={{ color: '#555' }}>{co.groups.intro}</p>
       <Form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -265,11 +278,11 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
       >
         <Form.Group widths="equal">
           <div id="collab-input-group-name">
-            <Form.Input label="Name" value={groupName} onChange={(e, d) => setGroupName(d.value)} required />
+            <Form.Input id="collab-input-group-name-field" label={co.groups.name} value={groupName} onChange={(e, d) => setGroupName(d.value)} required />
           </div>
           <Form.Input
             id="collab-input-group-threshold"
-            label="Threshold (m-of-n when keys resolve)"
+            label={co.groups.threshold}
             type="number"
             min={1}
             value={groupThreshold}
@@ -277,7 +290,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
           />
         </Form.Group>
         <span id="collab-btn-group-create">
-          <Form.Button primary type="submit" loading={busy} disabled={busy}>Create group</Form.Button>
+          <Form.Button primary type="submit" loading={busy} disabled={busy}>{co.groups.create}</Form.Button>
         </span>
       </Form>
 
@@ -304,23 +317,28 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
         }}
       >
         <Form.Group widths="equal">
-          <Form.Input id="collab-input-member-groupid" label="Group id" placeholder="grp_…" value={memberGroupId} onChange={(e, d) => setMemberGroupId(d.value)} />
-          <Form.Input id="collab-input-member-pubkey" label="Member secp256k1 pubkey (hex)" value={memberPub} onChange={(e, d) => setMemberPub(d.value)} />
+          <Form.Input id="collab-input-member-groupid" label={co.groups.memberGroup} placeholder="grp_…" value={memberGroupId} onChange={(e, d) => setMemberGroupId(d.value)} />
+          <Form.Input id="collab-input-member-pubkey" label={co.groups.memberKey} value={memberPub} onChange={(e, d) => setMemberPub(d.value)} />
         </Form.Group>
-        <Form.Button id="collab-btn-member-add" type="submit" loading={busy} disabled={busy}>Add pubkey member</Form.Button>
+        <Form.Button id="collab-btn-member-add" type="submit" loading={busy} disabled={busy}>{co.groups.addMember}</Form.Button>
       </Form>
 
       <Table compact celled size="small" style={{ marginTop: '1em' }}>
         <Table.Header>
           <Table.Row>
-            <Table.HeaderCell>Name</Table.HeaderCell>
-            <Table.HeaderCell>Id</Table.HeaderCell>
-            <Table.HeaderCell>m</Table.HeaderCell>
-            <Table.HeaderCell>Members</Table.HeaderCell>
-            <Table.HeaderCell />
+            <Table.HeaderCell>{co.groups.columns.name}</Table.HeaderCell>
+            <Table.HeaderCell>{co.groups.columns.id}</Table.HeaderCell>
+            <Table.HeaderCell>{co.groups.columns.threshold}</Table.HeaderCell>
+            <Table.HeaderCell>{co.groups.columns.members}</Table.HeaderCell>
+            <Table.HeaderCell>{co.groups.columns.actions}</Table.HeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
+          {(groups || []).length === 0 ? (
+            <Table.Row>
+              <Table.Cell colSpan={5} style={{ color: '#666' }}>{co.groups.empty}</Table.Cell>
+            </Table.Row>
+          ) : null}
           {(groups || []).map((g) => (
             <Table.Row key={g.id}>
               <Table.Cell>{g.name}</Table.Cell>
@@ -349,7 +367,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                     }
                   }}
                 >
-                  Preview
+                  {co.groups.preview}
                 </Button>
               </Table.Cell>
             </Table.Row>
@@ -358,26 +376,26 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
       </Table>
       {preview && previewGroupId ? (
         <Message info>
-          <Message.Header>Multisig preview for {previewGroupId}</Message.Header>
+          <Message.Header>{co.preview.heading(previewGroupId)}</Message.Header>
           <p style={{ margin: '0.35em 0 0.55em' }}>
-            Readiness:{' '}
+            {co.preview.readiness}{' '}
             {Array.isArray(preview.missing) && preview.missing.length > 0 ? (
               <Label color="orange" size="small">
-                Missing keys ({preview.missing.length})
+                {co.preview.missing(preview.missing.length)}
               </Label>
             ) : (
-              <Label color="green" size="small">Ready</Label>
+              <Label color="green" size="small">{co.preview.ready}</Label>
             )}
             {' '}
             <Label size="small">
-              {Number(preview.threshold || 0)}-of-{Number(preview.uniquePubkeys || 0)}
+              {co.preview.mOfN(Number(preview.threshold || 0), Number(preview.uniquePubkeys || 0))}
             </Label>
           </p>
           {preview.receiveReady && preview.receiveAddress ? (
             <Message positive>
-              <Message.Header>Your group can now receive funds!</Message.Header>
+              <Message.Header>{co.preview.receiveHeading}</Message.Header>
               <p style={{ marginTop: '0.35em', marginBottom: '0.45em' }}>
-                Taproot receive address: <code style={{ wordBreak: 'break-all' }}>{preview.receiveAddress}</code>
+                {co.preview.receiveAddress} <code style={{ wordBreak: 'break-all' }}>{preview.receiveAddress}</code>
               </p>
               <Button
                 size="mini"
@@ -385,17 +403,16 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                 basic
                 onClick={() => copyText('receiveAddress', preview.receiveAddress)}
               >
-                {copyState === 'receiveAddress' ? 'Copied address' : 'Copy receive address'}
+                {copyState === 'receiveAddress' ? co.preview.copiedAddress : co.preview.copyAddress}
               </Button>
             </Message>
           ) : null}
           {preview.federationPolicy && preview.federationPolicy.ready ? (
             <Message>
-              <Message.Header>Federation integration</Message.Header>
+              <Message.Header>{co.preview.federationHeading}</Message.Header>
               <p style={{ marginTop: '0.35em', marginBottom: '0.5em' }}>
-                This group can be reused as your distributed federation validator set.
-                Vault address from the same signer policy:{' '}
-                <code style={{ wordBreak: 'break-all' }}>{preview.federationPolicy.vaultAddress || '—'}</code>
+                {co.preview.federationBody}{' '}
+                <code style={{ wordBreak: 'break-all' }}>{preview.federationPolicy.vaultAddress || common.none}</code>
               </p>
               <Button
                 size="mini"
@@ -411,13 +428,13 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                       ? preview.federationPolicy.validatorsCompressedSorted
                       : [];
                     const thresholdNum = Number(preview.federationPolicy.threshold || preview.threshold || 1);
-                    if (!validators.length) throw new Error('No validators available in this group preview.');
+                    if (!validators.length) throw new Error(co.preview.noValidators);
                     const out = await rpc('SetDistributedFederationPolicy', {
                       validators,
                       threshold: thresholdNum
                     });
-                    if (out && out.status === 'error') throw new Error(out.message || 'Could not save federation policy.');
-                    setFederationApplyStatus(`Saved federation policy (${thresholdNum}-of-${validators.length}) from group ${previewGroupId}.`);
+                    if (out && out.status === 'error') throw new Error(out.message || co.preview.saveFailed);
+                    setFederationApplyStatus(co.preview.saved(thresholdNum, validators.length, previewGroupId));
                   } catch (err) {
                     setError(err && err.message ? err.message : String(err));
                   } finally {
@@ -425,7 +442,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                   }
                 }}
               >
-                Use this group as federation policy
+                {co.preview.useForFederation}
               </Button>
               <Button
                 size="mini"
@@ -433,7 +450,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                 basic
                 onClick={() => copyText('federationValidators', JSON.stringify(preview.federationPolicy.validatorsCompressedSorted || [], null, 2))}
               >
-                {copyState === 'federationValidators' ? 'Copied validators' : 'Copy federation validators'}
+                {copyState === 'federationValidators' ? co.preview.copiedValidators : co.preview.copyValidators}
               </Button>
               <Button
                 as={Link}
@@ -442,20 +459,23 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                 basic
                 type="button"
               >
-                Open federation settings
+                {co.preview.openFederation}
               </Button>
               {federationApplyStatus ? (
-                <Message positive size="small" style={{ marginTop: '0.75em', marginBottom: 0 }} content={federationApplyStatus} />
+                <Message positive size="small" style={{ marginTop: '0.75em', marginBottom: 0 }} content={federationApplyStatus} role="status" />
               ) : null}
             </Message>
           ) : null}
-          <pre id="collab-multisig-preview-json" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(preview, null, 2)}</pre>
+          <details className="hub-developer-details">
+            <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
+            <pre id="collab-multisig-preview-json" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(preview, null, 2)}</pre>
+          </details>
         </Message>
       ) : null}
 
       <Divider />
 
-      <Header as="h3">Invitations</Header>
+      <Header as="h3">{co.invitations.heading}</Header>
       <Form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -467,7 +487,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
             if (invitePeerIdentity.trim()) body.recipientPeerIdentity = invitePeerIdentity.trim();
             if (inviteGroupId.trim()) body.groupId = inviteGroupId.trim();
             if (!body.email && !body.recipientPeerIdentity) {
-              throw new Error('Enter invite email and/or recipient peer identity (id1...).');
+              throw new Error(co.invitations.needRecipient);
             }
             await rpc('CreateCollaborationInvitation', body);
             setInviteEmail('');
@@ -482,46 +502,51 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
         }}
       >
         <Form.Group widths="equal">
-          <Form.Input id="collab-input-invite-email" label="Email (optional)" placeholder="invitee@example.com" value={inviteEmail} onChange={(e, d) => setInviteEmail(d.value)} />
+          <Form.Input id="collab-input-invite-email" label={co.invitations.email} placeholder={co.invitations.emailPlaceholder} value={inviteEmail} onChange={(e, d) => setInviteEmail(d.value)} />
           <Form.Input
             id="collab-input-invite-peer"
-            label="Recipient peer identity (id1..., optional)"
-            placeholder="id1..."
+            label={co.invitations.peer}
+            placeholder={co.invitations.peerPlaceholder}
             value={invitePeerIdentity}
             onChange={(e, d) => setInvitePeerIdentity(d.value)}
           />
           <Form.Select
             id="collab-input-invite-group"
-            label="Attach group (optional)"
-            placeholder="Select group"
+            label={co.invitations.group}
+            placeholder={co.invitations.groupPlaceholder}
             value={inviteGroupId}
             onChange={(e, d) => setInviteGroupId(String(d.value || ''))}
             options={[
-              { key: '_none', value: '', text: 'No group attached' },
-              ...(groups || []).map((g) => ({ key: g.id, value: g.id, text: `${g.name} (${g.id})` }))
+              { key: '_none', value: '', text: co.invitations.noGroup },
+              ...(groups || []).map((g) => ({ key: g.id, value: g.id, text: co.invitations.groupOption(g.name, g.id) }))
             ]}
           />
         </Form.Group>
-        <Form.Button id="collab-btn-invite-send" primary type="submit" loading={busy} disabled={busy}>Send invitation</Form.Button>
+        <Form.Button id="collab-btn-invite-send" primary type="submit" loading={busy} disabled={busy}>{co.invitations.send}</Form.Button>
       </Form>
       <Table compact celled size="small">
         <Table.Header>
           <Table.Row>
-            <Table.HeaderCell>Email</Table.HeaderCell>
-            <Table.HeaderCell>Recipient peer</Table.HeaderCell>
-            <Table.HeaderCell>Group</Table.HeaderCell>
-            <Table.HeaderCell>Status</Table.HeaderCell>
-            <Table.HeaderCell>Expires</Table.HeaderCell>
-            <Table.HeaderCell>Id</Table.HeaderCell>
-            <Table.HeaderCell />
+            <Table.HeaderCell>{co.invitations.columns.email}</Table.HeaderCell>
+            <Table.HeaderCell>{co.invitations.columns.recipient}</Table.HeaderCell>
+            <Table.HeaderCell>{co.invitations.columns.group}</Table.HeaderCell>
+            <Table.HeaderCell>{co.invitations.columns.status}</Table.HeaderCell>
+            <Table.HeaderCell>{co.invitations.columns.expires}</Table.HeaderCell>
+            <Table.HeaderCell>{co.invitations.columns.id}</Table.HeaderCell>
+            <Table.HeaderCell>{co.invitations.columns.actions}</Table.HeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
+          {(invitations || []).length === 0 ? (
+            <Table.Row>
+              <Table.Cell colSpan={7} style={{ color: '#666' }}>{co.invitations.empty}</Table.Cell>
+            </Table.Row>
+          ) : null}
           {(invitations || []).map((inv) => (
             <Table.Row key={inv.id}>
-              <Table.Cell>{inv.email || '—'}</Table.Cell>
-              <Table.Cell style={{ wordBreak: 'break-all' }}>{inv.recipientPeerIdentity || '—'}</Table.Cell>
-              <Table.Cell>{inv.groupId ? ((groupMap[inv.groupId] && groupMap[inv.groupId].name) || inv.groupId) : '—'}</Table.Cell>
+              <Table.Cell>{inv.email || common.none}</Table.Cell>
+              <Table.Cell style={{ wordBreak: 'break-all' }}>{inv.recipientPeerIdentity || common.none}</Table.Cell>
+              <Table.Cell>{inv.groupId ? ((groupMap[inv.groupId] && groupMap[inv.groupId].name) || inv.groupId) : common.none}</Table.Cell>
               <Table.Cell>
                 {(() => {
                   const m = inviteStatusMeta(inv);
@@ -549,7 +574,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
                     }
                   }}
                 >
-                  Remove
+                  {co.remove}
                 </Button>
               </Table.Cell>
             </Table.Row>
@@ -558,10 +583,10 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
       </Table>
       {preview && previewGroupId ? (
         <Message>
-          <Message.Header>Execution handoff</Message.Header>
+          <Message.Header>{co.handoff.heading}</Message.Header>
           <p style={{ marginTop: '0.4em' }}>
-            Use this group preview as the input for contract execution policy authoring on the{' '}
-            <Link to="/contracts">Contracts</Link> page.
+            {co.handoff.bodyBefore}{' '}
+            <Link to="/contracts">{co.handoff.link}</Link> {co.handoff.bodyAfter}
           </p>
           <Button
             size="mini"
@@ -569,7 +594,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
             basic
             onClick={() => copyText('preview', JSON.stringify(preview, null, 2))}
           >
-            {copyState === 'preview' ? 'Copied preview' : 'Copy preview JSON'}
+            {copyState === 'preview' ? co.handoff.copiedPreview : co.handoff.copyPreview}
           </Button>
           <Button
             size="mini"
@@ -578,7 +603,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
             onClick={() => copyText('fingerprint', preview.policyFingerprint || '')}
             disabled={!preview.policyFingerprint}
           >
-            {copyState === 'fingerprint' ? 'Copied fingerprint' : 'Copy policy fingerprint'}
+            {copyState === 'fingerprint' ? co.handoff.copiedFingerprint : co.handoff.copyFingerprint}
           </Button>
           <Button
             size="mini"
@@ -587,7 +612,7 @@ function CollaborationHome ({ bridgeRef, adminToken }) {
             onClick={() => copyText('descriptor', preview.receiveDescriptor || '')}
             disabled={!preview.receiveDescriptor}
           >
-            {copyState === 'descriptor' ? 'Copied descriptor' : 'Copy Taproot descriptor'}
+            {copyState === 'descriptor' ? co.handoff.copiedDescriptor : co.handoff.copyDescriptor}
           </Button>
         </Message>
       ) : null}

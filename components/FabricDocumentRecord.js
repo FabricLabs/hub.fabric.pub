@@ -4,7 +4,7 @@
  * @fileoverview React wrapper around `@fabric/http` `fabric-document`: renders
  * the hash-only sealed blob tree (Tree root, leaves, ranked chunk providers)
  * for a document record. Offers come from `GET /services/market/chunks`
- * (local `DocumentOfferBook` telemetry) — never member metadata or bytes.
+ * (local `DocumentBook` telemetry) — never member metadata or bytes.
  */
 
 const React = require('react');

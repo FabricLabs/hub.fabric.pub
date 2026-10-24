@@ -2,6 +2,7 @@
 
 const React = require('react');
 const { Button, Icon, Message } = require('semantic-ui-react');
+const t = require('../locales/en');
 const {
   mergeAlertLists,
   computeDismissedIdSet,
@@ -105,7 +106,7 @@ function HubAlertStack (props) {
     <div
       id="fabric-hub-alert-stack"
       role="region"
-      aria-label="Hub alerts"
+      aria-label={t.shell.alerts.label}
       style={{
         margin: '0 -1em 0.5rem -1em',
         padding: '0 0.5rem',
@@ -118,7 +119,7 @@ function HubAlertStack (props) {
             type="button"
             basic
             icon
-            aria-label="Previous alert"
+            aria-label={t.shell.alerts.previous}
             disabled={index <= 0}
             onClick={onPrev}
             style={{ alignSelf: 'center', flex: '0 0 auto' }}
@@ -170,7 +171,7 @@ function HubAlertStack (props) {
                   basic
                   compact
                   size="small"
-                  aria-label="Dismiss alert"
+                  aria-label={t.shell.alerts.dismiss}
                   onClick={() => onDismiss(alert)}
                 >
                   <Icon name="close" />
@@ -184,7 +185,7 @@ function HubAlertStack (props) {
             type="button"
             basic
             icon
-            aria-label="Next alert"
+            aria-label={t.shell.alerts.next}
             disabled={index >= active.length - 1}
             onClick={onNext}
             style={{ alignSelf: 'center', flex: '0 0 auto' }}

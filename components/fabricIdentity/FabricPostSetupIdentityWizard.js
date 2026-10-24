@@ -17,6 +17,9 @@ const IdentityManager = require('../IdentityManager');
 const {
   hasCompletedPostSetupBrowserIdentity
 } = require('../../functions/fabricPostSetupBrowserIdentity');
+const t = require('../../locales/en');
+
+const copy = t.identity.postSetupWizard;
 
 /**
  * Full-viewport wizard that drives {@link IdentityManager} toward Generate / Existing key only.
@@ -66,12 +69,11 @@ function FabricPostSetupIdentityWizard (props) {
       <Segment style={{ maxWidth: '44rem', width: '100%' }} raised>
         <Header as="h2" style={{ marginBottom: '0.35em' }}>
           <Icon name="user secret" />
-          Create your Fabric identity
+          {copy.title}
         </Header>
         <Message info size="small" style={{ marginBottom: '1.1em' }}>
           <p style={{ margin: 0, lineHeight: 1.5 }}>
-            Use <strong>Generate</strong> or <strong>restore</strong> below to finish. You can skip and open the identity
-            menu from the top bar anytime.
+            {copy.intro}
           </p>
         </Message>
         <IdentityManager
@@ -110,7 +112,7 @@ function FabricPostSetupIdentityWizard (props) {
               if (typeof onSkip === 'function') onSkip();
             }}
           >
-            Skip for now — I will add an identity later
+            {copy.skip}
           </Button>
         </div>
       </Segment>

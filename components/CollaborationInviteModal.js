@@ -3,6 +3,9 @@
 const React = require('react');
 const { Modal, Button, Header, Icon, Message } = require('semantic-ui-react');
 const { toast } = require('../functions/toast');
+const strings = require('../locales/en');
+
+const ci = strings.network.collaborationInvite;
 
 function CollaborationInviteModal (props) {
   const open = !!(props && props.open);
@@ -14,9 +17,10 @@ function CollaborationInviteModal (props) {
 
   const respond = React.useCallback(async (action) => {
     if (!detail) return;
-    const url = action === 'accept' ? detail.acceptUrl : detail.declineUrl;
+    const accepting = action === 'accept';
+    const url = accepting ? detail.acceptUrl : detail.declineUrl;
     if (!url) {
-      setError(`Missing ${action} URL.`);
+      setError(accepting ? ci.missingAccept : ci.missingDecline);
       return;
     }
     setBusy(true);
@@ -25,9 +29,9 @@ function CollaborationInviteModal (props) {
       const res = await fetch(String(url), { method: 'GET', headers: { Accept: 'application/json' } });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || (body && body.status === 'error')) {
-        throw new Error((body && body.message) || `${action} failed (${res.status})`);
+        throw new Error((body && body.message) || (accepting ? ci.acceptFailed(res.status) : ci.declineFailed(res.status)));
       }
-      toast.success(action === 'accept' ? 'Invitation accepted.' : 'Invitation declined.', { header: 'Collaboration' });
+      toast.success(accepting ? ci.accepted : ci.declined, { header: ci.toastHeader });
       onClose();
     } catch (e) {
       setError(e && e.message ? e.message : String(e));
@@ -46,27 +50,27 @@ function CollaborationInviteModal (props) {
     <Modal open={open} onClose={onClose} size="small" closeIcon aria-labelledby="collaboration-invite-heading">
       <Header icon id="collaboration-invite-heading">
         <Icon name="users" />
-        Collaboration invitation
+        {ci.title}
       </Header>
       <Modal.Content>
         <p style={{ marginTop: 0 }}>
-          A connected peer invited this identity to collaborate.
-          {recipientPeerIdentity ? ` Recipient peer: ${recipientPeerIdentity}.` : ''}
-          {groupId ? ` Group: ${groupId}.` : ''}
+          {ci.body}
+          {recipientPeerIdentity ? ` ${ci.recipient(recipientPeerIdentity)}` : ''}
+          {groupId ? ` ${ci.group(groupId)}` : ''}
         </p>
         {fromPeerId ? (
           <p style={{ color: '#666' }}>
-            From peer: <code>{fromPeerId}</code>
+            {ci.from} <code>{fromPeerId}</code>
           </p>
         ) : null}
-        {error ? <Message negative content={error} /> : null}
+        {error ? <Message negative content={error} role="alert" /> : null}
       </Modal.Content>
       <Modal.Actions>
         <Button basic disabled={busy} onClick={() => respond('decline')}>
-          Reject
+          {ci.decline}
         </Button>
         <Button primary loading={busy} disabled={busy} onClick={() => respond('accept')}>
-          Accept
+          {ci.accept}
         </Button>
       </Modal.Actions>
     </Modal>

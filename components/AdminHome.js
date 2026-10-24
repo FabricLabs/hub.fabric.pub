@@ -17,30 +17,17 @@ const {
 } = require('../functions/hubUiFeatureFlags');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BeaconAdminPanel = require('./BeaconAdminPanel');
+const PrivateNetworkPanel = require('./PrivateNetworkPanel');
+const t = require('../locales/en');
+
+const c = t.settings.admin;
 
 /**
  * Operator admin hub: Beacon, federation links, regtest admin token.
  */
-const UI_FLAG_LABELS = {
-  promo: 'Promo hero on Home for signed-out public visitors only (install your own node — hidden after you sign in / for operators)',
-  advancedMode: 'Advanced Mode (shows power-user navigation and tools)',
-  peers: 'Peers & WebRTC (nav, routes, home network card)',
-  peersAdmin: 'Peers (hub admin token required in this browser)',
-  activities: 'Notifications (bell), activity log, feed, home sections',
-  features: 'Features tour (/features, More menu, home shortcut)',
-  sidechain: 'Sidechain demo, federation settings, beacon federation nav',
-  bitcoinPayments: 'Bitcoin — Payments & Payjoin (page, nav links, balance chip)',
-  bitcoinInvoices: 'Bitcoin — Invoices walkthrough page',
-  bitcoinResources: 'Bitcoin — HTTP resources browser (/services/bitcoin/resources)',
-  bitcoinExplorer: 'Bitcoin — Block & transaction detail routes',
-  bitcoinLightning: 'Bitcoin — Lightning UI & channel detail routes',
-  bitcoinCrowdfund: 'Bitcoin — Taproot crowdfund section on the dashboard'
-};
-const WORK_QUEUE_STRATEGY_OPTIONS = [
-  { key: 'highest_value_first', value: 'highest_value_first', text: 'Highest value first (default)' },
-  { key: 'fifo', value: 'fifo', text: 'FIFO (oldest first)' },
-  { key: 'oldest_high_value_first', value: 'oldest_high_value_first', text: 'Oldest first, value tie-breaker' }
-];
+const UI_FLAG_LABELS = c.flags;
+const WORK_QUEUE_STRATEGY_OPTIONS = ['highest_value_first', 'fifo', 'oldest_high_value_first']
+  .map((value) => ({ key: value, value, text: c.worker.strategies[value] }));
 
 /** Must match {@link HUB_SELF_DESTRUCT_CONFIRM_PHRASE} in `services/hub.js` (POST `/settings/self-destruct`). */
 const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
@@ -84,7 +71,7 @@ function AdminHome (props) {
       body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
     });
     const json = await res.json().catch(() => ({}));
-    if (json && json.error) throw new Error(json.error.message || 'RPC error');
+    if (json && json.error) throw new Error(json.error.message || t.common.errors.network);
     return json && Object.prototype.hasOwnProperty.call(json, 'result') ? json.result : json;
   }, []);
 
@@ -125,7 +112,7 @@ function AdminHome (props) {
 
   const formatBytes = React.useCallback((n) => {
     const v = Number(n);
-    if (!Number.isFinite(v) || v < 0) return 'n/a';
+    if (!Number.isFinite(v) || v < 0) return t.common.none;
     if (v < 1024) return `${v} B`;
     const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
     let idx = -1;
@@ -140,7 +127,7 @@ function AdminHome (props) {
   const runSelfDestruct = React.useCallback(async () => {
     const token = readHubAdminTokenFromBrowser(adminTokenProp);
     if (!token) {
-      setSelfDestructErr('Admin token required in this browser.');
+      setSelfDestructErr(c.token.needed);
       return;
     }
     setSelfDestructBusy(true);
@@ -165,7 +152,7 @@ function AdminHome (props) {
       if (!res.ok) {
         throw new Error((json && json.message) || raw || `${res.status} ${res.statusText}`);
       }
-      setSelfDestructOk(json.message || 'Local data wipe started. The Hub process will exit.');
+      setSelfDestructOk(json.message || c.danger.started);
       clearHubAdminTokenFromBrowser();
       setSelfDestructOpen(false);
       setSelfDestructPhrase('');
@@ -179,7 +166,7 @@ function AdminHome (props) {
 
   const formatDuration = React.useCallback((secIn) => {
     const sec = Number(secIn);
-    if (!Number.isFinite(sec) || sec < 0) return 'n/a';
+    if (!Number.isFinite(sec) || sec < 0) return t.common.none;
     const d = Math.floor(sec / 86400);
     const h = Math.floor((sec % 86400) / 3600);
     const m = Math.floor((sec % 3600) / 60);
@@ -264,7 +251,7 @@ function AdminHome (props) {
         setHttpShared(v === true || v === 'true');
       })
       .catch((e) => {
-        if (!cancelled) setHttpSharedErr(e && e.message ? e.message : String(e));
+        if (!cancelled) setHttpSharedErr(c.http.loadFailed(e && e.message ? e.message : String(e)));
       })
       .finally(() => {
         if (!cancelled) setHttpSharedLoading(false);
@@ -274,7 +261,7 @@ function AdminHome (props) {
 
   const persistHttpShared = (next) => {
     if (!adminToken) {
-      setHttpSharedErr('Admin token required to change HTTP bind mode.');
+      setHttpSharedErr(c.http.needToken);
       return;
     }
     setHttpSharedSaving(true);
@@ -290,21 +277,21 @@ function AdminHome (props) {
       body: JSON.stringify({ value: !!next })
     })
       .then((r) => {
-        if (!r.ok) return r.text().then((t) => { throw new Error(t || `${r.status}`); });
+        if (!r.ok) return r.text().then((text) => { throw new Error(text || `${r.status}`); });
         return r.json();
       })
       .then((j) => {
         setHttpShared(!!next);
         if (j && j.httpRebind === 'scheduled') {
-          setHttpSharedOk(j.message || 'HTTP listener is rebinding; WebSocket clients will reconnect.');
+          setHttpSharedOk(j.message || c.http.rebinding);
         } else if (j && j.httpRebind === 'skipped') {
-          setHttpSharedOk(j.httpRebindReason || 'Saved. Bind address is controlled by environment until you restart without those variables.');
+          setHttpSharedOk(j.httpRebindReason || c.http.envControlled);
         } else {
           setHttpSharedOk(null);
         }
       })
       .catch((e) => {
-        setHttpSharedErr(e && e.message ? e.message : String(e));
+        setHttpSharedErr(c.http.saveFailed(e && e.message ? e.message : String(e)));
       })
       .finally(() => {
         setHttpSharedSaving(false);
@@ -316,34 +303,34 @@ function AdminHome (props) {
     const next = loadHubUiFeatureFlags();
     setUiFlags(next);
     if (!adminToken) {
-      setUiFlagsPersistMsg('Saved in this browser only. Save admin token to persist on hub disk.');
+      setUiFlagsPersistMsg(c.flagsSection.savedLocal);
       return;
     }
     const result = await persistHubUiFeatureFlags(next, adminToken);
     if (!result.ok) {
-      setUiFlagsPersistMsg(`Saved in browser; hub-disk save failed: ${result.message || 'unknown error'}`);
+      setUiFlagsPersistMsg(c.flagsSection.saveFailed(result.message));
       return;
     }
-    setUiFlagsPersistMsg('Persisted to hub settings (disk) and restored on startup.');
+    setUiFlagsPersistMsg(c.flagsSection.saved);
   };
 
   const applyDocumentMarketPreset = async () => {
     const next = setAllHubUiFeatureFlags(documentMarketUiFlags());
     setUiFlags(next);
     if (!adminToken) {
-      setUiFlagsPersistMsg('Document market preset saved in this browser only. Save admin token to persist on hub disk.');
+      setUiFlagsPersistMsg(c.flagsSection.presetLocal);
       return;
     }
     const result = await persistHubUiFeatureFlags(next, adminToken);
     if (!result.ok) {
-      setUiFlagsPersistMsg(`Document market preset in browser; hub-disk save failed: ${result.message || 'unknown error'}`);
+      setUiFlagsPersistMsg(c.flagsSection.presetFailed(result.message));
       return;
     }
-    setUiFlagsPersistMsg('Document market preset persisted to hub settings (disk).');
+    setUiFlagsPersistMsg(c.flagsSection.presetSaved);
   };
 
   const runWorkerNow = async () => {
-    if (!adminToken) return setWorkerError('Admin token required.');
+    if (!adminToken) return setWorkerError(c.token.needed);
     setWorkerActionBusy(true);
     setWorkerError(null);
     try {
@@ -357,12 +344,12 @@ function AdminHome (props) {
   };
 
   const saveWorkerStrategy = async (strategy) => {
-    if (!hasAdmin) return setWorkerError('Admin token required.');
+    if (!hasAdmin) return setWorkerError(c.token.needed);
     setWorkerStrategySaving(true);
     setWorkerError(null);
     try {
       const out = await rpcCall('SetWorkerQueueStrategy', { adminToken, strategy });
-      if (out && out.status === 'error') throw new Error(out.message || 'Could not save worker queue strategy');
+      if (out && out.status === 'error') throw new Error(out.message || c.worker.strategyFailed);
       setWorkerStrategy(String((out && out.strategy) || strategy || 'highest_value_first'));
       await refreshWorkerPanel();
     } catch (e) {
@@ -373,7 +360,7 @@ function AdminHome (props) {
   };
 
   const clearWorkerQueue = async () => {
-    if (!adminToken) return setWorkerError('Admin token required.');
+    if (!adminToken) return setWorkerError(c.token.needed);
     setWorkerActionBusy(true);
     setWorkerError(null);
     try {
@@ -387,7 +374,7 @@ function AdminHome (props) {
   };
 
   const dropWorkerItem = async (id) => {
-    if (!adminToken) return setWorkerError('Admin token required.');
+    if (!adminToken) return setWorkerError(c.token.needed);
     setWorkerActionBusy(true);
     setWorkerError(null);
     try {
@@ -400,157 +387,163 @@ function AdminHome (props) {
     }
   };
 
+  const peersBlocked = !!(routeBlockedHint && routeBlockedHint.flag === 'peersAdmin');
+  const blockedLabel = routeBlockedHint && !peersBlocked
+    ? (UI_FLAG_LABELS[routeBlockedHint.flag] || routeBlockedHint.flag)
+    : null;
+  const healthNode = operatorHealth && operatorHealth.node ? operatorHealth.node : null;
+  const healthDisk = operatorHealth && operatorHealth.disk ? operatorHealth.disk : null;
+  const healthNet = operatorHealth && operatorHealth.network ? operatorHealth.network : null;
+  const flows = wealthSummary && wealthSummary.labeledFlows ? wealthSummary.labeledFlows : null;
+  const flowKeys = ['payjoin', 'payjoinDeposit', 'inventoryHtlcFund', 'inventoryHtlcClaim', 'storageContract'];
+  const flowValue = (group, key) => (flows && flows[group] ? Number(flows[group][key] || 0) : 0);
+  const yesNo = (v) => (v ? t.common.states.yes : t.common.states.no);
+  const currentStrategy = workerStatus && workerStatus.strategy ? String(workerStatus.strategy) : workerStrategy;
+  const sectionIntroStyle = { color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 };
+
   return (
     <Segment style={{ maxWidth: 960, margin: '1em auto' }}>
       <div style={{ marginBottom: '1em', display: 'flex', flexWrap: 'wrap', gap: '0.5em' }}>
-        <Button as={Link} to="/" basic size="small" aria-label="Back to home">
+        <Button as={Link} to="/" basic size="small">
           <Icon name="arrow left" aria-hidden="true" />
-          Home
+          {c.home}
         </Button>
-        <Button as={Link} to="/settings" basic size="small" aria-label="Back to settings overview">
+        <Button as={Link} to="/settings" basic size="small">
           <Icon name="setting" aria-hidden="true" />
-          Settings
+          {c.settings}
         </Button>
       </div>
 
-      {routeBlockedHint && (
+      {blockedLabel && (
         <Message
           warning
           style={{ marginBottom: '1em' }}
           onDismiss={() => setRouteBlockedHint(null)}
           dismissible
         >
-          <Message.Header>That page is hidden in this browser</Message.Header>
+          <Message.Header>{c.routeBlocked.title}</Message.Header>
           <p style={{ margin: '0.35em 0 0' }}>
-            {routeBlockedHint.flag === 'peersAdmin' ? (
+            {hasAdmin ? c.routeBlocked.flagOff(blockedLabel) : c.routeBlocked.flagOffNoToken(blockedLabel)}
+            {hasAdmin && routeBlockedHint.path ? (
               <>
-                You opened{' '}
-                <code style={{ wordBreak: 'break-all' }}>{routeBlockedHint.path || '(unknown path)'}</code>
-                . Peers are only available when this browser has the hub admin token (first-time setup token).
-                Paste or refresh the token below, then open the link again.
+                {' '}
+                <Link to={routeBlockedHint.path}>{c.routeBlocked.openAgain}</Link>
               </>
-            ) : (
-              <>
-                You opened{' '}
-                <code style={{ wordBreak: 'break-all' }}>{routeBlockedHint.path || '(unknown path)'}</code>
-                , but{' '}
-                <strong>{UI_FLAG_LABELS[routeBlockedHint.flag] || routeBlockedHint.flag}</strong> is turned off under
-                Feature visibility below. Enable it, then open the link again.
-              </>
-            )}
+            ) : null}
+          </p>
+        </Message>
+      )}
+      {peersBlocked && hasAdmin && (
+        <Message info style={{ marginBottom: '1em' }} onDismiss={() => setRouteBlockedHint(null)}>
+          <p style={{ margin: 0 }}>
+            {c.routeBlocked.peersReady}{' '}
+            <Link to={routeBlockedHint.path || '/peers'}>{c.routeBlocked.openPeers}</Link>
           </p>
         </Message>
       )}
 
       <Header as="h2" id="admin-page-heading">
         <Icon name="settings" aria-hidden="true" />
-        <Header.Content>Admin</Header.Content>
+        <Header.Content>{c.title}</Header.Content>
       </Header>
       <p id="admin-page-summary" style={{ color: '#666', marginBottom: '1.25em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Node-operator tools that depend on the hub setup token, Bitcoin service, and distributed execution surfaces.
-        End users normally use <Link to="/settings">Settings</Link>
-        {' '}and the <Link to="/services/bitcoin">Bitcoin</Link> dashboard without opening this page.
-        The Bitcoin dashboard is always available; turn on the Bitcoin sub-toggles below for Payments, Invoices, HTTP resources, block/tx explorer routes, Lightning, and crowdfund UI.
+        {c.summary}
       </p>
 
       {!hasAdmin ? (
-        <Message info style={{ marginBottom: '1em' }}>
-          <Message.Header>No admin token in this browser</Message.Header>
+        <Message warning style={{ marginBottom: '1em' }} id="admin-token-banner">
+          <Message.Header>{c.token.missingTitle}</Message.Header>
           <p style={{ margin: '0.35em 0 0' }}>
-            Paste the setup token from first-time hub configuration (or refresh it) to unlock Generate Block, Hub-wallet spends, and federation policy saves.
-            Regtest: use the panel below.
+            {peersBlocked ? c.token.peersBody : c.token.missingBody}
           </p>
+          <HubRegtestAdminTokenPanel
+            network={network}
+            adminTokenProp={adminTokenProp}
+            formOnly
+            inputId="admin-token-input"
+          />
+          <details className="hub-developer-details" style={{ marginTop: '0.75em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ margin: '0.35em 0 0' }}>{c.token.developer}</p>
+          </details>
         </Message>
       ) : (
         <Message positive size="small" style={{ marginBottom: '1em' }}>
-          Admin token is present in this browser.
+          {c.token.present}
         </Message>
       )}
 
-      <HubRegtestAdminTokenPanel network={network} adminTokenProp={adminTokenProp} />
-
-      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-operator-health-heading">Operator health</Header>
-      <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Local node health signals for disk capacity, process pressure, and connectivity to configured local services.
-      </p>
+      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-operator-health-heading">{c.health.title}</Header>
+      <p style={sectionIntroStyle}>{c.health.intro}</p>
       {operatorHealthError ? (
         <Message negative size="small" style={{ marginBottom: '0.75em' }}>
-          {operatorHealthError}
+          {c.health.loadFailed(operatorHealthError)}
         </Message>
       ) : null}
       <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', marginBottom: '0.75em' }}>
         <Button basic size="small" loading={operatorHealthLoading} onClick={refreshOperatorHealth}>
-          <Icon name="refresh" /> Refresh health
+          <Icon name="refresh" aria-hidden="true" /> {c.health.refresh}
         </Button>
         {operatorHealth && operatorHealth.now ? (
           <span style={{ color: '#666', fontSize: '0.9em', alignSelf: 'center' }}>
-            Updated: {new Date(operatorHealth.now).toLocaleString()}
+            {c.health.updated(new Date(operatorHealth.now).toLocaleString())}
           </span>
         ) : null}
       </div>
       <Segment secondary style={{ marginBottom: '1em' }}>
-        <div><strong>Host:</strong> {operatorHealth && operatorHealth.node && operatorHealth.node.hostname ? operatorHealth.node.hostname : 'n/a'}</div>
-        <div><strong>Node process uptime:</strong> {formatDuration(operatorHealth && operatorHealth.node ? operatorHealth.node.uptimeSec : null)}</div>
-        <div><strong>CPU usage (process):</strong> {operatorHealth && operatorHealth.node && operatorHealth.node.cpu && Number.isFinite(Number(operatorHealth.node.cpu.processPercent)) ? `${Number(operatorHealth.node.cpu.processPercent).toFixed(1)}%` : 'warming up…'}</div>
-        <div><strong>CPU cores:</strong> {operatorHealth && operatorHealth.node && operatorHealth.node.cpu && Number.isFinite(Number(operatorHealth.node.cpu.cores)) ? Number(operatorHealth.node.cpu.cores) : 'n/a'}</div>
-        <div><strong>System load avg:</strong> {operatorHealth && operatorHealth.node && Array.isArray(operatorHealth.node.loadAverage) ? operatorHealth.node.loadAverage.map((v) => Number(v || 0).toFixed(2)).join(' / ') : 'n/a'}</div>
-        <div><strong>Memory RSS:</strong> {formatBytes(operatorHealth && operatorHealth.node && operatorHealth.node.memory ? operatorHealth.node.memory.rss : null)}</div>
-        <div><strong>Heap used:</strong> {formatBytes(operatorHealth && operatorHealth.node && operatorHealth.node.memory ? operatorHealth.node.memory.heapUsed : null)}</div>
+        <div><strong>{c.health.host}:</strong> {healthNode && healthNode.hostname ? healthNode.hostname : t.common.none}</div>
+        <div><strong>{c.health.uptime}:</strong> {formatDuration(healthNode ? healthNode.uptimeSec : null)}</div>
+        <div><strong>{c.health.cpu}:</strong> {healthNode && healthNode.cpu && Number.isFinite(Number(healthNode.cpu.processPercent)) ? `${Number(healthNode.cpu.processPercent).toFixed(1)}%` : c.health.cpuMeasuring}</div>
+        <div><strong>{c.health.cores}:</strong> {healthNode && healthNode.cpu && Number.isFinite(Number(healthNode.cpu.cores)) ? Number(healthNode.cpu.cores) : t.common.none}</div>
+        <div><strong>{c.health.load}:</strong> {healthNode && Array.isArray(healthNode.loadAverage) ? healthNode.loadAverage.map((v) => Number(v || 0).toFixed(2)).join(' / ') : t.common.none}</div>
+        <div><strong>{c.health.memory}:</strong> {formatBytes(healthNode && healthNode.memory ? healthNode.memory.rss : null)}</div>
+        <div><strong>{c.health.heap}:</strong> {formatBytes(healthNode && healthNode.memory ? healthNode.memory.heapUsed : null)}</div>
       </Segment>
       <Segment secondary style={{ marginBottom: '1em' }}>
-        <div><strong>Disk path:</strong> <code>{operatorHealth && operatorHealth.disk && operatorHealth.disk.path ? operatorHealth.disk.path : 'n/a'}</code></div>
-        <div><strong>Disk available:</strong> {formatBytes(operatorHealth && operatorHealth.disk ? operatorHealth.disk.availableBytes : null)}</div>
-        <div><strong>Disk used:</strong> {formatBytes(operatorHealth && operatorHealth.disk ? operatorHealth.disk.usedBytes : null)} ({operatorHealth && operatorHealth.disk && Number.isFinite(Number(operatorHealth.disk.usedPercent)) ? `${Number(operatorHealth.disk.usedPercent).toFixed(1)}%` : 'n/a'})</div>
-        <div><strong>Estimated time to full:</strong> {formatDuration(operatorHealth && operatorHealth.disk ? operatorHealth.disk.estimatedSecondsUntilFull : null)}{operatorHealth && operatorHealth.disk && operatorHealth.disk.estimatedAt ? ` (around ${new Date(operatorHealth.disk.estimatedAt).toLocaleString()})` : ''}</div>
+        <div><strong>{c.health.diskPath}:</strong> <code>{healthDisk && healthDisk.path ? healthDisk.path : t.common.none}</code></div>
+        <div><strong>{c.health.diskFree}:</strong> {formatBytes(healthDisk ? healthDisk.availableBytes : null)}</div>
+        <div><strong>{c.health.diskUsed}:</strong> {formatBytes(healthDisk ? healthDisk.usedBytes : null)} ({healthDisk && Number.isFinite(Number(healthDisk.usedPercent)) ? `${Number(healthDisk.usedPercent).toFixed(1)}%` : t.common.none})</div>
+        <div><strong>{c.health.diskFull}:</strong> {formatDuration(healthDisk ? healthDisk.estimatedSecondsUntilFull : null)}{healthDisk && healthDisk.estimatedAt ? ` (${c.health.diskFullAround(new Date(healthDisk.estimatedAt).toLocaleString())})` : ''}</div>
         <div style={{ color: '#666' }}>
-          {operatorHealth && operatorHealth.disk && Number.isFinite(Number(operatorHealth.disk.trendBytesPerSecond)) && Number(operatorHealth.disk.trendBytesPerSecond) > 0
-            ? `Observed fill rate: ${formatBytes(operatorHealth.disk.trendBytesPerSecond)}/s`
-            : 'Fill-rate estimate appears after multiple health samples.'}
+          {healthDisk && Number.isFinite(Number(healthDisk.trendBytesPerSecond)) && Number(healthDisk.trendBytesPerSecond) > 0
+            ? c.health.fillRate(formatBytes(healthDisk.trendBytesPerSecond))
+            : c.health.fillRatePending}
         </div>
       </Segment>
       <Segment secondary style={{ marginBottom: '1.25em' }}>
-        <div><strong>DNS probe:</strong> {operatorHealth && operatorHealth.network && operatorHealth.network.dnsProbe && operatorHealth.network.dnsProbe.ok ? 'ok' : 'failed'}</div>
-        <div style={{ marginTop: '0.5em' }}><strong>Local service reachability:</strong></div>
-        {operatorHealth && operatorHealth.network && Array.isArray(operatorHealth.network.localProbes) && operatorHealth.network.localProbes.length ? (
+        <div><strong>{c.health.dns}:</strong> {healthNet && healthNet.dnsProbe && healthNet.dnsProbe.ok ? t.common.states.ok : t.common.states.failed}</div>
+        <div style={{ marginTop: '0.5em' }}><strong>{c.health.localServices}:</strong></div>
+        {healthNet && Array.isArray(healthNet.localProbes) && healthNet.localProbes.length ? (
           <div style={{ marginTop: '0.25em' }}>
-            {operatorHealth.network.localProbes.map((probe) => (
+            {healthNet.localProbes.map((probe) => (
               <div key={`${probe.name}:${probe.host}:${probe.port}`}>
-                <code>{probe.name}</code> {probe.host}:{probe.port} — {probe.ok ? `reachable (${probe.latencyMs} ms)` : `unreachable (${probe.error || 'error'})`}
+                <code>{probe.name}</code> {probe.host}:{probe.port} — {probe.ok ? c.health.reachable(probe.latencyMs) : c.health.unreachable(probe.error || c.health.noResponse)}
               </div>
             ))}
           </div>
         ) : (
-          <div style={{ marginTop: '0.25em', color: '#666' }}>No local probes configured.</div>
+          <div style={{ marginTop: '0.25em', color: '#666' }}>{c.health.noProbes}</div>
         )}
-        <div style={{ marginTop: '0.5em' }}><strong>Network-accessible addresses:</strong></div>
-        {operatorHealth && operatorHealth.network && Array.isArray(operatorHealth.network.interfaces) && operatorHealth.network.interfaces.length ? (
+        <div style={{ marginTop: '0.5em' }}><strong>{c.health.addresses}:</strong></div>
+        {healthNet && Array.isArray(healthNet.interfaces) && healthNet.interfaces.length ? (
           <div style={{ marginTop: '0.25em' }}>
-            {operatorHealth.network.interfaces.map((iface) => (
+            {healthNet.interfaces.map((iface) => (
               <div key={iface.name}>
-                <code>{iface.name}</code>: {Array.isArray(iface.addresses) ? iface.addresses.map((a) => a.address).join(', ') : '(none)'}
+                <code>{iface.name}</code>: {Array.isArray(iface.addresses) ? iface.addresses.map((a) => a.address).join(', ') : t.common.none}
               </div>
             ))}
           </div>
         ) : (
-          <div style={{ marginTop: '0.25em', color: '#666' }}>No external interfaces detected.</div>
+          <div style={{ marginTop: '0.25em', color: '#666' }}>{c.health.noAddresses}</div>
         )}
       </Segment>
 
-      {!hasAdmin ? (
-        <Message warning style={{ marginTop: '1em' }}>
-          <Message.Header>Admin controls are hidden until token is present</Message.Header>
-          <p style={{ margin: '0.35em 0 0' }}>
-            Save a valid admin token above to reveal worker queue controls, wealth visibility, network bind settings, and feature visibility toggles.
-          </p>
-        </Message>
-      ) : (
+      {hasAdmin ? (
         <React.Fragment>
           <BeaconAdminPanel />
 
-      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-worker-queue-heading">Fabric worker queue</Header>
-      <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Prioritized offer execution queue. Strategy is operator-managed and persisted on hub settings.
-      </p>
+      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-worker-queue-heading">{c.worker.title}</Header>
+      <p style={sectionIntroStyle}>{c.worker.intro}</p>
       {workerError ? (
         <Message negative size="small" style={{ marginBottom: '0.75em' }}>
           {workerError}
@@ -558,18 +551,20 @@ function AdminHome (props) {
       ) : null}
       <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', marginBottom: '0.75em' }}>
         <Button basic size="small" loading={workerLoading} onClick={refreshWorkerPanel}>
-          <Icon name="refresh" /> Refresh
+          <Icon name="refresh" aria-hidden="true" /> {c.worker.refresh}
         </Button>
         <Button primary size="small" disabled={!hasAdmin || workerActionBusy} loading={workerActionBusy} onClick={runWorkerNow}>
-          <Icon name="play" /> Run Now
+          <Icon name="play" aria-hidden="true" /> {c.worker.runNow}
         </Button>
         <Button negative size="small" disabled={!hasAdmin || workerActionBusy} loading={workerActionBusy} onClick={clearWorkerQueue}>
-          <Icon name="trash" /> Clear Queue
+          <Icon name="trash" aria-hidden="true" /> {c.worker.clear}
         </Button>
       </div>
       <Form style={{ marginBottom: '0.75em' }}>
         <Form.Select
-          label="Job selection strategy"
+          id="admin-worker-strategy"
+          label={c.worker.strategyLabel}
+          aria-label={c.worker.strategyLabel}
           options={WORK_QUEUE_STRATEGY_OPTIONS}
           value={workerStrategy}
           disabled={!hasAdmin || workerStrategySaving}
@@ -580,27 +575,27 @@ function AdminHome (props) {
         />
       </Form>
       <Segment secondary style={{ marginBottom: '1em' }}>
-        <div><strong>Worker ready:</strong> {workerStatus && workerStatus.workerReady ? 'yes' : 'no'}</div>
-        <div><strong>Selection strategy:</strong> {workerStatus && workerStatus.strategy ? workerStatus.strategy : workerStrategy}</div>
-        <div><strong>Queue length:</strong> {workerStatus && Number.isFinite(Number(workerStatus.queueLength)) ? Number(workerStatus.queueLength) : 0}</div>
-        <div><strong>Queue busy:</strong> {workerStatus && workerStatus.queueBusy ? 'yes' : 'no'}</div>
+        <div><strong>{c.worker.ready}:</strong> {yesNo(workerStatus && workerStatus.workerReady)}</div>
+        <div><strong>{c.worker.strategy}:</strong> {c.worker.strategies[currentStrategy] || currentStrategy}</div>
+        <div><strong>{c.worker.length}:</strong> {workerStatus && Number.isFinite(Number(workerStatus.queueLength)) ? Number(workerStatus.queueLength) : 0}</div>
+        <div><strong>{c.worker.busy}:</strong> {yesNo(workerStatus && workerStatus.queueBusy)}</div>
       </Segment>
       {workerQueue.length ? (
         <Card.Group itemsPerRow={1} stackable style={{ marginBottom: '1.25em' }}>
           {workerQueue.slice(0, 25).map((item) => (
             <Card key={item.id}>
               <Card.Content>
-                <Card.Header style={{ fontSize: '1em' }}>{item.type || 'work-item'}</Card.Header>
+                <Card.Header style={{ fontSize: '1em' }}>{item.type || c.worker.itemFallback}</Card.Header>
                 <Card.Meta>{item.id}</Card.Meta>
                 <Card.Description>
-                  <div><strong>Value:</strong> {Number(item.valueSats || 0)} sats</div>
-                  <div><strong>Attempts:</strong> {Number(item.attempts || 0)}</div>
-                  <div><strong>Peer:</strong> {item.sourcePeer || '(n/a)'}</div>
+                  <div><strong>{c.worker.value}:</strong> {t.common.sats(item.valueSats)}</div>
+                  <div><strong>{c.worker.attempts}:</strong> {Number(item.attempts || 0)}</div>
+                  <div><strong>{c.worker.peer}:</strong> {item.sourcePeer || t.common.none}</div>
                 </Card.Description>
               </Card.Content>
               <Card.Content extra>
                 <Button size="mini" basic negative disabled={!hasAdmin || workerActionBusy} onClick={() => dropWorkerItem(item.id)}>
-                  Drop item
+                  {c.worker.drop}
                 </Button>
               </Card.Content>
             </Card>
@@ -608,39 +603,32 @@ function AdminHome (props) {
         </Card.Group>
       ) : (
         <Message size="small" info style={{ marginBottom: '1.25em' }}>
-          Queue is empty.
+          {c.worker.empty}
         </Message>
       )}
 
-      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-wealth-heading">Node wealth visibility</Header>
-      <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Operational wallet balance plus labeled BTC-earning flows (Payjoin, storage contracts, inventory HTLC) observed by this hub.
-      </p>
+      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-wealth-heading">{c.wealth.title}</Header>
+      <p style={sectionIntroStyle}>{c.wealth.intro}</p>
       <Segment secondary style={{ marginBottom: '1.25em' }}>
-        <div><strong>Network:</strong> {wealthSummary && wealthSummary.wallet && wealthSummary.wallet.network ? wealthSummary.wallet.network : '(unknown)'}</div>
-        <div><strong>Wallet balance:</strong> {wealthSummary && wealthSummary.wallet ? Number(wealthSummary.wallet.balanceBtc || 0) : 0} BTC</div>
-        <div><strong>Chain height:</strong> {wealthSummary && wealthSummary.wallet && wealthSummary.wallet.height != null ? wealthSummary.wallet.height : 'n/a'}</div>
-        <div style={{ marginTop: '0.5em' }}><strong>Labeled flow counts:</strong></div>
-        <div>Payjoin proposals: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.counts.payjoin || 0) : 0}</div>
-        <div>Payjoin deposits: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.counts.payjoinDeposit || 0) : 0}</div>
-        <div>Inventory HTLC funds: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.counts.inventoryHtlcFund || 0) : 0}</div>
-        <div>Inventory HTLC claims: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.counts.inventoryHtlcClaim || 0) : 0}</div>
-        <div>Storage contracts: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.counts.storageContract || 0) : 0}</div>
-        <div style={{ marginTop: '0.5em' }}><strong>Labeled flow totals (sats):</strong></div>
-        <div>Payjoin proposals: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.totals.payjoin || 0) : 0}</div>
-        <div>Payjoin deposits: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.totals.payjoinDeposit || 0) : 0}</div>
-        <div>Inventory HTLC funds: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.totals.inventoryHtlcFund || 0) : 0}</div>
-        <div>Inventory HTLC claims: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.totals.inventoryHtlcClaim || 0) : 0}</div>
-        <div>Storage contracts: {wealthSummary && wealthSummary.labeledFlows ? Number(wealthSummary.labeledFlows.totals.storageContract || 0) : 0}</div>
+        <div><strong>{c.wealth.network}:</strong> {wealthSummary && wealthSummary.wallet && wealthSummary.wallet.network ? wealthSummary.wallet.network : c.wealth.unknown}</div>
+        <div><strong>{c.wealth.balance}:</strong> {t.common.sats(Math.round(Number(wealthSummary && wealthSummary.wallet ? wealthSummary.wallet.balanceBtc || 0 : 0) * 1e8))}</div>
+        <div><strong>{c.wealth.height}:</strong> {wealthSummary && wealthSummary.wallet && wealthSummary.wallet.height != null ? wealthSummary.wallet.height : t.common.none}</div>
+        <div style={{ marginTop: '0.5em' }}><strong>{c.wealth.counts}:</strong></div>
+        {flowKeys.map((key) => (
+          <div key={`count-${key}`}>{c.wealth[key]}: {flowValue('counts', key)}</div>
+        ))}
+        <div style={{ marginTop: '0.5em' }}><strong>{c.wealth.totals}:</strong></div>
+        {flowKeys.map((key) => (
+          <div key={`total-${key}`}>{c.wealth[key]}: {t.common.sats(flowValue('totals', key))}</div>
+        ))}
       </Segment>
 
-      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-network-http-heading">Network — HTTP bind (hub)</Header>
-      <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        <strong>Shared mode</strong> persists in <code>stores/hub/STATE</code> as <code>HTTP_SHARED_MODE</code>.
-        When enabled, the hub listens on <code>0.0.0.0</code> so other machines on the LAN can open this UI (subject to firewall).
-        When disabled, HTTP is bound to <code>127.0.0.1</code> only. Changing this setting <strong>rebinds the HTTP server immediately</strong> (open WebSockets drop and reconnect).
-        If <code>FABRIC_HUB_INTERFACE</code> or <code>INTERFACE</code> is set in the environment, the bind address follows that instead; save still persists the flag for when env is unset.
-      </p>
+      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-network-http-heading">{c.http.title}</Header>
+      <p style={{ ...sectionIntroStyle, marginBottom: '0.5em' }}>{c.http.intro}</p>
+      <details className="hub-developer-details" style={{ marginBottom: '0.75em', maxWidth: '42rem' }}>
+        <summary>{t.common.developerDetails}</summary>
+        <p style={{ color: '#666', margin: '0.35em 0 0' }}>{c.http.developer}</p>
+      </details>
       {httpSharedOk && (
         <Message info size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setHttpSharedOk(null)}>
           {httpSharedOk}
@@ -655,28 +643,37 @@ function AdminHome (props) {
         <Form.Field>
           <Checkbox
             toggle
-            label="HTTP shared mode (bind all interfaces)"
-            aria-label="HTTP shared mode (bind all interfaces)"
+            id="admin-http-shared-mode"
+            label={c.http.label}
             checked={httpShared}
             disabled={httpSharedLoading || httpSharedSaving || !hasAdmin}
             onChange={(_, d) => persistHttpShared(!!d.checked)}
           />
-          <span style={{ display: 'block', marginTop: '0.35em', fontSize: '0.85em', color: '#888' }}>
-            {httpSharedLoading ? 'Loading current setting…' : null}
-            {!hasAdmin ? ' Save the admin token in this browser to change this setting.' : null}
-          </span>
+          {httpSharedLoading ? (
+            <span style={{ display: 'block', marginTop: '0.35em', fontSize: '0.85em', color: '#888' }}>
+              {c.http.loading}
+            </span>
+          ) : null}
         </Form.Field>
       </Form>
 
+      <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-private-network-heading">{c.privateNetwork.title}</Header>
+      <p style={{ ...sectionIntroStyle, marginBottom: '0.5em' }}>{c.privateNetwork.intro}</p>
+      <details className="hub-developer-details" style={{ marginBottom: '0.75em', maxWidth: '42rem' }}>
+        <summary>{t.common.developerDetails}</summary>
+        <p style={{ color: '#666', margin: '0.35em 0 0' }}>{c.privateNetwork.developer}</p>
+      </details>
+      <PrivateNetworkPanel adminToken={adminToken} />
+
       <Divider section />
 
-      <Header as="h3" id="admin-ui-visibility-heading">Feature visibility</Header>
-      <p style={{ color: '#666', marginBottom: '0.75em', maxWidth: '42rem', lineHeight: 1.45 }}>
-        Defaults favor the <strong>Document market</strong> (Documents, Peers, Bitcoin invoices/explorer).
-        When a toggle is off, that area is hidden for this browser profile until you turn it back on.
-        Home, Documents, Contracts, Settings, Security, and this Admin page stay available.
-        Each browser merges local cache with hub-stored defaults when loaded; with admin token, saves persist to hub disk.
-      </p>
+      <Header as="h3" id="admin-ui-visibility-heading">{c.flagsSection.title}</Header>
+      <p style={{ ...sectionIntroStyle, marginBottom: '0.5em' }}>{c.flagsSection.intro}</p>
+      <p style={{ ...sectionIntroStyle, marginBottom: '0.5em' }}>{c.flagsSection.defaults}</p>
+      <details className="hub-developer-details" style={{ marginBottom: '0.75em', maxWidth: '42rem' }}>
+        <summary>{t.common.developerDetails}</summary>
+        <p style={{ color: '#666', margin: '0.35em 0 0' }}>{c.flagsSection.developer}</p>
+      </details>
       <Button
         type="button"
         size="small"
@@ -687,14 +684,14 @@ function AdminHome (props) {
         onClick={() => { applyDocumentMarketPreset(); }}
       >
         <Icon name="file alternate outline" aria-hidden="true" />
-        Document market preset
+        {c.flagsSection.preset}
       </Button>
       {uiFlagsPersistMsg ? (
         <Message info size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setUiFlagsPersistMsg(null)}>
           {uiFlagsPersistMsg}
         </Message>
       ) : null}
-      <Form>
+      <Form aria-labelledby="admin-ui-visibility-heading">
         {FLAG_KEYS.map((key) => {
           const labelText = UI_FLAG_LABELS[key] || key;
           const flagInputId = `fabric-hub-ui-flag-${key}`;
@@ -705,7 +702,6 @@ function AdminHome (props) {
                 id={flagInputId}
                 label={labelText}
                 checked={!!uiFlags[key]}
-                aria-label={`${labelText} — hub UI feature flag ${key}`}
                 onChange={(_, d) => {
                   syncUiFlag(key, !!d.checked);
                 }}
@@ -717,33 +713,24 @@ function AdminHome (props) {
 
           {(uiFlags.sidechain || anyBitcoinSubFeatureEnabled(uiFlags)) ? (
         <React.Fragment>
-          <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-related-pages-heading">Related pages</Header>
+          <Header as="h3" style={{ marginTop: '1.5em' }} id="admin-related-pages-heading">{c.related.title}</Header>
           <Card.Group itemsPerRow={1} stackable>
             {uiFlags.sidechain ? (
               <React.Fragment>
                 <Card as={Link} to="/settings/admin/beacon-federation" style={{ cursor: 'pointer' }}>
                   <Card.Content>
                     <Card.Header>
-                      <Icon name="users" aria-hidden="true" /> Beacon Federation
+                      <Icon name="users" aria-hidden="true" /> {c.related.beaconTitle}
                     </Card.Header>
-                    <Card.Description>
-                      Contract: epoch cadence, Fabric messages, cooperative signing, and L1 Taproot vault (144-block deposit lock by default).
-                    </Card.Description>
+                    <Card.Description>{c.related.beaconBody}</Card.Description>
                   </Card.Content>
                 </Card>
                 <Card as={Link} to="/federations" style={{ cursor: 'pointer' }}>
                   <Card.Content>
                     <Card.Header>
-                      <Icon name="sliders horizontal" aria-hidden="true" /> Federations (validators)
+                      <Icon name="sliders horizontal" aria-hidden="true" /> {c.related.federationsTitle}
                     </Card.Header>
-                    <Card.Description>
-                      Edit distributed federation pubkeys persisted on this hub (when not overridden by environment).
-                      Cross-check live policy with{' '}
-                      <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">GET manifest</a>
-                      {' / '}
-                      <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">GET epoch</a>
-                      {' '}(see <Link to="/settings/admin/beacon-federation">Beacon Federation</Link> for verification).
-                    </Card.Description>
+                    <Card.Description>{c.related.federationsBody}</Card.Description>
                   </Card.Content>
                 </Card>
               </React.Fragment>
@@ -751,32 +738,31 @@ function AdminHome (props) {
             <Card as={Link} to="/services/bitcoin" style={{ cursor: 'pointer' }}>
               <Card.Content>
                 <Card.Header>
-                  <Icon name="bitcoin" aria-hidden="true" /> Bitcoin dashboard
+                  <Icon name="bitcoin" aria-hidden="true" /> {c.related.bitcoinTitle}
                 </Card.Header>
-                <Card.Description>
-                  Node status, regtest tools, and core wallet view. Sub-pages (payments, invoices, resources, explorer, Lightning) follow the Bitcoin toggles above.
-                </Card.Description>
+                <Card.Description>{c.related.bitcoinBody}</Card.Description>
               </Card.Content>
             </Card>
           </Card.Group>
         </React.Fragment>
           ) : (
         <p style={{ color: '#666', marginTop: '1.5em', maxWidth: '42rem', lineHeight: 1.45 }}>
-          Enable <strong>Sidechain</strong> and/or any <strong>Bitcoin …</strong> toggle to show operator shortcut cards (federation, Bitcoin dashboard link).
+          {c.related.empty}
         </p>
           )}
 
           <Divider section />
 
           <Header as="h3" id="admin-self-destruct-heading" style={{ color: '#9f3a38', marginTop: '1.5em' }}>
-            <Icon name="bomb" aria-hidden="true" /> Danger zone
+            <Icon name="bomb" aria-hidden="true" /> {c.danger.title}
           </Header>
           <Message negative style={{ marginBottom: '0.75em' }}>
-            <Message.Header>Self-destruct — wipe local Hub data</Message.Header>
-            <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
-              Deletes this Hub&apos;s writable <code>stores/</code> and <code>logs/</code> under its data directory (setup, documents, Fabric state, local Bitcoin/Lightning/Payjoin files, and related indexes).
-              The server stops and exits so files can be removed; <strong>restart the Hub manually</strong> to run first-time setup again. This cannot be undone.
-            </p>
+            <Message.Header>{c.danger.wipeTitle}</Message.Header>
+            <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>{c.danger.wipeBody}</p>
+            <details className="hub-developer-details" style={{ marginTop: '0.5em' }}>
+              <summary>{t.common.developerDetails}</summary>
+              <p style={{ margin: '0.35em 0 0' }}>{c.danger.developer}</p>
+            </details>
           </Message>
           {selfDestructOk ? (
             <Message positive size="small" style={{ marginBottom: '0.75em' }} onDismiss={() => setSelfDestructOk(null)}>
@@ -795,7 +781,7 @@ function AdminHome (props) {
               setSelfDestructOpen(true);
             }}
           >
-            <Icon name="bomb" aria-hidden="true" /> Self-destruct…
+            <Icon name="bomb" aria-hidden="true" /> {c.danger.open}
           </Button>
 
           <Modal
@@ -804,11 +790,9 @@ function AdminHome (props) {
             onClose={() => !selfDestructBusy && setSelfDestructOpen(false)}
             size="small"
           >
-            <Modal.Header style={{ color: '#9f3a38' }}>Confirm total data wipe</Modal.Header>
+            <Modal.Header style={{ color: '#9f3a38' }}>{c.danger.confirmTitle}</Modal.Header>
             <Modal.Content>
-              <p style={{ marginBottom: '0.75em', lineHeight: 1.45 }}>
-                Type the phrase below exactly to confirm. The Hub process will shut down and delete local data.
-              </p>
+              <p style={{ marginBottom: '0.75em', lineHeight: 1.45 }}>{c.danger.confirmBody}</p>
               <p style={{ marginBottom: '0.5em' }}>
                 <code style={{ fontSize: '1rem', userSelect: 'all' }}>{HUB_SELF_DESTRUCT_CONFIRM_PHRASE}</code>
               </p>
@@ -817,18 +801,21 @@ function AdminHome (props) {
                   {selfDestructErr}
                 </Message>
               ) : null}
+              <label htmlFor="admin-self-destruct-phrase" style={{ display: 'block', fontWeight: 600, marginBottom: '0.35em' }}>
+                {c.danger.phraseLabel}
+              </label>
               <Input
                 fluid
-                placeholder="Confirmation phrase"
-                aria-label="Self-destruct confirmation phrase"
+                id="admin-self-destruct-phrase"
                 value={selfDestructPhrase}
                 disabled={selfDestructBusy}
                 onChange={(_, d) => setSelfDestructPhrase(d.value)}
+                autoComplete="off"
               />
             </Modal.Content>
             <Modal.Actions>
               <Button onClick={() => !selfDestructBusy && setSelfDestructOpen(false)} disabled={selfDestructBusy}>
-                Cancel
+                {t.common.actions.cancel}
               </Button>
               <Button
                 negative
@@ -840,12 +827,12 @@ function AdminHome (props) {
                 loading={selfDestructBusy}
                 onClick={runSelfDestruct}
               >
-                Wipe all local data and exit
+                {c.danger.confirm}
               </Button>
             </Modal.Actions>
           </Modal>
         </React.Fragment>
-      )}
+      ) : null}
     </Segment>
   );
 }

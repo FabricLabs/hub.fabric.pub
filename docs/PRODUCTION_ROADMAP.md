@@ -46,7 +46,7 @@ Living plan for shipping core product themes: **browser Bitcoin wallet**, **crow
 - [x] Crowdfunds route + browser smoke (`/services/bitcoin/crowdfunds`)
 - [x] Distributed federation UI (`/settings/federation`, flag `sidechain`)
 - [x] `GetDistributedFederationPolicy` HTTP shape — [`tests/hub.http.js`](../tests/hub.http.js) (JSON-RPC). **Save policy with admin token** remains a manual / playnet integration path (`playnet.beacon.federation.integration.js`).
-- [x] **F0** Explicit reserve + tip-bound vault withdraw (`CreateFederationPegInCredit` / `ProposeFederationPegOut` / `PrepareFederationVaultWithdrawalPsbt` + `federationValidatorVerify`)
+- [x] **F0** Explicit reserve + tip-bound vault withdraw (`CreateFederationPegInCredit` / `ProposeFederationPegOut` / `PrepareFederationVaultWithdrawalPsbt` + core `Federation` sign gate)
 - [ ] **F1** Destination authorization (descriptor / xpub allowlist + delayed updates)
 - [ ] **F2** Peg watcher (maturity credit, burn-then-broadcast, reorg freeze)
 - [ ] **F3** Vault emergency recovery path

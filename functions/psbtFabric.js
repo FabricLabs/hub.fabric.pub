@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * PSBT helpers for contract proposals, Payjoin, and HTLC flows (bitcoinjs-lib v6).
+ * PSBT helpers for contract proposals, Payjoin, and HTLC flows (bitcoinjs-lib v7).
  * Does not initialize ECC; signing callers must use the same ecc as elsewhere.
  *
  * Unsigned builders sort vin/vout with BIP-69 (`sortPsbtInputBags` /

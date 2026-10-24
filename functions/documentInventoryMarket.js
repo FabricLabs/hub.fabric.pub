@@ -227,15 +227,21 @@ function listOffers (map) {
 
 /**
  * Replace every stored offer from one peer with a fresh inventory snapshot.
+ * A large inventory arrives as several pages sharing one `inventoryId`
+ * (core `_sendLocalInventoryDocumentsWireResponse`); a page then drops only
+ * offers from an earlier snapshot, so the pages add up.
  * Mutates `map` in place.
  * @param {Object} map collection map
  * @param {Object} peer
  * @param {object[]} items
+ * @param {Object} [opts]
+ * @param {string} [opts.inventoryId] snapshot id shared by the pages of one response
  * @returns {object[]}
  */
-function replacePeerOffers (map, peer, items) {
+function replacePeerOffers (map, peer, items, opts = {}) {
   const out = map && typeof map === 'object' ? map : {};
   const key = peerKey(peer);
+  const inventoryId = opts.inventoryId ? String(opts.inventoryId).slice(0, 64) : null;
   for (const id of Object.keys(out)) {
     const row = out[id];
     if (!row) continue;
@@ -243,16 +249,38 @@ function replacePeerOffers (map, peer, items) {
       peerPubkey: row.peerPubkey,
       peerAddress: row.peerAddress
     });
-    if (rowKey === key) delete out[id];
+    if (rowKey !== key) continue;
+    if (inventoryId && row.inventoryId === inventoryId) continue;
+    delete out[id];
   }
   const saved = [];
   for (const item of (Array.isArray(items) ? items : [])) {
     const rec = normalizeInventoryItem(item, peer);
     if (!rec) continue;
+    if (inventoryId) rec.inventoryId = inventoryId;
     out[rec.id] = rec;
     saved.push(rec);
   }
   return saved;
+}
+
+/**
+ * Drop offers that only an address identifies (no signer key) once that session has closed:
+ * nothing can buy from them, and the seller lists again under its next session.
+ * @param {Object} map
+ * @param {function(string): boolean} isOpen
+ * @returns {number} offers dropped
+ */
+function dropClosedSessionOffers (map, isOpen) {
+  let dropped = 0;
+  for (const id of Object.keys(map || {})) {
+    const row = map[id];
+    if (!row || row.local || peerKeyFromHex(row.peerPubkey) || !row.peerAddress) continue;
+    if (isOpen(String(row.peerAddress))) continue;
+    delete map[id];
+    dropped++;
+  }
+  return dropped;
 }
 
 function localOffer (doc, self) {
@@ -513,6 +541,7 @@ module.exports = {
   normalizeInventoryItem,
   listOffers,
   replacePeerOffers,
+  dropClosedSessionOffers,
   localOffer,
   sortOffersByPrice,
   offersForDocument,

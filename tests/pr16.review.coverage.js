@@ -5,8 +5,8 @@
  *
  * Codacy: operator path helpers live under libs/hub-operator with thin
  * functions/* re-exports. Security: EditDocument shares the bulk-advisory
- * guard with CreateDocument. Wave 4: Bridge parent via http/core
- * fabricMessageParent + Message.toVector parent round-trip.
+ * guard with CreateDocument. Wave 4: Bridge parent via the Message parent
+ * statics + Message.toVector parent round-trip.
  */
 
 const assert = require('assert');
@@ -79,24 +79,14 @@ describe('Hub PR #16 review coverage', function () {
     assert.strictEqual(isHttpSharedModeEnabled(undefined), false);
   });
 
-  it('Bridge path fabricMessageParent matches core and toVector keeps parent', function () {
-    let parentLib = null;
-    try {
-      parentLib = require('@fabric/http/functions/fabricMessageParent');
-    } catch (_) {
-      parentLib = require('@fabric/core/functions/fabricMessageParent');
-    }
-    const coreParent = require('@fabric/core/functions/fabricMessageParent');
-    assert.strictEqual(parentLib.ZERO_PARENT, coreParent.ZERO_PARENT);
-    assert.strictEqual(typeof parentLib.setMessageParent, 'function');
-
+  it('Message parent statics set the parent and toVector keeps it', function () {
     const Key = require('@fabric/core/types/key');
     const Message = require('@fabric/core/types/message');
     const key = new Key();
     const genesis = Message.fromVector(['P2P_CHAT_MESSAGE', 'hub-bridge-genesis']).signWithKey(key);
     const child = Message.fromVector(['P2P_CHAT_MESSAGE', 'hub-bridge-child', genesis]).signWithKey(key);
-    parentLib.setMessageParent(child, genesis.id);
-    assert.strictEqual(parentLib.parentHexOf(child), genesis.id);
+    Message.setMessageParent(child, genesis.id);
+    assert.strictEqual(Message.parentHexOf(child), genesis.id);
 
     const vec = child.toVector();
     assert.strictEqual(vec.length, 3);

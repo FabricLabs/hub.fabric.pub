@@ -1,8 +1,10 @@
 'use strict';
 
 /**
- * Browser-local Joinmarket liquidity pool targets (BTC). Three tiers from largest to smallest.
- * Used as operator reference for staging hub-wallet UTXOs / ACP-friendly chunk sizes — not enforced on-chain.
+ * Browser-local coinjoin pool sizes (BTC), three tiers from largest to smallest.
+ * Saving maker terms on the Coinjoin page (`/services/coinjoin`) sends them to
+ * the Hub, where each becomes the top of one offer band (`services/coinjoin.js`).
+ * The storage key keeps its old `joinmarket` name so saved sizes carry over.
  */
 
 const {
