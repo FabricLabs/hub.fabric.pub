@@ -4,10 +4,14 @@ The desktop shell runs the same Hub **Node** process as `npm start` and opens a 
 ## Layout
 | Path | Role |
 |------|------|
-| `scripts/desktop.js` | Electron main: tray, **Run at startup**, spawns Hub with `ELECTRON_RUN_AS_NODE`, sets `FABRIC_HUB_APP_ROOT` / `FABRIC_HUB_USER_DATA`, waits for HTTP, loads the UI |
+| `scripts/desktop.js` | Electron main: tray, app menu, **Run at startup**, runs Hub as an Electron **`utilityProcess`** (restarts it after a crash), sets `FABRIC_HUB_APP_ROOT` / `FABRIC_HUB_USER_DATA`, waits for HTTP behind a loading window, loads the UI |
 | `scripts/startup/` | OS launchers packed as `resources/startup/` (macOS command + LaunchAgent, Windows cmd/vbs, Linux sh + XDG desktop) |
 | `functions/desktopOpenAtLogin.js` | Login-item payload, XDG autostart, `desktop-shell.json` |
-| `scripts/desktop-preload.js` | Exposes `window.fabricDesktop` (`isDesktopShell`, platform, versions, `onLoginPrompt`, `pullPendingLoginPrompt`) |
+| `functions/desktopShellPolicy.js` | Navigation / external-link / IPC-sender / permission / Payjoin-target rules |
+| `functions/desktopShellStatus.js` | Tray status lines, delegation notifications, window-bounds restore |
+| `functions/desktopSecureStore.js` | `safeStorage`-encrypted `secure-store.json` for the admin token |
+| `functions/desktopLogFile.js` | Rotating, secret-scrubbed `logs/fabric-hub.log` |
+| `scripts/desktop-preload.js` | Exposes `window.fabricDesktop` (`isDesktopShell`, platform, versions, `onLoginPrompt`, `pullPendingLoginPrompt`, `getPaths`, `payjoinPost`, `secureStore`) |
 | `scripts/desktopHubProbe.js` | Startup HTTP/P2P probes (whether to use an existing loopback Hub) |
 | `components/DelegationSigningModal.js` | In-app Semantic UI modals for **fabric://login** approval and **delegation** signature queue (replaces native OS dialogs) |
 | `dist/` | **electron-builder** output (gitignored): installers / unpacked apps |
@@ -108,8 +112,8 @@ npm run desktop
 npm run desktop:debug
 
 # Scripts use `env -u ELECTRON_RUN_AS_NODE` so the **shell** Electron binary is real Electron (not Node-as-Electron).
-# If your environment sets ELECTRON_RUN_AS_NODE for other tools, the desktop entry still clears it for the main process only;
-# the embedded `scripts/hub.js` child continues to set it as before.
+# The embedded `scripts/hub.js` runs as an Electron utilityProcess, so it never needs ELECTRON_RUN_AS_NODE
+# (packaged builds turn the RunAsNode fuse off).
 
 # Produce platform installers (current OS / arch)
 npm run build:desktop
@@ -143,17 +147,42 @@ Packaged installers copy `scripts/startup/` to **`resources/startup/`** beside `
 | Tray → **Run at startup** | Toggle OS login item (macOS / Windows) and Linux `~/.config/autostart/pub.fabric.hub.desktop` |
 | `FABRIC_OPEN_AT_LOGIN=0` / `=1` | Force off / on (wins over the tray persist file) |
 | `settings/local.js` → `openAtLogin` | Optional boolean if you add it; tray persist still wins after first launch |
-| userData `desktop-shell.json` | Remembers the tray choice (`openAtLogin`) |
+| userData `desktop-shell.json` | Remembers the tray choices (`openAtLogin`, `preventSleep`) and the window position (`windowBounds`, `windowMaximized`) |
 
 Installed builds default **on** so a first-run user gets a node that comes back after reboot. `npm run desktop` (unpackaged) defaults **off** so developers do not register the Electron binary as a login item.
 
-Login launches use `--hidden` (and macOS `openAsHidden`): Hub still starts Bitcoin / Fabric / Lightning; the window stays in the tray until **Show Fabric Hub**.
+Login launches use `--hidden` (macOS reports them through `wasOpenedAtLogin`): Hub still starts Bitcoin / Fabric / Lightning; the window stays in the tray until **Show Fabric Hub**.
 
 Manual wiring (same `--hidden` flag):
 
 - **macOS:** `resources/startup/macos/FabricHub.command` or copy `com.pub.fabric.hub.plist` to `~/Library/LaunchAgents/`
 - **Windows:** `resources/startup/windows/FabricHub-startup.cmd` (or `.vbs` for no console) in the Startup folder / Task Scheduler
 - **Linux:** `resources/startup/linux/fabrichub-startup.sh` or the sample `.desktop` under `~/.config/autostart/`
+
+### Tray status, notifications, menu
+- The tray lists the Hub state (starting / running / restarting / stopped, or "using the Hub already running"), then — polled every 30 s from loopback `GET /services/peering`, `/services/bitcoin`, `/services/lightning`, and `/sessions` — Fabric peer count, Bitcoin height or sync %, Lightning state, and waiting delegation signature requests (also the dock / launcher badge).
+- When the window is hidden or not focused, a `fabric:` login prompt, a `fabric:<hex>` message, or a new delegation signature request raises a native notification; clicking it brings the window up. Nothing is signed from the notification.
+- Tray / **File** menu: **Restart Hub**, **Reveal Hub data folder**, **Reveal logs**. Tray **Keep computer awake** (`powerSaveBlocker` `prevent-app-suspension`, off by default; `FABRIC_DESKTOP_PREVENT_SLEEP=1|0` forces it).
+- The app menu has no **Reload** / **DevTools** in packaged builds (DevTools are disabled outright) unless `FABRIC_DESKTOP_DEVTOOLS=1`; `npm run desktop` keeps them.
+- Window size, position, and maximized state come back on the next launch (only onto a display that still exists).
+
+### Crashes and logs
+If the Hub process exits on its own, the shell restarts it with backoff (1 s, 2 s, 4 s … up to 30 s). After more than five exits in five minutes it stops and asks: **Restart**, **Show log**, or **Quit**. On quit it asks the Hub to shut down (Bitcoin / Lightning / LevelDB close cleanly) and kills it only after 30 s.
+
+Main-process output and the Hub's stdout / stderr go to **`<userData>/logs/fabric-hub.log`** (5 MiB, three rotations), with xprv-family keys, Bearer tokens, token query parameters, JSON secret fields, and `FABRIC_*` secret env assignments scrubbed. If startup fails, the error dialog offers the log.
+
+## Security & privacy
+| Area | Behavior |
+|------|----------|
+| Renderer | `sandbox`, `contextIsolation`, no `nodeIntegration`, `webSecurity`; no `<webview>` |
+| Navigation | The window only shows the Hub origin (`127.0.0.1` / `localhost` on the Hub port). Other http(s) / `mailto:` links open in the OS browser; other schemes are dropped. |
+| IPC | Every `fabricDesktop` call is answered only for the Hub UI in the top-level frame |
+| Payjoin | `payjoinPost` goes to the Hub origin or a public **https** host (no credentials in the URL, no private / loopback addresses even after DNS), 30 s timeout, 1 MiB caps. `FABRIC_DESKTOP_PAYJOIN_ALLOW_PRIVATE=1` allows LAN receivers. |
+| Permissions | Denied by default; the Hub origin may use clipboard write, fullscreen, and notifications. No device (USB / HID / serial) access. |
+| Spellcheck | Linux would download Hunspell dictionaries from Google, so it is off there unless `FABRIC_DESKTOP_SPELLCHECK=1` |
+| Admin token | Stored with Electron **`safeStorage`** (macOS Keychain, Windows DPAPI, Linux libsecret / kwallet) in `<userData>/secure-store.json` (mode 0600) and held in renderer memory; an existing `localStorage` copy is moved there on first launch. Linux without a keyring (`basic_text`) keeps browser storage. |
+| Packaged fuses | `build.electronFuses`: RunAsNode, `NODE_OPTIONS`, and `--inspect` off; cookie encryption, embedded asar integrity, and load-only-from-asar on |
+| Hub HTTP | Loopback trust needs a loopback socket **and** a rebind-safe `Host` (IP literal, `localhost`, or `FABRIC_HUB_ALLOWED_HOSTS` / the configured hostname) **and** no proxy forward headers; other Hosts on a loopback socket get **421**. Responses carry a Content-Security-Policy (`FABRIC_HUB_CSP=0` turns it off). |
 
 
 ## Icons

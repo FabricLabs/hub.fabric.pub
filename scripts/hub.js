@@ -302,6 +302,7 @@ async function main (input = {}) {
 
   hub.on('ready', function (node) {
     console.log('[FABRIC:HUB]', `Hub is now started, pubkey ${hub.key.pubkey} listening on:`, node.address);
+    if (process.parentPort) process.parentPort.postMessage({ type: 'ready' });
   });
 
   hub.on('log', function (...log) {
@@ -367,6 +368,14 @@ process.once('SIGINT', () => {
 process.once('SIGTERM', () => {
   void exitWithHubStop('SIGTERM', 0);
 });
+
+// Electron desktop runs this file as a utilityProcess; Windows has no SIGTERM, so it asks over parentPort.
+if (process.parentPort) {
+  process.parentPort.on('message', (event) => {
+    const msg = event && event.data;
+    if (msg && msg.type === 'shutdown') void exitWithHubStop('desktop shutdown', 0);
+  });
+}
 
 process.on('exit', (code) => {
   if (code === 0) {

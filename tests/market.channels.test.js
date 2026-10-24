@@ -76,7 +76,7 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
 
     // No chain view yet → no new HTLCs (stale-tip guard). Hosts feed tips from the block hook.
     const sA = A.channels.sessions.get(opened.channelId);
-    assert.throws(() => sA.offerHtlc({ amountSats: 1, paymentHashHex: '11'.repeat(32), expireAfter: 8000 }), /tip unknown or stale/);
+    assert.throws(() => sA.offerHtlc({ amountSats: 1000, paymentHashHex: '11'.repeat(32), expireAfter: 8000 }), /tip unknown or stale/);
     await A.onBitcoinBlock({ height: 100 });
     await B.onBitcoinBlock({ height: 100 });
 
@@ -89,7 +89,7 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     const Peer = require('@fabric/core/types/peer');
     const sellerPeer = new Peer({ listen: false, sealPricedDocuments: true });
     const sealed = Document.seal(crypto.randomBytes(3000), { chunkBytes: 2048 });
-    assert.ok(sellerPeer.publishSealedDocument(sealed, { rateSats: 1 }).ok);
+    assert.ok(sellerPeer.publishSealedDocument(sealed, { rateSats: 1000 }).ok);
     B.hub.agent.sealedBlobPreimageForPaymentHash = (h) => sellerPeer.sealedBlobPreimageForPaymentHash(h);
     const paymentHashHex = sealed.paymentHashFor(1);
     const settled = [];

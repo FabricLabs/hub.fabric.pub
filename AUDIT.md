@@ -1,47 +1,47 @@
 # Fabric Hub Security Audit
 Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-run **`npm audit`** after dependency changes; keep this file aligned with the current lockfile.
 
-## Status (2026-08-15)
+## Status (2026-10-24)
 
 | Area | Posture |
 |------|---------|
-| `@fabric/core` | Git pin `FabricLabs/fabric#feature/rsi` (lockfile SHA `ff7c05c52c38c39e552c6f4a4bc62442425bdd0e`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/rsi` (lockfile SHA `5b1c1cf14039499e24313b6f17f5f0b9bd232318`) |
+| `@fabric/core` | Git pin `FabricLabs/fabric#feature/channels` (lockfile SHA `1ba3b3cd0376858824c94ae17929eb2e77111a91`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/channels` (lockfile SHA `123c850294802dc6adc66fbee17060aa2a8548ea`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
-| Node | **`engines.node` = `24.15.0`** (aligned with core / http) |
-| WebSocket (`ws`) | **Mitigated** — direct + override **`8.21.2`** |
-| Electron | **`39.8.10`** (clears Electron ≤39.8.9 advisory set on prior 36.x pin) |
-| electron-builder | **`26.15.7`** + overrides `tar@7.5.22`, `builder-util-runtime@9.7.0` |
-| nodemailer | **`10.1.7`** (clears the 9.0.4 advisory set; 9.1.1 still left the addressparser DoS and cross-transport TLS `servername` reuse) |
-| webpack / webpack-dev-server | **`5.109.2`** / **`5.2.6`**; `uuid@11.1.1` override (sockjs / jayson) |
-| React Router | **`react-router-dom@7.18.2`** — see residual below; webpack pins CJS entrypoints (see Recommendations) |
-| npm audit (this tree) | **6 high** — `extract-zip` symlink traversal ([GHSA-jmr9-qjv8-65gv](https://github.com/advisories/GHSA-jmr9-qjv8-65gv) / CVE-2026-56876) via `puppeteer` / `@puppeteer/browsers` (`@fabric/http`) and `electron`. **No upstream patched release.** Build/dev extraction only; do not pass untrusted zips to those tools. |
+| Node | **`engines.node` = `26.12.1`** (aligned with core / http) |
+| WebSocket (`ws`) | **Mitigated** — direct + override **`8.22.0`** |
+| Electron | **`44.9.3`** (clears the 39.x advisory set — popup/sandbox inheritance, cross-origin file/http reads, webview workers, permission origin attribution, eMudhra intermediates — and swaps `extract-zip` for `@electron-internal/extract-zip`). Needs macOS 13+, 64-bit only. 45 deprecates the synchronous `safeStorage` calls the admin-token store uses |
+| electron-builder | **`26.18.0`** + overrides `tar@7.5.22`, `builder-util-runtime@9.7.0` |
+| nodemailer | **`10.2.1`** (10.x clears the 9.0.4 advisory set; 9.1.1 still left the addressparser DoS and cross-transport TLS `servername` reuse) |
+| webpack / webpack-dev-server | **`5.112.2`** / **`5.2.6`**; `terser-webpack-plugin@5.6.1`; `uuid@11.1.1` override (sockjs / jayson) |
+| mocha / jsdoc-to-markdown | **`12.0.3`** / **`9.1.3`**, both **devDependencies** (test and `make:api` tooling only) |
+| React Router | **`react-router-dom@7.18.4`** — see residual below; webpack pins CJS entrypoints (see Recommendations) |
+| npm audit (this tree) | **0** (full and `--omit=dev`) |
 
 ## Residual (accepted)
 
 | Package | Severity | Notes |
 |---------|----------|-------|
-| `react-router` / `react-router-dom` **7.12–8.2** | high (advisory class) | [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) — **RSC mode** CSRF. Hub UI uses client **`BrowserRouter`** / SPA navigation, not React Server Components. Current `npm audit` does not flag this pin; keep watching for a non-RSC patch before changing it. Downgrading to **7.11.0** reintroduces earlier open-redirect advisories. Stay on **7.18.2**. |
-| `extract-zip` (via puppeteer + electron) | high | Abandoned package; no patched version. Electron uses it at **build time**; Puppeteer browser download is **dev/test**. Not on the Hub HTTP request path. |
+| `react-router` / `react-router-dom` **7.12–8.2** | high (advisory class) | [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) — **RSC mode** CSRF. Hub UI uses client **`BrowserRouter`** / SPA navigation, not React Server Components. Current `npm audit` does not flag this pin; keep watching for a non-RSC patch before changing it. Downgrading to **7.11.0** reintroduces earlier open-redirect advisories. Stay on **7.18.x**. |
 
 ## Overrides for mitigated runtime findings
 
 | Override | Why |
 |----------|-----|
-| `ws@8.21.2` | Direct + transitive (core/jayson, http, webpack-dev-server) |
+| `ws@8.22.0` | Direct + transitive (core/jayson, http, webpack-dev-server) |
 | `uuid@11.1.1` | jayson + sockjs (webpack-dev-server) |
 | `tar@7.5.22` | electron-builder / node-gyp extraction path |
 | `builder-util-runtime@9.7.0` | electron-updater credential leak class |
 | `elliptic` → `@soatok/elliptic-to-noble` | Existing Hub pin |
-| `serialize-javascript@7.0.5` | Existing Hub pin |
+| `serialize-javascript@7.1.4` | mocha + terser-webpack-plugin; &lt;7.1.3 has the `</script` XSS ([GHSA-m5mm-p8h7-m29v](https://github.com/advisories/GHSA-m5mm-p8h7-m29v)) |
 
-`package.json` **`allowScripts.electron@39.8.10`** is required so CI/desktop can download the Electron binary under npm’s install-scripts policy.
+Electron ≥42 has no install script: the binary downloads the first time `electron` runs (`npm run desktop`, or `npx install-electron`), so it needs no `allowScripts` entry.
 
 ## Recommendations
 
 1. After dependency edits: **`npm ci`** (or `npm i`) then **`npm audit`** and **`npm run ci`** (`build` + `test:unit`).
 2. Keep core/http on `feature/rsi` during RSI, then re-pin releases to lockfile SHAs; use **`npm run link:fabric`** for local monorepo work. **`npm run report:install` removes `package-lock.json`** then `npm i --allow-git=all` — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
-3. Do not run **`npm audit fix --force`** casually — it has proposed Electron 43 and React Router downgrades that fight the chosen pins. There is **no** `extract-zip` fix to force in.
+3. Do not run **`npm audit fix --force`** casually — it has proposed Electron, jsdoc-to-markdown, electron-builder and React Router downgrades that fight the chosen pins.
 4. Revisit React Router when a release fixes GHSA-qwww without regressing open-redirect advisories.
 5. Webpack must keep **`conditionNames`** without bare **`import`**, plus CJS aliases for **`react-router$` / `react-router-dom$` / `react-router/dom$`** — otherwise RR7’s `.mjs` exports break the SPA bundle at runtime.
 

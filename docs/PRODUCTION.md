@@ -23,7 +23,7 @@ Env still overrides (`FABRIC_HUB_RPC_URL`, `FABRIC_PLAYNET_PEERS`). Do not commi
 ## Pre-flight
 | Step | Command / action |
 |------|-------------------|
-| Node | Use **Node 24.15.x** (see `package.json` `engines`). |
+| Node | Use **Node 26.12.x** (see `package.json` `engines`). |
 | Install | `npm ci` (CI) or `npm install`. |
 | Build + tests | `npm run ci` — builds the browser bundle and runs unit tests. |
 | Browser E2E (optional) | `npm run test:e2e-browser` after Chrome install (`npx puppeteer browsers install chrome`). |
@@ -65,7 +65,7 @@ See [README.md](../README.md) and [BITCOIN_NETWORKS.md](../BITCOIN_NETWORKS.md) 
 - Ensure a **single** Hub instance per port set; `EADDRINUSE` means another process holds the port.
 - **Managed regtest + `pm2`:** if Hub Node OOMs, Core can be reparented to PID 1 and hold `stores/bitcoin-regtest`. This tree **attaches** via cookie RPC instead of spawning another `bitcoind` onto the lock. Ops: `pm2 stop hub`, confirm the lock holder is Hub’s datadir (not Sensemaker’s), then `pm2 start hub`.
 - **PM2 logs (P0):** install **`pm2-logrotate`** (`pm2 install pm2-logrotate`). Playnet `~/.pm2/logs` has grown to tens of GiB (`hub-error` / `hub-out`) with no rotation. Truncate once, then rotate. Do **not** raise `--max-old-space-size` as the OOM fix.
-- **Node:** Hub PM2 should be **24.15.x** (same as RSI / `package.json` `engines`), not 24.5.x.
+- **Node:** Hub PM2 should be **26.12.x** (same as RSI / `package.json` `engines`), not 24.5.x.
 - **Fabric `peers`:** do not seed **`sensemaker.io:7778`** (or `:7777`) when Sensemaker already listens on this host (`:7778`). Point at the **local** address or drop the row — remote DNS timeouts stall every boot.
 - **Lightning:** managed `lightningd` is **opt-in** (`lightning.managed: true` or `lightning.enable: true`). First-time setup downloads official Linux x86_64 CLN into `binaries/`, or uses Homebrew on macOS. PATH and `binaries/` both count. Datadir-only settings from `scripts/hub.js` must not spawn CLN. Stub: `FABRIC_LIGHTNING_STUB=1`.
 

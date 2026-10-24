@@ -123,19 +123,19 @@ describe('Hub Document Market accumulate + republish', function () {
     hub._accumulatePeerDocumentInventory({
       actor: { id: '02' + 'cc'.repeat(32) },
       object: {
-        items: [{ id: fileId, name: 'held.txt', purchasePriceSats: 100, published: true }]
+        items: [{ id: fileId, name: 'held.txt', purchasePriceSats: 1000, published: true }]
       }
     }, { name: '192.168.1.8:7777' });
 
     const changed = await hub._maybeRepublishHeldDocumentsFromMarket([fileId]);
     assert.strictEqual(changed.length, 1);
-    assert.strictEqual(changed[0].document.purchasePriceSats, 110);
-    assert.strictEqual(changed[0].costBasisSats, 100);
+    assert.strictEqual(changed[0].document.purchasePriceSats, 1100);
+    assert.strictEqual(changed[0].costBasisSats, 1000);
 
     const items = hub._collectLocalDocumentInventoryItems();
     const local = items.find((row) => row.id === fileId);
     assert.ok(local);
-    assert.strictEqual(local.purchasePriceSats, 110);
+    assert.strictEqual(local.purchasePriceSats, 1100);
     assert.strictEqual(local.costBasisSats, undefined);
     assert.strictEqual(local.contentBase64, undefined);
 
@@ -166,14 +166,14 @@ describe('Hub Document Market accumulate + republish', function () {
     hub._state.content.collections.documents[fileId] = {
       id: fileId,
       published: new Date().toISOString(),
-      purchasePriceSats: 50
+      purchasePriceSats: 500
     };
     hub._accumulatePeerDocumentInventory({
       actor: { id: '02' + '11'.repeat(32) },
-      object: { items: [{ id: fileId, purchasePriceSats: 100, published: true }] }
+      object: { items: [{ id: fileId, purchasePriceSats: 1000, published: true }] }
     }, { name: '10.0.0.4:7777' });
     const raised = await hub._maybeRepublishHeldDocumentsFromMarket();
-    assert.ok(raised.some((row) => row.document && row.document.purchasePriceSats === 110));
+    assert.ok(raised.some((row) => row.document && row.document.purchasePriceSats === 1100));
     await hub.stop().catch(() => {});
   });
 

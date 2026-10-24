@@ -16,6 +16,7 @@ const { Provider, connect } = require('react-redux');
 const toRelativeTime = require('../functions/toRelativeTime');
 const { logCrashReportHint } = require('../functions/fabricReportHint');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
+const { hydrateDesktopSecureStorage } = require('../functions/fabricBrowserState');
 
 // Components (toast styles bundled here — HubInterface is also loaded in Node for SSR/build)
 require('react-toastify/dist/ReactToastify.css');
@@ -94,6 +95,9 @@ async function main (input = {}) {
     document.body.appendChild(fallback);
     return {};
   }
+  // Desktop shell: admin token comes from OS-encrypted storage, so load it before the first read.
+  await hydrateDesktopSecureStorage();
+
   const root = ReactDOM.createRoot(container);
 
   console.debug('[HUB]', 'Rendering UI...');

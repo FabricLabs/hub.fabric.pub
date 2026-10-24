@@ -61,13 +61,11 @@ function argvRequestsHidden (argv) {
  * @param {Object} opts
  * @param {Array<string>} [opts.argv]
  * @param {boolean} [opts.wasOpenedAtLogin]
- * @param {boolean} [opts.wasOpenedAsHidden]
  * @returns {boolean}
  */
 function shouldStartHidden (opts) {
   const o = opts && typeof opts === 'object' ? opts : {};
   if (argvRequestsHidden(o.argv)) return true;
-  if (o.wasOpenedAsHidden) return true;
   if (o.wasOpenedAtLogin) return true;
   return false;
 }
@@ -205,7 +203,6 @@ function electronLoginItemSettings (opts) {
   const enable = !!o.openAtLogin;
   const out = {
     openAtLogin: enable,
-    openAsHidden: true,
     args: enable ? [HIDDEN_FLAG] : []
   };
   if (String(o.platform || '') !== 'darwin') {

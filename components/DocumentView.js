@@ -38,7 +38,8 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags');
 
-const DEFAULT_PUBLISH_PRICE_SATS = '25';
+// Smallest HTLC that settles on Bitcoin mainnet (@fabric/core HTLC_MINIMUM_SATS).
+const DEFAULT_PUBLISH_PRICE_SATS = '716';
 const TXID_HEX_64 = /^[a-fA-F0-9]{64}$/;
 
 function shortHexId (value) {

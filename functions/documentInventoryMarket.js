@@ -12,6 +12,10 @@
 
 const COLLECTION = 'documentoffers';
 
+// Smallest HTLC that settles on Bitcoin mainnet (dust + claim fee at 1 sat/vB);
+// the literal covers `@fabric/core` pins from before the constant existed.
+const HTLC_MINIMUM_SATS = require('@fabric/core/constants').HTLC_MINIMUM_SATS || 716;
+
 /**
  * @param {string} name
  * @param {boolean} fallback
@@ -127,6 +131,7 @@ function normalizeMarketPolicy (settings, env) {
 
 /**
  * List price from a remote cost basis: `ceil(cost * (1 + bps/10000)) + markupSats`, floored at minPriceSats.
+ * A paid price is never below {@link HTLC_MINIMUM_SATS} (buyers skip offers no HTLC can settle on mainnet); 0 stays free.
  * @param {number} costSats
  * @param {Object} [policy]
  * @returns {number}
@@ -138,7 +143,8 @@ function markupListPrice (costSats, policy) {
   const extra = Math.max(0, Math.floor(Number(p.markupSats) || 0));
   const minP = Math.max(0, Math.floor(Number(p.minPriceSats) || 0));
   const marked = Math.ceil((cost * (10000 + bps)) / 10000) + extra;
-  return Math.max(marked, minP);
+  const price = Math.max(marked, minP);
+  return price > 0 ? Math.max(price, HTLC_MINIMUM_SATS) : 0;
 }
 
 function itemsFromInventoryMessage (message) {
@@ -491,6 +497,7 @@ function requestConnectedInventories (peer) {
 
 module.exports = {
   COLLECTION,
+  HTLC_MINIMUM_SATS,
   envFlag,
   normalizeDocumentId,
   peerKeyFromHex,

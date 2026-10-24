@@ -58,6 +58,12 @@ const {
   resolveStartPhases,
   runHubStartPhase
 } = require('../functions/hubLifecycle');
+const {
+  allowedHostsFromSettings,
+  buildContentSecurityPolicy,
+  createLoopbackHostGuard,
+  isTrustedLoopbackRequest
+} = require('../functions/hubHttpLocalTrust');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
 const parseFilesystemJson = require('../functions/parseFilesystemJson');
@@ -818,6 +824,12 @@ class Hub extends Service {
     require('../components/library');
 
     // HTTP Server
+    /** Names (besides IP literals and localhost) this Hub answers to directly on loopback; see hubHttpLocalTrust. */
+    this._loopbackAllowedHosts = allowedHostsFromSettings(this.settings);
+    const devInlineIdentity = ['1', 'true', 'force'].includes(String(process.env.FABRIC_DEV_PUSH_BROWSER_IDENTITY || ''));
+    const contentSecurityPolicy = String(process.env.FABRIC_HUB_CSP || '').trim() === '0'
+      ? ''
+      : buildContentSecurityPolicy({ allowInlineScripts: devInlineIdentity });
     this.http = new HTTPServer({
       name: 'hub.fabric.pub',
       path: hubAssetsDir(),
@@ -837,9 +849,12 @@ class Hub extends Service {
         '12mb',
       websocket: this.settings.websocket || {},
       middlewares: {
+        loopbackHostGuard: createLoopbackHostGuard({ allowedHosts: this._loopbackAllowedHosts }),
         securityHeaders: (req, res, next) => {
           res.setHeader('X-Frame-Options', 'SAMEORIGIN');
           res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+          if (contentSecurityPolicy) res.setHeader('Content-Security-Policy', contentSecurityPolicy);
           next();
         },
         // BIP78 payjoin clients POST PSBT as text/plain (body-parser json ignores them).
@@ -6623,8 +6638,7 @@ class Hub extends Service {
       return res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
     }
 
-    const addr = (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || '';
-    const isLocal = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+    const isLocal = isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts });
     try {
       const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, paramArray)));
       res.setHeader('Content-Type', 'application/json');
