@@ -3,6 +3,9 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 const { Icon } = require('semantic-ui-react');
+const t = require('../locales/en');
+
+const c = t.bitcoin.scroller;
 
 /** BIP141 max block weight — used for fill height like mempool.space cubes. */
 const MAX_BLOCK_WEIGHT = 4000000;
@@ -17,9 +20,9 @@ function blockPath (hash) {
 }
 
 function fmtInt (n) {
-  if (n == null || n === '') return '—';
+  if (n == null || n === '') return t.common.none;
   const x = Number(n);
-  if (!Number.isFinite(x)) return '—';
+  if (!Number.isFinite(x)) return t.common.none;
   return x.toLocaleString();
 }
 
@@ -137,7 +140,7 @@ function BitcoinBlockScroller (props) {
     <div
       className="fabric-bitcoin-block-scroller"
       role="region"
-      aria-label="Block chain scroller"
+      aria-label={c.title}
       style={{
         marginTop: '0.85rem',
         marginBottom: '0.25rem',
@@ -156,11 +159,11 @@ function BitcoinBlockScroller (props) {
       >
         <span style={{ fontSize: '0.85em', color: '#666', fontWeight: 600 }}>
           <Icon name="exchange" aria-hidden="true" />
-          Chain
-          {loading ? <span style={{ fontWeight: 400, marginLeft: '0.5em' }}>Loading…</span> : null}
+          {c.title}
+          {loading ? <span style={{ fontWeight: 400, marginLeft: '0.5em' }}>{c.loading}</span> : null}
         </span>
         <span style={{ fontSize: '0.8em', color: '#999' }}>
-          Drag or scroll · older ← → newer
+          {c.hint}
         </span>
       </div>
       <div
@@ -197,9 +200,9 @@ function BitcoinBlockScroller (props) {
           const tint = feeTint(block);
           const txCount = block && block.txCount != null ? Number(block.txCount) : null;
           const feeLabel = block && block.avgFeeRateSatVb != null && Number.isFinite(Number(block.avgFeeRateSatVb))
-            ? `~${Number(block.avgFeeRateSatVb)} sat/vB`
+            ? c.feeRate(Number(block.avgFeeRateSatVb))
             : (block && block.totalFeeSats != null
-              ? `${fmtInt(block.totalFeeSats)} sats fees`
+              ? c.fees(fmtInt(block.totalFeeSats))
               : null);
           const fillH = Math.round(88 * ratio);
           const tileInner = (
@@ -247,12 +250,12 @@ function BitcoinBlockScroller (props) {
                   }}
                 >
                   <div style={{ fontWeight: 800, fontSize: '1.05em', letterSpacing: '-0.02em' }}>
-                    {height != null && Number.isFinite(height) ? fmtInt(height) : '—'}
+                    {height != null && Number.isFinite(height) ? fmtInt(height) : t.common.none}
                   </div>
                   <div style={{ fontSize: '0.72em', fontWeight: 600, marginTop: 2, opacity: 0.9 }}>
                     {txCount != null && Number.isFinite(txCount)
-                      ? `${fmtInt(txCount)} tx`
-                      : '—'}
+                      ? c.txCount(fmtInt(txCount))
+                      : t.common.none}
                   </div>
                   {feeLabel ? (
                     <div style={{ fontSize: '0.65em', marginTop: 2, opacity: 0.85 }}>{feeLabel}</div>
@@ -269,7 +272,7 @@ function BitcoinBlockScroller (props) {
                 }}
                 title={hash}
               >
-                {hash ? `${hash.slice(0, 6)}…` : '—'}
+                {hash ? `${hash.slice(0, 6)}…` : t.common.none}
               </div>
             </>
           );
@@ -291,8 +294,7 @@ function BitcoinBlockScroller (props) {
                 key={hash || `h-${height}-${idx}`}
                 to={path}
                 data-block-scroller-index={idx}
-                title={height != null ? `Block #${height}` : hash}
-                aria-label={height != null ? `Block ${height}` : `Block ${hash}`}
+                title={height != null ? c.blockTitle(height) : hash}
                 style={commonStyle}
                 draggable={false}
               >
@@ -305,7 +307,7 @@ function BitcoinBlockScroller (props) {
             <div
               key={hash || `h-${height}-${idx}`}
               data-block-scroller-index={idx}
-              title={height != null ? `Block #${height} (current)` : 'Current block'}
+              title={height != null ? c.currentTitle(height) : c.current}
               aria-current={isSelected ? 'page' : undefined}
               style={{ ...commonStyle, cursor: isSelected ? 'default' : 'grab' }}
             >

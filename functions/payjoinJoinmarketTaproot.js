@@ -1,27 +1,36 @@
 'use strict';
 
 /**
- * Pluggable Taproot receive template for Payjoin (BIP77) deposit sessions.
+ * Hub-custody Taproot payjoin receive addresses for Payjoin (BIP77/78) deposit sessions.
  *
- * - BIP21 + pj= and proposal POST semantics stay unchanged (Payjoin v2-compatible expectations).
- * - Default “Joinmarket-style” flow: NUMS internal key, script-path only, two tapleaves:
- *     1) Hub operator single-sig (compressed pubkey → x-only) — simple cooperative / ACP stitching.
- *   2) Beacon federation reserve — single-sig leaf with an x-only key you configure (env or explicit).
- *      On mainnet, configuring the real federation x-only makes this leaf spendable by the federation;
- *      until then, omit env to get a hard failure on mainnet, or supply a deliberate test key.
+ * These are plain receive addresses held by the Hub operator key, with a
+ * Beacon federation reserve leaf. They are not JoinMarket: no maker/taker
+ * market is involved (that is `services/coinjoin.js`). BIP21 + `pj=` and the
+ * proposal POST are unchanged.
  *
- * Tree shape and leaf order are part of the contract version so a future template can swap in
- * k-of-n federation tapscripts without pretending this address stays valid across script changes.
+ * - `hub_taproot_v2` (default for new Taproot sessions): the Hub operator
+ *   x-only key is the internal key, so the Hub spends by key path (looks like
+ *   any single-key P2TR spend); one tapleaf is the federation reserve.
+ * - `joinmarket_taproot_v1` (legacy, still accepted): NUMS internal key,
+ *   script-path only, leaves [operator, federation reserve]. The id is kept
+ *   so existing sessions and their addresses stay valid.
+ *
+ * The federation x-only comes from the session, Hub settings, or
+ * `FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX`. Off mainnet a Hub without one
+ * uses a random placeholder key it generated and saved once
+ * ({@link generatePlaceholderFederationXOnly}); its private key is never kept,
+ * so the reserve leaf of such an address cannot be spent by anyone. On
+ * mainnet a real key is required.
+ *
+ * Tree shape and leaf order are part of each template's contract version.
  */
 
+const crypto = require('crypto');
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('@fabric/core/types/ecc');
-const ecpairMod = require('ecpair');
-const ECPairFactory = typeof ecpairMod === 'function' ? ecpairMod : (ecpairMod.default || ecpairMod.ECPairFactory);
 const { payments, networks, script } = bitcoin;
 
 bitcoin.initEccLib(ecc);
-const ecpair = ECPairFactory(ecc);
 
 /** Same NUMS x-only internal key as federationVault / crowdfund (script-path spends only). */
 const TAPROOT_INTERNAL_NUMS = Buffer.from(
@@ -30,13 +39,13 @@ const TAPROOT_INTERNAL_NUMS = Buffer.from(
 );
 
 const JOINMARKET_TAPROOT_CONTRACT_VERSION = 1;
+/** Legacy template id (script-path only); accepted for existing sessions. */
 const TEMPLATE_ID = 'joinmarket_taproot_v1';
-
-/** Regtest/signet/testnet-only deterministic placeholder if no env/explicit federation x-only (private key = 1). */
-const REGTEST_PLACEHOLDER_PRIV = Buffer.concat([
-  Buffer.alloc(31, 0),
-  Buffer.from([0x01])
-]);
+const HUB_TAPROOT_CONTRACT_VERSION = 2;
+/** Key-path capable successor. */
+const HUB_TAPROOT_TEMPLATE_ID = 'hub_taproot_v2';
+const TEMPLATE_IDS = Object.freeze([HUB_TAPROOT_TEMPLATE_ID, TEMPLATE_ID]);
+const TEMPLATE_LABEL = 'Hub-custody Taproot payjoin receive address';
 
 function networkForFabricName (name = '') {
   const n = String(name || '').toLowerCase();
@@ -45,60 +54,78 @@ function networkForFabricName (name = '') {
   return networks.bitcoin;
 }
 
-function toXOnly (pubkey33) {
-  if (!Buffer.isBuffer(pubkey33) || pubkey33.length !== 33) return null;
-  if (pubkey33[0] !== 0x02 && pubkey33[0] !== 0x03) return null;
-  return pubkey33.subarray(1, 33);
+function isTestNetworkName (name = '') {
+  const n = String(name || '').toLowerCase();
+  return n === 'regtest' || n === 'test' || n === 'signet' || n === 'testnet';
 }
 
-function regtestPlaceholderFederationXOnly () {
-  const kp = ecpair.fromPrivateKey(REGTEST_PLACEHOLDER_PRIV);
-  return Buffer.from(kp.publicKey.subarray(1, 33));
+function toXOnly (pubkey33) {
+  if (!(pubkey33 instanceof Uint8Array) || pubkey33.length !== 33) return null;
+  if (pubkey33[0] !== 0x02 && pubkey33[0] !== 0x03) return null;
+  return Buffer.from(pubkey33.subarray(1, 33));
+}
+
+function asBuffer (bytes) {
+  return bytes instanceof Uint8Array ? Buffer.from(bytes) : bytes;
+}
+
+function tryXOnlyHex (h) {
+  const s = String(h || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(s)) return null;
+  const x = Buffer.from(s, 'hex');
+  return ecc.isXOnlyPoint(x) ? x : null;
 }
 
 /**
- * Resolve 32-byte x-only federation pubkey for the reserve leaf.
- * @param {object} opts
- * @param {string} [opts.explicitHex]
- * @param {string} [opts.configHex] - hub settings payjoin.beaconFederationXOnlyHex
+ * A random x-only key for the reserve leaf on test networks. The private key
+ * is discarded: the leaf is a placeholder nobody can spend (unlike a fixed
+ * well-known key, which anyone could).
+ * @returns {string} 64 hex
+ */
+function generatePlaceholderFederationXOnly () {
+  for (;;) {
+    const priv = crypto.randomBytes(32);
+    if (!ecc.isPrivate(priv)) continue;
+    const pub = ecc.pointFromScalar(priv, true);
+    priv.fill(0);
+    return Buffer.from(pub.subarray(1, 33)).toString('hex');
+  }
+}
+
+/**
+ * Resolve the 32-byte x-only federation pubkey for the reserve leaf.
+ * @param {Object} opts
+ * @param {string} [opts.explicitHex] session override
+ * @param {string} [opts.configHex] hub settings `payjoin.beaconFederationXOnlyHex`
+ * @param {string} [opts.placeholderHex] this Hub's saved placeholder (test networks only)
  * @param {string} [opts.networkName]
+ * @returns {Buffer}
  */
 function resolveBeaconFederationXOnly (opts = {}) {
-  const tryHex = (h) => {
-    const s = String(h || '').trim().toLowerCase();
-    if (!/^[0-9a-f]{64}$/i.test(s)) return null;
-    return Buffer.from(s, 'hex');
-  };
-  const a = tryHex(opts.explicitHex);
+  const a = tryXOnlyHex(opts.explicitHex);
   if (a) return a;
-  const b = tryHex(opts.configHex);
+  const b = tryXOnlyHex(opts.configHex);
   if (b) return b;
-  const c = tryHex(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX);
+  const c = tryXOnlyHex(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX);
   if (c) return c;
 
-  const net = String(opts.networkName || '').toLowerCase();
-  if (net === 'regtest' || net === 'test' || net === 'signet' || net === 'testnet') {
-    return regtestPlaceholderFederationXOnly();
+  if (isTestNetworkName(opts.networkName)) {
+    const p = tryXOnlyHex(opts.placeholderHex);
+    if (p) return p;
+    throw new Error('No federation key and no placeholder; the payjoin service generates one on attach.');
   }
 
   throw new Error(
-    'Beacon federation x-only is required for joinmarket taproot receive on this network. ' +
+    'Beacon federation x-only is required for a Hub Taproot payjoin address on this network. ' +
       'Set FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX (64 hex), payjoin.beaconFederationXOnlyHex in settings, ' +
       'or pass federationXOnlyHex when creating the session.'
   );
 }
 
-/**
- * @param {object} opts
- * @param {string} opts.networkName
- * @param {Buffer} opts.operatorPubkeyCompressed - 33-byte compressed secp256k1 pubkey
- * @param {Buffer} opts.federationXOnly - 32-byte x-only pubkey for reserve leaf
- */
-function buildPayjoinJoinmarketTaproot (opts = {}) {
-  const operatorPk = opts.operatorPubkeyCompressed;
-  const federationX = opts.federationXOnly;
-  const networkName = opts.networkName || 'mainnet';
-
+/** @private */
+function checkKeys (opts) {
+  const operatorPk = asBuffer(opts.operatorPubkeyCompressed);
+  const federationX = asBuffer(opts.federationXOnly);
   if (!Buffer.isBuffer(operatorPk) || operatorPk.length !== 33) {
     throw new Error('operatorPubkeyCompressed must be a 33-byte compressed pubkey.');
   }
@@ -107,19 +134,32 @@ function buildPayjoinJoinmarketTaproot (opts = {}) {
   if (!Buffer.isBuffer(federationX) || federationX.length !== 32) {
     throw new Error('federationXOnly must be a 32-byte x-only pubkey.');
   }
+  return { operatorPk, opX, federationX };
+}
 
-  const joinmarketLeaf = script.compile([opX, script.OPS.OP_CHECKSIG]);
-  const federationLeaf = script.compile([federationX, script.OPS.OP_CHECKSIG]);
-  const scriptTree = [{ output: joinmarketLeaf }, { output: federationLeaf }];
+/**
+ * Legacy `joinmarket_taproot_v1` address: NUMS internal key, leaves [operator, federation].
+ * @param {Object} opts
+ * @param {string} opts.networkName
+ * @param {Buffer} opts.operatorPubkeyCompressed 33-byte compressed secp256k1 pubkey
+ * @param {Buffer} opts.federationXOnly 32-byte x-only pubkey for reserve leaf
+ */
+function buildPayjoinJoinmarketTaproot (opts = {}) {
+  const { operatorPk, opX, federationX } = checkKeys(opts);
+  const networkName = opts.networkName || 'mainnet';
+
+  const operatorLeaf = Buffer.from(script.compile([opX, script.OPS.OP_CHECKSIG]));
+  const federationLeaf = Buffer.from(script.compile([federationX, script.OPS.OP_CHECKSIG]));
   const pay = payments.p2tr({
     internalPubkey: TAPROOT_INTERNAL_NUMS,
-    scriptTree,
+    scriptTree: [{ output: operatorLeaf }, { output: federationLeaf }],
     network: networkForFabricName(networkName)
   });
   if (!pay.address || !pay.output) throw new Error('p2tr did not produce address/output.');
 
   return {
     template: TEMPLATE_ID,
+    label: `${TEMPLATE_LABEL} (legacy, script path only)`,
     contractVersion: JOINMARKET_TAPROOT_CONTRACT_VERSION,
     address: pay.address,
     network: networkName,
@@ -129,23 +169,78 @@ function buildPayjoinJoinmarketTaproot (opts = {}) {
     leafOrder: ['joinmarket_operator', 'beacon_federation_reserve'],
     leaves: {
       joinmarket_operator: {
-        role: 'hub_operator_acp_join',
-        scriptHex: joinmarketLeaf.toString('hex')
+        role: 'hub_operator_single_sig',
+        scriptHex: operatorLeaf.toString('hex')
       },
       beacon_federation_reserve: {
         role: 'beacon_federation_single_sig',
-        scriptHex: federationLeaf.toString('hex'),
-        note: 'Swap federationXOnly for your Beacon federation aggregate key; new sessions pick up hub settings / env.'
+        scriptHex: federationLeaf.toString('hex')
       }
     }
   };
 }
 
+/**
+ * `hub_taproot_v2` address: Hub operator x-only internal key (key path), one federation reserve leaf.
+ * @param {Object} opts
+ * @param {string} opts.networkName
+ * @param {Buffer} opts.operatorPubkeyCompressed 33-byte compressed secp256k1 pubkey
+ * @param {Buffer} opts.federationXOnly 32-byte x-only pubkey for reserve leaf
+ */
+function buildPayjoinHubTaproot (opts = {}) {
+  const { operatorPk, opX, federationX } = checkKeys(opts);
+  const networkName = opts.networkName || 'mainnet';
+
+  const federationLeaf = Buffer.from(script.compile([federationX, script.OPS.OP_CHECKSIG]));
+  const pay = payments.p2tr({
+    internalPubkey: opX,
+    scriptTree: { output: federationLeaf },
+    network: networkForFabricName(networkName)
+  });
+  if (!pay.address || !pay.output) throw new Error('p2tr did not produce address/output.');
+
+  return {
+    template: HUB_TAPROOT_TEMPLATE_ID,
+    label: TEMPLATE_LABEL,
+    contractVersion: HUB_TAPROOT_CONTRACT_VERSION,
+    address: pay.address,
+    network: networkName,
+    operatorPubkeyCompressedHex: operatorPk.toString('hex'),
+    federationXOnlyHex: federationX.toString('hex'),
+    internalPubkeyHex: opX.toString('hex'),
+    keyPath: 'hub_operator',
+    leafOrder: ['beacon_federation_reserve'],
+    leaves: {
+      beacon_federation_reserve: {
+        role: 'beacon_federation_single_sig',
+        scriptHex: federationLeaf.toString('hex')
+      }
+    }
+  };
+}
+
+/**
+ * Build the address for a template id.
+ * @param {string} templateId `hub_taproot_v2` | `joinmarket_taproot_v1`
+ * @param {Object} opts see {@link buildPayjoinHubTaproot}
+ */
+function buildPayjoinTaprootTemplate (templateId, opts = {}) {
+  if (templateId === TEMPLATE_ID) return buildPayjoinJoinmarketTaproot(opts);
+  if (templateId === HUB_TAPROOT_TEMPLATE_ID) return buildPayjoinHubTaproot(opts);
+  throw new Error(`Unknown payjoin receive template: ${templateId}`);
+}
+
 module.exports = {
   JOINMARKET_TAPROOT_CONTRACT_VERSION,
+  HUB_TAPROOT_CONTRACT_VERSION,
   TEMPLATE_ID,
+  HUB_TAPROOT_TEMPLATE_ID,
+  TEMPLATE_IDS,
+  TEMPLATE_LABEL,
   TAPROOT_INTERNAL_NUMS,
   buildPayjoinJoinmarketTaproot,
-  resolveBeaconFederationXOnly,
-  regtestPlaceholderFederationXOnly
+  buildPayjoinHubTaproot,
+  buildPayjoinTaprootTemplate,
+  generatePlaceholderFederationXOnly,
+  resolveBeaconFederationXOnly
 };

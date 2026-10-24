@@ -15,14 +15,17 @@ const {
   Loader
 } = require('semantic-ui-react');
 const { fetchBlockByHash, fetchBlockWindow, loadUpstreamSettings } = require('../functions/bitcoinClient');
-const { UI_NUMBER_LOG_EXP_THRESHOLD, UI_NUMBER_COMPACT_FRACTION_THRESHOLD } = require('../constants');
+const { SATS_PER_BTC, UI_NUMBER_LOG_EXP_THRESHOLD, UI_NUMBER_COMPACT_FRACTION_THRESHOLD } = require('../constants');
 const BitcoinBlockScroller = require('./BitcoinBlockScroller');
+const t = require('../locales/en');
+
+const c = t.bitcoin.block;
 
 const BLOCK_HASH_REGEX = /^[a-fA-F0-9]{64}$/;
 
 function shortHash (h) {
   const s = String(h || '').trim();
-  if (!s) return '—';
+  if (!s) return t.common.none;
   if (s.length <= 18) return s;
   return `${s.slice(0, 10)}…${s.slice(-8)}`;
 }
@@ -34,16 +37,16 @@ function blockLink (hash) {
 }
 
 function fmtInt (n) {
-  if (n == null || n === '') return '—';
+  if (n == null || n === '') return t.common.none;
   const x = Number(n);
-  if (!Number.isFinite(x)) return '—';
+  if (!Number.isFinite(x)) return t.common.none;
   return x.toLocaleString();
 }
 
 function fmtDifficulty (n) {
-  if (n == null || n === '') return '—';
+  if (n == null || n === '') return t.common.none;
   const x = Number(n);
-  if (!Number.isFinite(x)) return '—';
+  if (!Number.isFinite(x)) return t.common.none;
   if (x >= UI_NUMBER_LOG_EXP_THRESHOLD) return x.toExponential(4);
   if (x >= UI_NUMBER_COMPACT_FRACTION_THRESHOLD) return x.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return x.toLocaleString(undefined, { maximumFractionDigits: 8 });
@@ -81,7 +84,7 @@ function BitcoinBlockView () {
     }
     if (!BLOCK_HASH_REGEX.test(rawHash)) {
       setLoading(false);
-      setError('Invalid block hash. Must be 64 hex characters.');
+      setError(c.invalidHash);
       setBlock(null);
       return;
     }
@@ -151,25 +154,25 @@ function BitcoinBlockView () {
           style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
           role="banner"
         >
-          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
+          <Button as={Link} to="/services/bitcoin" basic size="small" title={t.bitcoin.shared.backToBitcoinTitle}>
             <Icon name="arrow left" aria-hidden="true" />
-            Bitcoin
+            {t.bitcoin.shared.backToBitcoin}
           </Button>
           <Header as="h2" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em', flexWrap: 'wrap' }}>
             <Icon name="cube" aria-hidden="true" />
             <Header.Content>
-              Block {height != null && Number.isFinite(Number(height))
+              {c.title(height != null && Number.isFinite(Number(height))
                 ? `#${fmtInt(height)}`
-                : (hash ? shortHash(hash) : '')}
+                : (hash ? shortHash(hash) : ''))}
               <Header.Subheader style={{ marginTop: '0.35em' }}>
                 {timeSec != null && Number.isFinite(timeSec) ? (
-                  <span title={`Unix ${timeSec}`}>{new Date(timeSec * 1000).toLocaleString()}</span>
+                  <span title={c.unixTitle(timeSec)}>{new Date(timeSec * 1000).toLocaleString()}</span>
                 ) : (
-                  '—'
+                  t.common.none
                 )}
                 {medianSec != null && Number.isFinite(medianSec) && medianSec !== timeSec && (
                   <span style={{ marginLeft: '0.75em', color: '#888' }}>
-                    (median {new Date(medianSec * 1000).toLocaleString()})
+                    {c.median(new Date(medianSec * 1000).toLocaleString())}
                   </span>
                 )}
               </Header.Subheader>
@@ -192,22 +195,22 @@ function BitcoinBlockView () {
               {prevPath ? (
                 <Button as={Link} to={prevPath} title={prev}>
                   <Icon name='arrow left' />
-                  Parent block
+                  {c.previous}
                 </Button>
               ) : (
-                <Button disabled title='No parent (genesis or unknown)'>
+                <Button disabled title={c.noPrevious}>
                   <Icon name='arrow left' />
-                  Parent block
+                  {c.previous}
                 </Button>
               )}
               {nextPath ? (
                 <Button as={Link} to={nextPath} title={next}>
-                  Child block
+                  {c.next}
                   <Icon name='arrow right' style={{ marginLeft: '0.5em' }} />
                 </Button>
               ) : (
-                <Button disabled title='No known descendant (chain tip on this hub)'>
-                  Child block
+                <Button disabled title={c.noNext}>
+                  {c.next}
                   <Icon name='arrow right' style={{ marginLeft: '0.5em' }} />
                 </Button>
               )}
@@ -218,17 +221,17 @@ function BitcoinBlockView () {
 
       {!rawHash && (
         <Message warning>
-          <Message.Header>Missing block hash</Message.Header>
-          <p>Open a block from the block explorer so the URL includes a 64-character hex block id.</p>
+          <Message.Header>{c.missingTitle}</Message.Header>
+          <p>{c.missingBody}</p>
           <Button
             as={Link}
             to="/services/bitcoin/blocks"
             primary
             style={{ marginTop: '0.75em' }}
-            title="Open block explorer (recent blocks and mempool)"
+            title={t.bitcoin.shared.openExplorerTitle}
           >
             <Icon name="bitcoin" />
-            Block Explorer
+            {t.bitcoin.shared.openExplorer}
           </Button>
         </Message>
       )}
@@ -236,29 +239,29 @@ function BitcoinBlockView () {
       {!!rawHash && loading && (
         <Segment>
           <Loader active inline="centered" />
-          <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>Loading block…</p>
+          <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>{c.loading}</p>
         </Segment>
       )}
 
       {!!rawHash && error && !loading && (
         <Message negative>
-          <Message.Header>Failed to load block</Message.Header>
+          <Message.Header>{c.loadFailed}</Message.Header>
           <p>{error}</p>
           {BLOCK_HASH_REGEX.test(rawHash) ? (
             <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
               <Button type="button" size="small" onClick={() => void loadBlock()}>
                 <Icon name="refresh" />
-                Retry
+                {t.common.actions.retry}
               </Button>
               <Button
                 as={Link}
                 to="/services/bitcoin/blocks"
                 size="small"
                 basic
-                title="Open block explorer (recent blocks and mempool)"
+                title={t.bitcoin.shared.openExplorerTitle}
               >
                 <Icon name="list" />
-                Block Explorer
+                {t.bitcoin.shared.openExplorer}
               </Button>
             </div>
           ) : null}
@@ -267,23 +270,23 @@ function BitcoinBlockView () {
 
       {!!rawHash && !loading && !error && !block && (
         <Message warning>
-          <Message.Header>Block not found</Message.Header>
-          <p>This hub&apos;s Bitcoin node does not have that block, or the hash is unknown on this network.</p>
+          <Message.Header>{c.notFoundTitle}</Message.Header>
+          <p>{c.notFoundBody}</p>
           {BLOCK_HASH_REGEX.test(rawHash) ? (
             <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
               <Button type="button" size="small" onClick={() => void loadBlock()}>
                 <Icon name="refresh" />
-                Retry
+                {t.common.actions.retry}
               </Button>
               <Button
                 as={Link}
                 to="/services/bitcoin/blocks"
                 size="small"
                 basic
-                title="Open block explorer (recent blocks and mempool)"
+                title={t.bitcoin.shared.openExplorerTitle}
               >
                 <Icon name="list" />
-                Block Explorer
+                {t.bitcoin.shared.openExplorer}
               </Button>
             </div>
           ) : null}
@@ -297,29 +300,29 @@ function BitcoinBlockView () {
               <Grid.Column width={16}>
                 <Label.Group size='small'>
                   {block.confirmations != null && (
-                    <Label color='blue' title='Confirmations on this node'>
+                    <Label color='blue' title={c.confirmationsTitle}>
                       <Icon name='check circle' />
-                      {fmtInt(block.confirmations)} confirmations
+                      {t.bitcoin.shared.confirmations(block.confirmations)}
                     </Label>
                   )}
-                  <Label title='Transaction count'>
+                  <Label title={c.txCountTitle}>
                     <Icon name='exchange' />
-                    {fmtInt(nTxRpc)} txs
+                    {t.bitcoin.shared.transactions(nTxRpc)}
                   </Label>
                   {block.size != null && (
-                    <Label title='Serialized block size'>
+                    <Label title={c.sizeTitle}>
                       <Icon name='database' />
-                      {fmtInt(block.size)} B
+                      {t.bitcoin.shared.bytes(fmtInt(block.size))}
                     </Label>
                   )}
                   {block.weight != null && (
-                    <Label title='BIP141 block weight'>
-                      weight {fmtInt(block.weight)}
+                    <Label title={c.weightTitle}>
+                      {c.weight(fmtInt(block.weight))}
                     </Label>
                   )}
                   {block.strippedsize != null && block.strippedsize !== block.size && (
-                    <Label title='Stripped size (witness discount)'>
-                      stripped {fmtInt(block.strippedsize)} B
+                    <Label title={c.strippedTitle}>
+                      {c.stripped(fmtInt(block.strippedsize))}
                     </Label>
                   )}
                 </Label.Group>
@@ -328,43 +331,42 @@ function BitcoinBlockView () {
 
             <Divider />
 
-            <Header as='h4' style={{ marginBottom: '0.75em' }}>Block details</Header>
+            <Header as='h4' style={{ marginBottom: '0.75em' }}>{c.details}</Header>
             <Table basic='very' compact celled unstackable>
               <Table.Body>
-                <MetaRow label='Hash'>
+                <MetaRow label={c.hash}>
                   <span title={hash}><code>{hash}</code></span>
                 </MetaRow>
                 {height != null && (
-                  <MetaRow label='Height'>
+                  <MetaRow label={c.height}>
                     {fmtInt(height)}
                   </MetaRow>
                 )}
                 {prev ? (
-                  <MetaRow label='Previous block'>
+                  <MetaRow label={c.previous}>
                     <Link to={prevPath} title={prev}>
                       <code>{shortHash(prev)}</code>
                     </Link>
-                    <span style={{ marginLeft: '0.5em', color: '#888', fontSize: '0.85em' }}>(parent)</span>
                   </MetaRow>
                 ) : null}
                 {next ? (
-                  <MetaRow label='Next block'>
+                  <MetaRow label={c.next}>
                     <Link to={nextPath} title={next}>
                       <code>{shortHash(next)}</code>
                     </Link>
                   </MetaRow>
                 ) : (
-                  <MetaRow label='Next block'>
-                    <span style={{ color: '#888' }}>— (chain tip)</span>
+                  <MetaRow label={c.next}>
+                    <span style={{ color: '#888' }}>{c.chainTip}</span>
                   </MetaRow>
                 )}
                 {block.merkleroot ? (
-                  <MetaRow label='Merkle root'>
+                  <MetaRow label={c.merkleRoot}>
                     <code title={block.merkleroot}>{shortHash(block.merkleroot)}</code>
                   </MetaRow>
                 ) : null}
                 {block.version != null && (
-                  <MetaRow label='Version'>
+                  <MetaRow label={c.version}>
                     {fmtInt(block.version)}
                     {block.versionHex ? (
                       <span style={{ marginLeft: '0.5em', color: '#888' }}>({block.versionHex})</span>
@@ -372,24 +374,24 @@ function BitcoinBlockView () {
                   </MetaRow>
                 )}
                 {block.bits != null && (
-                  <MetaRow label='Bits'>
+                  <MetaRow label={c.bits}>
                     <code>{String(block.bits)}</code>
                   </MetaRow>
                 )}
                 {block.difficulty != null && (
-                  <MetaRow label='Difficulty'>
+                  <MetaRow label={c.difficulty}>
                     {fmtDifficulty(block.difficulty)}
                   </MetaRow>
                 )}
                 {block.nonce != null && (
-                  <MetaRow label='Nonce'>
+                  <MetaRow label={c.nonce}>
                     <code>{fmtInt(block.nonce)}</code>
                   </MetaRow>
                 )}
                 {block.chainwork != null && (
-                  <MetaRow label='Chainwork'>
+                  <MetaRow label={c.chainwork}>
                     <code title={String(block.chainwork)}>{shortHash(String(block.chainwork))}</code>
-                    <span style={{ marginLeft: '0.5em', color: '#888', fontSize: '0.85em' }}>(hex)</span>
+                    <span style={{ marginLeft: '0.5em', color: '#888', fontSize: '0.85em' }}>{c.hex}</span>
                   </MetaRow>
                 )}
               </Table.Body>
@@ -397,22 +399,22 @@ function BitcoinBlockView () {
           </Segment>
 
           <Segment>
-            <Header as='h3'>Transactions</Header>
+            <Header as='h3'>{c.transactions}</Header>
             {txs.length === 0 ? (
-              <p style={{ color: '#666' }}>No transactions in this block payload.</p>
+              <p style={{ color: '#666' }}>{c.noTransactions}</p>
             ) : (
               <Table compact='very' celled>
                 <Table.Header>
                   <Table.Row>
-                    <Table.HeaderCell>Txid</Table.HeaderCell>
-                    <Table.HeaderCell>Value</Table.HeaderCell>
+                    <Table.HeaderCell>{c.txid}</Table.HeaderCell>
+                    <Table.HeaderCell>{c.value}</Table.HeaderCell>
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
                   {txs.slice(0, 200).map((tx, idx) => {
                     const txid = (tx && (tx.txid || tx.id)) || String(tx);
-                    const value = tx && Array.isArray(tx.vout)
-                      ? tx.vout.reduce((acc, v) => acc + Number(v.value || 0), 0)
+                    const valueSats = tx && Array.isArray(tx.vout)
+                      ? tx.vout.reduce((acc, v) => acc + Math.round(Number((v && v.value) || 0) * SATS_PER_BTC), 0)
                       : null;
                     return (
                       <Table.Row key={`${txid}:${idx}`}>
@@ -420,12 +422,11 @@ function BitcoinBlockView () {
                           <Link
                             to={`/services/bitcoin/transactions/${encodeURIComponent(txid)}`}
                             title={txid}
-                            aria-label={`Transaction ${txid}`}
                           >
                             <code>{shortHash(txid)}</code>
                           </Link>
                         </Table.Cell>
-                        <Table.Cell>{value != null ? `${value} BTC` : '-'}</Table.Cell>
+                        <Table.Cell>{valueSats != null && Number.isFinite(valueSats) ? t.common.sats(valueSats) : t.common.none}</Table.Cell>
                       </Table.Row>
                     );
                   })}

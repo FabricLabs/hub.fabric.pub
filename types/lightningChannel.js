@@ -7,7 +7,7 @@
  * message-settlement semantics. This subclass records Core Lightning (CLN)
  * identifiers used by the Hub's `/services/lightning` integration.
  *
- * **Protocol note:** Inventory L1 HTLC (`functions/inventoryHtlc`) uses Taproot
+ * **Protocol note:** Inventory L1 HTLC (`@fabric/core/types/htlc`) uses Taproot
  * script-path outputs (hashlock + CLTV refund) suitable for regtest/demo. That
  * layout is adjacent to many Lightning P2TR constructions but is **not**
  * BOLT-compatible — Fabric protocol, not L2 `pay_chan`.

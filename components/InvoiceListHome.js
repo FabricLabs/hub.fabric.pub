@@ -13,6 +13,10 @@ const { formatSatsDisplay } = require('../functions/formatSats');
 const { buildTabPayerDemoUrl } = require('../functions/tabPayerDemoUrl');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
+const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const t = require('../locales/en');
+
+const L = t.payments.invoiceList;
 
 /**
  * InvoiceListHome: create invoices and store them in the browser Fabric state store.
@@ -70,7 +74,7 @@ class InvoiceListHome extends React.Component {
     const memo = String(this.state.memo || '').trim();
     const label = String(this.state.label || '').trim();
     if (!Number.isFinite(amountSats) || amountSats <= 0) {
-      this.setState({ error: 'Amount must be greater than 0 sats.' });
+      this.setState({ error: L.errors.amount });
       return;
     }
 
@@ -81,7 +85,7 @@ class InvoiceListHome extends React.Component {
       : 'regtest';
 
     if (!wallet.walletId || !wallet.xpub) {
-      this.setState({ error: 'Unlock an identity with xpub to create invoices.' });
+      this.setState({ error: `${L.identityBody} ${t.common.identity.howToLogIn}` });
       return;
     }
 
@@ -93,7 +97,7 @@ class InvoiceListHome extends React.Component {
         : null;
 
       if (!address) {
-        this.setState({ error: 'Could not derive receive address. Check xpub and network.', creating: false });
+        this.setState({ error: L.errors.noAddress, creating: false });
         return;
       }
 
@@ -101,7 +105,7 @@ class InvoiceListHome extends React.Component {
         address,
         amountSats,
         memo,
-        label: label || memo || `Invoice ${formatSatsDisplay(amountSats)} sats`,
+        label: label || memo || L.defaultLabel(formatSatsDisplay(amountSats)),
         network
       });
 
@@ -115,7 +119,7 @@ class InvoiceListHome extends React.Component {
           error: null
         }, () => this._syncInvoicesHashScroll());
       } else {
-        this.setState({ error: 'Failed to save invoice.', creating: false });
+        this.setState({ error: L.errors.saveFailed, creating: false });
       }
     } catch (err) {
       this.setState({
@@ -137,6 +141,17 @@ class InvoiceListHome extends React.Component {
     const network = (bitcoin.network && String(bitcoin.network).toLowerCase()) || 'regtest';
     const wallet = getNextReceiveWalletContext(identity);
     const hasWallet = !!(wallet.walletId && wallet.xpub);
+    const identityHowTo = classifyHubBrowserIdentity(identity) === 'password_locked'
+      ? t.common.identity.howToUnlock
+      : t.common.identity.howToLogIn;
+    const steps = [
+      { id: 'funds', to: '/services/bitcoin#fabric-bitcoin-regtest-toolbar' },
+      { id: 'receiver', to: '/settings/bitcoin-wallet' },
+      { id: 'payer', to: '/payments#fabric-btc-make-payment-h4' },
+      { id: 'advanced', to: '/services/coinjoin' },
+      { id: 'confirm', to: '/services/bitcoin/resources' },
+      { id: 'desktop', to: '/settings/security' }
+    ];
 
     return (
       <div className='fade-in'>
@@ -156,72 +171,52 @@ class InvoiceListHome extends React.Component {
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5em' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                  <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
+                  <Button as={Link} to="/services/bitcoin" basic size="small" title={L.backTitle}>
                     <Icon name="arrow left" aria-hidden="true" />
-                    Bitcoin
+                    {L.back}
                   </Button>
                   <Header as="h2" id="invoices-page-heading" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.35em' }}>
                     <Icon name="file alternate outline" aria-hidden="true" />
-                    <Header.Content>Invoices</Header.Content>
+                    <Header.Content>{L.title}</Header.Content>
                   </Header>
                 </div>
-                <div role="toolbar" aria-label="Account-to-account shortcuts" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
-                  <Button as={Link} to="/payments#fabric-payments-tab-demo" basic size="small" title="Payer tab walkthrough">
+                <div role="toolbar" aria-label={L.shortcutsLabel} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
+                  <Button as={Link} to="/payments#fabric-payments-tab-demo" basic size="small" title={L.paymentsTitle}>
                     <Icon name="credit card outline" aria-hidden="true" />
-                    Payments
+                    {L.payments}
                   </Button>
-                  <Button as={Link} to="/services/bitcoin#fabric-bitcoin-faucet" basic size="small" title="Regtest: fund an address from the Hub wallet">
+                  <Button as={Link} to="/services/bitcoin#fabric-bitcoin-faucet" basic size="small" title={L.faucetTitle}>
                     <Icon name="tint" aria-hidden="true" />
-                    Faucet
+                    {L.faucet}
                   </Button>
-                  <Button as={Link} to="/services/bitcoin/resources" basic size="small" title="L1 verify and HTTP resources">
+                  <Button as={Link} to="/services/bitcoin/resources" basic size="small" title={L.resourcesTitle}>
                     <Icon name="sitemap" aria-hidden="true" />
-                    Resources
+                    {L.resources}
                   </Button>
-                  <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" title="Taproot campaign, ACP PSBT, Payjoin deposit to vault">
+                  <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" title={L.crowdfundsTitle}>
                     <Icon name="heart outline" aria-hidden="true" />
-                    Crowdfunds
+                    {L.crowdfunds}
                   </Button>
                 </div>
               </div>
             </div>
             <p id="invoices-page-summary" style={{ color: '#666' }}>
-              Create payment requests and store them locally in your browser. Not published to global state.
+              {L.summary}
             </p>
           </section>
           <Message info size="small" id="fabric-invoices-tab-demo" style={{ marginBottom: '1em' }}>
-            <Message.Header>Two-tab invoice payment (production walkthrough)</Message.Header>
+            <Message.Header>{L.walkthroughTitle}</Message.Header>
             <List ordered relaxed style={{ margin: '0.35em 0 0', color: '#333' }}>
-              <List.Item>
-                <strong>Regtest funds:</strong> The Hub node wallet pays invoices (Make Payment / Pay Now). On{' '}
-                <Link to="/services/bitcoin#fabric-bitcoin-regtest-toolbar">Bitcoin</Link>
-                , use <strong>Generate Block</strong> (admin) until the Hub has spendable balance. Optional: open{' '}
-                <Link to="/services/bitcoin#fabric-bitcoin-faucet">Faucet</Link>
-                {' '}on the Bitcoin page — <strong>Use my receive address</strong>, <strong>Request from faucet</strong>, then <strong>Generate Block</strong> so your client balance (BIP44 account 0 under your identity) shows confirmed test coins.
-              </List.Item>
-              <List.Item>
-                <strong>Tab 1 (receiver):</strong> Invoices use the next external address on{' '}
-                <Link to="/settings/bitcoin-wallet">BIP44 account 0</Link> under your Fabric identity. Create an invoice and copy the address (or leave this tab open).
-              </List.Item>
-              <List.Item>
-                <strong>Tab 2 (payer):</strong> On the invoice row, click <strong>Open payer tab (prefilled)</strong> (adds <code>payTo</code> and <code>payAmountSats</code>, scrolls to Make Payment). Or open{' '}
-                <Link to="/payments#fabric-payments-tab-demo">Payments (full walkthrough)</Link>
-                {' '}or{' '}
-                <Link to="/payments#fabric-btc-make-payment-h4">jump to Make Payment</Link>
-                {' '}and paste address and amount. Spends and receives both use account 0 under the same identity. On-chain send uses the Hub node wallet and needs your setup <strong>admin token</strong> (if missing, use the yellow <strong>Regtest: Hub admin token</strong> panel below or on Payments).
-              </List.Item>
-              <List.Item>
-                <strong>Joinmarket / Payjoin (advanced):</strong> On each invoice card header, the <Icon name="setting" /> control opens <strong>three BTC pool targets</strong> (default 0.05 → 0.005 → 0.0005) for operator liquidity planning, and an optional <strong>Payjoin BIP21</strong> mint for this invoice address (<code>pj=</code>) that opens in Payments for local sign or ACP Hub boost.
-              </List.Item>
-              <List.Item>
-                <strong>Confirm:</strong> Return here — on the invoice card use <strong>Confirm payment</strong> with the txid, or verify via{' '}
-                <Link to="/services/bitcoin/resources">Resources → L1 payment verification</Link>. The invoice list lives in the browser Fabric state store for this origin, so both tabs see the same rows.
-              </List.Item>
-              <List.Item>
-                <strong>Desktop / delegation:</strong> If you use <strong>Log in with Fabric Hub (desktop)</strong>, manage tokens and open per-token audit under{' '}
-                <Link to="/settings/security">Security &amp; delegation</Link>
-                {' '}(REST <code>/sessions</code>).
-              </List.Item>
+              {steps.map((step) => {
+                const s = L.steps[step.id];
+                return (
+                  <List.Item key={step.id}>
+                    <strong>{s.title}</strong> {s.before}{' '}
+                    <Link to={step.to}>{s.link}</Link>
+                    {/^[.,;]/.test(s.after) ? s.after : ` ${s.after}`}
+                  </List.Item>
+                );
+              })}
             </List>
           </Message>
           <HubRegtestAdminTokenPanel
@@ -230,47 +225,46 @@ class InvoiceListHome extends React.Component {
           />
           <BitcoinWalletBranchBar identity={identity} />
           <p style={{ color: '#888', fontSize: '0.9em' }}>
-            Each invoice uses the next unused external address from your wallet path; used indices stay in the browser store.
-            {' '}
-            <Link to="/services/bitcoin/resources">L1 payment verification</Link>
-            {' '}
-            (txid + address + amount) lives under Bitcoin resources.
+            {L.addressNote}
           </p>
         </Segment>
 
         {!hasWallet && (
           <Message warning>
             <p style={{ margin: 0 }}>
-              <strong>Identity required</strong>
+              <strong>{L.identityTitle}</strong>
             </p>
             <p style={{ margin: '0.35em 0 0' }}>
-              Unlock an identity with an xpub to create invoices. Your receive addresses are derived from your wallet.
+              {L.identityBody} {identityHowTo}
             </p>
           </Message>
         )}
 
         {hasWallet && (
           <Segment>
-            <Header as='h3'>Create invoice</Header>
+            <Header as='h3'>{L.createTitle}</Header>
             <Form>
               <Form.Input
-                label='Amount (sats)'
+                id='invoice-create-amount'
+                label={L.amount}
                 type='number'
                 min='1'
                 step='1'
-                placeholder='1000'
+                placeholder={L.amountPlaceholder}
                 value={this.state.amountSats}
                 onChange={(e) => this.setState({ amountSats: e.target.value })}
               />
               <Form.Input
-                label='Label'
-                placeholder='e.g. Coffee payment'
+                id='invoice-create-label'
+                label={L.label}
+                placeholder={L.labelPlaceholder}
                 value={this.state.label}
                 onChange={(e) => this.setState({ label: e.target.value })}
               />
               <Form.Input
-                label='Memo'
-                placeholder='Optional note'
+                id='invoice-create-memo'
+                label={L.memo}
+                placeholder={L.memoPlaceholder}
                 value={this.state.memo}
                 onChange={(e) => this.setState({ memo: e.target.value })}
               />
@@ -282,12 +276,12 @@ class InvoiceListHome extends React.Component {
                 disabled={this.state.creating}
               >
                 <Icon name='plus' />
-                Create invoice
+                {L.create}
               </Button>
             </Form>
             {this.state.error && (
               <Message negative style={{ marginTop: '1em' }}>
-                <Message.Header>Could not create invoice</Message.Header>
+                <Message.Header>{L.createFailed}</Message.Header>
                 <p style={{ margin: '0.35em 0 0' }}>{this.state.error}</p>
               </Message>
             )}
@@ -296,7 +290,7 @@ class InvoiceListHome extends React.Component {
 
         <Segment>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5em', flexWrap: 'wrap', marginBottom: '0.35em' }}>
-            <Header as='h3' style={{ margin: 0 }}>My invoices</Header>
+            <Header as='h3' style={{ margin: 0 }}>{L.listTitle}</Header>
             <Button
               type="button"
               size="small"
@@ -304,14 +298,14 @@ class InvoiceListHome extends React.Component {
               icon
               labelPosition="left"
               onClick={() => this.refresh()}
-              title="Reload list from browser store (e.g. after another tab created an invoice)"
+              title={L.refreshTitle}
             >
               <Icon name="refresh" />
-              Refresh list
+              {L.refresh}
             </Button>
           </div>
           {this.state.invoices.length === 0 ? (
-            <p style={{ color: '#666' }}>No invoices yet. Create one above.</p>
+            <p style={{ color: '#666' }}>{L.empty}</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5em' }}>
               {this.state.invoices.map((inv) => (
@@ -323,7 +317,7 @@ class InvoiceListHome extends React.Component {
                         address={inv.address}
                         amountSats={inv.amountSats}
                         network={inv.network || network}
-                        label={inv.label || inv.memo || `Invoice ${formatSatsDisplay(inv.amountSats)} sats`}
+                        label={inv.label || inv.memo || L.defaultLabel(formatSatsDisplay(inv.amountSats))}
                         memo={inv.memo}
                         txids={inv.txids || []}
                         identity={identity}
@@ -345,9 +339,8 @@ class InvoiceListHome extends React.Component {
                         color="blue"
                         size="small"
                         icon="external alternate"
-                        content="Open payer tab (prefilled)"
-                        title="Opens Payments in a new tab with payTo and payAmountSats prefilled"
-                        aria-label="Open payer tab: Bitcoin Payments with address and amount prefilled"
+                        content={L.openPayerTab}
+                        title={L.openPayerTabTitle}
                       />
                       <Button
                         basic
@@ -355,12 +348,13 @@ class InvoiceListHome extends React.Component {
                         size='small'
                         icon='trash'
                         onClick={() => this.handleDelete(inv.id)}
-                        title='Delete invoice'
+                        title={L.deleteInvoice}
+                        aria-label={L.deleteInvoice}
                       />
                     </div>
                   </div>
                   <div style={{ fontSize: '0.8em', color: '#999', marginTop: '0.25em' }}>
-                    Created {inv.createdAt ? new Date(inv.createdAt).toLocaleString() : '-'}
+                    {L.created(inv.createdAt ? new Date(inv.createdAt).toLocaleString() : t.common.none)}
                   </div>
                 </div>
               ))}

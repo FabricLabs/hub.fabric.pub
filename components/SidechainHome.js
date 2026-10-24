@@ -53,6 +53,10 @@ const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { Link } = require('react-router-dom');
 const DistributedFederationPanel = require('./DistributedFederationPanel');
+const t = require('../locales/en');
+
+const sh = t.federation.sidechainHome;
+const tt = sh.toasts;
 
 function paymentHashHexFromPreimageHex (preimageHex) {
   const clean = String(preimageHex || '').trim().replace(/^0x/i, '');
@@ -145,7 +149,7 @@ class SidechainHome extends React.Component {
     const d = ev && ev.detail;
     if (!d || !d.object) return;
     this.setState({ inboundOffer: d });
-    toast.info('Incoming DOCUMENT_OFFER (see Demo section)');
+    toast.info(tt.incoming);
   }
 
   _getInitiatorId () {
@@ -176,15 +180,15 @@ class SidechainHome extends React.Component {
         manifest: man.ok ? man.data : null
       };
       const errs = [];
-      if (!st.ok) errs.push(st.error || 'GetSidechainState failed');
-      if (!ep.ok) errs.push(ep.error || 'epoch fetch failed');
-      if (!jr.ok) errs.push(jr.error || 'GetSidechainJournal failed');
-      if (!sn.ok) errs.push(sn.error || 'GetSidechainSnapshots failed');
+      if (!st.ok) errs.push(st.error || sh.errors.state);
+      if (!ep.ok) errs.push(ep.error || sh.errors.epoch);
+      if (!jr.ok) errs.push(jr.error || sh.errors.journal);
+      if (!sn.ok) errs.push(sn.error || sh.errors.snapshots);
       if (errs.length) next.epochError = errs.join(' · ');
       if (ep.ok) next.epoch = ep.data;
       if (st.ok && st.state && typeof st.state.clock === 'number') {
         next.patchJson = this.state.patchJson;
-        next.basisClockNote = `Current logical clock: ${st.state.clock} — use this as basisClock when submitting patches.`;
+        next.basisClockNote = sh.status.basisClock(st.state.clock);
       }
       this.setState(next);
     } catch (e) {
@@ -196,7 +200,7 @@ class SidechainHome extends React.Component {
 
   _shortDigest (hex, n = 10) {
     const s = String(hex || '');
-    if (s.length <= n * 2) return s || '—';
+    if (s.length <= n * 2) return s || t.common.none;
     return `${s.slice(0, n)}…${s.slice(-n)}`;
   }
 
@@ -213,15 +217,15 @@ class SidechainHome extends React.Component {
     const payload = last && last.payload;
     const sc = payload && payload.sidechain;
     if (!sc || sc.stateDigest == null) {
-      return { text: 'No sidechain digest in last sealed epoch (beacon idle or no epochs yet).', color: 'grey' };
+      return { text: sh.seal.none, color: 'grey' };
     }
     const cur = sidechain && sidechain.stateDigest;
-    if (!cur) return { text: `Last sealed digest: ${sc.stateDigest}`, color: 'blue' };
+    if (!cur) return { text: sh.seal.last(sc.stateDigest), color: 'blue' };
     if (String(sc.stateDigest) === String(cur)) {
-      return { text: 'Live head matches last sealed epoch sidechain digest.', color: 'green' };
+      return { text: sh.seal.match, color: 'green' };
     }
     return {
-      text: 'Live stateDigest differs from last sealed epoch — unsealed patch, sync lag, or post-reorg reconciliation (see BEACON_SIDECHAIN_DESIGN_AND_ROADMAP.md, section 6).',
+      text: sh.seal.differs,
       color: 'orange'
     };
   }
@@ -232,7 +236,7 @@ class SidechainHome extends React.Component {
     try {
       return { ok: true, witness: JSON.parse(raw) };
     } catch (_) {
-      return { ok: false, error: 'federation witness JSON' };
+      return { ok: false, error: tt.invalidWitness };
     }
   }
 
@@ -243,7 +247,7 @@ class SidechainHome extends React.Component {
   _sidechainPatchAuth () {
     const adminToken = this._adminToken();
     const fw = this._parseFederationWitnessFromState();
-    if (!fw.ok) return { ok: false, error: `Invalid ${fw.error}` };
+    if (!fw.ok) return { ok: false, error: fw.error };
     return {
       ok: true,
       adminToken: adminToken || undefined,
@@ -256,18 +260,18 @@ class SidechainHome extends React.Component {
     try {
       patches = JSON.parse(this.state.patchJson);
     } catch (e) {
-      toast.error('Invalid JSON in patches');
+      toast.error(tt.invalidPatchJson);
       return;
     }
     if (!Array.isArray(patches) || !patches.length) {
-      toast.error('patches must be a non-empty array');
+      toast.error(tt.emptyPatch);
       return;
     }
     const basisClock = this.state.sidechain && Number.isFinite(Number(this.state.sidechain.clock))
       ? Number(this.state.sidechain.clock)
       : NaN;
     if (!Number.isFinite(basisClock)) {
-      toast.error('Load sidechain state first');
+      toast.error(tt.loadFirst);
       return;
     }
     const auth = this._sidechainPatchAuth();
@@ -282,15 +286,15 @@ class SidechainHome extends React.Component {
       federationWitness: auth.federationWitness
     });
     if (!out.ok) {
-      toast.error(out.error || 'Patch failed');
+      toast.error(out.error || tt.patchFailed);
       return;
     }
     this.setState({ lastPatchResult: out.result });
-    toast.success('Sidechain patch applied');
+    toast.success(tt.patchApplied);
     await this.refresh();
   }
 
-  async _submitDocumentOfferDemo () {
+  async _submitDocumentOfferWithoutEscrow () {
     const auth = this._sidechainPatchAuth();
     if (!auth.ok) {
       toast.error(auth.error);
@@ -300,18 +304,17 @@ class SidechainHome extends React.Component {
     const rewardSats = Math.max(0, Math.floor(Number(this.state.offerRewardSats) || 0));
     const initiatorFabricId = this._getInitiatorId();
     if (!documentId) {
-      toast.error('Document id required');
+      toast.error(tt.documentIdRequired);
       return;
     }
     if (!initiatorFabricId) {
       toast.error(
-        `${fabricIdentityNeedFullKeyPlain(this.props.identity || {})} ` +
-        'An initiator Fabric id is required for this demo (connect to the hub if your id is still unknown).'
+        `${fabricIdentityNeedFullKeyPlain(this.props.identity || {})} ${tt.initiatorUnknown}`
       );
       return;
     }
     if (!this.state.sidechain) {
-      toast.error('Load sidechain state first');
+      toast.error(tt.loadFirst);
       return;
     }
     const offerId = newOfferId();
@@ -335,10 +338,10 @@ class SidechainHome extends React.Component {
       federationWitness: auth.federationWitness
     });
     if (!out.ok) {
-      toast.error(out.error || 'Offer patch failed');
+      toast.error(out.error || tt.offerFailed);
       return;
     }
-    toast.success(`Document offer ${offerId} recorded on sidechain`);
+    toast.success(tt.offerRecorded(offerId));
 
     const br = this.props.bridgeRef && this.props.bridgeRef.current;
     if (this.state.offerAnnounceChat && br && typeof br.submitChatMessage === 'function') {
@@ -348,7 +351,7 @@ class SidechainHome extends React.Component {
       );
       const line = `[${DOCUMENT_OFFER}] ${JSON.stringify(env)}`;
       br.submitChatMessage(line);
-      toast.info('Posted offer marker to activity chat (multi-hop / WebRTC demo signal)');
+      toast.info(tt.offerPosted);
     }
 
     this.setState({ lastPatchResult: out.result });
@@ -363,13 +366,13 @@ class SidechainHome extends React.Component {
     }
     const id = String(this.state.l1OfferId || '').trim();
     if (!id) {
-      toast.error('Set Offer id first');
+      toast.error(tt.offerIdRequired);
       return;
     }
     if (!id || !this.state.sidechain || !this.state.sidechain.content) return;
     const offers = this.state.sidechain.content.documentOffers;
     if (!offers || !offers[id]) {
-      toast.error('Unknown offer id');
+      toast.error(tt.unknownOffer);
       return;
     }
     const next = { ...offers[id], phase };
@@ -382,10 +385,10 @@ class SidechainHome extends React.Component {
       federationWitness: auth.federationWitness
     });
     if (!out.ok) {
-      toast.error(out.error || 'Update failed');
+      toast.error(out.error || tt.updateFailed);
       return;
     }
-    toast.success(`Offer ${id} → ${phase}`);
+    toast.success(tt.phaseSet(id, sh.offer.phase(phase)));
     await this.refresh();
   }
 
@@ -395,7 +398,7 @@ class SidechainHome extends React.Component {
 
   _genEscrowPreimage () {
     if (typeof window === 'undefined' || !window.crypto || !window.crypto.getRandomValues) {
-      toast.error('WebCrypto unavailable');
+      toast.error(tt.noRandom);
       return;
     }
     const u8 = new Uint8Array(32);
@@ -403,18 +406,18 @@ class SidechainHome extends React.Component {
     const hex = Buffer.from(u8).toString('hex');
     const ph = paymentHashHexFromPreimageHex(hex);
     this.setState({ escrowPreimageHex: hex, escrowPaymentHashHex: ph });
-    toast.success('New 32-byte preimage (keep secret until delivery)');
+    toast.success(tt.secretGenerated);
   }
 
   async _syncRefundLockFromTip () {
     const tip = await getBitcoinTipHeight();
     if (!tip.ok) {
-      toast.error(tip.error || 'Could not read chain tip');
+      toast.error(tip.error || tt.tipFailed);
       return;
     }
     const delta = Math.max(1, Math.floor(Number(this.state.escrowRefundDelta) || 144));
     this.setState({ escrowRefundLockHeight: String(tip.height + delta) });
-    toast.info(`refundLockHeight = tip (${tip.height}) + ${delta}`);
+    toast.info(tt.refundHeightSet(tip.height + delta, tip.height, delta));
   }
 
   async _buildEscrowAddress () {
@@ -423,19 +426,19 @@ class SidechainHome extends React.Component {
     const initiatorRefundPubkeyHex = String(this.state.escrowInitiatorRefundPubkey || '').trim().replace(/\s+/g, '');
     const refundLockHeight = Math.floor(Number(this.state.escrowRefundLockHeight) || 0);
     if (!paymentHashHex || paymentHashHex.length !== 64) {
-      toast.error('Generate preimage first (payment hash must be 64 hex chars)');
+      toast.error(tt.needSecret);
       return;
     }
     if (!delivererPubkeyHex || delivererPubkeyHex.length !== 66) {
-      toast.error('Deliverer pubkey: 33-byte compressed secp256k1 hex (66 chars)');
+      toast.error(tt.badDelivererKey);
       return;
     }
     if (!initiatorRefundPubkeyHex || initiatorRefundPubkeyHex.length !== 66) {
-      toast.error('Initiator refund pubkey: 66 hex chars (compressed)');
+      toast.error(tt.badInitiatorKey);
       return;
     }
     if (!Number.isFinite(refundLockHeight) || refundLockHeight < 1) {
-      toast.error('Set refundLockHeight (absolute block height for CLTV refund)');
+      toast.error(tt.needRefundHeight);
       return;
     }
     const rewardSats = Math.max(0, Math.floor(Number(this.state.offerRewardSats) || 0));
@@ -448,11 +451,11 @@ class SidechainHome extends React.Component {
       label: `offer-${(this.state.l1OfferId || newOfferId()).slice(0, 12)}`
     });
     if (!out.ok || !out.result || out.result.status !== 'success') {
-      toast.error(out.error || (out.result && out.result.message) || 'Build escrow failed');
+      toast.error(out.error || (out.result && out.result.message) || tt.buildFailed);
       return;
     }
     this.setState({ escrowBuildResult: out.result });
-    toast.success('Escrow address derived (fund this output ≥ reward sats)');
+    toast.success(tt.built);
   }
 
   async _recordL1OfferOnSidechain () {
@@ -463,18 +466,22 @@ class SidechainHome extends React.Component {
     }
     const br = this.state.escrowBuildResult;
     if (!br || !br.paymentAddress) {
-      toast.error('Build escrow address first');
+      toast.error(tt.buildFirst);
       return;
     }
     const documentId = String(this.state.offerDocumentId || '').trim();
     const rewardSats = Math.max(0, Math.floor(Number(this.state.offerRewardSats) || 0));
     const initiatorFabricId = this._getInitiatorId();
-    if (!documentId || !initiatorFabricId) {
-      toast.error('Document id and unlocked identity required');
+    if (!documentId) {
+      toast.error(tt.documentIdRequired);
+      return;
+    }
+    if (!initiatorFabricId) {
+      toast.error(`${fabricIdentityNeedFullKeyPlain(this.props.identity || {})} ${tt.initiatorUnknown}`);
       return;
     }
     if (!this.state.sidechain) {
-      toast.error('Load sidechain state first');
+      toast.error(tt.loadFirst);
       return;
     }
     const offerId = String(this.state.l1OfferId || '').trim() || newOfferId();
@@ -506,11 +513,11 @@ class SidechainHome extends React.Component {
       federationWitness: auth.federationWitness
     });
     if (!out.ok) {
-      toast.error(out.error || 'Patch failed');
+      toast.error(out.error || tt.patchFailed);
       return;
     }
     this.setState({ l1OfferId: offerId, lastPatchResult: out.result });
-    toast.success(`Offer ${offerId} on sidechain — fund ${br.paymentAddress}`);
+    toast.success(tt.recordedFund(offerId, br.paymentAddress));
 
     if (this.state.offerAnnounceChat && this.props.bridgeRef && this.props.bridgeRef.current) {
       const brInst = this.props.bridgeRef.current;
@@ -541,17 +548,17 @@ class SidechainHome extends React.Component {
     const offerId = String(this.state.l1OfferId || '').trim();
     const txid = String(this.state.l1FundingTxid || '').trim().toLowerCase();
     if (!offerId || !txid) {
-      toast.error('Set l1OfferId and funding txid');
+      toast.error(tt.needOfferAndTxid);
       return;
     }
     if (!this.state.sidechain || !this.state.sidechain.content || !this.state.sidechain.content.documentOffers) {
-      toast.error('Load sidechain; offer must exist');
+      toast.error(tt.offerNotLoaded);
       return;
     }
     const offers = this.state.sidechain.content.documentOffers;
     const rec = offers[offerId];
     if (!rec || !rec.paymentAddress) {
-      toast.error('Unknown offer or missing paymentAddress on record');
+      toast.error(rec ? tt.noEscrowAddress : tt.unknownOffer);
       return;
     }
     const rewardSats = Math.max(0, Math.floor(Number(rec.rewardSats) || 0));
@@ -561,7 +568,7 @@ class SidechainHome extends React.Component {
       rewardSats
     });
     if (!v.ok || !v.result || v.result.status !== 'success' || !v.result.verified) {
-      toast.error(v.error || (v.result && v.result.message) || 'Funding not verified');
+      toast.error(v.error || (v.result && v.result.message) || tt.notVerified);
       return;
     }
     const next = {
@@ -578,10 +585,10 @@ class SidechainHome extends React.Component {
       federationWitness: auth.federationWitness
     });
     if (!out.ok) {
-      toast.error(out.error || 'Patch failed');
+      toast.error(out.error || tt.patchFailed);
       return;
     }
-    toast.success('Offer marked funded on sidechain');
+    toast.success(tt.markedFunded);
     await this.refresh();
   }
 
@@ -594,22 +601,22 @@ class SidechainHome extends React.Component {
     const offerId = String(this.state.l1OfferId || '').trim();
     const preimage = String(this.state.escrowPreimageHex || '').trim().toLowerCase();
     if (!offerId || !/^[0-9a-f]{64}$/.test(preimage)) {
-      toast.error('Offer id and local escrow preimage (64 hex) required');
+      toast.error(tt.needOfferAndSecret);
       return;
     }
     if (!this.state.sidechain || !this.state.sidechain.content || !this.state.sidechain.content.documentOffers) {
-      toast.error('Load sidechain');
+      toast.error(tt.loadFirst);
       return;
     }
     const rec = this.state.sidechain.content.documentOffers[offerId];
     if (!rec) {
-      toast.error('Unknown offer');
+      toast.error(tt.unknownOffer);
       return;
     }
     const want = String(rec.paymentHashHex || '').toLowerCase();
     const got = paymentHashHexFromPreimageHex(preimage);
     if (want && got !== want) {
-      toast.error('Preimage does not match offer paymentHashHex');
+      toast.error(tt.secretMismatch);
       return;
     }
     const next = { ...rec, phase: 'delivered', revealedPreimageHex: preimage };
@@ -621,27 +628,27 @@ class SidechainHome extends React.Component {
       federationWitness: auth.federationWitness
     });
     if (!out.ok) {
-      toast.error(out.error || 'Patch failed');
+      toast.error(out.error || tt.patchFailed);
       return;
     }
-    toast.success('Preimage on sidechain — deliverer can build claim tx');
+    toast.success(tt.revealed);
     await this.refresh();
   }
 
   async _prepareDelivererClaim () {
     const offerId = String(this.state.l1OfferId || '').trim();
     if (!this.state.sidechain || !this.state.sidechain.content || !this.state.sidechain.content.documentOffers) {
-      toast.error('Load sidechain');
+      toast.error(tt.loadFirst);
       return;
     }
     const rec = this.state.sidechain.content.documentOffers[offerId];
     if (!rec || !rec.fundingTxid || !rec.revealedPreimageHex) {
-      toast.error('Offer needs funded + delivered (revealed preimage)');
+      toast.error(tt.claimNotReady);
       return;
     }
     const dest = String(this.state.l1ClaimDestAddress || '').trim();
     if (!dest) {
-      toast.error('Claim payout address required');
+      toast.error(tt.claimAddressRequired);
       return;
     }
     const feeSats = Math.max(1, Math.floor(Number(this.state.l1FeeClaimSats) || 2000));
@@ -655,18 +662,18 @@ class SidechainHome extends React.Component {
       feeSats
     });
     if (!prep.ok || !prep.result || prep.result.status !== 'success') {
-      toast.error(prep.error || (prep.result && prep.result.message) || 'Prepare PSBT failed');
+      toast.error(prep.error || (prep.result && prep.result.message) || tt.prepareFailed);
       return;
     }
     this.setState({ l1LastPsbtClaim: prep.result.psbtBase64 });
-    toast.success('Claim PSBT ready — sign with deliverer key then broadcast');
+    toast.success(tt.claimReady);
   }
 
   _signAndBroadcastClaim () {
     const psbtB64 = String(this.state.l1LastPsbtClaim || '').trim();
     const priv = String(this.state.l1DelivererPrivHex || '').trim().replace(/^0x/i, '');
     if (!psbtB64 || !/^[0-9a-f]{64}$/i.test(priv)) {
-      toast.error('Prepare claim PSBT and paste deliverer secp256k1 private key (64 hex)');
+      toast.error(tt.claimNeedsKey);
       return;
     }
     const offerId = String(this.state.l1OfferId || '').trim();
@@ -675,7 +682,7 @@ class SidechainHome extends React.Component {
       : null;
     const preimage = String((rec && rec.revealedPreimageHex) || this.state.escrowPreimageHex || '').trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(preimage)) {
-      toast.error('Offer must include revealedPreimageHex (refresh sidechain) or keep local preimage');
+      toast.error(tt.claimNeedsSecret);
       return;
     }
     let txHex;
@@ -683,7 +690,7 @@ class SidechainHome extends React.Component {
       ({ txHex } = signDelivererClaimFromPsbtBase64(psbtB64, preimage, priv));
     } catch (e) {
       this.setState({ l1DelivererPrivHex: '' });
-      toast.error(e && e.message ? e.message : 'Sign failed');
+      toast.error(e && e.message ? e.message : tt.signFailed);
       return;
     }
     this.setState({ l1DelivererPrivHex: '' });
@@ -693,17 +700,17 @@ class SidechainHome extends React.Component {
   async _prepareInitiatorRefund () {
     const offerId = String(this.state.l1OfferId || '').trim();
     if (!this.state.sidechain || !this.state.sidechain.content || !this.state.sidechain.content.documentOffers) {
-      toast.error('Load sidechain');
+      toast.error(tt.loadFirst);
       return;
     }
     const rec = this.state.sidechain.content.documentOffers[offerId];
     if (!rec || !rec.fundingTxid || !rec.refundLockHeight) {
-      toast.error('Offer missing funding or refundLockHeight');
+      toast.error(tt.refundNotReady);
       return;
     }
     const dest = String(this.state.l1RefundDestAddress || '').trim();
     if (!dest) {
-      toast.error('Refund payout address required');
+      toast.error(tt.refundAddressRequired);
       return;
     }
     const feeSats = Math.max(1, Math.floor(Number(this.state.l1FeeRefundSats) || 2000));
@@ -717,21 +724,21 @@ class SidechainHome extends React.Component {
       feeSats
     });
     if (!prep.ok || !prep.result || prep.result.status !== 'success') {
-      toast.error(prep.error || (prep.result && prep.result.message) || 'Prepare refund PSBT failed');
+      toast.error(prep.error || (prep.result && prep.result.message) || tt.prepareFailed);
       return;
     }
     if (prep.result.refundValidOnChain === false) {
-      toast.warning('Chain tip below refundLockHeight — tx may not relay yet');
+      toast.warning(tt.refundEarly);
     }
     this.setState({ l1LastPsbtRefund: prep.result.psbtBase64 });
-    toast.success('Refund PSBT ready — sign with initiator refund key');
+    toast.success(tt.refundReady);
   }
 
   _signAndBroadcastRefund () {
     const psbtB64 = String(this.state.l1LastPsbtRefund || '').trim();
     const priv = String(this.state.l1InitiatorPrivHex || '').trim().replace(/^0x/i, '');
     if (!psbtB64 || !/^[0-9a-f]{64}$/i.test(priv)) {
-      toast.error('Prepare refund PSBT and paste initiator refund private key (64 hex)');
+      toast.error(tt.refundNeedsKey);
       return;
     }
     let txHex;
@@ -739,7 +746,7 @@ class SidechainHome extends React.Component {
       ({ txHex } = signInitiatorRefundFromPsbtBase64(psbtB64, priv));
     } catch (e) {
       this.setState({ l1InitiatorPrivHex: '' });
-      toast.error(e && e.message ? e.message : 'Sign failed');
+      toast.error(e && e.message ? e.message : tt.signFailed);
       return;
     }
     this.setState({ l1InitiatorPrivHex: '' });
@@ -754,12 +761,12 @@ class SidechainHome extends React.Component {
     }
     const b = await broadcastSignedTransaction({ signedTxHex: txHex, adminToken: auth.adminToken });
     if (!b.ok || !b.result || b.result.status !== 'success') {
-      toast.error(b.error || (b.result && b.result.message) || 'Broadcast failed');
+      toast.error(b.error || (b.result && b.result.message) || tt.broadcastFailed);
       return;
     }
     const txid = b.result.txid;
     this.setState({ l1LastSignedTxHex: txHex });
-    toast.success(`Broadcast ${exitKind}: ${txid}`);
+    toast.success(exitKind === 'claim' ? tt.broadcastClaim(txid) : tt.broadcastRefund(txid));
 
     const offerId = String(this.state.l1OfferId || '').trim();
     if (offerId && this.state.sidechain && this.state.sidechain.content && this.state.sidechain.content.documentOffers) {
@@ -791,124 +798,122 @@ class SidechainHome extends React.Component {
     const policy = this._effectivePolicy();
     const journalEntries = (journal && Array.isArray(journal.entries)) ? journal.entries : [];
     const snapshotRows = (snapshots && Array.isArray(snapshots.snapshots)) ? snapshots.snapshots : [];
+    const links = t.federation.shared.links;
+    const offer = sh.offer;
+    const legendStyle = { fontWeight: 700, fontSize: '1.07em', marginBottom: '0.5em', padding: 0 };
+    const stepStyle = { marginTop: '1.25em' };
 
     return (
       <Segment.Group>
         <Segment>
           <Header as="h2">
-            <Icon name="chain" />
-            Sidechain (shared state)
+            <Icon name="chain" aria-hidden="true" />
+            {sh.title}
           </Header>
-          <p style={{ color: '#666', maxWidth: '52em' }}>
-            Shared JSON at <code>sidechain/STATE</code>, patched under optional contract path policy, sealed into
-            Beacon epochs, recoverable via <code>SNAPSHOTS</code> + <code>JOURNAL</code>. Use the same Hub origin
-            for LAN nodes (e.g. <code>http://192.168.50.5:8080</code>).
-            {' '}
-            <Link to="/contracts">Execution contracts</Link>
-            {' · '}
-            <Link to="/federations">Federations</Link>
-            {' · '}
-            <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">manifest</a>
-            {' · '}
-            <a href="/services/distributed/sidechain" target="_blank" rel="noopener noreferrer">HTTP state</a>
-            {' · '}
-            <a href="/services/distributed/sidechain/journal" target="_blank" rel="noopener noreferrer">journal</a>
-          </p>
+          <p style={{ color: '#666', maxWidth: '52em' }}>{sh.intro}</p>
           <div
             role="toolbar"
-            aria-label="Hub shortcuts"
+            aria-label={sh.shortcutsLabel}
             style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center', marginBottom: '0.65em' }}
           >
-            <Button as={Link} to="/" basic size="small" icon labelPosition="left" aria-label="Back to home">
+            <Button as={Link} to="/" basic size="small" icon labelPosition="left">
               <Icon name="arrow left" aria-hidden="true" />
-              Home
+              {t.federation.shared.backTo(t.federation.shared.home)}
             </Button>
-            <Button as={Link} to="/contracts" basic size="small" title="Execution contracts and L1 registry">
-              Contracts
+            <Button as={Link} to="/contracts" basic size="small" title={sh.shortcuts.contractsTitle}>
+              {sh.shortcuts.contracts}
             </Button>
-            <Button as={Link} to="/federations" basic size="small" icon="users" title="Multi-sig federation policy (k-of-n)">
-              Federations
+            <Button as={Link} to="/federations" basic size="small" title={sh.shortcuts.federationsTitle}>
+              <Icon name="users" aria-hidden="true" />
+              {sh.shortcuts.federations}
             </Button>
-            <Button as={Link} to="/services/bitcoin" basic size="small" title="Bitcoin status, regtest, Lightning">
-              Bitcoin
+            <Button as={Link} to="/services/bitcoin" basic size="small" title={sh.shortcuts.bitcoinTitle}>
+              {sh.shortcuts.bitcoin}
             </Button>
             {hubUi.bitcoinPayments ? (
-              <Button as={Link} to="/payments" basic size="small" title="Payjoin and payments">
-                Payments
+              <Button as={Link} to="/payments" basic size="small" title={sh.shortcuts.paymentsTitle}>
+                {sh.shortcuts.payments}
               </Button>
             ) : null}
             {hubUi.bitcoinResources ? (
-              <Button as={Link} to="/services/bitcoin/resources" basic size="small" title="HTTP resources and L1 verify">
-                Resources
+              <Button as={Link} to="/services/bitcoin/resources" basic size="small" title={sh.shortcuts.resourcesTitle}>
+                {sh.shortcuts.resources}
               </Button>
             ) : null}
             {hubUi.bitcoinCrowdfund ? (
-              <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" title="Taproot crowdfund vault">
-                <Icon name="heart" />
-                Crowdfunds
+              <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" title={sh.shortcuts.crowdfundsTitle}>
+                <Icon name="heart" aria-hidden="true" />
+                {sh.shortcuts.crowdfunds}
               </Button>
             ) : null}
           </div>
-          <Button primary icon loading={loading} onClick={() => this.refresh()}>
-            <Icon name="refresh" />
-            Refresh
+          <Button primary icon labelPosition="left" loading={loading} onClick={() => this.refresh()}>
+            <Icon name="refresh" aria-hidden="true" />
+            {sh.refresh}
           </Button>
           {epochError && (
             <Message warning style={{ marginTop: '1em' }}>
-              <Message.Header>Fetch warning</Message.Header>
+              <Message.Header>{sh.warningTitle}</Message.Header>
               <p>{epochError}</p>
             </Message>
           )}
           <DistributedFederationPanel hideSidechainNavLink style={{ marginTop: '1em' }} />
+          <details className="hub-developer-details" style={{ fontSize: '0.9em', color: '#666' }}>
+            <summary>{t.common.developerDetails}</summary>
+            {sh.developer.map((line) => <p key={line} style={{ margin: '0.35em 0' }}>{line}</p>)}
+            <a href="/services/distributed/sidechain" target="_blank" rel="noopener noreferrer">{links.sidechainState}</a>
+            {' · '}
+            <a href="/services/distributed/sidechain/journal" target="_blank" rel="noopener noreferrer">{links.sidechainJournal}</a>
+          </details>
         </Segment>
 
         <Segment>
-          <Header as="h3">Head status</Header>
+          <Header as="h3">{sh.status.title}</Header>
+          <p style={{ color: '#666', fontSize: '0.9em' }}>{sh.status.clockHelp}</p>
           <Statistic.Group size="tiny" style={{ marginBottom: '0.75em' }}>
             <Statistic>
-              <Statistic.Value>{sidechain && sidechain.clock != null ? String(sidechain.clock) : '—'}</Statistic.Value>
-              <Statistic.Label>Logical clock</Statistic.Label>
+              <Statistic.Value>{sidechain && sidechain.clock != null ? String(sidechain.clock) : t.common.none}</Statistic.Value>
+              <Statistic.Label>{sh.status.clock}</Statistic.Label>
             </Statistic>
             <Statistic>
-              <Statistic.Value>{journal && journal.unsealedCount != null ? String(journal.unsealedCount) : '—'}</Statistic.Value>
-              <Statistic.Label>Unsealed journal</Statistic.Label>
+              <Statistic.Value>{journal && journal.unsealedCount != null ? String(journal.unsealedCount) : t.common.none}</Statistic.Value>
+              <Statistic.Label>{sh.status.unsealed}</Statistic.Label>
             </Statistic>
             <Statistic>
-              <Statistic.Value>{snapshots && snapshots.snapshotCount != null ? String(snapshots.snapshotCount) : '—'}</Statistic.Value>
-              <Statistic.Label>Sealed snapshots</Statistic.Label>
+              <Statistic.Value>{snapshots && snapshots.snapshotCount != null ? String(snapshots.snapshotCount) : t.common.none}</Statistic.Value>
+              <Statistic.Label>{sh.status.snapshots}</Statistic.Label>
             </Statistic>
             <Statistic>
-              <Statistic.Value>{beacon && beacon.epochCount != null ? String(beacon.epochCount) : '—'}</Statistic.Value>
-              <Statistic.Label>Beacon epochs</Statistic.Label>
+              <Statistic.Value>{beacon && beacon.epochCount != null ? String(beacon.epochCount) : t.common.none}</Statistic.Value>
+              <Statistic.Label>{sh.status.epochs}</Statistic.Label>
             </Statistic>
           </Statistic.Group>
           <Label color={hint.color} style={{ marginBottom: '0.5em' }}>{hint.text}</Label>
           {sidechain && sidechain.stateDigest ? (
             <p style={{ fontFamily: 'monospace', fontSize: '12px', color: '#444', wordBreak: 'break-all' }}>
-              stateDigest: {sidechain.stateDigest}
+              {sh.status.digest(sidechain.stateDigest)}
             </p>
           ) : null}
           {basisClockNote && <p style={{ color: '#555' }}>{basisClockNote}</p>}
         </Segment>
 
         <Segment>
-          <Header as="h3">Contract path policy</Header>
-          <p style={{ color: '#666', fontSize: '0.9em', maxWidth: '48em' }}>
-            From hub settings / env (<code>sidechainPolicy</code> on the distributed manifest). Empty means any
-            RFC6902 path under <code>content</code> is allowed (still requires admin or federation auth).
-          </p>
+          <Header as="h3">{sh.policy.title}</Header>
+          <p style={{ color: '#666', fontSize: '0.9em', maxWidth: '48em' }}>{sh.policy.body}</p>
           {policy ? (
             <pre style={{ fontSize: '12px', overflow: 'auto' }}>{safeJson(policy)}</pre>
           ) : (
-            <Message info>No path policy configured — patches are auth-gated only.</Message>
+            <Message info>{sh.policy.none}</Message>
           )}
+          <details className="hub-developer-details" style={{ fontSize: '0.85em', color: '#666' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ margin: '0.35em 0' }}>{sh.policy.developer}</p>
+          </details>
         </Segment>
 
         <Segment>
-          <Header as="h3">Beacon / distributed epoch</Header>
-          <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75em', maxWidth: '48em' }}>
-            Hub summary (not the full sealed message). Compare any L1 height/hash in the live epoch payload to your node; re-verify Schnorr witness bytes against the manifest pubkeys (see the Federation guarantees panel above).
-          </p>
+          <Header as="h3">{sh.epoch.title}</Header>
+          <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75em', maxWidth: '48em' }}>{sh.epoch.body}</p>
           {beacon ? (
             <pre style={{ fontSize: '12px', overflow: 'auto' }}>{safeJson({
               status: beacon.status,
@@ -926,22 +931,20 @@ class SidechainHome extends React.Component {
               lastSidechain: lastPayload && lastPayload.sidechain
             })}</pre>
           ) : (
-            <Message info>No epoch data yet.</Message>
+            <Message info>{sh.epoch.empty}</Message>
           )}
         </Segment>
 
         <Segment>
-          <Header as="h3">Sealed snapshots</Header>
-          <p style={{ color: '#666', fontSize: '0.9em' }}>
-            Full state copies keyed by Beacon <code>payload.clock</code> (reorg rewind). Digests only below.
-          </p>
+          <Header as="h3">{sh.snapshots.title}</Header>
+          <p style={{ color: '#666', fontSize: '0.9em' }}>{sh.snapshots.body}</p>
           {snapshotRows.length ? (
             <Table celled compact size="small">
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Beacon clock</Table.HeaderCell>
-                  <Table.HeaderCell>Sidechain clock</Table.HeaderCell>
-                  <Table.HeaderCell>stateDigest</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.snapshots.beaconClock}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.snapshots.sidechainClock}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.snapshots.digest}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -957,27 +960,26 @@ class SidechainHome extends React.Component {
               </Table.Body>
             </Table>
           ) : (
-            <Message info>No snapshots yet — wait for a Beacon epoch after state exists.</Message>
+            <Message info>{sh.snapshots.empty}</Message>
           )}
         </Segment>
 
         <Segment>
-          <Header as="h3">Patch journal</Header>
+          <Header as="h3">{sh.journal.title}</Header>
           <p style={{ color: '#666', fontSize: '0.9em' }}>
-            Append-only transitions. <code>sealedBeaconClock</code> is set when an epoch seals that sidechain clock;
-            null means unsealed (replayed on restore).
-            {journal ? ` Showing ${journalEntries.length} of ${journal.entryCount}.` : ''}
+            {sh.journal.body}
+            {journal ? ` ${sh.journal.showing(journalEntries.length, journal.entryCount)}` : ''}
           </p>
           {journalEntries.length ? (
             <Table celled compact size="small">
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>seq</Table.HeaderCell>
-                  <Table.HeaderCell>clock</Table.HeaderCell>
-                  <Table.HeaderCell>sealed</Table.HeaderCell>
-                  <Table.HeaderCell>ops</Table.HeaderCell>
-                  <Table.HeaderCell>paths</Table.HeaderCell>
-                  <Table.HeaderCell>patchDigest</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.journal.seq}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.journal.clock}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.journal.sealed}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.journal.ops}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.journal.paths}</Table.HeaderCell>
+                  <Table.HeaderCell>{sh.journal.digest}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -987,14 +989,14 @@ class SidechainHome extends React.Component {
                     <Table.Cell>{row.basisClock}→{row.clock}</Table.Cell>
                     <Table.Cell>
                       {row.sealedBeaconClock == null ? (
-                        <Label size="mini" color="orange">unsealed</Label>
+                        <Label size="mini" color="orange">{sh.journal.unsealed}</Label>
                       ) : (
                         row.sealedBeaconClock
                       )}
                     </Table.Cell>
                     <Table.Cell>{row.opCount}</Table.Cell>
                     <Table.Cell style={{ fontFamily: 'monospace', fontSize: '11px' }}>
-                      {(row.paths || []).join(', ') || '—'}
+                      {(row.paths || []).join(', ') || t.common.none}
                     </Table.Cell>
                     <Table.Cell style={{ fontFamily: 'monospace', fontSize: '11px' }}>
                       {this._shortDigest(row.patchDigest, 8)}
@@ -1004,278 +1006,327 @@ class SidechainHome extends React.Component {
               </Table.Body>
             </Table>
           ) : (
-            <Message info>Journal empty — apply a patch to create the first entry.</Message>
+            <Message info>{sh.journal.empty}</Message>
           )}
         </Segment>
 
         <Segment>
-          <Header as="h3">Live sidechain state</Header>
+          <Header as="h3">{sh.document.title}</Header>
           <Label color={hint.color} style={{ marginBottom: '0.75em' }}>{hint.text}</Label>
           <Button
             size="small"
             basic
             style={{ marginBottom: '0.75em' }}
+            aria-expanded={showContentJson}
             onClick={() => this.setState({ showContentJson: !showContentJson })}
           >
-            {showContentJson ? 'Hide full JSON' : 'Show full JSON'}
+            {showContentJson ? sh.document.hide : sh.document.show}
           </Button>
           {showContentJson ? (
             sidechain ? (
               <pre style={{ fontSize: '12px', overflow: 'auto', maxHeight: '22em' }}>{safeJson(sidechain)}</pre>
             ) : (
-              <Message warning>Could not load GetSidechainState (check Hub RPC and session).</Message>
+              <Message warning>{sh.document.loadFailed}</Message>
             )
           ) : (
-            <p style={{ color: '#666' }}>
-              Full document hidden by default. Clock and digest are in <strong>Head status</strong> above.
-            </p>
+            <p style={{ color: '#666' }}>{sh.document.hidden}</p>
           )}
-          {basisClockNote && <p style={{ color: '#555' }}>{basisClockNote}</p>}
         </Segment>
 
         <Segment>
-          <Header as="h3">Submit JSON Patch (admin or federation)</Header>
+          <Header as="h3">{sh.patch.title}</Header>
           <p style={{ color: '#666' }}>
-            RFC6902 ops apply to <code>content</code> only. Requires <code>basisClock</code> equal to current clock.
-            Hub policy for admin token vs <code>federationWitness</code> (k-of-n) is summarized in <strong>Federation guarantees</strong> above.
-            Without validators configured, use your admin token from Settings; it is read from the same store as other admin flows.
+            {sh.patch.intro}{' '}
+            {sh.patch.auth}
           </p>
           <Form>
-            <p style={{ margin: '0 0 0.5em', color: '#666', fontSize: '0.9em' }} id="fabric-sidechain-witness-intro">
-              <strong>Federation witness</strong> — optional when the hub is admin-only; <strong>required</strong> when validators are configured.
-              Used for <strong>Apply patch</strong> and <strong>every</strong> document-offer / L1 escrow sidechain action below (same <code>SubmitSidechainStatePatch</code> verification). Example:{' '}
-              <code style={{ fontSize: '11px' }}>{'{"version":1,"signatures":{"03…":"<schnorr sig hex>"}}'}</code>
-            </p>
-            <label htmlFor="fabric-sidechain-federation-witness" style={{ display: 'block', marginBottom: '0.35em', fontWeight: 600 }}>
-              Federation witness JSON
-            </label>
-            <TextArea
-              id="fabric-sidechain-federation-witness"
-              rows={5}
-              value={this.state.federationWitnessJson}
-              onChange={(e, { value }) => this.setState({ federationWitnessJson: value })}
-              placeholder='{"version":1,"signatures":{}}'
-              style={{ fontFamily: 'monospace', fontSize: '12px' }}
-              aria-label="Federation witness JSON for SubmitSidechainStatePatch"
-              aria-describedby="fabric-sidechain-witness-intro"
-            />
-            <Header as="h4" style={{ marginTop: '1.25em', marginBottom: '0.5em' }} id="fabric-sidechain-raw-patch-heading">
-              Raw patch (RFC6902)
-            </Header>
-            <TextArea
-              id="fabric-sidechain-patch-json"
-              rows={12}
-              value={patchJson}
-              onChange={(e, { value }) => this.setState({ patchJson: value })}
-              style={{ fontFamily: 'monospace', fontSize: '12px' }}
-              aria-label="RFC6902 JSON Patch operations for sidechain content"
-              aria-labelledby="fabric-sidechain-raw-patch-heading"
-            />
-            <Button style={{ marginTop: '0.75em' }} primary onClick={() => this._submitRawPatch()}>
-              Apply patch
-            </Button>
+            <fieldset>
+              <legend style={legendStyle}>{sh.patch.witnessLegend}</legend>
+              <p style={{ margin: '0 0 0.5em', color: '#666', fontSize: '0.9em' }} id="fabric-sidechain-witness-intro">
+                {sh.patch.witnessIntro}
+              </p>
+              <Form.Field>
+                <label htmlFor="fabric-sidechain-federation-witness">{sh.patch.witnessLabel}</label>
+                <TextArea
+                  id="fabric-sidechain-federation-witness"
+                  rows={5}
+                  value={this.state.federationWitnessJson}
+                  onChange={(e, { value }) => this.setState({ federationWitnessJson: value })}
+                  placeholder='{"version":1,"signatures":{}}'
+                  style={{ fontFamily: 'monospace', fontSize: '12px' }}
+                  aria-describedby="fabric-sidechain-witness-intro"
+                />
+              </Form.Field>
+              <details className="hub-developer-details" style={{ fontSize: '0.85em', color: '#666' }}>
+                <summary>{t.common.developerDetails}</summary>
+                <code style={{ fontSize: '11px' }}>{sh.patch.witnessExample}</code>
+              </details>
+            </fieldset>
+            <fieldset style={stepStyle}>
+              <legend style={legendStyle}>{sh.patch.operationsLegend}</legend>
+              <Form.Field>
+                <label htmlFor="fabric-sidechain-patch-json">{sh.patch.operationsLabel}</label>
+                <TextArea
+                  id="fabric-sidechain-patch-json"
+                  rows={12}
+                  value={patchJson}
+                  onChange={(e, { value }) => this.setState({ patchJson: value })}
+                  style={{ fontFamily: 'monospace', fontSize: '12px' }}
+                />
+              </Form.Field>
+              <Button type="button" primary onClick={() => this._submitRawPatch()}>
+                {sh.patch.apply}
+              </Button>
+            </fieldset>
           </Form>
           {lastPatchResult && (
             <Message success style={{ marginTop: '1em' }}>
+              <Message.Header>{sh.patch.resultTitle}</Message.Header>
               <pre style={{ fontSize: '11px' }}>{safeJson(lastPatchResult)}</pre>
             </Message>
           )}
         </Segment>
 
         <Segment>
-          <Header as="h3">DOCUMENT_OFFER — L1 escrow (Taproot HTLC)</Header>
-          <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75em' }}>
-            Sidechain updates from this section use the same <strong>Federation witness</strong> field and admin token as <strong>Submit JSON Patch</strong> above.
+          <Header as="h3">{offer.title}</Header>
+          <p style={{ color: '#666', maxWidth: '52em' }}>{offer.intro}</p>
+          <p style={{ color: '#666', maxWidth: '52em' }}>{offer.how}</p>
+          <p style={{ color: '#666', fontSize: '0.9em', maxWidth: '52em' }}>
+            {offer.auth}{' '}
+            {offer.broadcast}
           </p>
-          <p style={{ color: '#666', maxWidth: '52em' }}>
-            Escrow matches inventory HTLC: <strong>deliverer</strong> claims with preimage + Schnorr after the initiator
-            publishes <code>revealedPreimageHex</code> on the sidechain; <strong>initiator</strong> refunds after{' '}
-            <code>refundLockHeight</code> (CLTV). Single SHA-256 preimage → <code>paymentHashHex</code> in the script.
-            On regtest, <code>BroadcastSignedTransaction</code> does not require an admin token; other networks require
-            admin or <code>settings.bitcoin.publicDocumentOfferBroadcast</code>.
-          </p>
+          <details className="hub-developer-details" style={{ fontSize: '0.85em', color: '#666', marginBottom: '0.75em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ margin: '0.35em 0' }}>{offer.developer}</p>
+          </details>
           {inboundOffer && (
             <Message info onDismiss={() => this.setState({ inboundOffer: null })}>
-              <Message.Header>Last inbound offer envelope</Message.Header>
+              <Message.Header>{offer.inboundTitle}</Message.Header>
               <pre style={{ fontSize: '11px' }}>{safeJson(inboundOffer)}</pre>
             </Message>
           )}
-          <Header as="h4">1. Offer + escrow params</Header>
           <Form>
-            <Form.Input
-              label="Document id"
-              value={this.state.offerDocumentId}
-              onChange={(e, { value }) => this.setState({ offerDocumentId: value })}
-            />
-            <Form.Input
-              label="Reward (sats) — min paid to escrow output"
-              value={this.state.offerRewardSats}
-              onChange={(e, { value }) => this.setState({ offerRewardSats: value })}
-            />
-            <Form.Input
-              label="Memo"
-              value={this.state.offerMemo}
-              onChange={(e, { value }) => this.setState({ offerMemo: value })}
-            />
-            <Form.Input
-              label="Offer id (optional — generated if empty when recording)"
-              value={this.state.l1OfferId}
-              onChange={(e, { value }) => this.setState({ l1OfferId: value })}
-              placeholder="leave blank to auto-generate"
-            />
-            <Form.Checkbox
-              label="Post DOCUMENT_OFFER marker to activity chat when recording on sidechain"
-              checked={this.state.offerAnnounceChat}
-              onChange={(e, { checked }) => this.setState({ offerAnnounceChat: !!checked })}
-            />
-            <Divider />
-            <Button type="button" size="small" onClick={() => this._genEscrowPreimage()}>
-              Generate escrow preimage (32 bytes)
-            </Button>
-            <Form.Input
-              label="Escrow preimage hex (secret — same machine until reveal step)"
-              value={this.state.escrowPreimageHex}
-              onChange={(e, { value }) => this.setState({
-                escrowPreimageHex: value,
-                escrowPaymentHashHex: paymentHashHexFromPreimageHex(value)
-              })}
-            />
-            <Form.Input
-              label="Payment hash SHA256(preimage) — auto from preimage"
-              value={this.state.escrowPaymentHashHex}
-              readOnly
-            />
-            <Form.Input
-              label="Deliverer compressed pubkey (66 hex) — claim path"
-              value={this.state.escrowDelivererPubkey}
-              onChange={(e, { value }) => this.setState({ escrowDelivererPubkey: value })}
-            />
-            <Form.Input
-              label="Initiator refund compressed pubkey (66 hex) — CLTV refund path"
-              value={this.state.escrowInitiatorRefundPubkey}
-              onChange={(e, { value }) => this.setState({ escrowInitiatorRefundPubkey: value })}
-            />
-            <Form.Group widths="equal">
+            <fieldset>
+              <legend style={legendStyle}>{offer.step1}</legend>
               <Form.Input
-                label="refundLockHeight (absolute block height)"
-                value={this.state.escrowRefundLockHeight}
-                onChange={(e, { value }) => this.setState({ escrowRefundLockHeight: value })}
+                id="sidechain-offer-document-id"
+                label={offer.documentId}
+                value={this.state.offerDocumentId}
+                onChange={(e, { value }) => this.setState({ offerDocumentId: value })}
               />
               <Form.Input
-                label="Delta blocks (used with button below)"
-                value={this.state.escrowRefundDelta}
-                onChange={(e, { value }) => this.setState({ escrowRefundDelta: value })}
+                id="sidechain-offer-reward"
+                label={offer.reward}
+                type="number"
+                min={0}
+                value={this.state.offerRewardSats}
+                onChange={(e, { value }) => this.setState({ offerRewardSats: value })}
               />
-            </Form.Group>
-            <Button type="button" size="small" onClick={() => this._syncRefundLockFromTip()}>
-              Set refund lock from chain tip + delta
-            </Button>
-            <Divider />
-            <Button type="button" primary onClick={() => this._buildEscrowAddress()}>
-              Build escrow address (RPC)
-            </Button>
-            <Button type="button" color="teal" style={{ marginLeft: '0.5em' }} onClick={() => this._recordL1OfferOnSidechain()}>
-              Record offer on sidechain (funding_pending)
-            </Button>
+              <Form.Input
+                id="sidechain-offer-memo"
+                label={offer.memo}
+                value={this.state.offerMemo}
+                onChange={(e, { value }) => this.setState({ offerMemo: value })}
+              />
+              <Form.Input
+                id="sidechain-offer-id"
+                label={offer.offerId}
+                value={this.state.l1OfferId}
+                onChange={(e, { value }) => this.setState({ l1OfferId: value })}
+                placeholder={offer.offerIdPlaceholder}
+              />
+              <Form.Checkbox
+                id="sidechain-offer-announce"
+                label={offer.announce}
+                checked={this.state.offerAnnounceChat}
+                onChange={(e, { checked }) => this.setState({ offerAnnounceChat: !!checked })}
+              />
+              <Divider />
+              <Button type="button" size="small" onClick={() => this._genEscrowPreimage()}>
+                {offer.generateSecret}
+              </Button>
+              <Form.Input
+                id="sidechain-offer-preimage"
+                label={offer.secret}
+                autoComplete="off"
+                value={this.state.escrowPreimageHex}
+                onChange={(e, { value }) => this.setState({
+                  escrowPreimageHex: value,
+                  escrowPaymentHashHex: paymentHashHexFromPreimageHex(value)
+                })}
+              />
+              <Form.Input
+                id="sidechain-offer-payment-hash"
+                label={offer.paymentHash}
+                value={this.state.escrowPaymentHashHex}
+                readOnly
+              />
+              <Form.Input
+                id="sidechain-offer-deliverer-pubkey"
+                label={offer.delivererKey}
+                value={this.state.escrowDelivererPubkey}
+                onChange={(e, { value }) => this.setState({ escrowDelivererPubkey: value })}
+              />
+              <Form.Input
+                id="sidechain-offer-initiator-pubkey"
+                label={offer.initiatorKey}
+                value={this.state.escrowInitiatorRefundPubkey}
+                onChange={(e, { value }) => this.setState({ escrowInitiatorRefundPubkey: value })}
+              />
+              <Form.Group widths="equal">
+                <Form.Input
+                  id="sidechain-offer-refund-height"
+                  label={offer.refundHeight}
+                  type="number"
+                  min={1}
+                  value={this.state.escrowRefundLockHeight}
+                  onChange={(e, { value }) => this.setState({ escrowRefundLockHeight: value })}
+                />
+                <Form.Input
+                  id="sidechain-offer-refund-delta"
+                  label={offer.refundDelta}
+                  type="number"
+                  min={1}
+                  value={this.state.escrowRefundDelta}
+                  onChange={(e, { value }) => this.setState({ escrowRefundDelta: value })}
+                />
+              </Form.Group>
+              <Button type="button" size="small" onClick={() => this._syncRefundLockFromTip()}>
+                {offer.setRefundHeight}
+              </Button>
+              <Divider />
+              <Button type="button" primary onClick={() => this._buildEscrowAddress()}>
+                {offer.buildEscrow}
+              </Button>
+              <Button type="button" color="teal" style={{ marginLeft: '0.5em' }} onClick={() => this._recordL1OfferOnSidechain()}>
+                {offer.record}
+              </Button>
+            </fieldset>
           </Form>
           {this.state.escrowBuildResult && this.state.escrowBuildResult.paymentAddress && (
             <Message positive style={{ marginTop: '1em' }}>
-              <Message.Header>Escrow funding</Message.Header>
-              <p><strong>Address:</strong> <code>{this.state.escrowBuildResult.paymentAddress}</code></p>
+              <Message.Header>{offer.escrowTitle}</Message.Header>
+              <p><strong>{offer.escrowAddress}</strong> <code>{this.state.escrowBuildResult.paymentAddress}</code></p>
               {this.state.escrowBuildResult.bitcoinUri ? (
-                <p><strong>BIP21:</strong> <code style={{ wordBreak: 'break-all' }}>{this.state.escrowBuildResult.bitcoinUri}</code></p>
+                <p><strong>{offer.escrowUri}</strong> <code style={{ wordBreak: 'break-all' }}>{this.state.escrowBuildResult.bitcoinUri}</code></p>
               ) : null}
             </Message>
           )}
 
-          <Header as="h4" style={{ marginTop: '1.25em' }}>2. Confirm L1 funding</Header>
-          <Form>
-            <Form.Input
-              label="Funding txid"
-              value={this.state.l1FundingTxid}
-              onChange={(e, { value }) => this.setState({ l1FundingTxid: value })}
-            />
-            <Button type="button" onClick={() => this._verifyL1FundingAndPatch()}>
-              Verify funding and patch to funded
-            </Button>
+          <Form style={stepStyle}>
+            <fieldset>
+              <legend style={legendStyle}>{offer.step2}</legend>
+              <Form.Input
+                id="sidechain-offer-funding-txid"
+                label={offer.fundingTxid}
+                value={this.state.l1FundingTxid}
+                onChange={(e, { value }) => this.setState({ l1FundingTxid: value })}
+              />
+              <Button type="button" onClick={() => this._verifyL1FundingAndPatch()}>
+                {offer.verify}
+              </Button>
+            </fieldset>
           </Form>
 
-          <Header as="h4" style={{ marginTop: '1.25em' }}>3. Delivery — reveal preimage (initiator)</Header>
-          <Button type="button" onClick={() => this._revealPreimageDelivered()}>
-            Patch offer → delivered + revealedPreimageHex
-          </Button>
+          <Form style={stepStyle}>
+            <fieldset>
+              <legend style={legendStyle}>{offer.step3}</legend>
+              <p style={{ color: '#666', fontSize: '0.9em' }}>{offer.step3Help}</p>
+              <Button type="button" onClick={() => this._revealPreimageDelivered()}>
+                {offer.reveal}
+              </Button>
+            </fieldset>
+          </Form>
 
-          <Header as="h4" style={{ marginTop: '1.25em' }}>4a. Exit — deliverer claim</Header>
-          <Form>
-            <Form.Input
-              label="Claim payout address"
-              value={this.state.l1ClaimDestAddress}
-              onChange={(e, { value }) => this.setState({ l1ClaimDestAddress: value })}
-            />
-            <Form.Input
-              label="Fee (sats)"
-              value={this.state.l1FeeClaimSats}
-              onChange={(e, { value }) => this.setState({ l1FeeClaimSats: value })}
-            />
-            <Form.Input
-              label="Deliverer secp256k1 privkey (64 hex) — stays in browser"
-              type="password"
-              autoComplete="off"
-              value={this.state.l1DelivererPrivHex}
-              onChange={(e, { value }) => this.setState({ l1DelivererPrivHex: value })}
-            />
-            <Button type="button" onClick={() => this._prepareDelivererClaim()}>
-              Prepare claim PSBT
-            </Button>
-            <Button type="button" positive style={{ marginLeft: '0.5em' }} onClick={() => this._signAndBroadcastClaim()}>
-              Sign and broadcast claim
-            </Button>
+          <Form style={stepStyle}>
+            <fieldset>
+              <legend style={legendStyle}>{offer.step4a}</legend>
+              <Form.Input
+                id="sidechain-offer-claim-address"
+                label={offer.claimAddress}
+                value={this.state.l1ClaimDestAddress}
+                onChange={(e, { value }) => this.setState({ l1ClaimDestAddress: value })}
+              />
+              <Form.Input
+                id="sidechain-offer-claim-fee"
+                label={offer.claimFee}
+                type="number"
+                min={1}
+                value={this.state.l1FeeClaimSats}
+                onChange={(e, { value }) => this.setState({ l1FeeClaimSats: value })}
+              />
+              <Form.Input
+                id="sidechain-offer-deliverer-private-key"
+                label={offer.delivererPrivateKey}
+                type="password"
+                autoComplete="off"
+                value={this.state.l1DelivererPrivHex}
+                onChange={(e, { value }) => this.setState({ l1DelivererPrivHex: value })}
+              />
+              <Button type="button" onClick={() => this._prepareDelivererClaim()}>
+                {offer.prepareClaim}
+              </Button>
+              <Button type="button" positive style={{ marginLeft: '0.5em' }} onClick={() => this._signAndBroadcastClaim()}>
+                {offer.signClaim}
+              </Button>
+            </fieldset>
           </Form>
           {this.state.l1LastPsbtClaim ? (
             <p style={{ fontSize: '11px', color: '#666', wordBreak: 'break-all' }}>
-              Last claim PSBT (base64): {this.state.l1LastPsbtClaim.slice(0, 80)}…
+              {offer.lastClaimPsbt(this.state.l1LastPsbtClaim.slice(0, 80))}
             </p>
           ) : null}
 
-          <Header as="h4" style={{ marginTop: '1.25em' }}>4b. Exit — initiator refund (after CLTV height)</Header>
-          <Form>
-            <Form.Input
-              label="Refund payout address"
-              value={this.state.l1RefundDestAddress}
-              onChange={(e, { value }) => this.setState({ l1RefundDestAddress: value })}
-            />
-            <Form.Input
-              label="Fee (sats)"
-              value={this.state.l1FeeRefundSats}
-              onChange={(e, { value }) => this.setState({ l1FeeRefundSats: value })}
-            />
-            <Form.Input
-              label="Initiator refund privkey (64 hex) — stays in browser"
-              type="password"
-              autoComplete="off"
-              value={this.state.l1InitiatorPrivHex}
-              onChange={(e, { value }) => this.setState({ l1InitiatorPrivHex: value })}
-            />
-            <Button type="button" onClick={() => this._prepareInitiatorRefund()}>
-              Prepare refund PSBT
-            </Button>
-            <Button type="button" color="orange" style={{ marginLeft: '0.5em' }} onClick={() => this._signAndBroadcastRefund()}>
-              Sign &amp; broadcast refund
-            </Button>
+          <Form style={stepStyle}>
+            <fieldset>
+              <legend style={legendStyle}>{offer.step4b}</legend>
+              <Form.Input
+                id="sidechain-offer-refund-address"
+                label={offer.refundAddress}
+                value={this.state.l1RefundDestAddress}
+                onChange={(e, { value }) => this.setState({ l1RefundDestAddress: value })}
+              />
+              <Form.Input
+                id="sidechain-offer-refund-fee"
+                label={offer.refundFee}
+                type="number"
+                min={1}
+                value={this.state.l1FeeRefundSats}
+                onChange={(e, { value }) => this.setState({ l1FeeRefundSats: value })}
+              />
+              <Form.Input
+                id="sidechain-offer-initiator-private-key"
+                label={offer.initiatorPrivateKey}
+                type="password"
+                autoComplete="off"
+                value={this.state.l1InitiatorPrivHex}
+                onChange={(e, { value }) => this.setState({ l1InitiatorPrivHex: value })}
+              />
+              <Button type="button" onClick={() => this._prepareInitiatorRefund()}>
+                {offer.prepareRefund}
+              </Button>
+              <Button type="button" color="orange" style={{ marginLeft: '0.5em' }} onClick={() => this._signAndBroadcastRefund()}>
+                {offer.signRefund}
+              </Button>
+            </fieldset>
           </Form>
 
           <Divider />
-          <Header as="h4">Sidechain-only rehearsal (no L1)</Header>
-          <Button type="button" color="teal" size="small" onClick={() => this._submitDocumentOfferDemo()}>
-            Create offer on sidechain (no escrow)
-          </Button>
-          <p style={{ color: '#666', marginTop: '0.75em' }}>Operator phase override:</p>
-          <Button.Group size="small">
-            <Button onClick={() => this._advanceOfferPhase('funding_pending')}>funding_pending</Button>
-            <Button onClick={() => this._advanceOfferPhase('funded')}>funded</Button>
-            <Button onClick={() => this._advanceOfferPhase('delivered')}>delivered</Button>
-            <Button onClick={() => this._advanceOfferPhase('settled')}>settled</Button>
-          </Button.Group>
+          <fieldset style={{ border: 'none', padding: 0, margin: 0 }}>
+            <legend style={legendStyle}>{offer.noEscrowLegend}</legend>
+            <p style={{ color: '#666', fontSize: '0.9em' }}>{offer.noEscrowHelp}</p>
+            <Button type="button" color="teal" size="small" onClick={() => this._submitDocumentOfferWithoutEscrow()}>
+              {offer.createNoEscrow}
+            </Button>
+            <p style={{ color: '#666', marginTop: '0.75em' }} id="sidechain-offer-phase-label">{offer.phaseOverride}</p>
+            <Button.Group size="small" role="group" aria-labelledby="sidechain-offer-phase-label">
+              {['funding_pending', 'funded', 'delivered', 'settled'].map((phase) => (
+                <Button key={phase} type="button" onClick={() => this._advanceOfferPhase(phase)}>
+                  {offer.phase(phase)}
+                </Button>
+              ))}
+            </Button.Group>
+          </fieldset>
         </Segment>
       </Segment.Group>
     );

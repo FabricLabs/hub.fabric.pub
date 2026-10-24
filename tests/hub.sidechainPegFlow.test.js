@@ -14,7 +14,7 @@ const ecc = require('@fabric/core/types/ecc');
 const Key = require('@fabric/core/types/key');
 const Hub = require('../services/hub');
 const sidechainState = require('../functions/sidechainState');
-const federationReserveLedger = require('../functions/federationReserveLedger');
+const Federation = require('@fabric/core/types/federation');
 const federationVault = require('../functions/federationVault');
 
 bitcoin.initEccLib(ecc);
@@ -143,7 +143,7 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
     const tx = new bitcoin.Transaction();
     tx.version = 2;
     tx.addInput(Buffer.alloc(32, 1), 0);
-    tx.addOutput(built.output, amountSats);
+    tx.addOutput(built.output, BigInt(amountSats));
     return tx.toHex();
   }
 
@@ -178,7 +178,7 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
 
     const afterIn = hub._getSidechainStateJson();
     assert.strictEqual(afterIn.clock, 1);
-    const reserveIn = federationReserveLedger.readReserve(afterIn.content);
+    const reserveIn = Federation.readReserve(afterIn.content);
     assert.strictEqual(reserveIn.outstandingSats, DEPOSIT_SATS);
     assert.strictEqual(reserveIn.deposits.length, 1);
     assert.strictEqual(String(reserveIn.deposits[0].txid).toLowerCase(), DEPOSIT_TXID);
@@ -218,7 +218,7 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
     assert.strictEqual(Number(sealedBurn.clock), 2);
 
     const afterBurn = hub._getSidechainStateJson();
-    const reserveBurn = federationReserveLedger.readReserve(afterBurn.content);
+    const reserveBurn = Federation.readReserve(afterBurn.content);
     assert.strictEqual(reserveBurn.outstandingSats, DEPOSIT_SATS - WITHDRAW_SATS);
     assert.strictEqual(reserveBurn.pendingBurnsSats, WITHDRAW_SATS);
     assert.strictEqual(reserveBurn.withdrawals.length, 1);
@@ -230,7 +230,7 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
 
     // --- Settle after simulated L1 payout confirm ---
     const settledVault = DEPOSIT_SATS - WITHDRAW_SATS;
-    const settled = federationReserveLedger.settlePegOutPayout(
+    const settled = Federation.settlePegOutPayout(
       afterBurn.content,
       proposed.withdrawalRequest.requestId,
       {
@@ -240,7 +240,7 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
           vout: 0,
           amountSats: WITHDRAW_SATS,
           destinationAddress: dest,
-          confirmations: 1
+          confirmations: Federation.DEFAULT_PAYOUT_MIN_CONFIRMATIONS
         }
       }
     );
@@ -251,18 +251,18 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
 
     const sealedSettle = await sealPatches(
       hub,
-      federationReserveLedger.patchesForReserve(settled.reserve)
+      Federation.patchesForReserve(settled.reserve)
     );
     assert.strictEqual(Number(sealedSettle.clock), 3);
 
     const finalState = hub._getSidechainStateJson();
     assert.strictEqual(finalState.clock, 3);
-    const finalReserve = federationReserveLedger.readReserve(finalState.content);
+    const finalReserve = Federation.readReserve(finalState.content);
     assert.strictEqual(finalReserve.outstandingSats, DEPOSIT_SATS - WITHDRAW_SATS);
     assert.strictEqual(finalReserve.pendingBurnsSats, 0);
     assert.strictEqual(finalReserve.vaultConfirmedSats, settledVault);
     assert.strictEqual(finalReserve.withdrawals[0].status, 'settled');
-    assert.strictEqual(federationReserveLedger.assertConservation(finalReserve).ok, true);
+    assert.strictEqual(Federation.assertConservation(finalReserve).ok, true);
 
     const journal = hub._getSidechainJournalJson({ limit: 10 });
     assert.ok(journal.entries && journal.entries.length >= 3, 'journal should record seals');

@@ -24,7 +24,6 @@ const {
 const Invoice = require('./Invoice');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const FabricDocumentRecord = require('./FabricDocumentRecord');
-const { formatSatsDisplay } = require('../functions/formatSats');
 const { loadUpstreamSettings, fetchTransactionByHash, sendBridgePayment } = require('../functions/bitcoinClient');
 const {
   loadHubUiFeatureFlags,
@@ -37,6 +36,10 @@ const {
 } = require('../functions/hubIdentityUiHints');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags');
+const t = require('../locales/en');
+
+const dv = t.documents.view;
+const tc = t.common;
 
 // Smallest HTLC that settles on Bitcoin mainnet (@fabric/core HTLC_MINIMUM_SATS).
 const DEFAULT_PUBLISH_PRICE_SATS = '716';
@@ -219,25 +222,25 @@ function DocumentDetail (props) {
             }));
           };
           if (!body || typeof body !== 'object') {
-            if (!ok) fail(`Could not load document (HTTP ${status || 'error'}).`);
+            if (!ok) fail(dv.load.http(status));
             return;
           }
           if (body.error) {
             const err = body.error;
             const msg = err && (err.message != null || err.data != null)
               ? String(err.message != null ? err.message : err.data)
-              : 'Hub refused the document request.';
+              : dv.load.refused;
             fail(msg);
             return;
           }
           if (body.result == null) {
-            if (!ok) fail(`Could not load document (HTTP ${status || 'error'}).`);
+            if (!ok) fail(dv.load.http(status));
             return;
           }
           const applied = bridge.mergeGetDocumentRpcResult(body.result);
           if (!applied && body.result && body.result.type === 'GetDocumentResult') {
             fail(
-              (body.result.message && String(body.result.message)) || 'Document could not be loaded from the hub.'
+              (body.result.message && String(body.result.message)) || dv.load.failed
             );
           }
         })
@@ -247,7 +250,7 @@ function DocumentDetail (props) {
           window.dispatchEvent(new CustomEvent('documentLoadFailed', {
             detail: {
               documentId: String(id),
-              message: (err && err.message) ? err.message : 'Network error while loading document from hub.'
+              message: (err && err.message) ? err.message : dv.load.network
             }
           }));
         });
@@ -265,7 +268,7 @@ function DocumentDetail (props) {
       const docId = String(d.documentId);
       const match = docId === String(id) || (doc && (doc.sha256 === docId || doc.sha === docId));
       if (!match) return;
-      setLoadError(d.message || 'Document not found.');
+      setLoadError(d.message || dv.load.notFound);
     };
     if (typeof window !== 'undefined') {
       window.addEventListener('documentLoadFailed', handler);
@@ -277,7 +280,7 @@ function DocumentDetail (props) {
   React.useEffect(() => {
     if (!id || doc) return undefined;
     const t = setTimeout(() => {
-      setLoadError((prev) => prev || 'No response from hub while loading this document. Check your connection or try Refresh.');
+      setLoadError((prev) => prev || dv.load.timeout);
     }, 22000);
     return () => clearTimeout(t);
   }, [id, doc]);
@@ -332,7 +335,7 @@ function DocumentDetail (props) {
       if (!match) return;
       setDistributeBusy(false);
       setDistributeInvoice(null);
-      setDistributeError(String(detail.message || 'Could not create distribute invoice'));
+      setDistributeError(String(detail.message || dv.distribute.invoiceFailed));
     };
     window.addEventListener('distributeInvoiceFailed', handler);
     return () => window.removeEventListener('distributeInvoiceFailed', handler);
@@ -402,7 +405,7 @@ function DocumentDetail (props) {
     if (!distributeOpen || distributeInvoice || distributeSuccessContractId || !distributeBusy) return undefined;
     const t = setTimeout(() => {
       setDistributeBusy(false);
-      setDistributeError((prev) => prev || 'Timed out waiting for a distribute invoice from the hub. Check Bitcoin and try Request invoice again.');
+      setDistributeError((prev) => prev || dv.distribute.invoiceTimeout);
     }, 45000);
     return () => clearTimeout(t);
   }, [distributeOpen, distributeInvoice, distributeSuccessContractId, distributeBusy]);
@@ -431,7 +434,7 @@ function DocumentDetail (props) {
       const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
       if (!match || !distributeOpen) return;
       setDistributeBusy(false);
-      setDistributeError(detail.message || 'Create storage contract failed.');
+      setDistributeError(detail.message || dv.distribute.contractFailed);
     };
     window.addEventListener('storageContractBondFailed', handler);
     return () => window.removeEventListener('storageContractBondFailed', handler);
@@ -442,7 +445,7 @@ function DocumentDetail (props) {
     if (!distributeBusy || distributeSuccessContractId) return;
     const timeout = setTimeout(() => {
       setDistributeBusy(false);
-      setDistributeError('Contract creation is taking longer than expected. Check the contract list or try again.');
+      setDistributeError(dv.distribute.contractSlow);
     }, 15000);
     return () => clearTimeout(timeout);
   }, [distributeBusy, distributeSuccessContractId]);
@@ -468,11 +471,7 @@ function DocumentDetail (props) {
       setPeerOfferBusy(false);
       setPeerOfferError(null);
       const pid = d.proposalId ? String(d.proposalId) : '';
-      setPeerOfferSuccess(
-        pid
-          ? `Hosting offer sent (${shortHexId(pid)}). When the peer accepts, pay their invoice to bond storage.`
-          : 'Hosting offer sent. When the peer accepts, pay their invoice to bond storage.'
-      );
+      setPeerOfferSuccess(dv.distribute.offerSent(pid ? shortHexId(pid) : ''));
     };
     window.addEventListener('distributeProposalSent', handler);
     return () => window.removeEventListener('distributeProposalSent', handler);
@@ -487,7 +486,7 @@ function DocumentDetail (props) {
       if (!match) return;
       setPeerOfferBusy(false);
       setPeerOfferSuccess(null);
-      setPeerOfferError(String(d.message || 'Could not send hosting offer'));
+      setPeerOfferError(String(d.message || dv.distribute.offerFailed));
     };
     window.addEventListener('distributeProposalFailed', handler);
     return () => window.removeEventListener('distributeProposalFailed', handler);
@@ -497,7 +496,7 @@ function DocumentDetail (props) {
     if (!peerOfferBusy) return undefined;
     const t = setTimeout(() => {
       setPeerOfferBusy(false);
-      setPeerOfferError((prev) => prev || 'Timed out waiting for a response from the hub.');
+      setPeerOfferError((prev) => prev || dv.distribute.offerTimeout);
     }, 45000);
     return () => clearTimeout(t);
   }, [peerOfferBusy]);
@@ -532,7 +531,7 @@ function DocumentDetail (props) {
       const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
       if (match && purchaseOpen) {
         setPurchaseInvoice(null);
-        setPurchaseError(String(detail.message || 'Could not create purchase invoice'));
+        setPurchaseError(String(detail.message || dv.purchase.invoiceFailed));
       }
     };
     window.addEventListener('purchaseInvoiceFailed', handler);
@@ -543,7 +542,7 @@ function DocumentDetail (props) {
   React.useEffect(() => {
     if (!purchaseOpen || purchaseInvoice || purchasedContent) return undefined;
     const t = setTimeout(() => {
-      setPurchaseError((prev) => prev || 'Timed out waiting for a purchase invoice from the hub. Check Bitcoin, publish status, and list price, then close and try Purchase again.');
+      setPurchaseError((prev) => prev || dv.purchase.invoiceTimeout);
     }, 45000);
     return () => clearTimeout(t);
   }, [purchaseOpen, purchaseInvoice, purchasedContent]);
@@ -600,7 +599,7 @@ function DocumentDetail (props) {
     if (!isPublishing) return;
     const timeout = setTimeout(() => {
       setIsPublishing(false);
-      setPublishError((prev) => prev || 'No publish confirmation from the hub yet. Check your connection or try again.');
+      setPublishError((prev) => prev || dv.actions.publishTimeout);
     }, 10000);
     return () => clearTimeout(timeout);
   }, [doc, doc?.published, doc?.id, doc?.sha256, isPublishing, props.bridgeRef, peerListTick]);
@@ -654,7 +653,7 @@ function DocumentDetail (props) {
       const match = docId === id || (doc && (doc.sha256 === docId || doc.sha === docId));
       if (!match) return;
       setIsPublishing(false);
-      setPublishError(String(d.message || 'Publish failed'));
+      setPublishError(String(d.message || dv.actions.publishFailed));
     };
     if (typeof window !== 'undefined') {
       window.addEventListener('publishDocumentFailed', handler);
@@ -684,14 +683,14 @@ function DocumentDetail (props) {
     try {
       const r = await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim());
       if (!r || !r.ok) {
-        setHtlcUnlockError((r && r.error) || 'Unlock failed.');
+        setHtlcUnlockError((r && r.error) || dv.keyUnlock.failed);
       } else {
         setHtlcPreimageHex('');
         setUnlocked(false);
         setDecryptedContent(null);
       }
     } catch (e) {
-      setHtlcUnlockError((e && e.message) || 'Unlock failed.');
+      setHtlcUnlockError((e && e.message) || dv.keyUnlock.failed);
     } finally {
       setHtlcUnlockBusy(false);
     }
@@ -753,12 +752,12 @@ function DocumentDetail (props) {
       readHubAdminTokenFromBrowser(props.adminToken)
     ).trim();
     if (!token) {
-      setTombstoneError('Admin token required.');
+      setTombstoneError(tc.errors.adminTokenRequired);
       return;
     }
     const bridge = props.bridgeRef && props.bridgeRef.current;
     if (!bridge || typeof bridge.emitTombstone !== 'function') {
-      setTombstoneError('Bridge is not ready.');
+      setTombstoneError(dv.unpublish.notConnected);
       return;
     }
     // Hub published catalog keys documents by content hash; URL may use lineage / actor id.
@@ -768,7 +767,7 @@ function DocumentDetail (props) {
     try {
       const r = await bridge.emitTombstone({ documentId: canonicalDocId, adminToken: token });
       if (!r || !r.ok) {
-        setTombstoneError((r && r.message) ? r.message : 'Unpublish failed. Check admin token and that the document is still in the hub published catalog.');
+        setTombstoneError((r && r.message) ? r.message : dv.unpublish.failed);
         return;
       }
       setTombstoneOpen(false);
@@ -780,7 +779,7 @@ function DocumentDetail (props) {
       };
       setTimeout(refresh, 400);
     } catch (e) {
-      setTombstoneError((e && e.message) ? e.message : 'Unpublish failed.');
+      setTombstoneError((e && e.message) ? e.message : dv.unpublish.failed);
     } finally {
       setTombstoneBusy(false);
     }
@@ -860,7 +859,7 @@ function DocumentDetail (props) {
         if (!res.ok || !body || body.status === 'error') {
           setContractPayTx({
             loading: false,
-            error: (body && body.message) || 'Could not load contract.'
+            error: (body && body.message) || dv.contract.loadFailed
           });
           return;
         }
@@ -876,7 +875,7 @@ function DocumentDetail (props) {
           setContractPayTx({
             loading: false,
             txid,
-            error: data.message || 'Could not load transaction.'
+            error: data.message || dv.contract.txLoadFailed
           });
           return;
         }
@@ -884,7 +883,7 @@ function DocumentDetail (props) {
           setContractPayTx({
             loading: false,
             txid,
-            error: 'Transaction not found on this hub (or not indexed yet).'
+            error: dv.contract.txNotFound
           });
           return;
         }
@@ -922,7 +921,7 @@ function DocumentDetail (props) {
         const data = await fetchTransactionByHash(upstreamSettings, tx);
         if (cancelled) return;
         if (data && data.status === 'error') {
-          setDistributeTxChain({ loading: false, error: data.message || 'Tx not found' });
+          setDistributeTxChain({ loading: false, error: data.message || dv.distribute.txNotFound });
           return;
         }
         setDistributeTxChain({ loading: false, tx: data });
@@ -950,42 +949,29 @@ function DocumentDetail (props) {
     shareUrlCanonical = `${origin}/documents/${encodeURIComponent(id)}`;
   }
 
-  const cadenceOptions = [
-    { key: 'hourly', value: 'hourly', text: 'Hourly' },
-    { key: 'daily', value: 'daily', text: 'Daily' },
-    { key: 'weekly', value: 'weekly', text: 'Weekly' },
-    { key: 'monthly', value: 'monthly', text: 'Monthly' }
-  ];
+  const cadenceOptions = ['hourly', 'daily', 'weekly', 'monthly']
+    .map((value) => ({ key: value, value, text: dv.distribute.cadence[value] }));
 
-  const deadlineOptions = [
-    { key: '1s', value: '1s', text: '1 second' },
-    { key: '5s', value: '5s', text: '5 seconds' },
-    { key: '10s', value: '10s', text: '10 seconds' },
-    { key: '30s', value: '30s', text: '30 seconds' },
-    { key: '60s', value: '60s', text: '60 seconds' },
-    { key: '10m', value: '10m', text: '10 minutes' },
-    { key: '60m', value: '60m', text: '60 minutes' }
-  ];
+  const deadlineOptions = ['1s', '5s', '10s', '30s', '60s', '10m', '60m']
+    .map((value) => ({ key: value, value, text: dv.distribute.deadline[value] }));
 
   const hubAdminTokenPresent = !!getAdminTokenFromProps(props);
 
   const handlePayDistributeFromBridge = React.useCallback(async () => {
     if (!distributeInvoice || !id) return;
     if (!props.hasDocumentKey) {
-      setDistributeError(
-        `${fabricIdentityNeedFullKeyPlain(props.identity || {})} Distribute bonding from this browser needs an unlocked signing session.`
-      );
+      setDistributeError(dv.payment.needSigning(fabricIdentityNeedFullKeyPlain(props.identity || {})));
       return;
     }
     const token = getAdminTokenFromProps(props);
     if (!token) {
-      setDistributeError('Admin token required to pay from the hub wallet.');
+      setDistributeError(dv.payment.needsToken);
       return;
     }
     const to = String(distributeInvoice.address || '').trim();
     const amountSats = Math.round(Number(distributeInvoice.amountSats));
     if (!to || !Number.isFinite(amountSats) || amountSats <= 0) {
-      setDistributeError('Invalid distribute invoice (address or amount).');
+      setDistributeError(dv.payment.invalidInvoice);
       return;
     }
     setDistributeBridgeBusy(true);
@@ -998,11 +984,11 @@ function DocumentDetail (props) {
       }, token);
       const txid = res && res.payment && res.payment.txid ? String(res.payment.txid).trim() : '';
       if (!txid) {
-        throw new Error((res && res.message) || 'Hub wallet did not return a txid.');
+        throw new Error((res && res.message) || dv.payment.noTxid);
       }
       setDistributeTxid(txid);
       if (typeof props.onDistributeDocument !== 'function') {
-        throw new Error('Distribute is not available on this hub.');
+        throw new Error(dv.distribute.unavailable);
       }
       setDistributeBusy(true);
       const config = {
@@ -1035,24 +1021,22 @@ function DocumentDetail (props) {
   const handlePayPurchaseFromBridge = React.useCallback(async () => {
     if (!purchaseInvoice || !id) return;
     if (!props.hasDocumentKey) {
-      setPurchaseError(
-        `${fabricIdentityNeedFullKeyPlain(props.identity || {})} Purchase bonding from this browser needs an unlocked signing session.`
-      );
+      setPurchaseError(dv.payment.needSigning(fabricIdentityNeedFullKeyPlain(props.identity || {})));
       return;
     }
     const token = getAdminTokenFromProps(props);
     if (!token) {
-      setPurchaseError('Admin token required to pay from the hub wallet.');
+      setPurchaseError(dv.payment.needsToken);
       return;
     }
     const to = String(purchaseInvoice.address || '').trim();
     const amountSats = Math.round(Number(purchaseInvoice.amountSats));
     if (!to || !Number.isFinite(amountSats) || amountSats <= 0) {
-      setPurchaseError('Invalid purchase invoice (address or amount).');
+      setPurchaseError(dv.payment.invalidInvoice);
       return;
     }
     if (typeof props.onClaimPurchase !== 'function') {
-      setPurchaseError('Claim is not available on this hub.');
+      setPurchaseError(dv.purchase.unavailable);
       return;
     }
     setPurchaseBridgeBusy(true);
@@ -1065,7 +1049,7 @@ function DocumentDetail (props) {
       }, token);
       const txid = res && res.payment && res.payment.txid ? String(res.payment.txid).trim() : '';
       if (!txid) {
-        throw new Error((res && res.message) || 'Hub wallet did not return a txid.');
+        throw new Error((res && res.message) || dv.payment.noTxid);
       }
       setPurchaseTxid(txid);
       setPurchaseBusy(true);
@@ -1073,7 +1057,7 @@ function DocumentDetail (props) {
       if (out && out.document) {
         setPurchasedContent(out.document);
       } else {
-        setPurchaseError((out && out.error) || 'Claim failed after hub wallet payment.');
+        setPurchaseError((out && out.error) || dv.purchase.claimFailedAfterPay);
       }
     } catch (err) {
       setPurchaseError((err && err.message) ? err.message : String(err));
@@ -1084,6 +1068,28 @@ function DocumentDetail (props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchaseInvoice, id, props.onClaimPurchase, props.adminToken, props.hasDocumentKey, upstreamSettings]);
 
+  const av = dv.availability;
+  const dd = dv.distribute;
+  const dp = dv.purchase;
+  const headingText = doc ? (doc.name || id) : dv.headingFallback;
+  const explorerOffTitle = av.explorerOff;
+  const identityMode = classifyHubBrowserIdentity(props.identity || {});
+  const identityHint = fabricIdentityNeedFullKeyPlain(props.identity || {});
+  const identityTitle = identityMode === 'watch_only'
+    ? dv.identityTitle.watchOnly
+    : identityMode === 'password_locked'
+      ? dv.identityTitle.locked
+      : dv.identityTitle.none;
+  const txLink = (txid, text) => (uf.bitcoinExplorer ? (
+    <Link to={`/services/bitcoin/transactions/${encodeURIComponent(txid)}`}>
+      {text}
+    </Link>
+  ) : (
+    <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title={explorerOffTitle}>
+      {txid}
+    </code>
+  ));
+
   return (
     <fabric-document-detail class='fade-in'>
       <Segment>
@@ -1091,38 +1097,45 @@ function DocumentDetail (props) {
           style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
           role="banner"
         >
-          <Button basic size="small" as={Link} to="/documents" aria-label="Back to documents list">
+          <Button basic size="small" as={Link} to="/documents">
             <Icon name="arrow left" aria-hidden="true" />
-            Documents
+            {dv.backToList}
           </Button>
           <Header
             as="h2"
             style={{ margin: 0, flex: '1 1 10rem', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}
           >
-            <Header.Content style={{ wordBreak: 'break-word' }}>{name}</Header.Content>
+            <Header.Content style={{ wordBreak: 'break-word' }}>
+              {headingText}
+              {!doc && id ? (
+                <Header.Subheader style={{ wordBreak: 'break-all', color: '#888' }}>
+                  <code>{id}</code>
+                </Header.Subheader>
+              ) : null}
+            </Header.Content>
             {isEncrypted && (
-              <Label size="small" color="green" title="Encrypted with your key">
+              <Label size="small" color="green" title={dv.labels.encryptedTitle}>
                 <Icon name="lock" aria-hidden="true" />
-                Encrypted
+                {dv.labels.encrypted}
               </Label>
             )}
             {doc && isPublishedInStore && (
-              <Label size="small" color="blue" title={publishedAt ? `Published: ${publishedAt}` : 'Published'}>
+              <Label size="small" color="blue" title={publishedAt ? dv.labels.publishedAt(publishedAt) : dv.labels.published}>
                 <Icon name="bullhorn" aria-hidden="true" />
-                Published
+                {dv.labels.published}
               </Label>
             )}
             {doc && doc.source === 'peer' && !isPublishedInStore && (
-              <Label size="small" color="teal" title="Remote inventory listing; this hub does not hold the file">
+              <Label size="small" color="teal" title={dv.labels.peerOfferTitle}>
                 <Icon name="share alternate" aria-hidden="true" />
-                Peer offer
+                {dv.labels.peerOffer}
               </Label>
             )}
             {storageContractId && (
               <Label
                 size="small"
                 color="purple"
-                title="This document has an active storage contract"
+                title={dv.labels.distributedTitle}
                 style={{ cursor: 'pointer' }}
                 onClick={() => {
                   if (storageContractId) {
@@ -1131,7 +1144,7 @@ function DocumentDetail (props) {
                 }}
               >
                 <Icon name="cloud" aria-hidden="true" />
-                Distributed
+                {dv.labels.distributed}
               </Label>
             )}
           </Header>
@@ -1141,55 +1154,53 @@ function DocumentDetail (props) {
 
         {doc && (
           <Message info style={{ marginBottom: '1.25em' }}>
-            <Message.Header>Storage &amp; availability</Message.Header>
+            <Message.Header>{av.title}</Message.Header>
             <p style={{ marginBottom: '0.75em', color: 'rgba(0,0,0,0.7)' }}>
-              How this document exists on your node and on the hub. <strong>Author</strong> is the creator’s document id (lineage);
-              <strong> publisher</strong> is the Fabric peer id of the hub that hosts the published listing.
-              <strong> Publish</strong> with a price seals content (ciphertext-at-rest); buyers pay an L1 HTLC that reveals the decryption key.
-              {distributeEnabled ? <> <strong> Distribute</strong> (optional) bonds multi-node storage contracts.</> : null}
+              {av.intro}
+              {distributeEnabled ? <>{' '}{av.introDistribute}</> : null}
             </p>
             <List relaxed>
               <List.Item>
                 <List.Icon name="hdd" color="grey" verticalAlign="middle" />
                 <List.Content>
-                  <List.Header>Local copy</List.Header>
+                  <List.Header>{av.localTitle}</List.Header>
                   <List.Description>
-                    This browser holds metadata{doc.sha256 ? ` (content hash ${String(doc.sha256).slice(0, 16)}…)` : ''}.
+                    {av.local(doc.sha256 ? String(doc.sha256).slice(0, 16) : '')}
                   </List.Description>
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Icon name="bullhorn" color={isPublishedInStore ? 'blue' : 'grey'} verticalAlign="middle" />
                 <List.Content>
-                  <List.Header>Published to hub index</List.Header>
+                  <List.Header>{av.publishedTitle}</List.Header>
                   <List.Description>
                     {isPublishedInStore
                       ? (publishedAt
-                        ? `Visible in the network store since ${publishedAt}.${fabricPeerId ? ` Publisher (Fabric peer): ${shortHexId(fabricPeerId)}.` : ''}`
-                        : `Listed in the hub published index.${fabricPeerId ? ` Publisher: ${shortHexId(fabricPeerId)}.` : ''}`)
-                      : 'Not published — only you see it until you publish.'}
+                        ? av.publishedSince(publishedAt, fabricPeerId ? shortHexId(fabricPeerId) : '')
+                        : av.publishedListed(fabricPeerId ? shortHexId(fabricPeerId) : ''))
+                      : av.notPublished}
                   </List.Description>
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Icon name="cloud" color={storageContractId ? 'purple' : 'grey'} verticalAlign="middle" />
                 <List.Content>
-                  <List.Header>Network storage contract</List.Header>
+                  <List.Header>{av.storageTitle}</List.Header>
                   <List.Description>
                     {storageContractId ? (
                       <span>
-                        Active contract{' '}
+                        {av.activeContract}{' '}
                         <code style={{ cursor: 'pointer', textDecoration: 'underline' }} role="button" tabIndex={0}
                           onClick={() => navigate(`/contracts/${encodeURIComponent(storageContractId)}`)}
                           onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/contracts/${encodeURIComponent(storageContractId)}`); }}
                         >
                           {String(storageContractId).slice(0, 12)}…
                         </code>
-                        {' '}(pay-to-distribute bonded storage).
+                        {' '}{av.activeContractSuffix}
                         {contractPayTx && (
                           <div style={{ marginTop: '0.5em' }}>
                             {contractPayTx.loading && (
-                              <span style={{ color: '#666', fontSize: '0.92em' }}>Checking L1 payment transaction…</span>
+                              <span style={{ color: '#666', fontSize: '0.92em' }}>{av.checkingPayment}</span>
                             )}
                             {!contractPayTx.loading && contractPayTx.txid && contractPayTx.tx
                               && (contractPayTx.tx.blockhash == null || contractPayTx.tx.blockhash === '')
@@ -1197,19 +1208,11 @@ function DocumentDetail (props) {
                               <div style={{ fontSize: '0.92em' }}>
                                 <Label size="small" color="orange">
                                   <Icon name="clock" />
-                                  Mempool
+                                  {av.unconfirmed}
                                 </Label>
                                 {' '}
-                                {uf.bitcoinExplorer ? (
-                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
-                                    Payment transaction
-                                  </Link>
-                                ) : (
-                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
-                                    {contractPayTx.txid}
-                                  </code>
-                                )}
-                                <span style={{ color: '#666' }}> — awaiting confirmation</span>
+                                {txLink(contractPayTx.txid, av.paymentTx)}
+                                <span style={{ color: '#666' }}> {av.awaitingConfirmation}</span>
                               </div>
                             )}
                             {!contractPayTx.loading && contractPayTx.txid && contractPayTx.tx
@@ -1217,31 +1220,15 @@ function DocumentDetail (props) {
                               <div style={{ fontSize: '0.92em' }}>
                                 <Label size="small" color="green">
                                   <Icon name="check" />
-                                  {contractPayTx.tx.confirmations} confirmation{Number(contractPayTx.tx.confirmations) === 1 ? '' : 's'}
+                                  {av.confirmations(Number(contractPayTx.tx.confirmations))}
                                 </Label>
                                 {' '}
-                                {uf.bitcoinExplorer ? (
-                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
-                                    View payment transaction
-                                  </Link>
-                                ) : (
-                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
-                                    {contractPayTx.txid}
-                                  </code>
-                                )}
+                                {txLink(contractPayTx.txid, av.viewPaymentTx)}
                               </div>
                             )}
                             {!contractPayTx.loading && contractPayTx.error && contractPayTx.txid && (
                               <div style={{ fontSize: '0.92em', color: '#666' }}>
-                                {uf.bitcoinExplorer ? (
-                                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(contractPayTx.txid)}`}>
-                                    Payment transaction
-                                  </Link>
-                                ) : (
-                                  <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
-                                    {contractPayTx.txid}
-                                  </code>
-                                )}
+                                {txLink(contractPayTx.txid, av.paymentTx)}
                                 <span> — {contractPayTx.error}</span>
                               </div>
                             )}
@@ -1249,13 +1236,13 @@ function DocumentDetail (props) {
                               <span style={{ fontSize: '0.92em', color: '#888' }}>{contractPayTx.error}</span>
                             )}
                             {!contractPayTx.loading && contractPayTx.txid === null && !contractPayTx.error && (
-                              <span style={{ fontSize: '0.92em', color: '#888' }}>No payment tx id on contract yet.</span>
+                              <span style={{ fontSize: '0.92em', color: '#888' }}>{av.noPaymentTx}</span>
                             )}
                           </div>
                         )}
                       </span>
                     ) : (
-                      'No storage contract — use Distribute to bond L1 payment for replicated storage.'
+                      distributeEnabled ? av.noContractDistribute : av.noContract
                     )}
                   </List.Description>
                 </List.Content>
@@ -1263,15 +1250,19 @@ function DocumentDetail (props) {
               <List.Item>
                 <List.Icon name="bitcoin" color={docPurchasePriceSats > 0 ? 'orange' : 'grey'} verticalAlign="middle" />
                 <List.Content>
-                  <List.Header>Paid access (inventory HTLC)</List.Header>
+                  <List.Header>{av.priceTitle}</List.Header>
                   <List.Description>
                     {docPurchasePriceSats > 0
-                      ? `Buyers pay ${formatSatsDisplay(docPurchasePriceSats)} sats via P2TR HTLC to unlock content (Fabric protocol; not a Lightning invoice).`
-                      : 'No list price — document is free to fetch once published.'}
+                      ? av.price(tc.sats(docPurchasePriceSats))
+                      : av.free}
                   </List.Description>
                 </List.Content>
               </List.Item>
             </List>
+            <details className="hub-developer-details" style={{ fontSize: '0.9em', color: '#666' }}>
+              <summary>{tc.developerDetails}</summary>
+              {av.devPricing}
+            </details>
           </Message>
         )}
 
@@ -1279,22 +1270,22 @@ function DocumentDetail (props) {
           <Segment>
             <Header as="h3">
               <Icon name="sitemap" />
-              Sealed blob tree
+              {dv.pieces.title}
             </Header>
             <p style={{ color: '#666', marginTop: 0 }}>
-              Hash-only record: Tree root, per-blob payment hashes, and the cheapest / fastest chunk providers this hub has seen.
+              {dv.pieces.intro}
             </p>
             <FabricDocumentRecord document={doc} />
             <Button
               size="mini"
               basic
               style={{ marginTop: '0.75em' }}
-              title="Let this hub's budget agent pick the cheapest / nearest provider per blob (regtest/signet only)"
+              title={dv.pieces.agentButtonTitle}
               onClick={async () => {
                 const record = FabricDocumentRecord.recordFromHubDocument(doc);
                 const token = getAdminTokenFromProps(props);
                 if (!token) {
-                  setAgentNotice('Admin token required to register wants with the budget agent.');
+                  setAgentNotice(dv.pieces.agentNeedsToken);
                   return;
                 }
                 try {
@@ -1304,15 +1295,15 @@ function DocumentDetail (props) {
                     body: JSON.stringify({ documentId: record.documentId, merkleRootHex: record.merkleRootHex, blobTotal: record.blobTotal })
                   });
                   const j = await r.json().catch(() => ({}));
-                  if (r.status === 503) throw new Error('Budget agent is disabled (settings.market.agent.enable).');
-                  if (!r.ok) throw new Error(j.error || 'Budget agent refused the want');
-                  setAgentNotice(`Budget agent will acquire ${record.blobTotal} blob(s) when a plan fits its cap.`);
+                  if (r.status === 503) throw new Error(dv.pieces.agentDisabled);
+                  if (!r.ok) throw new Error(j.error || dv.pieces.agentRefused);
+                  setAgentNotice(dv.pieces.agentQueued(record.blobTotal));
                 } catch (e) {
                   setAgentNotice(e.message);
                 }
               }}
             >
-              Want with budget agent
+              {dv.pieces.agentButton}
             </Button>
             {agentNotice && <p style={{ color: '#666', marginTop: '0.5em' }}>{agentNotice}</p>}
           </Segment>
@@ -1322,27 +1313,26 @@ function DocumentDetail (props) {
           <Segment>
             <Header as="h3">
               <Icon name="exchange" />
-              Peer offers
+              {dv.offers.title}
             </Header>
             <p style={{ color: '#666', marginTop: 0 }}>
-              Inventory listings for this content id. This hub only fulfills sales when it holds the file locally;
-              remote rows are cost basis for optional markup republish.
+              {dv.offers.intro}
             </p>
             {doc.costBasisSats != null && (
               <p style={{ margin: '0 0 0.75em' }}>
-                Cost basis: <strong>{formatSatsDisplay(doc.costBasisSats)} sats</strong>
-                {docPurchasePriceSats > 0 ? ` · listed at ${formatSatsDisplay(docPurchasePriceSats)} sats` : ''}
+                {dv.offers.costBasis} <strong>{tc.sats(doc.costBasisSats)}</strong>
+                {docPurchasePriceSats > 0 ? ` · ${dv.offers.listedAt(tc.sats(docPurchasePriceSats))}` : ''}
               </p>
             )}
             <List divided relaxed>
               {doc.offers.map((offer, idx) => {
                 const key = offer.id || `${offer.peerPubkey || offer.peerAddress || 'peer'}-${idx}`;
                 const who = offer.local
-                  ? (offer.peerAlias || 'this node')
+                  ? (offer.peerAlias || dv.offers.thisHub)
                   : (offer.peerAlias || (offer.peerPubkey
                     ? `${String(offer.peerPubkey).slice(0, 8)}…${String(offer.peerPubkey).slice(-4)}`
-                    : (offer.peerAddress || 'peer')));
-                const sats = offer.purchasePriceSats != null ? Number(offer.purchasePriceSats) : null;
+                    : (offer.peerAddress || dv.offers.unknownPeer)));
+                const offerSats = offer.purchasePriceSats != null ? Number(offer.purchasePriceSats) : null;
                 return (
                   <List.Item key={key}>
                     <List.Icon name={offer.local ? 'home' : 'share alternate'} color={offer.local ? 'blue' : 'teal'} />
@@ -1350,16 +1340,16 @@ function DocumentDetail (props) {
                       <List.Header>
                         {who}
                         {idx === 0 ? (
-                          <Label size="mini" color="olive" style={{ marginLeft: '0.5em' }}>lowest</Label>
+                          <Label size="mini" color="olive" style={{ marginLeft: '0.5em' }}>{dv.offers.lowest}</Label>
                         ) : null}
                         {offer.local ? (
-                          <Label size="mini" style={{ marginLeft: '0.35em' }}>local</Label>
+                          <Label size="mini" style={{ marginLeft: '0.35em' }}>{dv.offers.local}</Label>
                         ) : null}
                       </List.Header>
                       <List.Description>
-                        {sats != null && Number.isFinite(sats)
-                          ? (sats === 0 ? 'free' : `${formatSatsDisplay(sats)} sats`)
-                          : 'unset'}
+                        {offerSats != null && Number.isFinite(offerSats)
+                          ? (offerSats === 0 ? dv.offers.free : tc.sats(offerSats))
+                          : dv.offers.noPrice}
                         {offer.peerAddress ? ` · ${offer.peerAddress}` : ''}
                       </List.Description>
                     </List.Content>
@@ -1373,55 +1363,39 @@ function DocumentDetail (props) {
         {doc && (
         <Card fluid>
           <Card.Content>
-            <Card.Header>Document</Card.Header>
+            <Card.Header>{dv.details.title}</Card.Header>
           <Card.Meta>{created}</Card.Meta>
             <Card.Description>
-              <div><strong>ID:</strong> <code>{id}</code></div>
-              <div title="Fabric document id for the content creator (original lineage)">
-                <strong>Author:</strong> <code>{authorDocId || '—'}</code>
+              <div><strong>{dv.details.id}</strong> <code>{id}</code></div>
+              <div title={dv.details.authorTitle}>
+                <strong>{dv.details.author}</strong> <code>{authorDocId || tc.none}</code>
               </div>
-              <div title="Fabric peer id of the hub hosting this document in its published index">
-                <strong>Publisher:</strong>{' '}
+              <div title={dv.details.publisherTitle}>
+                <strong>{dv.details.publisher}</strong>{' '}
                 {isPublishedInStore && fabricPeerId
                   ? <code>{fabricPeerId}</code>
-                  : <span style={{ color: '#888' }}>— (listed hub peer id when published)</span>}
+                  : <span style={{ color: '#888' }}>{dv.details.publisherNone}</span>}
               </div>
-              <div><strong>MIME:</strong> {mime}</div>
-              <div><strong>Size:</strong> {doc && doc.size != null ? `${doc.size} bytes` : ''}</div>
+              <div><strong>{dv.details.type}</strong> {mime}</div>
+              <div><strong>{dv.details.size}</strong> {doc && doc.size != null ? dv.details.sizeBytes(doc.size) : ''}</div>
               {isHtlcPendingDecrypt && (
                 <Message info style={{ marginTop: '0.75em' }}>
-                  <Message.Header>HTLC-encrypted delivery</Message.Header>
+                  <Message.Header>{dv.keyUnlock.title}</Message.Header>
                   <p style={{ margin: '0.5em 0 0.75em', fontSize: '0.95em' }}>
-                    This file was sent after an inventory HTLC was funded. Enter the same
-                    32-byte preimage that appears in the seller&apos;s on-chain claim witness
-                    (Taproot hashlock). Binding depends on how the document was listed:
-                  </p>
-                  <ul style={{ margin: '0 0 0.75em 1.25em', padding: 0, fontSize: '0.95em' }}>
-                    <li>
-                      <strong>Priced / sealed:</strong> preimage is the AES content key{' '}
-                      <code>K</code>; payment hash is <code>SHA256(K)</code>.
-                    </li>
-                    <li>
-                      <strong>Legacy unsealed:</strong> preimage is{' '}
-                      <code>SHA256</code> of the <em>unsigned</em> Fabric{' '}
-                      <code>DocumentPublish</code> envelope (signature field all zeros — not a
-                      signed gossip frame). Payment hash / invoice{' '}
-                      <code>contentHash</code> is <code>SHA256(preimage)</code>.
-                    </li>
-                  </ul>
-                  <p style={{ margin: '0 0 0.75em', fontSize: '0.9em', color: '#666' }}>
-                    Canonical helpers: <code>@fabric/core/functions/documentPaymentHash</code>{' '}
-                    (<code>resolveDocumentContentHashHex</code>) and{' '}
-                    <code>publishedDocumentEnvelope</code>.
+                    {dv.keyUnlock.body}
                   </p>
                   {doc.htlcPaymentHashHex && (
                     <div style={{ fontSize: '0.88em', marginBottom: '0.5em', wordBreak: 'break-all' }}>
-                      <strong>Payment hash (verify on-chain / invoice):</strong> <code>{doc.htlcPaymentHashHex}</code>
+                      <strong>{dv.keyUnlock.paymentHash}</strong> <code>{doc.htlcPaymentHashHex}</code>
                     </div>
                   )}
+                  <label htmlFor="document-unlock-key" style={{ display: 'block', fontWeight: 600, marginBottom: '0.35em' }}>
+                    {dv.keyUnlock.keyLabel}
+                  </label>
                   <Input
                     fluid
-                    placeholder="Preimage (64 hex characters)"
+                    id="document-unlock-key"
+                    placeholder={dv.keyUnlock.keyPlaceholder}
                     value={htlcPreimageHex}
                     onChange={(e, d) => setHtlcPreimageHex((d && d.value) != null ? d.value : e.target.value)}
                     style={{ marginBottom: '0.5em' }}
@@ -1431,77 +1405,71 @@ function DocumentDetail (props) {
                     primary
                     loading={htlcUnlockBusy}
                     disabled={!TXID_HEX_64.test(htlcPreimageHex.trim())}
-                    title="Preimage is 32 bytes (64 hex characters), same length as a txid"
+                    title={dv.keyUnlock.buttonTitle}
                     onClick={handleHtlcPreimageUnlock}
                   >
                     <Icon name="key" />
-                    Decrypt with preimage
+                    {dv.keyUnlock.button}
                   </Button>
                   {htlcUnlockError && (
-                    <div style={{ marginTop: '0.5em', color: '#9f3a38', fontSize: '0.9em' }}>{htlcUnlockError}</div>
+                    <div style={{ marginTop: '0.5em', color: '#9f3a38', fontSize: '0.9em' }} role="alert">{htlcUnlockError}</div>
                   )}
+                  <details className="hub-developer-details" style={{ marginTop: '0.75em', fontSize: '0.9em', color: '#666' }}>
+                    <summary>{tc.developerDetails}</summary>
+                    <p style={{ margin: '0.35em 0' }}>{dv.keyUnlock.devIntro}</p>
+                    <ul style={{ margin: '0 0 0.5em 1.25em', padding: 0 }}>
+                      <li>{dv.keyUnlock.devSealed}</li>
+                      <li>{dv.keyUnlock.devLegacy}</li>
+                    </ul>
+                    <p style={{ margin: 0 }}>{dv.keyUnlock.devHelpers}</p>
+                  </details>
                 </Message>
               )}
               {isEncrypted && !contentBase64 && (
                 <div style={{ marginTop: '0.5em' }}>
-                  <Button size="small" onClick={handleUnlock} title="Decrypt and show content">
+                  <Button size="small" onClick={handleUnlock}>
                     <Icon name="unlock" />
-                    Unlock
+                    {dv.contents.decrypt}
                   </Button>
                 </div>
               )}
-              {needsIdentityUnlock && (() => {
-                const idMode = classifyHubBrowserIdentity(props.identity || {});
-                const header = idMode === 'watch_only'
-                  ? 'Signing key required'
-                  : idMode === 'password_locked'
-                    ? 'Unlock Fabric identity'
-                    : 'Fabric identity required';
-                return (
-                  <Message info size="small" style={{ marginTop: '0.75em' }}>
-                    <Message.Header>{header}</Message.Header>
-                    <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
-                      {idMode === 'watch_only' ? (
-                        <>
-                          This browser only has a <strong>watch-only</strong> identity (public key). <strong>Publish</strong>, <strong>Purchase</strong>, and <strong>Distribute</strong> need a full key: open the top-bar identity menu or{' '}
-                          <Link to="/settings">Settings</Link>
-                          {' → '}
-                          <strong>Fabric identity</strong> to import a signing key or use desktop signing.
-                        </>
-                      ) : idMode === 'password_locked' ? (
-                        <>
-                          Use the top-bar <strong>Locked</strong> control (encryption password) or{' '}
-                          <Link to="/settings">Settings</Link>
-                          {' → '}
-                          <strong>Fabric identity</strong>. <strong>Publish</strong>, <strong>Purchase</strong> (HTLC invoice/claim), and <strong>Distribute</strong> only run while unlocked so hub requests are Schnorr-signed and document bytes are available.
-                        </>
-                      ) : (
-                        <>
-                          Create or restore a key: <Link to="/settings">Settings</Link>
-                          {' → '}
-                          <strong>Fabric identity</strong>, or <strong>Log in</strong> in the top bar.
-                          {' '}
-                          <strong>Publish</strong>, <strong>Purchase</strong>, and <strong>Distribute</strong> require Schnorr signing from this browser when you use those flows here.
-                        </>
-                      )}
-                      {' '}
-                      Pay-to-distribute and hub-wallet <strong>Pay Now</strong> use <strong>real Bitcoin transactions</strong>: <strong>Pay Now</strong> and <strong>Pay from hub wallet</strong> broadcast via this hub&apos;s <code>bitcoind</code> (admin token where required); you can also pay from any external wallet and paste the txid.
-                      {needsIdentityKeyForEncryptedBody ? ' Encrypted documents also need unlock to preview or download.' : ''}{' '}
-                      <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> ties this identity to L1 receive/send paths.
-                    </p>
-                    {typeof props.onRequestUnlock === 'function' && (
-                      <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
-                        <Icon name="key" />
-                        Open Fabric identity
-                      </Button>
-                    )}
-                  </Message>
-                );
-              })()}
+              {needsIdentityUnlock && (
+                <Message info size="small" style={{ marginTop: '0.75em' }}>
+                  <Message.Header>
+                    {identityMode === 'watch_only'
+                      ? dv.identity.titleWatchOnly
+                      : identityMode === 'password_locked'
+                        ? dv.identity.titleLocked
+                        : dv.identity.titleNone}
+                  </Message.Header>
+                  <p style={{ margin: '0.35em 0 0.5em', fontSize: '0.95em' }}>
+                    {identityHint} {dv.identity.signed}
+                    {needsIdentityKeyForEncryptedBody ? ` ${dv.identity.encrypted}` : ''}
+                  </p>
+                  <p style={{ margin: '0 0 0.5em', fontSize: '0.95em' }}>
+                    {dv.identity.payments}{' '}
+                    <Link to="/settings/bitcoin-wallet">{dv.identity.walletLink}</Link> {dv.identity.walletSuffix}
+                  </p>
+                  {typeof props.onRequestUnlock === 'function' && (
+                    <Button size="small" type="button" onClick={() => props.onRequestUnlock()}>
+                      <Icon name="key" />
+                      {identityMode === 'watch_only'
+                        ? dv.identity.buttonWatchOnly
+                        : identityMode === 'password_locked'
+                          ? dv.identity.buttonLocked
+                          : dv.identity.buttonNone}
+                    </Button>
+                  )}
+                  <details className="hub-developer-details" style={{ marginTop: '0.5em', fontSize: '0.9em', color: '#666' }}>
+                    <summary>{tc.developerDetails}</summary>
+                    {dv.identity.devSigning}
+                  </details>
+                </Message>
+              )}
             </Card.Description>
           </Card.Content>
           <Card.Content extra>
-            <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
               <Button
                 size="small"
                 basic
@@ -1510,7 +1478,7 @@ function DocumentDetail (props) {
                 onClick={() => typeof props.onGetDocument === 'function' && props.onGetDocument(id)}
               >
                 <Icon name="refresh" />
-                Refresh
+                {tc.actions.refresh}
               </Button>
               <Button
                 size="small"
@@ -1529,31 +1497,32 @@ function DocumentDetail (props) {
                 disabled={!doc || isPublishing || !!isPublishedInStore || needsIdentityUnlock}
                 title={
                   needsIdentityUnlock
-                    ? 'Unlock your identity to publish (signed hub request)'
-                    : (doc && isPublishedInStore ? 'Document is published' : 'Publish this document ID to the hub global store')
+                    ? identityHint
+                    : (doc && isPublishedInStore ? dv.actions.publishedTitle : dv.actions.publishTitle)
                 }
               >
                 <Icon
                   name={isPublishing ? 'spinner' : (doc && isPublishedInStore ? 'check' : 'bullhorn')}
                   loading={isPublishing}
                 />
-                {isPublishing ? 'Publishing…' : (doc && isPublishedInStore ? 'Published' : 'Publish')}
+                {isPublishing ? dv.actions.publishing : (doc && isPublishedInStore ? dv.actions.published : dv.actions.publish)}
               </Button>
               {!isPublishedInStore && (
-                <Input
-                  type="number"
-                  min="0"
-                  placeholder="Price (sats)"
-                  value={publishPriceSats}
-                  onChange={(e) => setPublishPriceSats(e.target.value)}
-                  style={{ width: 110 }}
-                  disabled={needsIdentityUnlock}
-                  title={
-                    needsIdentityUnlock
-                      ? 'Unlock identity to set list price when publishing'
-                      : `List price when publishing (default ${DEFAULT_PUBLISH_PRICE_SATS} sats; HTLC purchase)`
-                  }
-                />
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35em' }}>
+                  <label htmlFor="document-publish-price" style={{ fontSize: '0.9em', color: '#555' }}>
+                    {dv.actions.priceLabel}
+                  </label>
+                  <Input
+                    id="document-publish-price"
+                    type="number"
+                    min="0"
+                    value={publishPriceSats}
+                    onChange={(e) => setPublishPriceSats(e.target.value)}
+                    style={{ width: 110 }}
+                    disabled={needsIdentityUnlock}
+                    title={needsIdentityUnlock ? identityHint : dv.actions.priceTitle(DEFAULT_PUBLISH_PRICE_SATS)}
+                  />
+                </span>
               )}
               {canPurchase && documentPurchaseEnabled && (
                 <Button
@@ -1573,14 +1542,10 @@ function DocumentDetail (props) {
                       props.onRequestPurchaseInvoice(id);
                     }
                   }}
-                  title={
-                    needsIdentityUnlock
-                      ? 'Unlock identity to request a purchase invoice (signed hub request)'
-                      : 'Purchase this document (HTLC: pay to unlock with sha256(sha256(content)))'
-                  }
+                  title={needsIdentityUnlock ? identityHint : dv.actions.buyTitle}
                 >
                   <Icon name="bitcoin" />
-                  Purchase ({formatSatsDisplay(docPurchasePriceSats)} sats)
+                  {dv.actions.buy(tc.sats(docPurchasePriceSats))}
                 </Button>
               )}
               {distributeEnabled || storageContractId ? (
@@ -1604,12 +1569,12 @@ function DocumentDetail (props) {
                   disabled={!id || needsIdentityUnlock || (!storageContractId && !distributeEnabled)}
                   title={
                     needsIdentityUnlock
-                      ? 'Unlock your identity to start pay-to-distribute (signed requests, real L1 bond)'
-                      : (storageContractId ? 'View storage contract' : 'Distribute this document across other nodes')
+                      ? identityHint
+                      : (storageContractId ? dv.actions.viewContractTitle : dv.actions.distributeTitle)
                   }
                 >
                   <Icon name={storageContractId ? 'cloud' : 'cloud upload'} />
-                  {storageContractId ? 'Distributed' : 'Distribute'}
+                  {storageContractId ? dv.actions.distributed : dv.actions.distribute}
                 </Button>
               ) : null}
               <Button
@@ -1619,10 +1584,10 @@ function DocumentDetail (props) {
                 labelPosition="left"
                 onClick={() => id && setShareOpen(true)}
                 disabled={!id}
-                title="Share a link to this document"
+                title={dv.actions.shareTitle}
               >
                 <Icon name="share alternate" />
-                Share
+                {dv.actions.share}
               </Button>
               {canAdminUnpublish && (
                 <Button
@@ -1637,14 +1602,10 @@ function DocumentDetail (props) {
                     setTombstoneOpen(true);
                   }}
                   disabled={needsIdentityUnlock}
-                  title={
-                    needsIdentityUnlock
-                      ? 'Unlock your identity before removing this document from the hub catalog'
-                      : 'Remove this document from the hub published catalog (requires admin token)'
-                  }
+                  title={needsIdentityUnlock ? identityHint : dv.actions.unpublishTitle}
                 >
                   <Icon name="trash" />
-                  Unpublish
+                  {dv.actions.unpublish}
                 </Button>
               )}
               {downloadHref && (
@@ -1656,7 +1617,7 @@ function DocumentDetail (props) {
                   download={name}
                 >
                   <Icon name="download" />
-                  Download
+                  {dv.actions.download}
                 </Button>
               )}
             </div>
@@ -1667,7 +1628,7 @@ function DocumentDetail (props) {
                 style={{ marginTop: '0.75em' }}
                 onDismiss={() => setPublishError(null)}
               >
-                <Message.Header>Publish did not complete</Message.Header>
+                <Message.Header>{dv.actions.publishErrorTitle}</Message.Header>
                 <p style={{ margin: '0.35em 0 0', fontSize: '0.95em' }}>{publishError}</p>
               </Message>
             ) : null}
@@ -1680,19 +1641,24 @@ function DocumentDetail (props) {
           open={shareOpen}
           onClose={() => setShareOpen(false)}
         >
-          <Header icon="share alternate" content="Share document" />
+          <Header icon="share alternate" content={dv.share.title} />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              This link keeps the document ID on the client side using the URL hash.
+              {dv.share.body}
             </p>
+            <label htmlFor="document-share-link" style={{ display: 'block', fontWeight: 600, marginBottom: '0.35em' }}>
+              {dv.share.linkLabel}
+            </label>
             <Input
               fluid
               readOnly
+              id="document-share-link"
               value={shareUrlHash}
               onFocus={(e) => e.target.select()}
               action={{
                 icon: 'copy',
-                title: 'Copy to clipboard',
+                title: dv.share.copy,
+                'aria-label': dv.share.copy,
                 onClick: () => {
                   try {
                     if (shareUrlHash && navigator && navigator.clipboard) {
@@ -1704,13 +1670,13 @@ function DocumentDetail (props) {
             />
             {shareUrlCanonical && (
               <p style={{ marginTop: '0.75em', fontSize: '0.85em', color: '#888' }}>
-                Permanent URL: <code>{shareUrlCanonical}</code>
+                {dv.share.permanent} <code>{shareUrlCanonical}</code>
               </p>
             )}
           </Modal.Content>
           <Modal.Actions>
             <Button basic onClick={() => setShareOpen(false)}>
-              Close
+              {tc.actions.close}
             </Button>
           </Modal.Actions>
         </Modal>
@@ -1724,16 +1690,18 @@ function DocumentDetail (props) {
             setTombstoneError(null);
           }}
         >
-          <Header icon="trash" content="Unpublish document (admin)" />
+          <Header icon="trash" content={dv.unpublish.title} />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              This removes the document from the hub&apos;s <strong>published catalog</strong> so it no longer appears in the network index.
-              The hub may still keep the stored file under <code>documents/</code>; this action is the same as{' '}
-              <code>EmitTombstone</code> with <code>documentId</code>.
+              {dv.unpublish.body}
             </p>
             <p style={{ color: '#666' }}>
-              <strong>Document id:</strong> <code>{id}</code>
+              <strong>{dv.unpublish.documentId}</strong> <code>{id}</code>
             </p>
+            <details className="hub-developer-details" style={{ fontSize: '0.9em', color: '#666', marginBottom: '0.75em' }}>
+              <summary>{tc.developerDetails}</summary>
+              {dv.unpublish.devTombstone}
+            </details>
             {tombstoneError && (
               <Message negative size="small">
                 <p>{tombstoneError}</p>
@@ -1742,7 +1710,7 @@ function DocumentDetail (props) {
           </Modal.Content>
           <Modal.Actions>
             <Button type="button" basic onClick={() => { if (!tombstoneBusy) { setTombstoneOpen(false); setTombstoneError(null); } }}>
-              Cancel
+              {tc.actions.cancel}
             </Button>
             <Button
               type="button"
@@ -1752,7 +1720,7 @@ function DocumentDetail (props) {
               onClick={handleConfirmTombstone}
             >
               <Icon name="trash" />
-              Remove from hub index
+              {dv.unpublish.confirm}
             </Button>
           </Modal.Actions>
         </Modal>
@@ -1774,28 +1742,25 @@ function DocumentDetail (props) {
             setPeerOfferSuccess(null);
           }}
         >
-          <Header icon="cloud upload" content="Pay to distribute" />
+          <Header icon="cloud upload" content={dd.title} />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              Pay Bitcoin (L1) to have other nodes store this document under a long-term contract.
-              By default, storage is requested for 4 years with periodic random challenges.
-              Payment is a <strong>real on-chain transaction</strong> to the invoice address; the hub verifies it before recording the storage contract.
+              {dd.intro}
             </p>
             {needsIdentityUnlock && (
               <Message warning size="small" style={{ marginBottom: '1em' }}>
-                <Message.Header>Identity locked</Message.Header>
+                <Message.Header>{identityTitle}</Message.Header>
                 <p style={{ margin: '0.35em 0 0', color: '#333' }}>
-                  Close this dialog, unlock your identity in the top bar, then open Distribute again.
+                  {identityHint} {dd.needKeyThen}
                 </p>
               </Message>
             )}
             {!!props.hasDocumentKey && distributeModalNoLocalWire && (
               <Message warning size="small" style={{ marginBottom: '1em' }}>
-                <Message.Header>No local signing key in this browser</Message.Header>
+                <Message.Header>{dd.noLocalKeyTitle}</Message.Header>
                 <p style={{ margin: '0.35em 0 0', color: '#333' }}>
-                  Invoice and contract steps still reach the Hub over your session; pay the distribute address from any wallet you trust.
-                  If you use desktop delegation, confirm prompts in the Hub app and revoke under{' '}
-                  <Link to="/settings/security">Security &amp; delegation</Link> on shared computers.
+                  {dd.noLocalKeyBody}{' '}
+                  <Link to="/settings/security">{dd.securityLink}</Link>.
                 </p>
               </Message>
             )}
@@ -1805,29 +1770,29 @@ function DocumentDetail (props) {
                 color={!distributeInvoice && !distributeSuccessContractId ? 'blue' : 'grey'}
                 size="small"
               >
-                1. Request invoice
+                {dd.steps.request}
               </Label>
               <Label
                 color={distributeInvoice && !distributeSuccessContractId ? 'blue' : 'grey'}
                 size="small"
               >
-                2. Pay
+                {dd.steps.pay}
               </Label>
               <Label
                 color={distributeSuccessContractId ? 'green' : 'grey'}
                 size="small"
               >
-                3. {distributeSuccessContractId ? 'Done' : 'Confirm'}
+                {distributeSuccessContractId ? dd.steps.done : dd.steps.confirm}
               </Label>
             </div>
             {distributeSuccessContractId ? (
               <Segment color="green" style={{ textAlign: 'center' }}>
                 <Icon name="check circle" size="big" color="green" />
                 <Header as="h4" style={{ marginTop: '0.5em' }}>
-                  Storage contract created
+                  {dd.successTitle}
                 </Header>
                 <p style={{ color: '#666', marginBottom: '1em' }}>
-                  Your payment has been bonded. The document is now distributed.
+                  {dd.successBody}
                 </p>
                 <Button
                   primary
@@ -1841,7 +1806,7 @@ function DocumentDetail (props) {
                   }}
                 >
                   <Icon name="file alternate" />
-                  View contract
+                  {dd.viewContract}
                 </Button>
               </Segment>
             ) : !distributeInvoice ? (
@@ -1852,7 +1817,7 @@ function DocumentDetail (props) {
                   if (!id || distributeBusy || peerOfferBusy || needsIdentityUnlock) return;
                   const amount = parseInt(distributeAmountSats, 10);
                   if (!Number.isFinite(amount) || amount <= 0) {
-                    setDistributeError('Enter a positive amount in sats.');
+                    setDistributeError(dd.amountInvalid);
                     return;
                   }
                   setDistributeError(null);
@@ -1867,24 +1832,26 @@ function DocumentDetail (props) {
                   if (typeof props.onRequestDistributeInvoice === 'function') {
                     props.onRequestDistributeInvoice(id, config);
                   } else {
-                    setDistributeError('Distribute is not available on this hub.');
+                    setDistributeError(dd.unavailable);
                     setDistributeBusy(false);
                   }
                 }}
               >
                 <Form.Field>
-                  <label>Amount (sats)</label>
+                  <label htmlFor="document-distribute-amount">{dd.amountLabel}</label>
                   <Input
+                    id="document-distribute-amount"
                     type="number"
                     min="1"
-                    placeholder="e.g. 100000"
+                    placeholder={dd.amountPlaceholder}
                     value={distributeAmountSats}
                     onChange={(e) => setDistributeAmountSats(e.target.value)}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label># of desired copies</label>
+                  <label htmlFor="document-distribute-copies">{dd.copiesLabel}</label>
                   <Input
+                    id="document-distribute-copies"
                     type="number"
                     min="1"
                     max="100"
@@ -1893,12 +1860,12 @@ function DocumentDetail (props) {
                       const v = parseInt(e.target.value, 10);
                       if (Number.isFinite(v) && v >= 1) setDistributeDesiredCopies(v);
                     }}
-                    title="How many copies you want stored across the network"
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Duration</label>
+                  <label htmlFor="document-distribute-duration">{dd.durationLabel}</label>
                   <Input
+                    id="document-distribute-duration"
                     type="number"
                     min="1"
                     max="10"
@@ -1907,23 +1874,25 @@ function DocumentDetail (props) {
                       const v = parseInt(e.target.value, 10);
                       if (Number.isFinite(v)) setDistributeDurationYears(v);
                     }}
-                    label={{ basic: true, content: 'years' }}
+                    label={{ basic: true, content: dd.years }}
                     labelPosition="right"
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Challenge frequency</label>
+                  <label id="document-distribute-cadence-label">{dd.cadenceLabel}</label>
                   <Dropdown
                     selection
+                    aria-labelledby="document-distribute-cadence-label"
                     options={cadenceOptions}
                     value={distributeCadence}
                     onChange={(_, data) => setDistributeCadence(data.value)}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Response deadline</label>
+                  <label id="document-distribute-deadline-label">{dd.deadlineLabel}</label>
                   <Dropdown
                     selection
+                    aria-labelledby="document-distribute-deadline-label"
                     options={deadlineOptions}
                     value={distributeDeadline}
                     onChange={(_, data) => setDistributeDeadline(data.value)}
@@ -1931,23 +1900,24 @@ function DocumentDetail (props) {
                 </Form.Field>
                 <Divider section />
                 <Message info size="small">
-                  <Message.Header>Offer a connected Fabric peer</Message.Header>
+                  <Message.Header>{dd.peerTitle}</Message.Header>
                   <p style={{ margin: '0.35em 0 0', color: '#333' }}>
-                    Sends a private P2P hosting offer (same channel as incoming proposals on{' '}
-                    <Link to="/documents">Documents</Link>). The peer accepts from their list and returns a Bitcoin invoice; you pay that invoice to bond storage.
-                    The hub must already have the file under its content hash — create or open the document once so it is stored on the hub.
+                    {dd.peerBody}{' '}
+                    <Link to="/documents">{dd.peerBodyLink}</Link>.
+                    {' '}{dd.peerBodyAfter}
                   </p>
                   {fabricPeerDropdownOptions.length === 0 ? (
                     <p style={{ margin: '0.75em 0 0', color: '#666' }}>
-                      No Fabric TCP peers in the latest hub snapshot. Connect a peer under{' '}
-                      <Link to="/peers">Peers</Link>.
+                      {dd.noPeersBefore}{' '}
+                      <Link to="/peers">{dd.noPeersLink}</Link>.
                     </p>
                   ) : (
                     <>
                       <Form.Field style={{ marginTop: '0.75em' }}>
-                        <label>Peer</label>
+                        <label id="document-distribute-peer-label">{dd.peerLabel}</label>
                         <Dropdown
-                          placeholder="Select peer (must be connected on the hub)"
+                          aria-labelledby="document-distribute-peer-label"
+                          placeholder={dd.peerPlaceholder}
                           selection
                           search
                           options={fabricPeerDropdownOptions}
@@ -1975,7 +1945,7 @@ function DocumentDetail (props) {
                         onClick={() => {
                           const amount = parseInt(distributeAmountSats, 10);
                           if (!Number.isFinite(amount) || amount <= 0) {
-                            setPeerOfferError('Enter a positive amount in sats above first.');
+                            setPeerOfferError(dd.offerAmountInvalid);
                             return;
                           }
                           const backendId = (doc && doc.sha256) ? String(doc.sha256) : String(id);
@@ -2002,11 +1972,11 @@ function DocumentDetail (props) {
                         }}
                       >
                         <Icon name="send" />
-                        Send hosting offer
+                        {dd.sendOffer}
                       </Button>
                       {typeof props.onSendDistributeProposal !== 'function' && (
                         <p style={{ marginTop: '0.5em', color: '#888', fontSize: '0.9em' }}>
-                          This session does not expose peer proposals (bridge not ready).
+                          {dd.offerUnavailable}
                         </p>
                       )}
                       {peerOfferError && (
@@ -2019,7 +1989,7 @@ function DocumentDetail (props) {
                   )}
                 </Message>
                 {distributeError && (
-                  <p style={{ marginTop: '0.75em', color: '#b00' }}>
+                  <p style={{ marginTop: '0.75em', color: '#b00' }} role="alert">
                     {distributeError}
                   </p>
                 )}
@@ -2030,7 +2000,7 @@ function DocumentDetail (props) {
                   address={distributeInvoice.address}
                   amountSats={distributeInvoice.amountSats}
                   network={distributeInvoice.network}
-                  label="Storage contract payment"
+                  label={dd.invoiceLabel}
                   identity={props.identity || {}}
                   compact
                   requireUnlockedIdentityForHubPay
@@ -2050,79 +2020,77 @@ function DocumentDetail (props) {
                         .catch((err) => {
                           setDistributeBusy(false);
                           setDistributeError(
-                            (err && err.message) ? err.message : 'Distribution request failed.'
+                            (err && err.message) ? err.message : dd.failed
                           );
                         });
                     }
                   }}
                 />
                 {hubAdminTokenPresent && (
-                  <div style={{ marginTop: '1em', display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'center' }}>
-                    <Button
-                      type="button"
-                      color="orange"
-                      loading={distributeBridgeBusy}
-                      disabled={
-                        distributeBridgeBusy ||
-                        distributeBusy ||
-                        !!distributeSuccessContractId ||
-                        needsIdentityUnlock
-                      }
-                      onClick={handlePayDistributeFromBridge}
-                      title="POST /services/bitcoin sendpayment — hub bitcoind broadcasts; admin token + unlocked identity required in this browser"
-                    >
-                      <Icon name="server" />
-                      Pay from hub wallet & bond
-                    </Button>
-                    <span style={{ color: '#666', fontSize: '0.9em', maxWidth: '28em' }}>
-                      {'One step: spend from this hub\'s bitcoind wallet, then call '}
-                      <code>CreateStorageContract</code>
-                      {' with the returned txid (same as Confirm below). Regtest: mine a block if verification is slow.'}
-                    </span>
+                  <div style={{ marginTop: '1em' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'center' }}>
+                      <Button
+                        type="button"
+                        color="orange"
+                        loading={distributeBridgeBusy}
+                        disabled={
+                          distributeBridgeBusy ||
+                          distributeBusy ||
+                          !!distributeSuccessContractId ||
+                          needsIdentityUnlock
+                        }
+                        onClick={handlePayDistributeFromBridge}
+                        title={dd.payFromHubTitle}
+                      >
+                        <Icon name="server" />
+                        {dd.payFromHub}
+                      </Button>
+                      <span style={{ color: '#666', fontSize: '0.9em', maxWidth: '28em' }}>
+                        {dd.payFromHubNote}
+                      </span>
+                    </div>
+                    <details className="hub-developer-details" style={{ marginTop: '0.5em', fontSize: '0.85em', color: '#666' }}>
+                      <summary>{tc.developerDetails}</summary>
+                      {dd.devPayFromHub}
+                    </details>
                   </div>
                 )}
+                {distributeError && (
+                  <Message negative size="small" style={{ marginTop: '1em' }} content={distributeError} />
+                )}
                 <Form.Field style={{ marginTop: '1em' }}>
-                  <label>Or paste txid (if you paid from an external wallet)</label>
+                  <label htmlFor="document-distribute-txid">{dd.pasteTxidLabel}</label>
                   <Input
-                    placeholder="txid from your wallet"
+                    fluid
+                    id="document-distribute-txid"
+                    placeholder={dd.txidPlaceholder}
                     value={distributeTxid}
                     onChange={(e) => setDistributeTxid(e.target.value)}
                   />
                 </Form.Field>
                 {TXID_HEX_64.test(String(distributeTxid || '').trim()) && (
                   <div style={{ marginTop: '0.5em', fontSize: '0.9em' }}>
-                    {uf.bitcoinExplorer ? (
-                      <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(distributeTxid).trim())}`}>
-                        Open transaction
-                      </Link>
-                    ) : (
-                      <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
-                        {String(distributeTxid).trim()}
-                      </code>
-                    )}
+                    {txLink(String(distributeTxid).trim(), dd.openTx)}
                     <span style={{ color: '#666' }}>
-                      {' '}— on-chain sends often appear in the mempool first; mine a block on regtest to confirm.
+                      {' '}{dd.mempoolNote}
                     </span>
                     {distributeTxChain && !distributeSuccessContractId && (
                       <div style={{ marginTop: '0.35em', color: '#555' }}>
-                        {distributeTxChain.loading && <span>Checking depth…</span>}
+                        {distributeTxChain.loading && <span>{dd.checking}</span>}
                         {!distributeTxChain.loading && distributeTxChain.tx
                           && (distributeTxChain.tx.blockhash == null || distributeTxChain.tx.blockhash === '')
                           && Number(distributeTxChain.tx.confirmations || 0) === 0 && (
-                          <span><strong>Mempool</strong> — 0 confirmations</span>
+                          <span><strong>{dd.unconfirmed}</strong> {dd.zeroConfirmations}</span>
                         )}
                         {!distributeTxChain.loading && distributeTxChain.tx
                           && Number(distributeTxChain.tx.confirmations || 0) > 0 && (
-                          <span>
-                            <strong>{distributeTxChain.tx.confirmations}</strong> confirmation
-                            {Number(distributeTxChain.tx.confirmations) === 1 ? '' : 's'}
-                          </span>
+                          <span>{dd.confirmations(Number(distributeTxChain.tx.confirmations))}</span>
                         )}
                         {!distributeTxChain.loading && distributeTxChain.error && (
                           <span style={{ color: '#888' }}>{distributeTxChain.error}</span>
                         )}
                         {!distributeTxChain.loading && !distributeTxChain.tx && !distributeTxChain.error && (
-                          <span style={{ color: '#888' }}>Not visible on this hub yet — will retry.</span>
+                          <span style={{ color: '#888' }}>{dd.notSeen}</span>
                         )}
                       </div>
                     )}
@@ -2148,7 +2116,7 @@ function DocumentDetail (props) {
                 setPeerOfferSuccess(null);
               }}
             >
-              {distributeSuccessContractId ? 'Close' : distributeInvoice ? 'Previous' : 'Cancel'}
+              {distributeSuccessContractId ? tc.actions.close : tc.actions.cancel}
             </Button>
             {distributeSuccessContractId ? (
               <Button
@@ -2163,7 +2131,7 @@ function DocumentDetail (props) {
                 }}
               >
                 <Icon name="file alternate" />
-                View contract
+                {dd.viewContract}
               </Button>
             ) : !distributeInvoice ? (
               <Button
@@ -2172,9 +2140,9 @@ function DocumentDetail (props) {
                 form="fabric-document-distribute-form"
                 loading={distributeBusy}
                 disabled={distributeBusy || peerOfferBusy || needsIdentityUnlock}
-                title={needsIdentityUnlock ? 'Unlock identity to request a distribute invoice' : undefined}
+                title={needsIdentityUnlock ? identityHint : undefined}
               >
-                Request invoice
+                {dd.request}
               </Button>
             ) : (
               <Button
@@ -2196,13 +2164,13 @@ function DocumentDetail (props) {
                     .catch((err) => {
                       setDistributeBusy(false);
                       setDistributeError(
-                        (err && err.message) ? err.message : 'Distribution request failed.'
+                        (err && err.message) ? err.message : dd.failed
                       );
                     });
                   // Success: storageContractBonded will fire and set distributeSuccessContractId
                 }}
               >
-                Confirm & Distribute
+                {dd.confirm}
               </Button>
             )}
           </Modal.Actions>
@@ -2221,35 +2189,40 @@ function DocumentDetail (props) {
             setPurchaseBridgeBusy(false);
           }}
         >
-          <Header icon="bitcoin" content="Purchase document (HTLC)" />
+          <Header icon="bitcoin" content={dp.title} />
           <Modal.Content>
             <p style={{ color: '#666' }}>
-              Pay the on-chain invoice. For priced sealed documents the hub stores ciphertext-at-rest; after L1 payment verification it reveals the AES decryption key (HTLC preimage). Same-hub <strong>Claim &amp; Unlock</strong> returns plaintext; peer inventory HTLC delivers ciphertext then auto-unlocks via <code>HTLC_KEY_REVEAL</code>.
+              {dp.intro}
             </p>
+            <details className="hub-developer-details" style={{ fontSize: '0.85em', color: '#666' }}>
+              <summary>{tc.developerDetails}</summary>
+              {dp.devIntro}
+            </details>
             {needsIdentityUnlock && (
               <Message warning size="small" style={{ marginTop: '0.75em' }}>
-                Unlock your identity to complete this flow from this browser.
+                <Message.Header>{identityTitle}</Message.Header>
+                <p style={{ margin: '0.35em 0 0' }}>{identityHint} {dp.needKeyThen}</p>
               </Message>
             )}
             <p style={{ color: '#888', fontSize: '0.9em', marginTop: '0.35em' }}>
-              If <strong>Claim &amp; Unlock</strong> fails immediately after you broadcast, the payment may still be unconfirmed — on regtest use <strong>Generate Block</strong> on{' '}
-              <Link to="/services/bitcoin">Bitcoin</Link>.
+              {dp.confirmHelp}{' '}{dp.regtestBefore}{' '}
+              <Link to="/services/bitcoin">{dp.regtestLink}</Link>.
               {uf.bitcoinResources ? (
                 <>
-                  {' '}For a raw L1 proof (txid + address + sats), use{' '}
-                  <Link to="/services/bitcoin/resources">Bitcoin → Resources</Link>.
+                  {' '}{dp.resourcesBefore}{' '}
+                  <Link to="/services/bitcoin/resources">{dp.resourcesLink}</Link>.
                 </>
               ) : (
                 <>
-                  {' '}Enable <strong>Bitcoin — HTTP resources</strong> in Admin for the interactive payment verifier.
+                  {' '}{dp.resourcesOff}
                 </>
               )}
             </p>
             {purchasedContent ? (
               <Segment color="green">
                 <Icon name="check circle" size="big" color="green" />
-                <Header as="h4" style={{ marginTop: '0.5em' }}>Document unlocked</Header>
-                <p style={{ color: '#666', marginBottom: '1em' }}>Content hash verified. You can now view or download.</p>
+                <Header as="h4" style={{ marginTop: '0.5em' }}>{dp.successTitle}</Header>
+                <p style={{ color: '#666', marginBottom: '1em' }}>{dp.successBody}</p>
                 <Button
                   primary
                   as="a"
@@ -2257,17 +2230,19 @@ function DocumentDetail (props) {
                   download={purchasedContent.name || 'document'}
                 >
                   <Icon name="download" />
-                  Download
+                  {dp.download}
                 </Button>
               </Segment>
             ) : !purchaseInvoice ? (
               <div style={{ marginTop: '0.5em' }}>
-                {!purchaseError && <p style={{ color: '#888' }}>Requesting invoice…</p>}
+                {!purchaseError && <p style={{ color: '#888' }}>{dp.requesting}</p>}
                 {purchaseError && (
                   <>
                     <Message negative>{purchaseError}</Message>
                     <p style={{ color: '#666', fontSize: '0.9em', marginTop: '0.75em' }}>
-                      Typical causes: Bitcoin unavailable on the hub, document not published, or no list price / floor. Use <Link to="/services/bitcoin">Bitcoin</Link> and confirm this document shows <strong>Published</strong> with a purchase price.
+                      {dp.errorHelpBefore}{' '}
+                      <Link to="/services/bitcoin">{dp.errorHelpLink}</Link>
+                      {' '}{dp.errorHelpAfter}
                     </p>
                   </>
                 )}
@@ -2278,7 +2253,7 @@ function DocumentDetail (props) {
                   address={purchaseInvoice.address}
                   amountSats={purchaseInvoice.amountSats}
                   network={purchaseInvoice.network}
-                  label="Document purchase (HTLC)"
+                  label={dp.invoiceLabel}
                   identity={props.identity || {}}
                   compact
                   requireUnlockedIdentityForHubPay
@@ -2293,7 +2268,7 @@ function DocumentDetail (props) {
                           if (res && res.document) {
                             setPurchasedContent(res.document);
                           } else {
-                            setPurchaseError((res && res.error) || 'Claim failed');
+                            setPurchaseError((res && res.error) || dp.claimFailed);
                           }
                         })
                         .catch((err) => setPurchaseError(err && err.message ? err.message : String(err)))
@@ -2302,32 +2277,40 @@ function DocumentDetail (props) {
                   }}
                 />
                 {hubAdminTokenPresent && (
-                  <div style={{ marginTop: '1em', display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'center' }}>
-                    <Button
-                      type="button"
-                      color="orange"
-                      loading={purchaseBridgeBusy}
-                      disabled={
-                        purchaseBridgeBusy ||
-                        purchaseBusy ||
-                        !!purchasedContent ||
-                        needsIdentityUnlock
-                      }
-                      onClick={handlePayPurchaseFromBridge}
-                      title="POST /services/bitcoin sendpayment — hub bitcoind broadcasts; admin token + unlocked identity in this browser"
-                    >
-                      <Icon name="server" />
-                      Pay from hub wallet & unlock
-                    </Button>
-                    <span style={{ color: '#666', fontSize: '0.9em', maxWidth: '28em' }}>
-                      {'Spend from this hub\'s bitcoind wallet, then claim with the returned txid. Regtest: mine a block if verification is slow.'}
-                    </span>
+                  <div style={{ marginTop: '1em' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75em', alignItems: 'center' }}>
+                      <Button
+                        type="button"
+                        color="orange"
+                        loading={purchaseBridgeBusy}
+                        disabled={
+                          purchaseBridgeBusy ||
+                          purchaseBusy ||
+                          !!purchasedContent ||
+                          needsIdentityUnlock
+                        }
+                        onClick={handlePayPurchaseFromBridge}
+                        title={dp.payFromHubTitle}
+                      >
+                        <Icon name="server" />
+                        {dp.payFromHub}
+                      </Button>
+                      <span style={{ color: '#666', fontSize: '0.9em', maxWidth: '28em' }}>
+                        {dp.payFromHubNote}
+                      </span>
+                    </div>
+                    <details className="hub-developer-details" style={{ marginTop: '0.5em', fontSize: '0.85em', color: '#666' }}>
+                      <summary>{tc.developerDetails}</summary>
+                      {dp.devPayFromHub}
+                    </details>
                   </div>
                 )}
                 <Form.Field style={{ marginTop: '1em' }}>
-                  <label>Or paste txid (if you paid from an external wallet)</label>
+                  <label htmlFor="document-purchase-txid">{dp.pasteTxidLabel}</label>
                   <Input
-                    placeholder="txid from your wallet"
+                    fluid
+                    id="document-purchase-txid"
+                    placeholder={dp.txidPlaceholder}
                     value={purchaseTxid}
                     onChange={(e) => setPurchaseTxid(e.target.value)}
                   />
@@ -2346,7 +2329,7 @@ function DocumentDetail (props) {
               setPurchasedContent(null);
               setPurchaseBridgeBusy(false);
             }}>
-              {purchasedContent ? 'Close' : 'Cancel'}
+              {purchasedContent ? tc.actions.close : tc.actions.cancel}
             </Button>
             {!purchasedContent && purchaseInvoice && (
               <Button
@@ -2361,13 +2344,13 @@ function DocumentDetail (props) {
                   Promise.resolve(props.onClaimPurchase(id, tx))
                     .then((res) => {
                       if (res && res.document) setPurchasedContent(res.document);
-                      else setPurchaseError((res && res.error) || 'Claim failed');
+                      else setPurchaseError((res && res.error) || dp.claimFailed);
                     })
                     .catch((err) => setPurchaseError(err && err.message ? err.message : String(err)))
                     .finally(() => setPurchaseBusy(false));
                 }}
               >
-                Claim & Unlock
+                {dp.claim}
               </Button>
             )}
           </Modal.Actions>
@@ -2375,11 +2358,11 @@ function DocumentDetail (props) {
 
         {!doc && loadError && (
           <Message negative style={{ marginTop: '1em' }}>
-            <Message.Header>Could not load document</Message.Header>
+            <Message.Header>{dv.load.errorTitle}</Message.Header>
             <p>{loadError}</p>
-            <Button as={Link} to="/documents" style={{ marginTop: '0.75em' }} aria-label="Back to documents list">
+            <Button as={Link} to="/documents" style={{ marginTop: '0.75em' }}>
               <Icon name="arrow left" aria-hidden="true" />
-              Documents
+              {dv.backToList}
             </Button>
             <Button
               basic
@@ -2390,7 +2373,7 @@ function DocumentDetail (props) {
               }}
             >
               <Icon name="refresh" />
-              Retry
+              {tc.actions.retry}
             </Button>
           </Message>
         )}
@@ -2403,9 +2386,9 @@ function DocumentDetail (props) {
             <div>
               <Loader active inline="centered" />
               <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
-                Loading document…
+                {dv.load.title}
                 <Header.Subheader>
-                  Fetching document details from hub.
+                  {dv.load.subtitle}
                 </Header.Subheader>
               </Header>
             </div>
@@ -2414,23 +2397,18 @@ function DocumentDetail (props) {
 
         {doc && isEncrypted && !contentBase64 && (
           <Segment secondary style={{ marginTop: '1em' }}>
-            <Header as="h3">Contents</Header>
+            <Header as="h3">{dv.contents.title}</Header>
             <p style={{ color: '#666' }}>
               {props.hasDocumentKey
-                ? 'Encrypted. Click Unlock above to decrypt and view.'
-                : (
-                  <>
-                    Encrypted. Unlock your identity to view this document (
-                    <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or the top-bar <strong>Locked</strong> control).
-                  </>
-                )}
+                ? dv.contents.encryptedWithKey
+                : dv.contents.encryptedNoKey(identityHint)}
             </p>
           </Segment>
         )}
 
         {doc && imageSrc && (
           <Segment style={{ marginTop: '1em' }}>
-            <Header as="h3">Preview</Header>
+            <Header as="h3">{dv.contents.preview}</Header>
             <div style={{ textAlign: 'center' }}>
               <img
                 src={imageSrc}
@@ -2443,12 +2421,12 @@ function DocumentDetail (props) {
 
         {doc && text != null && (
           <Segment style={{ marginTop: '1em' }}>
-            <Header as="h3">Contents</Header>
+            <Header as="h3">{dv.contents.title}</Header>
             {showGraphPreview ? (
               <>
                 <GraphDocumentPreview dotSource={text} hasDocumentKey={props.hasDocumentKey} />
                 <details style={{ marginTop: '0.75rem' }}>
-                  <summary style={{ cursor: 'pointer', color: '#555' }}>DOT source</summary>
+                  <summary style={{ cursor: 'pointer', color: '#555' }}>{dv.contents.dotSource}</summary>
                   <pre style={{ whiteSpace: 'pre-wrap', background: '#f7f7f7', padding: '0.75em', borderRadius: 6, maxHeight: 320, overflow: 'auto', marginTop: '0.5rem' }}>
                     {text}
                   </pre>
@@ -2464,9 +2442,9 @@ function DocumentDetail (props) {
 
         {doc && !imageSrc && text == null && contentBase64 && (
           <Segment secondary style={{ marginTop: '1em' }}>
-            <Header as="h3">Contents</Header>
+            <Header as="h3">{dv.contents.title}</Header>
             <p style={{ color: '#666' }}>
-              A preview is not available for this file type. Use the Download button above to view it with a native application.
+              {dv.contents.noPreview}
             </p>
           </Segment>
         )}

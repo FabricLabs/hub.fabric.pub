@@ -49,7 +49,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
   const Key = require('@fabric/core/types/key');
   const Challenge = require('@fabric/core/types/challenge');
   const Document = require('@fabric/core/types/document');
-  const DocumentOfferBook = require('@fabric/core/types/offerBook');
+  const DocumentBook = require('@fabric/core/types/documentBook');
   const Bond = require('@fabric/core/types/bond');
 
   function memoryFs () {
@@ -69,7 +69,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
       pub: Buffer.from(secp256k1.getPublicKey(provPriv, true)).toString('hex'),
       xOnly: Buffer.from(schnorr.getPublicKey(provPriv)).toString('hex')
     };
-    const book = new DocumentOfferBook();
+    const book = new DocumentBook();
     const hub = { beacon: { state: { clock } }, market: { book }, _rootKey: key, agent: null };
     const fs = memoryFs();
     const svc = new ChallengeService({ enable: true }).attach({ hub, fs });
@@ -153,7 +153,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
 
   it('sweeps silent providers into timelocked non-response proofs from their pre-signed penalty; a check-in defeats it', async function () {
     const bitcoinjs = require(require.resolve('bitcoinjs-lib', { paths: [require.resolve('@fabric/core/types/channel')] }));
-    const { signerFromPriv32 } = require('@fabric/core/functions/inventoryHtlc');
+    const { signerFromPriv32 } = require('@fabric/core/types/htlc');
     const compressed = (p) => Buffer.from(signerFromPriv32(p).publicKey).toString('hex');
 
     const { svc, hub, fs, provider, doc, hashes } = fixture(20);
@@ -219,7 +219,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     // Destination binding ships with fabric #188; skip until the @fabric/core pin includes it.
     if (typeof require('@fabric/core/types/witness').FraudProof._penaltyDestination !== 'function') return this.skip();
     const bitcoinjs = require(require.resolve('bitcoinjs-lib', { paths: [require.resolve('@fabric/core/types/channel')] }));
-    const { signerFromPriv32 } = require('@fabric/core/functions/inventoryHtlc');
+    const { signerFromPriv32 } = require('@fabric/core/types/htlc');
     const compressed = (p) => Buffer.from(signerFromPriv32(p).publicKey).toString('hex');
     const p2wpkh = (pub) => bitcoinjs.payments.p2wpkh({ pubkey: Buffer.from(pub, 'hex'), network: bitcoinjs.networks.regtest }).address;
 
@@ -257,7 +257,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     const blockHash = Buffer.from(crypto.createHash('sha256').update(once).digest()).reverse().toString('hex');
     const tx = new bitcoinjs.Transaction();
     tx.addInput(crypto.randomBytes(32), 0);
-    tx.addOutput(Buffer.from('0014' + '11'.repeat(20), 'hex'), 1000);
+    tx.addOutput(Buffer.from('0014' + '11'.repeat(20), 'hex'), 1000n);
 
     const asked = { headers: [], txids: [] };
     let onChain = true;

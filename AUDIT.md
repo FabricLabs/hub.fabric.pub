@@ -6,17 +6,18 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | Area | Posture |
 |------|---------|
 | `@fabric/core` | Git pin `FabricLabs/fabric#feature/channels` (lockfile SHA `1ba3b3cd0376858824c94ae17929eb2e77111a91`) |
-| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/channels` (lockfile SHA `123c850294802dc6adc66fbee17060aa2a8548ea`) |
+| `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/channels` (lockfile SHA `c6224197956445d619abe229b6008db16cfea625`; re-lock onto the commit that adds `functions/browserCrypto` — webpack resolves it at build time, and older http still carries `crypto-browserify` → `elliptic`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
 | Node | **`engines.node` = `26.12.1`** (aligned with core / http) |
-| WebSocket (`ws`) | **Mitigated** — direct + override **`8.22.0`** |
+| WebSocket (`ws`) | **Mitigated** — direct **`8.22.0`**; no override. jayson and webpack-bundle-analyzer keep their own `ws@7.5.13` (`^7.5.10`, patched) |
 | Electron | **`44.9.3`** (clears the 39.x advisory set — popup/sandbox inheritance, cross-origin file/http reads, webview workers, permission origin attribution, eMudhra intermediates — and swaps `extract-zip` for `@electron-internal/extract-zip`). Needs macOS 13+, 64-bit only. 45 deprecates the synchronous `safeStorage` calls the admin-token store uses |
-| electron-builder | **`26.18.0`** + overrides `tar@7.5.22`, `builder-util-runtime@9.7.0` |
+| electron-builder | **`26.18.0`** — resolves `tar@7.5.22` and pins `builder-util-runtime@9.7.0` itself; no overrides |
 | nodemailer | **`10.2.1`** (10.x clears the 9.0.4 advisory set; 9.1.1 still left the addressparser DoS and cross-transport TLS `servername` reuse) |
-| webpack / webpack-dev-server | **`5.112.2`** / **`5.2.6`**; `terser-webpack-plugin@5.6.1`; `uuid@11.1.1` override (sockjs / jayson) |
-| mocha / c8 / jsdoc-to-markdown | **`12.0.3`** / **`12.0.0`** / **`9.1.3`**, all **devDependencies** (test, coverage, and `make:api` tooling only). mocha 12 resolves `serialize-javascript@7.1.4` (past the `</script` XSS, [GHSA-m5mm-p8h7-m29v](https://github.com/advisories/GHSA-m5mm-p8h7-m29v)) without an override |
+| webpack / webpack-dev-server | **`5.112.2`** / **`6.1.0`** (no sockjs; proxy errors via http-proxy-middleware 4 `on.error`); `webpack-cli@5.1.4`; `terser-webpack-plugin@5.6.1`; `jsdom@30.1.3` (build-time HTML render, same as http) |
+| bitcoinjs-lib / bip32 / ecpair | **`7.0.4`** / **`5.0.1`** / **`3.0.2`** — same as `@fabric/core`, so the tree holds one copy of each. Keys, scripts, and PSBT fields are `Uint8Array` and output values are `bigint` |
+| mocha / c8 / jsdoc-to-markdown | **`12.0.3`** / **`12.0.0`** devDependencies; jsdoc-to-markdown **`9.1.3`** runs through `npx` in `make:api` and is not installed. mocha 12 resolves `serialize-javascript@7.1.4` (past the `</script` XSS, [GHSA-m5mm-p8h7-m29v](https://github.com/advisories/GHSA-m5mm-p8h7-m29v)) without an override |
 | React Router | **`react-router-dom@7.18.4`** — see residual below; webpack pins CJS entrypoints (see Recommendations) |
-| npm audit (this tree) | **0** (full and `--omit=dev`) |
+| npm audit (this tree) | **0** (full and `--omit=dev`) once locked onto the `@fabric/http` without `crypto-browserify`; on `c622419` without the old override it reports 5 low (`elliptic` via http's `crypto-browserify`) |
 
 ## Residual (accepted)
 
@@ -26,13 +27,8 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 
 ## Overrides for mitigated runtime findings
 
-| Override | Why |
-|----------|-----|
-| `ws@8.22.0` | Direct + transitive (core/jayson, http, webpack-dev-server) |
-| `uuid@11.1.1` | jayson + sockjs (webpack-dev-server) |
-| `tar@7.5.22` | electron-builder / node-gyp extraction path |
-| `builder-util-runtime@9.7.0` | electron-updater credential leak class |
-| `elliptic` → `@soatok/elliptic-to-noble` | Existing Hub pin |
+None. The `elliptic` → `@soatok/elliptic-to-noble` override went with `crypto-browserify`: webpack maps `crypto` / `node:crypto` to `@fabric/http/functions/browserCrypto` (noble hashes and ciphers), so no `elliptic`, `asn1.js`, or `browserify-*` package is installed or bundled once the lockfile resolves an `@fabric/http` that ships it.
+
 Electron ≥42 has no install script: the binary downloads the first time `electron` runs (`npm run desktop`, or `npx install-electron`), so it needs no `allowScripts` entry.
 
 ## Recommendations

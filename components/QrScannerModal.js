@@ -4,6 +4,9 @@ const React = require('react');
 const { Modal, Button, Icon, Message } = require('semantic-ui-react');
 
 const Html5Qrcode = require('html5-qrcode').Html5Qrcode;
+const t = require('../locales/en');
+
+const copy = t.identity.qrScanner;
 
 class QrScannerModal extends React.Component {
   constructor (props) {
@@ -58,7 +61,7 @@ class QrScannerModal extends React.Component {
       );
       this.setState({ error: null, started: true });
     } catch (err) {
-      this.setState({ error: err && err.message ? err.message : 'Camera access failed.' });
+      this.setState({ error: err && err.message ? t.common.errors.withReason(copy.cameraFailed, err.message) : copy.cameraFailed });
     }
   }
 
@@ -78,7 +81,7 @@ class QrScannerModal extends React.Component {
       <Modal open={!!open} onClose={onClose} size="small">
         <Modal.Header>
           <Icon name="camera" />
-          Scan QR Code
+          {copy.title}
         </Modal.Header>
         <Modal.Content>
           <div id={this._scannerId} style={{ width: '100%', minHeight: '250px' }} />
@@ -88,11 +91,11 @@ class QrScannerModal extends React.Component {
             </Message>
           )}
           <p style={{ color: '#666', fontSize: '0.9em', marginTop: '0.5em' }}>
-            Point your camera at a Bitcoin address or Lightning invoice QR code.
+            {copy.hint}
           </p>
         </Modal.Content>
         <Modal.Actions>
-          <Button basic onClick={onClose}>Cancel</Button>
+          <Button basic onClick={onClose}>{t.common.actions.cancel}</Button>
         </Modal.Actions>
       </Modal>
     );

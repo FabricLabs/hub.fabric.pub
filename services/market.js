@@ -4,7 +4,7 @@
  * Document Market service: the Hub's local chunk index and provider telemetry.
  *
  * Wraps `functions/documentInventoryMarket.js` (durable `documentoffers`
- * rows) with a `@fabric/core` `DocumentOfferBook` so inventory responses are
+ * rows) with a `@fabric/core` `DocumentBook` so inventory responses are
  * ranked by price, measured round-trip latency, delivery outcomes, and fraud
  * penalties. Telemetry is **local only** (never gossiped) and persisted under
  * the Hub filesystem as `fabric/market-telemetry.json`.
@@ -20,7 +20,7 @@
  * `POST /services/market/agent/wants` / `PUT /services/market/agent` are admin.
  * Agent state persists at `fabric/market-agent.json`.
  *
- * Payment channels (Phase 4, `@fabric/core/types/channel` `Channel.Book`):
+ * Payment channels (Phase 4, `@fabric/core/types/channelBook` `ChannelBook`):
  * when `settings.market.channels.enable` is on, the Hub keeps per-counterparty
  * channel sessions keyed by the operator root key; the budget agent pays for
  * chunks over an open channel (off-chain HTLC settled by the seller's key
@@ -31,9 +31,9 @@
  * (admin) opens one. State persists at `fabric/market-channels.json`.
  */
 const Service = require('@fabric/core/types/service');
-const DocumentOfferBook = require('@fabric/core/types/offerBook');
+const DocumentBook = require('@fabric/core/types/documentBook');
 const MarketAgent = require('@fabric/core/services/market');
-const Channel = require('@fabric/core/types/channel');
+const ChannelBook = require('@fabric/core/types/channelBook');
 const Message = require('@fabric/core/types/message');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
 
@@ -55,7 +55,7 @@ class MarketService extends Service {
 
     this.hub = null;
     this.fs = null;
-    this.book = new DocumentOfferBook(this.settings.book || {});
+    this.book = new DocumentBook(this.settings.book || {});
     this.agent = null;
     this.channels = null;
     this.key = null;
@@ -74,7 +74,7 @@ class MarketService extends Service {
 
   /**
    * Build (once) the channel registry keyed by the operator root key.
-   * @returns {Channel.Book|null}
+   * @returns {ChannelBook|null}
    */
   _ensureChannels () {
     if (this.channels) return this.channels;
@@ -88,7 +88,7 @@ class MarketService extends Service {
     }
     try {
       const cfg = (this.settings.channels && typeof this.settings.channels === 'object') ? this.settings.channels : {};
-      this.channels = new Channel.Book({
+      this.channels = new ChannelBook({
         localPrivateKey: this.key.private,
         network,
         tipHeight: () => Number(bitcoin && bitcoin.height) || 0,

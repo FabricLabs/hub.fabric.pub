@@ -155,6 +155,24 @@ class PeeringService extends Service {
   static verifyOracleAttestation (attestation) {
     return verifyOracleAttestation(attestation);
   }
+
+  /**
+   * Check another Hub's `GET /services/peering` (or `/attestation`) answer and
+   * return the key that signed it.
+   * @param {Object} body `{ oracleAttestation }` or the attestation itself
+   * @returns {{ ok: boolean, pubkey: (string|null), claim: (Object|null), error: (string|undefined) }}
+   */
+  static verifyHubAttestation (body) {
+    const att = body && body.oracleAttestation ? body.oracleAttestation : body;
+    if (!att || typeof att !== 'object') return { ok: false, pubkey: null, claim: null, error: 'no attestation' };
+    const raw = String((att.issuer && att.issuer.publicKeyHex) || '').trim().toLowerCase().replace(/^0x/, '');
+    const pubkey = /^0[23][0-9a-f]{64}$/.test(raw) ? raw : null;
+    if (!pubkey) return { ok: false, pubkey: null, claim: null, error: 'attestation issuer is not a compressed pubkey' };
+    if (!verifyOracleAttestation(att)) {
+      return { ok: false, pubkey, claim: null, error: 'attestation signature does not verify' };
+    }
+    return { ok: true, pubkey, claim: att.claim || null };
+  }
 }
 
 module.exports = PeeringService;

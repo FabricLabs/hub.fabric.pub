@@ -14,7 +14,7 @@ describe('hubIdentityUiHints', function () {
 
   it('suffix mentions watch-only path when not password locked', function () {
     const s = h.fabricIdentityUnlockSuffixPlain({ xpub: 'xpub9' });
-    assert.ok(/watch-only/i.test(s) || /import a full key/i.test(s));
+    assert.ok(/import your full key/i.test(s));
     assert.ok(!/Locked control to enter your encryption password/i.test(s));
   });
 

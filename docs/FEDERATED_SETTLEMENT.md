@@ -13,11 +13,11 @@ Witness vs digest vs L1: core [SIGNATURE_PROOF_MODEL.md](https://github.com/Fabr
 | `PrepareFederationVaultWithdrawalPsbt` | Build a partial vault PSBT; requires matching `withdrawalRequest` |
 
 Pre-sign: Beacon auto-sign and vault prepare call
-`federationValidatorVerify.evaluateValidatorSignGate` (local digests + reserve
+`Federation.evaluateValidatorSignGate` (local digests + reserve
 conservation). Threshold ≥ 2 also needs `withdrawalWitnesses`.
 
-Needs `npm run link:fabric` (or a pin) to a core tip that includes
-`functions/federationReserveLedger.js` and `functions/federationValidatorVerify.js`.
+Needs `npm run link:fabric` (or a pin) to a core tip whose `types/federation`
+carries the reserve ledger and sign-gate statics.
 
 ## Environment
 | Var | Purpose |

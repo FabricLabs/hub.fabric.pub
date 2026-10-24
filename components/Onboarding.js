@@ -32,19 +32,24 @@ const {
   defaultBitcoinRpcPort,
   presetById
 } = require('../functions/hubBitcoinSetup');
+const t = require('../locales/en');
+
+const copy = t.identity.onboarding;
 
 const BITCOIN_NETWORKS = [
-  { key: 'regtest', value: 'regtest', text: 'Regtest (local development)', rpcPort: 18443 },
-  { key: 'signet', value: 'signet', text: 'Signet (public test coins)', rpcPort: 38332 },
-  { key: 'testnet', value: 'testnet', text: 'Testnet (public testing)', rpcPort: 18332 },
-  { key: 'mainnet', value: 'mainnet', text: 'Mainnet (production)', rpcPort: 8332 }
+  { key: 'regtest', value: 'regtest', text: copy.networks.regtest, rpcPort: 18443 },
+  { key: 'signet', value: 'signet', text: copy.networks.signet, rpcPort: 38332 },
+  { key: 'testnet', value: 'testnet', text: copy.networks.testnet, rpcPort: 18332 },
+  { key: 'mainnet', value: 'mainnet', text: copy.networks.mainnet, rpcPort: 8332 }
 ];
 
 const SETUP_STEPS = [
-  { key: 'intro', title: 'Welcome', description: 'What this Hub does' },
-  { key: 'node', title: 'Node', description: 'Name and HTTP' },
-  { key: 'bitcoin', title: 'Bitcoin', description: 'Chain and Core' }
+  { key: 'intro', title: copy.steps.intro.title, description: copy.steps.intro.description },
+  { key: 'node', title: copy.steps.node.title, description: copy.steps.node.description },
+  { key: 'bitcoin', title: copy.steps.bitcoin.title, description: copy.steps.bitcoin.description }
 ];
+
+const hintStyle = { display: 'block', marginTop: '0.25em', color: '#666' };
 
 function sleepMs (ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -179,7 +184,7 @@ class Onboarding extends React.Component {
     const needsSecret = !!this.props.requiresSetupUiSecret;
     const secretTrim = String(this.state.setupUiSecret || '').trim();
     if (needsSecret && !secretTrim) {
-      throw new Error('Enter the operator setup secret (FABRIC_HUB_SETUP_UI_SECRET).');
+      throw new Error(copy.errors.secretMissing);
     }
     return {
       needsSecret,
@@ -220,7 +225,7 @@ class Onboarding extends React.Component {
   installNodeBinaries = async () => {
     if (!this.needsBinaryDownload()) return;
     const { extra } = this.setupSecretHeadersBody();
-    this.setState({ binariesBusy: true, binariesProgress: { phase: 'starting' }, applyStatus: 'Downloading node binaries…' });
+    this.setState({ binariesBusy: true, binariesProgress: { phase: 'starting' }, applyStatus: copy.apply.downloading });
     if (this._binariesPoll) clearInterval(this._binariesPoll);
     this._binariesPoll = setInterval(() => { this.refreshBinariesStatus(); }, 1000);
     try {
@@ -242,13 +247,13 @@ class Onboarding extends React.Component {
         try { body = JSON.parse(text); } catch (_) {}
       }
       if (!response.ok) {
-        throw new Error(body.message || body.error || `Binary download failed: ${response.status}`);
+        throw new Error(body.message || body.error || copy.errors.downloadFailed(response.status));
       }
       if (body.bitcoin && body.bitcoin.ok === false) {
-        throw new Error(body.bitcoin.reason || 'Bitcoin Core download failed.');
+        throw new Error(body.bitcoin.reason || copy.errors.bitcoinDownloadFailed);
       }
       if (this.state.lightningManaged && body.lightning && body.lightning.ok === false && !body.lightning.skipped) {
-        throw new Error(body.lightning.reason || 'Core Lightning install failed.');
+        throw new Error(body.lightning.reason || copy.errors.lightningFailed);
       }
       this.applyBinariesStatus(body.status || body);
     } finally {
@@ -268,7 +273,7 @@ class Onboarding extends React.Component {
       const { extra } = this.setupSecretHeadersBody();
       this.setState({
         binariesBusy: true,
-        binariesProgress: { phase: 'starting', message: 'Checking publishers…' },
+        binariesProgress: { phase: 'starting', message: copy.binaries.checking },
         error: null
       });
       if (this._binariesPoll) clearInterval(this._binariesPoll);
@@ -291,7 +296,7 @@ class Onboarding extends React.Component {
         try { body = JSON.parse(text); } catch (_) {}
       }
       if (!response.ok) {
-        throw new Error(body.message || body.error || `Remote check failed: ${response.status}`);
+        throw new Error(body.message || body.error || copy.errors.checkFailed(response.status));
       }
       const check = body.lastCheck || body;
       this.setState({ binariesCheck: check });
@@ -299,7 +304,8 @@ class Onboarding extends React.Component {
         this.applyBinariesStatus(Object.assign({}, body.status, { lastCheck: check }));
       }
     } catch (err) {
-      this.setState({ error: err && err.message ? err.message : String(err) });
+      const message = err && err.message ? err.message : String(err);
+      this.setState({ error: /fetch|NetworkError/.test(message) ? t.common.errors.network : message });
     } finally {
       if (this._binariesPoll) {
         clearInterval(this._binariesPoll);
@@ -324,7 +330,7 @@ class Onboarding extends React.Component {
       } catch (_) {}
       await sleepMs(200);
     }
-    throw new Error('Hub did not report configured after writing stores. Check the server log and try again.');
+    throw new Error(copy.errors.notConfirmed);
   }
 
   handleComplete = async () => {
@@ -332,7 +338,7 @@ class Onboarding extends React.Component {
       saving: true,
       error: null,
       step: 'applying',
-      applyStatus: 'Writing Hub stores…'
+      applyStatus: copy.apply.writing
     });
     const started = Date.now();
     try {
@@ -341,7 +347,7 @@ class Onboarding extends React.Component {
       if (this.state.bitcoinManaged || this.state.lightningManaged) {
         await this.installNodeBinaries();
       }
-      this.setState({ applyStatus: 'Saving settings…' });
+      this.setState({ applyStatus: copy.apply.saving });
       const pruneN = parseInt(this.state.bitcoinPrune, 10);
       const response = await fetch(`${baseUrl}/settings`, {
         method: 'POST',
@@ -389,14 +395,14 @@ class Onboarding extends React.Component {
         if (!text.trim().startsWith('<')) {
           try { errBody = JSON.parse(text); } catch (_) {}
         }
-        throw new Error(errBody.message || errBody.error || `Setup failed: ${response.status}`);
+        throw new Error(errBody.message || errBody.error || copy.errors.setupFailedStatus(response.status));
       }
 
       if (text.trim().startsWith('<')) {
-        throw new Error('Server returned HTML instead of JSON. Ensure the Hub is running (npm start) and the proxy target is correct.');
+        throw new Error(copy.errors.htmlResponse);
       }
       const result = JSON.parse(text);
-      this.setState({ applyStatus: 'Confirming stores on disk…' });
+      this.setState({ applyStatus: copy.apply.confirming });
       await this.waitUntilConfigured();
       const elapsed = Date.now() - started;
       if (elapsed < HUB_SETUP_APPLY_MIN_MS) {
@@ -411,9 +417,9 @@ class Onboarding extends React.Component {
       }
       this.setState({ open: false, saving: false });
     } catch (err) {
-      let message = err && err.message ? err.message : 'Setup failed';
+      let message = err && err.message ? err.message : copy.errors.setupFailed;
       if (message.includes('fetch') || message.includes('Failed to fetch') || message.includes('NetworkError')) {
-        message = 'Cannot reach the Hub. Ensure the server is running (npm start) and try again.';
+        message = t.common.errors.network;
       }
       this.setState({
         saving: false,
@@ -434,100 +440,85 @@ class Onboarding extends React.Component {
 
   binariesProgressLabel () {
     const p = this.state.binariesProgress;
-    if (!p) return this.state.binariesBusy ? 'Working…' : '';
+    const b = copy.binaries;
+    if (!p) return this.state.binariesBusy ? b.working : '';
     if (p.phase === 'download' && p.file && Number(p.total) > 0) {
-      return `Downloading ${p.file} (${this.binariesProgressPercent()}%)`;
+      return b.downloadingPercent(p.file, this.binariesProgressPercent());
     }
-    if (p.phase === 'download' && p.file) return `Downloading ${p.file}`;
+    if (p.phase === 'download' && p.file) return b.downloading(p.file);
     if (p.phase === 'extract') {
-      return p.component ? `Extracting ${p.component}…` : 'Extracting archive…';
+      return p.component ? b.extracting(p.component) : b.extractingArchive;
     }
     if (p.message) return p.message;
-    if (p.file && p.phase === 'remote') return `Fetching ${p.file}`;
-    if (p.phase === 'remote') return 'Checking publishers…';
-    return this.state.binariesBusy ? 'Installing node binaries…' : '';
+    if (p.file && p.phase === 'remote') return b.fetching(p.file);
+    if (p.phase === 'remote') return b.checking;
+    return this.state.binariesBusy ? b.installing : '';
   }
 
   binaryRowStatus (row, installedFallback) {
+    const b = copy.binaries;
     if (!row) {
-      return installedFallback ? 'Installed' : 'Not installed';
+      return installedFallback ? b.installed : b.notInstalled;
     }
-    if (row.status === 'matches_pin') return 'Matches Hub pin';
-    if (row.status === 'local_differs') return 'Local differs from pin';
-    if (row.status === 'not_installed') return 'Not installed';
-    if (row.installed && row.matchesLocal) return 'Matches Hub pin';
-    if (row.installed) return 'Local differs from pin';
-    return 'Not installed';
+    if (row.status === 'matches_pin') return b.matchesPin;
+    if (row.status === 'local_differs') return b.differsFromPin;
+    if (row.status === 'not_installed') return b.notInstalled;
+    if (row.installed && row.matchesLocal) return b.matchesPin;
+    if (row.installed) return b.differsFromPin;
+    return b.notInstalled;
   }
 
   renderIntro () {
+    const c = copy.intro;
     return (
       <Segment basic>
         <Message info>
-          <Message.Header>Welcome to Fabric Hub</Message.Header>
-          <p>
-            This process is the first-time operator setup. Completing it creates an admin token
-            that stays in <strong>this browser only</strong> (never stored on the server) and writes
-            Hub settings into <code>stores/hub/STATE</code>.
-          </p>
+          <Message.Header>{c.title}</Message.Header>
+          <p>{c.adminToken}</p>
         </Message>
+        <p>{c.about}</p>
         <p>
-          Hub is the Fabric rendezvous: peer discovery, browser WebRTC signaling, documents,
-          and optional Bitcoin / Lightning. You will name the node, choose how HTTP is bound,
-          then pick Bitcoin Core options aimed at a first operator — the same beginner knobs
-          Jameson Lopp’s{' '}
+          {c.loppBefore}{' '}
           <a href="https://jlopp.github.io/bitcoin-core-config-generator/" target="_blank" rel="noopener noreferrer">
-            Bitcoin Core Config Generator
+            {c.loppLink}
           </a>
-          {' '}exposes (network, prune vs txindex, listen, dbcache, connection and upload caps).
-          Those options sit in one accordion group at a time. A managed node defaults to no
-          transaction relay (Core <code>-blocksonly</code>).
+          {c.loppAfter}
         </p>
         <Message>
-          <Message.Header>Resetting this Hub</Message.Header>
+          <Message.Header>{c.resetTitle}</Message.Header>
           {this.state.desktopUsesExternalHub ? (
-            <p>
-              This desktop window is attached to an existing Hub on loopback, so first-time
-              setup follows <strong>that process&apos;s</strong> store (often the repo
-              {' '}<code>stores/hub</code> from <code>npm start</code>). Quit the other Hub,
-              or restart desktop with <code>FABRIC_DESKTOP_ALWAYS_SPAWN_HUB=1</code>.
-              Wiping only the git checkout does nothing if the live process still has
-              {' '}<code>IS_CONFIGURED</code> in memory.
-            </p>
+            <p>{c.resetExternal}</p>
           ) : this.state.desktopHubStore ? (
-            <p>
-              Desktop does <strong>not</strong> use the git checkout. Quit Fabric Hub, then
-              delete <code>{this.state.desktopHubStore}</code> (tray: Reveal Hub data folder),
-              or use Admin → Self-destruct. From the repo, <code>npm run reset:stores</code>
-              wipes CLI and desktop Hub stores (legacy Electron profile included).
-            </p>
+            <p>{c.resetDesktop}</p>
           ) : (
-            <p>
-              Stop Hub, then run <code>npm run reset:stores</code> from this repo (CLI
-              {' '}<code>stores/hub</code>, desktop Fabric Hub userData, and the legacy Electron
-              profile). Desktop stores are not the git checkout
-              ({' '}<code>~/Library/Application Support/Fabric Hub/stores/hub</code> on macOS).
-              Restart Hub to see this flow again.
-            </p>
+            <p>{c.resetCli}</p>
           )}
-          <p>
-            Default <code>npm run reset:stores</code> also removes Bitcoin and Lightning
-            datadirs (<code>stores/bitcoin-*</code>, <code>stores/lightning/</code>) and logs.
-            Use <code>--setup-only</code> to leave chain data.
-          </p>
+          <p>{c.resetChain}</p>
+          <details className="hub-developer-details">
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ margin: '0.35em 0 0' }}>
+              {this.state.desktopUsesExternalHub
+                ? c.resetExternalDeveloper
+                : (this.state.desktopHubStore ? c.resetDesktopDeveloper(this.state.desktopHubStore) : c.resetCliDeveloper)}
+            </p>
+            <p style={{ margin: '0.35em 0 0' }}>{c.resetChainDeveloper}</p>
+            <p style={{ margin: '0.35em 0 0' }}>{c.storeDeveloper}</p>
+          </details>
         </Message>
       </Segment>
     );
   }
 
   renderNode () {
+    const c = copy.node;
     return (
       <Form>
         <Form.Field>
-          <label>Node name</label>
+          <label htmlFor="hub-onboarding-node-name">{c.name}</label>
           <Input
+            id="hub-onboarding-node-name"
             data-testid="hub-onboarding-node-name"
-            placeholder="e.g. Hub, My Node"
+            placeholder={c.namePlaceholder}
             value={this.state.nodeName}
             onChange={(e) => this.setState({ nodeName: e.target.value })}
           />
@@ -535,31 +526,36 @@ class Onboarding extends React.Component {
         <Form.Field>
           <Checkbox
             data-testid="hub-onboarding-http-shared"
-            label="Share HTTP on the LAN (bind 0.0.0.0). Off keeps the dashboard on loopback."
+            label={c.share}
             checked={!!this.state.httpSharedMode}
             onChange={(e, { checked }) => this.setState({ httpSharedMode: !!checked })}
           />
-          <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-            Desktop defaults to loopback until you enable this. Environment
-            {' '}<code>FABRIC_HUB_INTERFACE</code> still wins on restart.
+          <small style={hintStyle}>
+            {c.shareHint}
           </small>
+          <details className="hub-developer-details" style={{ marginTop: '0.25em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <small style={hintStyle}>{c.shareDeveloper}</small>
+          </details>
         </Form.Field>
         <Form.Field>
-          <label>Disk space allocation (MB)</label>
+          <label htmlFor="hub-onboarding-disk-mb">{c.disk}</label>
           <Input
+            id="hub-onboarding-disk-mb"
             type="number"
             min="1"
             placeholder="1024"
             value={this.state.diskAllocationMb}
             onChange={(e) => this.setState({ diskAllocationMb: e.target.value })}
           />
-          <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-            Maximum storage for documents (used for HTLC purchase limits).
+          <small style={hintStyle}>
+            {c.diskHint}
           </small>
         </Form.Field>
         <Form.Field>
-          <label>Cost per byte (sats)</label>
+          <label htmlFor="hub-onboarding-cost-per-byte">{c.cost}</label>
           <Input
+            id="hub-onboarding-cost-per-byte"
             type="number"
             min="0"
             step="0.000001"
@@ -567,23 +563,27 @@ class Onboarding extends React.Component {
             value={this.state.costPerByteSats}
             onChange={(e) => this.setState({ costPerByteSats: e.target.value })}
           />
-          <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-            Per-byte floor for document serving (HTLC purchase price). 0.01 ≈ 10k sats/MB.
+          <small style={hintStyle}>
+            {c.costHint}
           </small>
         </Form.Field>
         {this.props.requiresSetupUiSecret ? (
           <Form.Field>
-            <label>Operator setup secret</label>
+            <label htmlFor="hub-onboarding-setup-secret">{c.secret}</label>
             <Input
+              id="hub-onboarding-setup-secret"
               type="password"
               autoComplete="off"
-              placeholder="Same as FABRIC_HUB_SETUP_UI_SECRET on the server"
               value={this.state.setupUiSecret}
               onChange={(e) => this.setState({ setupUiSecret: e.target.value })}
             />
-            <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-              Required to authorize first-time configuration when the hub is protected with an environment secret.
+            <small style={hintStyle}>
+              {c.secretHint}
             </small>
+            <details className="hub-developer-details" style={{ marginTop: '0.25em' }}>
+              <summary>{t.common.developerDetails}</summary>
+              <small style={hintStyle}>{c.secretDeveloper}</small>
+            </details>
           </Form.Field>
         ) : null}
       </Form>
@@ -614,26 +614,32 @@ class Onboarding extends React.Component {
     const pruneOn = parseInt(this.state.bitcoinPrune, 10) > 0;
     const lightningOn = this.state.lightningManaged && lightningSupported && this.state.bitcoinManaged;
     const acc = this.state.bitcoinAccordion;
+    const c = copy.bitcoin;
+    const b = copy.binaries;
     return (
       <Form>
         <Accordion styled fluid exclusive={false} data-testid="hub-onboarding-bitcoin-accordion">
-          {this.bitcoinAccordionTitle('network', 'Network')}
+          {this.bitcoinAccordionTitle('network', c.sections.network)}
           <Accordion.Content active={acc === 'network'}>
             <Form.Field>
-              <label>Beginner preset</label>
+              <label htmlFor="hub-onboarding-bitcoin-preset">{c.preset}</label>
               <Select
+                id="hub-onboarding-bitcoin-preset"
+                aria-label={c.preset}
                 data-testid="hub-onboarding-bitcoin-preset"
                 options={bitcoinPresetSelectOptions()}
                 value={this.state.bitcoinPreset}
                 onChange={(e, { value }) => this.applyPreset(value)}
               />
-              <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
+              <small style={hintStyle}>
                 {preset.description}
               </small>
             </Form.Field>
             <Form.Field>
-              <label>Bitcoin network</label>
+              <label htmlFor="hub-onboarding-bitcoin-network">{c.network}</label>
               <Select
+                id="hub-onboarding-bitcoin-network"
+                aria-label={c.network}
                 data-testid="hub-onboarding-bitcoin-network"
                 options={BITCOIN_NETWORKS}
                 value={this.state.bitcoinNetwork}
@@ -648,7 +654,7 @@ class Onboarding extends React.Component {
             </Form.Field>
             <Form.Field>
               <Checkbox
-                label="Launch managed Bitcoin node (bitcoind)"
+                label={c.managed}
                 data-testid="hub-onboarding-bitcoin-managed"
                 checked={this.state.bitcoinManaged}
                 onChange={(e, { checked }) => {
@@ -663,38 +669,42 @@ class Onboarding extends React.Component {
             {!this.state.bitcoinManaged && (
               <Segment basic style={{ marginLeft: '1.5em', paddingTop: 0, paddingLeft: 0 }}>
                 <Form.Field>
-                  <label>Bitcoin RPC host</label>
+                  <label htmlFor="hub-onboarding-bitcoin-rpc-host">{c.rpcHost}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-rpc-host"
                     placeholder="127.0.0.1"
                     value={this.state.bitcoinHost}
                     onChange={(e) => this.setState({ bitcoinHost: e.target.value })}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Bitcoin RPC port</label>
+                  <label htmlFor="hub-onboarding-bitcoin-rpc-port">{c.rpcPort}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-rpc-port"
                     placeholder={String(defaultBitcoinRpcPort(this.state.bitcoinNetwork))}
                     type="number"
                     value={this.state.bitcoinRpcPort}
                     onChange={(e) => this.setState({ bitcoinRpcPort: e.target.value })}
                   />
-                  <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-                    Default: regtest 18443, signet 38332, testnet 18332, mainnet 8332
+                  <small style={hintStyle}>
+                    {c.rpcPortHint}
                   </small>
                 </Form.Field>
                 <Form.Field>
-                  <label>Bitcoin RPC username</label>
+                  <label htmlFor="hub-onboarding-bitcoin-rpc-user">{c.rpcUser}</label>
                   <Input
-                    placeholder="rpcuser"
+                    id="hub-onboarding-bitcoin-rpc-user"
+                    autoComplete="username"
                     value={this.state.bitcoinUsername}
                     onChange={(e) => this.setState({ bitcoinUsername: e.target.value })}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Bitcoin RPC password</label>
+                  <label htmlFor="hub-onboarding-bitcoin-rpc-password">{c.rpcPassword}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-rpc-password"
                     type="password"
-                    placeholder="rpcpassword"
+                    autoComplete="current-password"
                     value={this.state.bitcoinPassword}
                     onChange={(e) => this.setState({ bitcoinPassword: e.target.value })}
                   />
@@ -704,12 +714,12 @@ class Onboarding extends React.Component {
           </Accordion.Content>
           {this.state.bitcoinManaged ? (
             <React.Fragment>
-              {this.bitcoinAccordionTitle('core', 'Bitcoin Core')}
+              {this.bitcoinAccordionTitle('core', c.sections.core)}
               <Accordion.Content active={acc === 'core'}>
                 <Form.Field>
                   <Checkbox
                     data-testid="hub-onboarding-bitcoin-listen"
-                    label="Listen for inbound Bitcoin P2P (server=1). Off is Lopp’s local / Raspberry-style default."
+                    label={c.listen}
                     checked={!!this.state.bitcoinListen}
                     onChange={(e, { checked }) => this.setState({ bitcoinListen: !!checked })}
                   />
@@ -717,18 +727,23 @@ class Onboarding extends React.Component {
                 <Form.Field>
                   <Checkbox
                     data-testid="hub-onboarding-bitcoin-txrelay"
-                    label="Relay unconfirmed transactions (txrelay). Off is the Hub default: Core -blocksonly, so peers cannot fill this mempool. Wallet RPC still works."
+                    label={c.txrelay}
                     checked={lightningOn || !!this.state.bitcoinTxrelay}
                     disabled={lightningOn}
                     onChange={(e, { checked }) => this.setState({ bitcoinTxrelay: !!checked })}
                   />
-                  <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-                    Core 29 has no -txrelay flag; Hub maps this to -blocksonly=1 when off. Lightning turns relay on.
+                  <small style={hintStyle}>
+                    {c.txrelayHint}
                   </small>
+                  <details className="hub-developer-details" style={{ marginTop: '0.25em' }}>
+                    <summary>{t.common.developerDetails}</summary>
+                    <small style={hintStyle}>{c.txrelayDeveloper}</small>
+                  </details>
                 </Form.Field>
                 <Form.Field>
-                  <label>Prune (MiB, 0 = keep full blocks)</label>
+                  <label htmlFor="hub-onboarding-bitcoin-prune">{c.prune}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-prune"
                     data-testid="hub-onboarding-bitcoin-prune"
                     type="number"
                     min="0"
@@ -742,22 +757,23 @@ class Onboarding extends React.Component {
                       });
                     }}
                   />
-                  <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-                    Core minimum prune is 550 MiB. Prune cannot be combined with txindex or Lightning.
+                  <small style={hintStyle}>
+                    {c.pruneHint}
                   </small>
                 </Form.Field>
                 <Form.Field>
                   <Checkbox
                     data-testid="hub-onboarding-bitcoin-txindex"
-                    label="Transaction index (txindex=1). Required for Lightning; disabled when pruning."
+                    label={c.txindex}
                     checked={!!this.state.bitcoinTxindex && !pruneOn}
                     disabled={pruneOn}
                     onChange={(e, { checked }) => this.setState({ bitcoinTxindex: !!checked })}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Database cache (dbcache, MiB)</label>
+                  <label htmlFor="hub-onboarding-bitcoin-dbcache">{c.dbcache}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-dbcache"
                     type="number"
                     min="4"
                     value={this.state.bitcoinDbcache}
@@ -765,8 +781,9 @@ class Onboarding extends React.Component {
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Max peer connections</label>
+                  <label htmlFor="hub-onboarding-bitcoin-maxconnections">{c.maxConnections}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-maxconnections"
                     type="number"
                     min="4"
                     value={this.state.bitcoinMaxconnections}
@@ -774,26 +791,27 @@ class Onboarding extends React.Component {
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Max upload target (MiB/day, 0 = unlimited)</label>
+                  <label htmlFor="hub-onboarding-bitcoin-maxuploadtarget">{c.uploadTarget}</label>
                   <Input
+                    id="hub-onboarding-bitcoin-maxuploadtarget"
                     type="number"
                     min="0"
                     value={this.state.bitcoinMaxuploadtarget}
                     onChange={(e) => this.setState({ bitcoinMaxuploadtarget: e.target.value })}
                   />
-                  <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-                    Lopp’s Low Bandwidth class uses a daily cap so a home connection is not saturated.
+                  <small style={hintStyle}>
+                    {c.uploadTargetHint}
                   </small>
                 </Form.Field>
               </Accordion.Content>
             </React.Fragment>
           ) : null}
-          {this.bitcoinAccordionTitle('lightning', 'Lightning')}
+          {this.bitcoinAccordionTitle('lightning', c.sections.lightning)}
           <Accordion.Content active={acc === 'lightning'}>
             <Form.Field>
               <Checkbox
                 data-testid="hub-onboarding-lightning-managed"
-                label="Launch managed Lightning node (lightningd)"
+                label={c.lightningManaged}
                 disabled={!lightningSupported || !this.state.bitcoinManaged}
                 checked={lightningOn}
                 onChange={(e, { checked }) => {
@@ -806,31 +824,32 @@ class Onboarding extends React.Component {
                   });
                 }}
               />
-              <small style={{ display: 'block', marginTop: '0.25em', color: '#666' }}>
-                Optional. Requires managed Bitcoin, no prune, txindex, and transaction relay.
+              <small style={hintStyle}>
+                {c.lightningHint}{' '}
                 {binaries && binaries.lightning && binaries.lightning.reason
-                  ? ` ${binaries.lightning.reason}`
-                  : ' Official Core Lightning tarballs are Linux x86_64; macOS uses Homebrew when brew is installed.'}
+                  ? binaries.lightning.reason
+                  : c.lightningPlatform}
               </small>
             </Form.Field>
             {!this.state.lightningManaged && (
               <Form.Field>
-                <label>Lightning RPC socket path</label>
+                <label htmlFor="hub-onboarding-lightning-socket">{c.lightningSocket}</label>
                 <Input
-                  placeholder="/path/to/lightningd.sock"
+                  id="hub-onboarding-lightning-socket"
+                  placeholder={c.lightningSocketPlaceholder}
                   value={this.state.lightningSocket}
                   onChange={(e) => this.setState({ lightningSocket: e.target.value })}
                 />
               </Form.Field>
             )}
           </Accordion.Content>
-          {this.bitcoinAccordionTitle('binaries', 'Node binaries')}
+          {this.bitcoinAccordionTitle('binaries', c.sections.binaries)}
           <Accordion.Content active={acc === 'binaries'}>
             <Segment data-testid="hub-onboarding-binaries" secondary>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.75em', marginBottom: '0.75em' }}>
                 <Header as="h4" style={{ margin: 0 }}>
-                  <Icon name="download" />
-                  Node binaries
+                  <Icon name="download" aria-hidden="true" />
+                  {b.title}
                 </Header>
                 <Button
                   type="button"
@@ -841,44 +860,43 @@ class Onboarding extends React.Component {
                   loading={this.state.binariesBusy}
                   onClick={this.checkRemoteBinaries}
                 >
-                  <Icon name="refresh" />
-                  Check remote
+                  <Icon name="refresh" aria-hidden="true" />
+                  {b.check}
                 </Button>
               </div>
               <p style={{ marginTop: 0 }}>
-                Hub pins Bitcoin Core
-                {binaries && binaries.bitcoin && binaries.bitcoin.version ? ` ${binaries.bitcoin.version}` : ''}
-                {this.state.lightningManaged ? ' and Core Lightning' : ''}
-                {' '}for <code>{(binaries && binaries.platform) || 'this platform'}</code>.
-                Check remote downloads publisher indexes and SHA256SUMS, compares them to this pin
-                and to the local install, and downloads the pin only when a binary is missing.
-                A newer publisher listing is shown, not installed.
+                {b.pinned(
+                  binaries && binaries.bitcoin && binaries.bitcoin.version,
+                  this.state.lightningManaged,
+                  (binaries && binaries.platform) || b.platformFallback
+                )}
+                {' '}{b.checkExplain}
               </p>
               <Table compact basic="very" size="small" unstackable data-testid="hub-onboarding-binaries-list">
                 <Table.Header>
                   <Table.Row>
-                    <Table.HeaderCell>Component</Table.HeaderCell>
-                    <Table.HeaderCell>Local</Table.HeaderCell>
-                    <Table.HeaderCell>Hub pin</Table.HeaderCell>
-                    <Table.HeaderCell>Remote latest</Table.HeaderCell>
-                    <Table.HeaderCell>Status</Table.HeaderCell>
+                    <Table.HeaderCell>{b.component}</Table.HeaderCell>
+                    <Table.HeaderCell>{b.local}</Table.HeaderCell>
+                    <Table.HeaderCell>{b.pin}</Table.HeaderCell>
+                    <Table.HeaderCell>{b.remote}</Table.HeaderCell>
+                    <Table.HeaderCell>{b.status}</Table.HeaderCell>
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
                   <Table.Row>
-                    <Table.Cell>Bitcoin Core</Table.Cell>
+                    <Table.Cell>{b.bitcoinCore}</Table.Cell>
                     <Table.Cell>
                       {(this.state.binariesCheck && this.state.binariesCheck.bitcoin && this.state.binariesCheck.bitcoin.local)
-                        || (binaries && binaries.bitcoin && binaries.bitcoin.installed ? 'installed' : '—')}
+                        || (binaries && binaries.bitcoin && binaries.bitcoin.installed ? b.installed : t.common.none)}
                     </Table.Cell>
                     <Table.Cell>
                       {(this.state.binariesCheck && this.state.binariesCheck.bitcoin && this.state.binariesCheck.bitcoin.pin)
                         || (binaries && binaries.bitcoin && binaries.bitcoin.version)
-                        || '—'}
+                        || t.common.none}
                     </Table.Cell>
                     <Table.Cell>
                       {(this.state.binariesCheck && this.state.binariesCheck.bitcoin && this.state.binariesCheck.bitcoin.remoteLatest)
-                        || '—'}
+                        || t.common.none}
                     </Table.Cell>
                     <Table.Cell>
                       {this.binaryRowStatus(
@@ -886,34 +904,34 @@ class Onboarding extends React.Component {
                         binaries && binaries.bitcoin && binaries.bitcoin.installed
                       )}
                       {this.state.binariesCheck && this.state.binariesCheck.bitcoin && this.state.binariesCheck.bitcoin.remoteIsNewer
-                        ? ' · newer listed'
+                        ? ` · ${b.newerSuffix}`
                         : ''}
                     </Table.Cell>
                   </Table.Row>
                   <Table.Row>
-                    <Table.Cell>Core Lightning</Table.Cell>
+                    <Table.Cell>{b.coreLightning}</Table.Cell>
                     <Table.Cell>
                       {(this.state.binariesCheck && this.state.binariesCheck.lightning && this.state.binariesCheck.lightning.local)
-                        || (binaries && binaries.lightning && binaries.lightning.installed ? 'installed' : '—')}
+                        || (binaries && binaries.lightning && binaries.lightning.installed ? b.installed : t.common.none)}
                     </Table.Cell>
                     <Table.Cell>
                       {(this.state.binariesCheck && this.state.binariesCheck.lightning && this.state.binariesCheck.lightning.pin)
                         || (binaries && binaries.lightning && binaries.lightning.version)
-                        || '—'}
+                        || t.common.none}
                     </Table.Cell>
                     <Table.Cell>
                       {(this.state.binariesCheck && this.state.binariesCheck.lightning && this.state.binariesCheck.lightning.remoteLatest)
-                        || '—'}
+                        || t.common.none}
                     </Table.Cell>
                     <Table.Cell>
                       {!lightningSupported
-                        ? 'Not available'
+                        ? b.notAvailable
                         : this.binaryRowStatus(
                           this.state.binariesCheck && this.state.binariesCheck.lightning,
                           binaries && binaries.lightning && binaries.lightning.installed
                         )}
                       {this.state.binariesCheck && this.state.binariesCheck.lightning && this.state.binariesCheck.lightning.remoteIsNewer
-                        ? ' · newer listed'
+                        ? ` · ${b.newerSuffix}`
                         : ''}
                     </Table.Cell>
                   </Table.Row>
@@ -921,12 +939,12 @@ class Onboarding extends React.Component {
               </Table>
               {this.state.binariesCheck && this.state.binariesCheck.bitcoin && this.state.binariesCheck.bitcoin.pinMatchesOfficial === false ? (
                 <Message warning size="small">
-                  Official SHA256SUMS for Bitcoin Core {this.state.binariesCheck.bitcoin.pin} does not match Hub&apos;s pinned digest.
+                  {b.pinMismatch(this.state.binariesCheck.bitcoin.pin)}
                 </Message>
               ) : null}
               {this.state.binariesCheck && (this.state.binariesCheck.bitcoin && this.state.binariesCheck.bitcoin.remoteError) ? (
                 <Message warning size="small">
-                  Bitcoin Core listing: {this.state.binariesCheck.bitcoin.remoteError}
+                  {b.remoteError(this.state.binariesCheck.bitcoin.remoteError)}
                 </Message>
               ) : null}
               {this.state.binariesBusy && (
@@ -942,12 +960,12 @@ class Onboarding extends React.Component {
         </Accordion>
         {this.state.bitcoinNetwork === 'regtest' && this.state.bitcoinManaged && (
           <Message info size="small">
-            Regtest is a private chain on this machine. Lightning is optional.
+            {c.regtestNote}
           </Message>
         )}
         {(this.state.bitcoinNetwork === 'signet' || this.state.bitcoinNetwork === 'testnet') && this.state.bitcoinManaged && (
           <Message info size="small">
-            Managed signet/testnet runs bitcoind locally. Signet has predictable ~1 min blocks; testnet uses PoW and can be unstable.
+            {c.testnetNote}
           </Message>
         )}
       </Form>
@@ -959,7 +977,7 @@ class Onboarding extends React.Component {
       <Segment basic textAlign="center" style={{ minHeight: '16em', paddingTop: '3em' }} data-testid="hub-onboarding-applying">
         <Dimmer active inverted>
           <Loader size="large" inverted>
-            {this.state.applyStatus || 'Finishing setup…'}
+            {this.state.applyStatus || copy.apply.finishing}
           </Loader>
         </Dimmer>
       </Segment>
@@ -980,8 +998,8 @@ class Onboarding extends React.Component {
         closeIcon={false}
       >
         <Modal.Header>
-          <Icon name="settings" />
-          First-Time Setup
+          <Icon name="settings" aria-hidden="true" />
+          {copy.title}
         </Modal.Header>
         <Modal.Content>
           {!applying && (
@@ -1014,15 +1032,20 @@ class Onboarding extends React.Component {
           {applying && this.renderApplying()}
           {error && (
             <Message negative>
-              <Message.Header>Error</Message.Header>
+              <Message.Header>{copy.errors.title}</Message.Header>
               <p>{error}</p>
             </Message>
+          )}
+          {!applying && (
+            <p data-testid="hub-onboarding-finish-later" style={{ color: '#666', fontSize: '0.9em', marginTop: '1em', marginBottom: 0 }}>
+              {copy.finishLater}
+            </p>
           )}
         </Modal.Content>
         <Modal.Actions>
           {step !== 'intro' && !applying && (
             <Button data-testid="hub-onboarding-back" onClick={this.goBack} disabled={busy}>
-              Back
+              {t.common.actions.back}
             </Button>
           )}
           {(step === 'intro' || step === 'node') && (
@@ -1032,8 +1055,8 @@ class Onboarding extends React.Component {
               onClick={this.goNext}
               disabled={busy}
             >
-              Next
-              <Icon name="arrow right" />
+              {copy.next}
+              <Icon name="arrow right" aria-hidden="true" />
             </Button>
           )}
           {step === 'bitcoin' && (
@@ -1044,8 +1067,8 @@ class Onboarding extends React.Component {
               disabled={busy}
               onClick={this.handleComplete}
             >
-              <Icon name="check" />
-              Complete Setup
+              <Icon name="check" aria-hidden="true" />
+              {copy.complete}
             </Button>
           )}
         </Modal.Actions>

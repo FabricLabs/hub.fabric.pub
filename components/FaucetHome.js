@@ -16,6 +16,9 @@ const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrow
 const { computeHubWalletSpendHints } = require('../functions/bitcoinSpendBounds');
 const { fundLocalKeyFromHubFaucet } = require('../functions/fundLocalKeyFromHubFaucet');
 const { SATS_PER_BTC } = require('../constants');
+const t = require('../locales/en');
+
+const L = t.payments.faucet;
 
 function hubWalletSatsFromDetail (detail) {
   if (!detail || typeof detail !== 'object' || !detail.available) return null;
@@ -56,7 +59,7 @@ class FaucetHome extends React.Component {
     const identity = (this.props && this.props.identity) || {};
     if (!identity.xpub) {
       this.setState({
-        faucetResult: { error: 'Unlock or create a local identity first (Identity panel).' },
+        faucetResult: { error: t.common.identity.needIdentity },
         faucetNotice: ''
       });
       return;
@@ -69,7 +72,7 @@ class FaucetHome extends React.Component {
         : 'regtest');
     if (network !== 'regtest') {
       this.setState({
-        faucetResult: { error: 'Faucet is regtest-only.' },
+        faucetResult: { error: L.errors.regtestOnly },
         faucetNotice: ''
       });
       return;
@@ -79,7 +82,7 @@ class FaucetHome extends React.Component {
       fundMyBusy: true,
       loading: true,
       faucetResult: null,
-      faucetNotice: 'Funding your local receive address from the Hub faucet…'
+      faucetNotice: L.notices.funding
     });
     try {
       const funded = await fundLocalKeyFromHubFaucet({
@@ -101,10 +104,12 @@ class FaucetHome extends React.Component {
           mined: funded.mined
         },
         faucetNotice: funded.mined && funded.mined.error
-          ? `Faucet sent ${funded.amountSats} sats to your local key. Confirm with Generate block (admin) if the top-bar balance is still zero.`
-          : `Funded your local key with ${funded.amountSats.toLocaleString()} sats` +
-            (funded.txid ? ` (${funded.txid.slice(0, 12)}…)` : '') +
-            (funded.mined && !funded.mined.error ? ' and mined a confirmation.' : '.'),
+          ? L.notices.fundedUnconfirmed(funded.amountSats)
+          : L.notices.funded(
+            funded.amountSats,
+            funded.txid ? funded.txid.slice(0, 12) : '',
+            !!(funded.mined && !funded.mined.error)
+          ),
         faucetLastStatus: {
           ok: true,
           when: Date.now(),
@@ -196,7 +201,7 @@ class FaucetHome extends React.Component {
     const amountSats = Math.round(Number(this.state.amountSats || 0));
     if (this.state.resolvingAddress) {
       this.setState({
-        faucetResult: { error: 'Still resolving your receive address. Please wait a moment and try again.' },
+        faucetResult: { error: L.errors.stillResolving },
         faucetNotice: '',
         faucetLastStatus: {
           ok: false,
@@ -204,14 +209,14 @@ class FaucetHome extends React.Component {
           address: '',
           amountSats: null,
           txid: '',
-          error: 'Still resolving your receive address. Please wait a moment and try again.'
+          error: L.errors.stillResolving
         }
       });
       return;
     }
     if (!address) {
       this.setState({
-        faucetResult: { error: 'Recipient address is required.' },
+        faucetResult: { error: L.errors.addressRequired },
         faucetNotice: '',
         faucetLastStatus: {
           ok: false,
@@ -219,14 +224,14 @@ class FaucetHome extends React.Component {
           address: '',
           amountSats: null,
           txid: '',
-          error: 'Recipient address is required.'
+          error: L.errors.addressRequired
         }
       });
       return;
     }
     if (!Number.isFinite(amountSats) || amountSats <= 0) {
       this.setState({
-        faucetResult: { error: 'Amount (sats) must be greater than zero.' },
+        faucetResult: { error: L.errors.amountRequired },
         faucetNotice: '',
         faucetLastStatus: {
           ok: false,
@@ -234,7 +239,7 @@ class FaucetHome extends React.Component {
           address,
           amountSats,
           txid: '',
-          error: 'Amount (sats) must be greater than zero.'
+          error: L.errors.amountRequired
         }
       });
       return;
@@ -254,7 +259,7 @@ class FaucetHome extends React.Component {
     if (amountSats < hintsPre.minRecipientSats) {
       this.setState({
         faucetResult: {
-          error: `Amount is below the typical dust floor (${hintsPre.minRecipientSats} sats). Use at least that many sats so the output is relayable.`
+          error: L.errors.belowDust(hintsPre.minRecipientSats)
         },
         faucetNotice: '',
         faucetLastStatus: {
@@ -263,7 +268,7 @@ class FaucetHome extends React.Component {
           address,
           amountSats,
           txid: '',
-          error: `Below dust floor (${hintsPre.minRecipientSats} sats).`
+          error: L.errors.belowDustShort(hintsPre.minRecipientSats)
         }
       });
       return;
@@ -271,7 +276,7 @@ class FaucetHome extends React.Component {
     if (hintsPre.canPayTarget === false) {
       this.setState({
         faucetResult: {
-          error: 'This amount plus fees cannot be covered by the hub UTXO set (fragmentation or fee market). Try a smaller amount, Use max affordable, or consolidate the hub wallet on the node.'
+          error: L.errors.cannotCover
         },
         faucetNotice: '',
         faucetLastStatus: {
@@ -280,7 +285,7 @@ class FaucetHome extends React.Component {
           address,
           amountSats,
           txid: '',
-          error: 'UTXO / fee simulation: cannot pay this amount.'
+          error: L.errors.cannotCoverShort
         }
       });
       return;
@@ -288,7 +293,7 @@ class FaucetHome extends React.Component {
     this.setState({
       loading: true,
       faucetResult: null,
-      faucetNotice: `Submitting faucet request for ${amountSats} sats...`
+      faucetNotice: L.notices.sending(amountSats)
     });
     try {
       const result = await requestFaucet(this.state.upstream || loadUpstreamSettings(), { address, amountSats });
@@ -304,13 +309,12 @@ class FaucetHome extends React.Component {
             amountSats,
             network: normalized.network || (this.props && this.props.bitcoin && this.props.bitcoin.network) || 'regtest'
           };
-      const txidText = faucetResult && faucetResult.txid ? ` Txid: ${String(faucetResult.txid)}.` : '';
       this.setState({
         loading: false,
         faucetResult,
         faucetNotice: faucetResult && faucetResult.error
           ? ''
-          : `Faucet request accepted.${txidText}`,
+          : L.notices.accepted(faucetResult && faucetResult.txid ? String(faucetResult.txid) : ''),
         faucetLastStatus: {
           ok: !faucetResult.error,
           when: Date.now(),
@@ -397,17 +401,22 @@ class FaucetHome extends React.Component {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
             <Button as={Link} to="/services/bitcoin" basic size="small">
               <Icon name="arrow left" />
-              Bitcoin
+              {L.back}
             </Button>
             <Header as="h2" style={{ margin: 0 }}>
               <Icon name="tint" />
-              <Header.Content>Faucet</Header.Content>
+              <Header.Content>{L.title}</Header.Content>
             </Header>
           </div>
           <p style={{ color: '#666', marginTop: '0.6em', marginBottom: 0 }}>
-            Regtest faucet moves coins from the Hub / Beacon wallet onto <strong>your local key</strong> receive
-            address so the top-bar balance updates. Desktop auto-funds once per session when the Hub faucet is funded.
+            {L.intro}
           </p>
+          {!faucetAllowed ? (
+            <Message warning style={{ marginTop: '0.85em' }}>
+              <Message.Header>{L.notRegtestTitle}</Message.Header>
+              <p>{L.notRegtest(bitcoinNetwork)}</p>
+            </Message>
+          ) : null}
           {faucetAllowed ? (
             <div style={{ marginTop: '0.85em' }}>
               <Button
@@ -418,25 +427,26 @@ class FaucetHome extends React.Component {
                 onClick={() => void this.fundMyWallet()}
               >
                 <Icon name="tint" />
-                {this.state.fundMyBusy ? 'Funding local key…' : 'Fund my local key'}
+                {this.state.fundMyBusy ? L.fundingMine : L.fundMine}
               </Button>
               <p style={{ color: '#666', marginTop: '0.5em', marginBottom: 0, fontSize: '0.95em' }}>
-                One click: resolve your receive address → Hub faucet → mine a confirmation (when admin token is present).
+                {L.fundMineHint}
               </p>
             </div>
           ) : null}
           {faucetAllowed ? (
             <Message info size="small" style={{ marginTop: '0.75em' }}>
-              <Message.Header>Playnet past subsidy — use the network</Message.Header>
+              <Message.Header>{L.playnetTitle}</Message.Header>
               <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
-                <strong>Bitcoin P2P</strong> (regtest <code>:18444</code>) and <strong>Fabric TCP</strong> (<code>:7777</code>) are different layers.
-                Under <Link to="/services/bitcoin">Bitcoin</Link> → <strong>Network</strong>, wait for outbound P2P connections to your configured{' '}
-                <code>addnode</code> targets so you share the same chain as other playnet nodes.
-                Under <Link to="/peers">Peers</Link>, use <strong>Add primary hub</strong> (<code>hub.fabric.pub:7777</code>) for block gossip and discovery.
-                If <strong>this</strong> hub&apos;s wallet cannot fund you, open the public regtest faucet in another tab —{' '}
-                <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">hub.fabric.pub/services/bitcoin/faucet</a>
-                {' — '}paste the same receive address as <strong>Use my address</strong> here, then use <strong>Generate block</strong> on{' '}
-                <Link to="/services/bitcoin#fabric-bitcoin-regtest-toolbar">your Bitcoin</Link> dashboard so the payment confirms.
+                {L.playnetPorts}{' '}
+                {L.playnetBitcoinBefore} <Link to="/services/bitcoin">{L.playnetBitcoinLink}</Link> {L.playnetBitcoinAfter}{' '}
+                {L.playnetPeersBefore} <Link to="/peers">{L.playnetPeersLink}</Link>{L.playnetPeersAfter}
+              </p>
+              <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
+                {L.playnetPublic}{' '}
+                <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">{L.playnetPublicLink}</a>.{' '}
+                {L.playnetConfirmBefore}{' '}
+                <Link to="/services/bitcoin#fabric-bitcoin-regtest-toolbar">{L.playnetConfirmLink}</Link> {L.playnetConfirmAfter}
               </p>
             </Message>
           ) : null}
@@ -448,7 +458,7 @@ class FaucetHome extends React.Component {
         >
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5em', marginBottom: '0.75em' }}>
             <Header as="h3" style={{ margin: 0, flex: '1 1 auto' }}>
-              Hub wallet (faucet source)
+              {L.walletTitle}
             </Header>
             <Button
               type="button"
@@ -458,92 +468,71 @@ class FaucetHome extends React.Component {
               onClick={() => void this.refreshHubWalletStatus()}
             >
               <Icon name="refresh" />
-              Refresh
+              {t.common.actions.refresh}
             </Button>
           </div>
           {this.state.hubBitcoinError ? (
             <Message negative size="small" style={{ marginTop: 0 }}>
-              Could not load hub Bitcoin status: {this.state.hubBitcoinError}
+              {L.loadStatusFailed(this.state.hubBitcoinError)}
             </Message>
           ) : null}
           {this.state.hubUtxosError ? (
             <Message warning size="small" style={{ marginTop: 0 }}>
-              Could not load hub UTXO list (limits fragmentation checks): {this.state.hubUtxosError}
+              {L.loadCoinsFailed(this.state.hubUtxosError)}
             </Message>
           ) : null}
           {!this.state.hubBitcoinError && !this.state.hubBitcoinLoading && !detail ? (
             <Message warning size="small" style={{ marginTop: 0 }}>
-              No status loaded yet. Choose Refresh.
+              {L.noStatus}
             </Message>
           ) : null}
           {hubReady ? (
             <div style={{ lineHeight: 1.6 }}>
               <div>
-                <strong>Network:</strong> {bitcoinNetwork || '—'}
+                <strong>{L.network}:</strong> {bitcoinNetwork || t.common.none}
                 {chainHeight != null ? (
                   <span>
                     {' '}
-                    · <strong>Height:</strong> {chainHeight}
+                    · <strong>{L.height}:</strong> {chainHeight}
                   </span>
                 ) : null}
               </div>
               {hubSats != null ? (
                 <div style={{ marginTop: '0.35em' }}>
-                  <strong>Trusted balance (hub bitcoind):</strong>{' '}
-                  {hubBtc != null ? hubBtc.toFixed(8) : '0.00000000'} BTC ({hubSats.toLocaleString()} sats)
+                  <strong>{L.balance}:</strong>{' '}
+                  {L.balanceValue(hubBtc != null ? hubBtc.toFixed(8) : '0.00000000', hubSats)}
                   {suggestedFaucetSats != null ? (
                     <span style={{ display: 'block', marginTop: '0.35em', color: '#555', fontSize: '0.95em' }}>
-                      On shared regtest / playnet, the hub wallet may be low if other nodes mined; pull at most{' '}
-                      <strong>{suggestedFaucetSats.toLocaleString()} sats</strong>
-                      {spendHints.hadUtxoList ? (
-                        <>
-                          {' '}
-                          (~{spendHints.satPerVbyte} sat/vB, {spendHints.utxoCount} UTXO
-                          {spendHints.utxoCount === 1 ? '' : 's'}, fee reserve ~{spendHints.feeReserveSats.toLocaleString()}{' '}
-                          sats).
-                        </>
-                      ) : (
-                        <>
-                          {' '}
-                          (~{spendHints.satPerVbyte} sat/vB, fee reserve ~{spendHints.feeReserveSats.toLocaleString()} sats;
-                          refresh after UTXO list loads for tighter bounds).
-                        </>
-                      )}
+                      {L.maxHint(suggestedFaucetSats)}{' '}
+                      {spendHints.hadUtxoList
+                        ? L.feeHintCoins(spendHints.satPerVbyte, spendHints.utxoCount, spendHints.feeReserveSats)
+                        : L.feeHintNoCoins(spendHints.satPerVbyte, spendHints.feeReserveSats)}
                     </span>
                   ) : hubSats != null && hubSats <= spendHints.feeReserveSats ? (
                     <span style={{ display: 'block', marginTop: '0.35em', color: '#8a6d3b', fontSize: '0.95em' }}>
-                      Balance is too low for a safe faucet send after fees — publish or trade on the network instead of
-                      draining this hub.
+                      {L.tooLow}
                     </span>
                   ) : null}
                 </div>
               ) : null}
               {detail && detail.mempoolTxCount != null && Number(detail.mempoolTxCount) > 0 ? (
                 <p style={{ margin: '0.5em 0 0', color: '#666', fontSize: '0.95em' }}>
-                  Mempool: {detail.mempoolTxCount} tx
-                  {faucetAllowed
-                    ? ' — unconfirmed sends (including faucet) confirm after you mine a block.'
-                    : ''}
+                  {L.mempool(Number(detail.mempoolTxCount))}
+                  {faucetAllowed ? ` ${L.mempoolConfirm}` : ''}
                 </p>
               ) : null}
               {faucetAllowed ? (
                 <p style={{ margin: '0.5em 0 0', color: '#666', fontSize: '0.95em' }}>
-                  If the hub wallet is empty, open{' '}
-                  <Link to="/services/bitcoin#fabric-bitcoin-regtest-toolbar">Bitcoin → Regtest toolbar</Link>
-                  {' '}and use <strong>Generate block</strong> (admin) so coinbase pays into the hub wallet, then return here.
+                  {L.emptyBefore}{' '}
+                  <Link to="/services/bitcoin#fabric-bitcoin-regtest-toolbar">{L.emptyLink}</Link>
+                  {' '}{L.emptyAfter}
                 </p>
-              ) : (
-                <Message warning size="small" style={{ marginTop: '0.75em' }}>
-                  Faucet is only available on <strong>regtest</strong>. This hub reports <strong>{bitcoinNetwork || 'unknown'}</strong>.
-                </Message>
-              )}
+              ) : null}
             </div>
           ) : null}
           {!hubReady && detail && !this.state.hubBitcoinLoading ? (
             <Message warning size="small" style={{ marginTop: 0 }}>
-              Bitcoin service is not available on this hub
-              {detail.status ? ` (${detail.status})` : ''}.
-              {detail.message ? ` ${detail.message}` : ''}
+              {L.unavailable(detail.status, detail.message)}
             </Message>
           ) : null}
         </Segment>
@@ -561,10 +550,10 @@ class FaucetHome extends React.Component {
               style={{ marginTop: this.state.faucetNotice ? '0.5em' : 0 }}
             >
               <p style={{ margin: 0 }}>
-                <strong>Last faucet request:</strong>{' '}
-                {this.state.faucetLastStatus.ok ? 'accepted' : 'failed'}
+                <strong>{L.lastRequest}:</strong>{' '}
+                {this.state.faucetLastStatus.ok ? L.lastAccepted : L.lastFailed}
                 {this.state.faucetLastStatus.amountSats != null
-                  ? ` · ${this.state.faucetLastStatus.amountSats} sats`
+                  ? ` · ${t.common.sats(this.state.faucetLastStatus.amountSats)}`
                   : ''}
                 {this.state.faucetLastStatus.address
                   ? ` · ${this.state.faucetLastStatus.address}`
@@ -572,32 +561,29 @@ class FaucetHome extends React.Component {
               </p>
               {this.state.faucetLastStatus.txid ? (
                 <p style={{ margin: '0.35em 0 0', wordBreak: 'break-all' }}>
-                  Txid: {this.state.faucetLastStatus.txid}
+                  {L.transactionId}: {this.state.faucetLastStatus.txid}
                 </p>
               ) : null}
               {this.state.faucetLastStatus.error ? (
                 <p style={{ margin: '0.35em 0 0' }}>
-                  Error: {this.state.faucetLastStatus.error}
+                  {L.errorLabel}: {this.state.faucetLastStatus.error}
                 </p>
               ) : null}
             </Message>
           ) : null}
           {amountExceedsHub && faucetAllowed ? (
             <Message warning size="small" style={{ marginTop: 0 }}>
-              Request ({Number.isFinite(amountSatsNum) ? amountSatsNum.toLocaleString() : '—'} sats) is above what this hub
-              can afford after fees and dust reserve ({maxAffordableSats.toLocaleString()} sats max). Lower the amount or use{' '}
-              <strong>Use max affordable</strong>.
+              {L.overMax(Number.isFinite(amountSatsNum) ? amountSatsNum : 0, maxAffordableSats)}
             </Message>
           ) : null}
           {recipientBelowDust && faucetAllowed ? (
             <Message warning size="small" style={{ marginTop: 0 }}>
-              Amount is below the relay dust floor ({spendHints.minRecipientSats} sats). Enter at least that many sats.
+              {L.belowDustWarning(spendHints.minRecipientSats)}
             </Message>
           ) : null}
           {fragmentationBlocksPay && faucetAllowed ? (
             <Message warning size="small" style={{ marginTop: 0 }}>
-              With the current UTXO set and fee rate, this amount is unlikely to build without merging inputs (largest coin{' '}
-              {spendHints.largestUtxoSats.toLocaleString()} sats). Use a smaller amount or consolidate on the node.
+              {L.fragmented(spendHints.largestUtxoSats)}
             </Message>
           ) : null}
           <Form
@@ -607,21 +593,24 @@ class FaucetHome extends React.Component {
             }}
           >
             <Form.Field>
-              <label>Send to address ({bitcoinNetwork || 'any'})</label>
+              <label htmlFor="faucet-address">{L.addressLabel(bitcoinNetwork)}</label>
               <Input
-                placeholder="bcrt1... or m/44'/0'/0'/0/0"
+                id="faucet-address"
+                placeholder={L.addressPlaceholder}
                 value={this.state.sendTo}
                 onChange={(e) => this.setState({ sendTo: e.target.value })}
                 action={{
-                  content: this.state.resolvingAddress ? 'Loading…' : 'Use my address',
+                  type: 'button',
+                  content: this.state.resolvingAddress ? L.findingAddress : L.useMyAddress,
                   disabled: this.state.resolvingAddress || this.state.loading,
                   onClick: () => this.useMyAddress()
                 }}
               />
             </Form.Field>
             <Form.Field width={4}>
-              <label>Amount (sats)</label>
+              <label htmlFor="faucet-amount">{L.amountLabel}</label>
               <Input
+                id="faucet-amount"
                 type="number"
                 min="1"
                 step="1"
@@ -630,7 +619,8 @@ class FaucetHome extends React.Component {
                 action={
                   suggestedFaucetSats != null
                     ? {
-                        content: `Use max affordable (${suggestedFaucetSats.toLocaleString()})`,
+                        type: 'button',
+                        content: L.useMax(suggestedFaucetSats),
                         disabled: this.state.loading || this.state.resolvingAddress,
                         onClick: () =>
                           this.setState({
@@ -650,13 +640,19 @@ class FaucetHome extends React.Component {
               onClick={() => this.requestFaucet()}
             >
               <Icon name="tint" />
-              Request from faucet
+              {L.request}
             </Button>
           </Form>
-          {this.state.faucetResult ? (
-            <Message negative={!!this.state.faucetResult.error} positive={!this.state.faucetResult.error} style={{ marginTop: '1em' }}>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{JSON.stringify(this.state.faucetResult, null, 2)}</pre>
+          {this.state.faucetResult && this.state.faucetResult.error ? (
+            <Message negative style={{ marginTop: '1em' }}>
+              {this.state.faucetResult.error}
             </Message>
+          ) : null}
+          {this.state.faucetResult && !this.state.faucetResult.error ? (
+            <details className="hub-developer-details" style={{ marginTop: '1em' }}>
+              <summary>{t.common.developerDetails}</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{JSON.stringify(this.state.faucetResult, null, 2)}</pre>
+            </details>
           ) : null}
         </Segment>
       </div>

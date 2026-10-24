@@ -56,7 +56,7 @@ REST **`/sessions`** is unchanged. See **`package.json` → `exports`**. Layers:
 | Accept `CONTRACT_PUBLISH` → `sidechains/<id>/` + parent `/namespaces/<id>` seal | `@fabric/core/functions/contractStatechains` | `functions/contractStatechains.js` |
 | Beacon k-of-n epoch Schnorr rounds | `@fabric/core/functions/beaconFederationSigning` | `functions/beaconFederationSigning.js` |
 | Contract-namespace tip Schnorr (`ContractStateTip`) | `@fabric/core/functions/contractStateSigning` | `functions/contractStateSigning.js` — **update Hub docs/RPC if tip kind changes** |
-| Contract Taproot failover ladder (`after`/`until`/migrate) | `@fabric/core/functions/contractTaproot` | `functions/federationVault.js` (re-export); Beacon treasury via `toAddress(spendLadder)` |
+| Contract Taproot failover ladder (`after`/`until`/migrate) | `@fabric/core/types/policy` | `functions/federationVault.js` (re-export); Beacon treasury via `toAddress(spendLadder)` |
 | Shared outer / body / activity type catalogs | `@fabric/core/functions/applicationNamespaces` | Hub + application message-type modules |
 | Node `fs` contract sidechain (desktop/relay) | `@fabric/core/functions/contractSidechainLocal` | Application `functions/contractSidechain.js` |
 

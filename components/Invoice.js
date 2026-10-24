@@ -37,6 +37,17 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const t = require('../locales/en');
+
+const L = t.payments.invoice;
+
+function identityHowTo (identity) {
+  const state = classifyHubBrowserIdentity(identity);
+  if (state === 'password_locked') return t.common.identity.howToUnlock;
+  if (state === 'watch_only') return t.common.identity.howToImport;
+  return t.common.identity.howToLogIn;
+}
 
 // BitPay circa 2016: Bitcoin orange accent
 const BITCOIN_ORANGE = '#F7931A';
@@ -62,7 +73,7 @@ const BITCOIN_ORANGE = '#F7931A';
  */
 function Invoice (props) {
   const [hubUiTick, setHubUiTick] = React.useState(0);
-  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((n) => n + 1)), []);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
 
@@ -171,7 +182,7 @@ function Invoice (props) {
   const handlePay = React.useCallback(async () => {
     if (!address || !amountSats || amountSats <= 0) return;
     if (requireUnlockedIdentityForHubPay && !identityUnlocked) {
-      setError('Unlock your Fabric identity (top bar) before Pay Now — this session must be unlocked for distribute/publish flows.');
+      setError(`${L.identityBlocked} ${identityHowTo(identity)}`);
       return;
     }
     setPaying(true);
@@ -181,7 +192,7 @@ function Invoice (props) {
     const adminToken = readHubAdminTokenFromBrowser(adminTokenProp);
     if (!adminToken) {
       setPaying(false);
-      setError('Admin token required to pay from the Hub wallet (setup token in local storage).');
+      setError(t.common.errors.adminTokenRequired);
       return;
     }
     try {
@@ -200,7 +211,7 @@ function Invoice (props) {
           window.dispatchEvent(new CustomEvent('clientBalanceUpdate'));
         }
       } else {
-        const errMsg = (res && res.error) || (res && res.message) || 'Payment completed but no txid returned.';
+        const errMsg = (res && res.error) || (res && res.message) || L.errors.noTxid;
         setError(errMsg);
         if (typeof onError === 'function') onError(new Error(errMsg));
       }
@@ -211,7 +222,7 @@ function Invoice (props) {
     } finally {
       setPaying(false);
     }
-  }, [address, amountSats, memo, label, upstream, wallet, onPaid, onError, refreshChainStatus, adminTokenProp, requireUnlockedIdentityForHubPay, identityUnlocked]);
+  }, [address, amountSats, memo, label, upstream, wallet, onPaid, onError, refreshChainStatus, adminTokenProp, requireUnlockedIdentityForHubPay, identityUnlocked, identity]);
 
   const isMainnet = String(network || '').toLowerCase() === 'mainnet';
 
@@ -241,7 +252,7 @@ function Invoice (props) {
         });
         if (typeof onPaid === 'function') onPaid(txid);
       } else {
-        const msg = 'This transaction does not pay this address for at least the invoice amount, or the tx could not be loaded (txindex disabled / wrong network).';
+        const msg = L.errors.notVerified;
         setError(msg);
         if (typeof onError === 'function') onError(new Error(msg));
       }
@@ -275,11 +286,11 @@ function Invoice (props) {
         address,
         amountSats: Number(amountSats),
         label: label || 'Invoice Payjoin',
-        memo: String(memo || `invoice-joinmarket:${invoiceId || 'local'}`).slice(0, 200)
+        memo: String(memo || `invoice-payjoin:${invoiceId || 'local'}`).slice(0, 200)
       });
       const uri = session && (session.bip21Uri || '');
       if (!uri || !/^bitcoin:/i.test(String(uri))) {
-        throw new Error('Payjoin session did not return a valid BIP21 URI (check Hub payjoin service).');
+        throw new Error(L.errors.payjoinBadUri);
       }
       setJoinmarketUri(String(uri));
     } catch (err) {
@@ -363,6 +374,9 @@ function Invoice (props) {
   if (!address || amountSats == null || amountSats <= 0) return null;
 
   const amountBtc = formatBtcFromSats(amountSats);
+  const idSuffix = String(invoiceId || address).replace(/[^A-Za-z0-9_-]/g, '');
+  const externalTxidInputId = `invoice-${idSuffix}-txid`;
+  const poolInputPrefix = `invoice-${idSuffix}-pool`;
   const amountFormatted = formatSatsDisplay(amountSats);
   const isPaid = isPaidFlow;
   const isConfirmed = !!(chainStatus && chainStatus.verified && Number(chainStatus.confirmations) > 0);
@@ -401,23 +415,23 @@ function Invoice (props) {
         <div style={{ flex: '1 1 auto', minWidth: 0 }}>
           {isConfirmed ? (
             <>
-              <Icon name="check circle" /> Payment confirmed
+              <Icon name="check circle" /> {L.status.confirmed}
             </>
           ) : isMempoolPaid ? (
             <>
-              <Icon name="clock" /> Awaiting confirmation
+              <Icon name="clock" /> {L.status.mempool}
             </>
           ) : headerWaiting ? (
             <>
-              <Icon name="sync" /> Verifying payment…
+              <Icon name="sync" /> {L.status.verifying}
             </>
           ) : isPaid ? (
             <>
-              <Icon name="warning circle" /> Paid — confirmation pending
+              <Icon name="warning circle" /> {L.status.paidPending}
             </>
           ) : (
             <>
-              <Icon name="bitcoin" /> Pay with Bitcoin
+              <Icon name="bitcoin" /> {L.status.unpaid}
             </>
           )}
         </div>
@@ -428,8 +442,8 @@ function Invoice (props) {
           inverted
           compact
           size="small"
-          aria-label="Advanced: Joinmarket pool targets and optional Payjoin BIP21 for this invoice"
-          title="Joinmarket pools & Payjoin"
+          aria-label={L.advanced}
+          title={L.advanced}
           onClick={() => setAdvancedOpen(true)}
         >
           <Icon name="setting" />
@@ -447,11 +461,11 @@ function Invoice (props) {
           <div style={{ marginBottom: '1em' }}>
             <img
               src={qrDataUrl}
-              alt="Bitcoin payment QR code"
+              alt={L.qrAlt}
               style={{ display: 'block', margin: '0 auto', borderRadius: 4 }}
             />
             <p style={{ fontSize: '0.8em', color: '#888', marginTop: '0.5em' }}>
-              Scan with your wallet
+              {L.scan}
             </p>
           </div>
         )}
@@ -465,7 +479,7 @@ function Invoice (props) {
           {amountBtc} BTC
         </div>
         <div style={{ color: '#666', fontSize: '0.9em', marginBottom: '1em' }}>
-          {amountFormatted} satoshis
+          {L.satsLine(amountFormatted)}
         </div>
 
         <div style={{
@@ -483,11 +497,11 @@ function Invoice (props) {
 
         {compact && !isPaid && !isMainnet && (
           <p style={{ fontSize: '0.78em', color: '#666', marginBottom: '0.65em', textAlign: 'left', lineHeight: 1.4 }}>
-            <strong>Second tab:</strong> use the blue <strong>Open payer tab (prefilled)</strong> control for this invoice (same origin, new tab; shown to the right of the card on wide layouts). It opens Payments with <code>payTo</code> and <code>payAmountSats</code>, and scrolls to Make Payment.
+            <strong>{L.secondTabTitle}</strong> {L.secondTab}
             {uf.bitcoinInvoices ? (
-              <> See the walkthrough at the top of <Link to="/services/bitcoin/invoices#fabric-invoices-tab-demo">Invoices</Link>.</>
+              <> {L.walkthroughBefore} <Link to="/services/bitcoin/invoices#fabric-invoices-tab-demo">{L.walkthroughLink}</Link>.</>
             ) : (
-              <> Enable <strong>Bitcoin — Invoices</strong> in Admin → Feature visibility for a link to the walkthrough.</>
+              <> {L.walkthroughOff}</>
             )}
           </p>
         )}
@@ -499,15 +513,15 @@ function Invoice (props) {
             onClick={() => handleCopy(address)}
           >
             <Icon name="copy" />
-            {copied ? 'Copied!' : 'Copy address'}
+            {copied ? t.common.actions.copied : L.copyAddress}
           </Button>
           <Button
             size="small"
             basic
-            onClick={() => handleCopy(`${address}\n${amountFormatted} sats`)}
+            onClick={() => handleCopy(L.copyBothText(address, amountFormatted))}
           >
             <Icon name="copy" />
-            Copy both
+            {L.copyBoth}
           </Button>
         </div>
 
@@ -519,19 +533,19 @@ function Invoice (props) {
 
         {!isPaid && isMainnet && (
           <Message warning size="small" style={{ marginTop: '1em', textAlign: 'left' }}>
-            Mainnet: pay with your own wallet from the QR or address above, then paste the transaction id below.
-            The Hub will verify against its configured <code>bitcoind</code> (requires a node that can serve the tx).
+            {L.mainnet}
           </Message>
         )}
 
         {!isPaid && (
           <div style={{ marginTop: '1em', textAlign: 'left' }}>
-            <div style={{ fontSize: '0.85em', color: '#666', marginBottom: '0.35em' }}>
-              Paid from another wallet? Paste txid:
-            </div>
+            <label htmlFor={externalTxidInputId} style={{ display: 'block', fontSize: '0.85em', color: '#666', marginBottom: '0.35em' }}>
+              {L.externalLabel}
+            </label>
             <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
               <Input
-                placeholder="abc123… (64 hex characters)"
+                id={externalTxidInputId}
+                placeholder={L.externalPlaceholder}
                 value={externalTxid}
                 onChange={(e, { value }) => setExternalTxid(value != null ? String(value) : (e && e.target && e.target.value) || '')}
                 onInput={(e) => {
@@ -539,15 +553,12 @@ function Invoice (props) {
                   if (v !== externalTxid) setExternalTxid(v);
                 }}
                 style={{ flex: '1 1 12em', minWidth: '10em' }}
-                input={{
-                  'aria-label': 'Bitcoin transaction id for external L1 payment verification'
-                }}
               />
               <Button
                 type="button"
-                content="Confirm payment"
+                content={L.confirm}
                 icon="checkmark"
-                aria-label="Confirm payment: verify pasted txid pays this invoice (L1)"
+                title={L.confirmTitle}
                 loading={verifying}
                 disabled={verifying || paying || !String(externalTxid || '').trim()}
                 onClick={handleVerifyExternal}
@@ -558,7 +569,7 @@ function Invoice (props) {
 
         {!isPaid && !isMainnet && hubPayBlockedByIdentity && (
           <Message info size="small" style={{ marginTop: '1em', textAlign: 'left' }}>
-            Unlock your identity in the top bar to use <strong>Pay Now</strong> here. You can still pay from any external wallet and paste the txid below — that creates a real on-chain payment verified by the hub.
+            {L.identityBlocked} {identityHowTo(identity)}
           </Message>
         )}
 
@@ -568,8 +579,8 @@ function Invoice (props) {
             primary
             style={{ marginTop: '1em', background: BITCOIN_ORANGE }}
             icon="bitcoin"
-            content="Pay Now"
-            aria-label="Pay invoice via hub Payments API (admin token required; hub bitcoind broadcasts)"
+            content={L.pay}
+            title={L.payTitle}
             loading={paying}
             disabled={paying || verifying || hubPayBlockedByIdentity}
             onClick={handlePay}
@@ -590,21 +601,20 @@ function Invoice (props) {
             style={{ marginTop: '1em', textAlign: 'left' }}
           >
             {chainStatus && chainStatus.loading ? (
-              <p style={{ margin: 0 }}>Checking mempool and block depth…</p>
+              <p style={{ margin: 0 }}>{L.checking}</p>
             ) : isConfirmed ? (
               <p style={{ margin: 0 }}>
                 {(() => {
                   const rawC = chainStatus && chainStatus.confirmations != null ? Number(chainStatus.confirmations) : 0;
                   const c = Number.isFinite(rawC) ? rawC : 0;
-                  const label = c === 1 ? '1 confirmation' : `${c} confirmations`;
                   return (
                     <>
-                      {label}.
+                      {L.confirmations(c)}
                       {' '}
                       {uf.bitcoinExplorer ? (
-                        <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Open transaction</Link>
+                        <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>{L.openTransaction}</Link>
                       ) : (
-                        <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{effectiveTxid}</code>
+                        <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title={L.explorerOff}>{effectiveTxid}</code>
                       )}
                     </>
                   );
@@ -612,29 +622,29 @@ function Invoice (props) {
               </p>
             ) : chainStatus && chainStatus.verified ? (
               <p style={{ margin: 0 }}>
-                Transaction is in the mempool or has zero confirmations; it will show as settled after the next block.
+                {L.mempoolNote}
                 {' '}
                 {uf.bitcoinExplorer ? (
-                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>View status</Link>
+                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>{L.viewStatus}</Link>
                 ) : (
-                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{effectiveTxid}</code>
+                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title={L.explorerOff}>{effectiveTxid}</code>
                 )}
                 {chainStatus.matchedSats != null && (
                   <span style={{ display: 'block', marginTop: '0.35em', color: '#666', fontSize: '0.9em' }}>
-                    Matched {Number(chainStatus.matchedSats).toLocaleString()} sats to this invoice address.
+                    {L.matched(chainStatus.matchedSats)}
                   </span>
                 )}
               </p>
             ) : (
               <p style={{ margin: 0 }}>
                 {chainStatus && chainStatus.error
-                  ? `Could not verify yet (${chainStatus.error}). Retrying…`
-                  : 'Waiting for the node to see this transaction…'}
+                  ? L.notYet(chainStatus.error)
+                  : L.waiting}
                 {' '}
                 {uf.bitcoinExplorer ? (
-                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>Transaction page</Link>
+                  <Link to={`/services/bitcoin/transactions/${encodeURIComponent(effectiveTxid)}`}>{L.transactionPage}</Link>
                 ) : (
-                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{effectiveTxid}</code>
+                  <code style={{ fontSize: '0.9em', wordBreak: 'break-all' }} title={L.explorerOff}>{effectiveTxid}</code>
                 )}
               </p>
             )}
@@ -643,7 +653,7 @@ function Invoice (props) {
 
         {isPaid && persistedTxids.length > 0 && (
           <Message positive size="small" style={{ marginTop: '1em', textAlign: 'left' }}>
-            <strong>Payment{persistedTxids.length > 1 ? 's' : ''} ({persistedTxids.length}):</strong>
+            <strong>{L.payments(persistedTxids.length)}</strong>
             <div style={{ marginTop: '0.25em' }}>
               {persistedTxids.map((txid) => (
                 <div key={txid} style={{ marginTop: '0.25em' }}>
@@ -652,7 +662,7 @@ function Invoice (props) {
                       {txid}
                     </Link>
                   ) : (
-                    <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{txid}</code>
+                    <code style={{ fontSize: '0.85em', wordBreak: 'break-all' }} title={L.explorerOff}>{txid}</code>
                   )}
                 </div>
               ))}
@@ -667,20 +677,19 @@ function Invoice (props) {
         onClose={() => setAdvancedOpen(false)}
         size="small"
       >
-        <Modal.Header>Advanced — Joinmarket &amp; pools</Modal.Header>
+        <Modal.Header>{L.modalTitle}</Modal.Header>
         <Modal.Content scrolling>
           <p style={{ color: '#555', fontSize: '0.9em', lineHeight: 1.45, marginBottom: '0.75em' }}>
-            Three local <strong>pool</strong> targets (BTC) for operator reference when staging hub-wallet liquidity for{' '}
-            <strong>ACP / Payjoin</strong>-style flows. They do not move coins by themselves. Optional: mint a{' '}
-            <strong>BIP78</strong> deposit session for <em>this invoice address</em> so payers can use a <code>bitcoin:</code> URI with{' '}
-            <code>pj=</code> (Payjoin v2-compatible receiver); then open Payments to sign or boost.
+            {L.poolsIntroBefore} <Link to="/services/coinjoin">{L.poolsIntroLink}</Link> {L.poolsIntroAfter}{' '}
+            {L.payjoinIntro}
           </p>
-          <Header as="h4" style={{ marginTop: 0 }}>Pool sizes (BTC)</Header>
+          <Header as="h4" style={{ marginTop: 0 }}>{L.poolsTitle}</Header>
           <Form>
             {poolLabels().map((lbl, i) => (
               <Form.Field key={lbl}>
-                <label>{lbl}</label>
+                <label htmlFor={`${poolInputPrefix}-${i}`}>{t.payments.coinjoin.poolLabels[i] || lbl}</label>
                 <Input
+                  id={`${poolInputPrefix}-${i}`}
                   type="number"
                   step="any"
                   min="1e-8"
@@ -692,20 +701,20 @@ function Invoice (props) {
                   }}
                 />
                 <span style={{ fontSize: '0.85em', color: '#888' }}>
-                  ≈ {btcToSats(poolBtc[i] != null ? poolBtc[i] : 0).toLocaleString()} sats
+                  {L.approxSats(btcToSats(poolBtc[i] != null ? poolBtc[i] : 0))}
                 </span>
               </Form.Field>
             ))}
             <Button type="button" size="small" onClick={handleSavePools}>
-              Save pool targets
+              {L.savePools}
             </Button>
           </Form>
 
           <Divider />
 
-          <Header as="h4">Optional Payjoin withdrawal to this invoice</Header>
+          <Header as="h4">{L.payjoinTitle}</Header>
           <p style={{ color: '#555', fontSize: '0.88em' }}>
-            Creates a Hub <strong>Payjoin</strong> session paying this card&apos;s address (same on-chain destination as the QR above). Uses standard BIP21 + <code>pj=</code>; no Taproot template swap on the invoice address.
+            {L.payjoinBody}
           </p>
           {!isPaid && (
             <Button
@@ -715,11 +724,11 @@ function Invoice (props) {
               disabled={joinmarketBusy}
               onClick={handleCreateInvoicePayjoin}
             >
-              Create Payjoin BIP21 for this invoice
+              {L.createPayjoin}
             </Button>
           )}
           {isPaid && (
-            <Message info size="tiny">Invoice already has a payment recorded — Payjoin session creation is hidden.</Message>
+            <Message info size="tiny">{L.alreadyPaid}</Message>
           )}
           {joinmarketErr && (
             <Message negative size="small" style={{ marginTop: '0.75em' }}>
@@ -737,7 +746,7 @@ function Invoice (props) {
                   size="small"
                   basic
                   icon="copy"
-                  content="Copy BIP21"
+                  content={L.copyLink}
                   onClick={() => handleCopy(joinmarketUri)}
                 />
                 <Button
@@ -745,7 +754,7 @@ function Invoice (props) {
                   size="small"
                   primary
                   icon="external alternate"
-                  content="Open Payments (Payjoin URI)"
+                  content={L.openInPayments}
                   href={buildTabPayerPayjoinUrl(joinmarketUri)}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -756,7 +765,7 @@ function Invoice (props) {
         </Modal.Content>
         <Modal.Actions>
           <Button type="button" onClick={() => setAdvancedOpen(false)}>
-            Close
+            {t.common.actions.close}
           </Button>
         </Modal.Actions>
       </Modal>

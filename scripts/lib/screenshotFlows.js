@@ -42,9 +42,9 @@ const SHOTS = [
     flow: 'document-exchange',
     tier: 'ui',
     title: 'Create document',
-    description: 'Create Document form for a named text blob.',
+    description: 'New text document form for a named text blob.',
     path: '/documents',
-    waitText: 'Create Document',
+    waitText: 'New text document',
     fullPage: false,
     action: 'document-create-form'
   },

@@ -31,7 +31,7 @@ changes bytes 144–207 and diverges from the payment commitment.
 | `documentPaymentHash` | `resolveDocumentContentHashHex`, alias normalize |
 | `publishedDocumentEnvelope` | Unsigned envelope + legacy `purchaseContentHashHex` |
 | `documentContentKey` / `documentSealedExchange` | AES-GCM seal; `paymentHashHexFromKey` |
-| `inventoryHtlc` | P2TR HTLC build / claim / refund |
+| `Htlc` (`@fabric/core/types/htlc`) | P2TR HTLC build / claim / refund |
 
 Hub `functions/*.js` files are thin re-exports of the above.
 

@@ -779,6 +779,27 @@ describe('@fabric/hub', function () {
           );
         });
 
+        it('GET /services/coinjoin reports the coinjoin market without Bitcoin', async function () {
+          const response = await makeRequest('GET', '/services/coinjoin', null, jsonApi);
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(response.body.type, 'CoinjoinStatus');
+          assert.strictEqual(response.body.available, false);
+          assert.ok(response.body.reason, 'says why it is unavailable');
+        });
+
+        it('coinjoin rounds, maker terms, and bonds need the admin token', async function () {
+          for (const [method, route] of [
+            ['POST', '/services/coinjoin/offers'],
+            ['POST', '/services/coinjoin/rounds'],
+            ['GET', '/services/coinjoin/rounds'],
+            ['POST', '/services/coinjoin/bonds'],
+            ['GET', '/services/coinjoin/bonds']
+          ]) {
+            const response = await makeRequest(method, route, method === 'POST' ? { amountSats: 100000 } : null, jsonApi);
+            assert.strictEqual(response.status, 401, `${method} ${route}`);
+          }
+        });
+
         it('POST /services/bitcoin/payments still aliases POST /payments (legacy path)', async function () {
           const response = await makeRequest('POST', '/services/bitcoin/payments', {
             walletId: 'fabric-test-wallet',

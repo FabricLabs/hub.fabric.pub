@@ -39,7 +39,7 @@ describe('PayjoinService BIP78 absolute pj=', () => {
       network: 'regtest',
       publicOrigin: 'http://127.0.0.1:18080',
       endpointBasePath: '/services/payjoin',
-      autoAcpBoost: false
+      receiverContribution: false
     });
     const session = await svc.createDepositSession({
       address: 'bcrt1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
@@ -54,20 +54,21 @@ describe('PayjoinService BIP78 absolute pj=', () => {
     assert.ok(/^https?:\/\//i.test(decodeURIComponent(session.bip21Uri.match(/pj=([^&]+)/)[1])));
   });
 
-  it('submitProposal returns bip78Psbt for JSON path without ACP', async () => {
+  it('submitProposal returns the original on the JSON path and a BIP78 error when the Hub does not contribute', async () => {
     const svc = new PayjoinService({
       network: 'regtest',
       publicOrigin: 'http://127.0.0.1:18080',
-      autoAcpBoost: false
+      receiverContribution: false
     });
     const session = await svc.createDepositSession({
       address: 'bcrt1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
       amountSats: 1000
     });
     const demo = 'cHNidP8BAHECAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AQAAAAAAAAAAIgAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
-    const result = await svc.submitProposal(session.id, { psbt: demo, autoAcpBoost: false });
+    const result = await svc.submitProposal(session.id, { psbt: demo, receiverContribution: false });
     assert.strictEqual(result.bip78Psbt, demo);
     assert.strictEqual(result.proposal.psbt, demo);
+    assert.strictEqual(result.bip78Error.errorCode, 'unavailable');
   });
 });
 
@@ -122,7 +123,7 @@ describe('payjoinFabricProtocol BIP78/BIP77 profile', () => {
   it('advertises BIP78 active and experimental BIP77 mailbox by default', () => {
     const p = buildFabricPayjoinProtocolProfile({
       endpointBasePath: '/services/payjoin',
-      autoAcpBoost: true,
+      receiverContribution: true,
       publicOrigin: 'http://127.0.0.1:8080',
       bip77MailboxExperimental: true
     });
@@ -153,7 +154,7 @@ describe('Hub BIP78 text/plain proposal HTTP handler', () => {
     return out;
   }
 
-  it('text/plain POST returns text/plain payjoined PSBT and defers autoAcp to service default', async () => {
+  it('text/plain POST returns text/plain payjoin PSBT, passes BIP78 params, and defers contribution to the service default', async () => {
     const hub = Object.create(Hub.prototype);
     const calls = [];
     const svc = {
@@ -175,6 +176,7 @@ describe('Hub BIP78 text/plain proposal HTTP handler', () => {
     const req = {
       headers: { 'content-type': 'text/plain', accept: 'text/plain' },
       params: { sessionId: 'sess-bip78' },
+      query: { v: '1', additionalfeeoutputindex: '1', maxadditionalfeecontribution: '200' },
       body: DEMO_PSBT
     };
     const res = mockRes();
@@ -186,25 +188,57 @@ describe('Hub BIP78 text/plain proposal HTTP handler', () => {
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].sessionId, 'sess-bip78');
     assert.strictEqual(calls[0].input.psbt, DEMO_PSBT);
-    assert.strictEqual(calls[0].input.autoAcpBoost, undefined,
-      'BIP78 wire must not force autoAcpBoost false; service default applies');
+    assert.strictEqual(calls[0].input.receiverContribution, undefined,
+      'BIP78 wire must not force the contribution off; service default applies');
+    assert.strictEqual(calls[0].input.bip78Params.additionalFeeOutputIndex, 1);
+    assert.strictEqual(calls[0].input.bip78Params.maxAdditionalFeeContribution, 200);
   });
 
-  it('BIP78 text/plain with service autoAcpBoost records ACP attempt on proposal', async () => {
+  it('text/plain POST answers a BIP78 JSON error when the Hub declines', async () => {
+    const hub = Object.create(Hub.prototype);
+    hub._getPayjoinService = () => ({
+      async submitProposal () {
+        return {
+          bip78Psbt: DEMO_PSBT,
+          bip78Error: { errorCode: 'not-enough-money', message: 'Hub wallet has no confirmed coin to contribute' },
+          proposal: { id: 'p', psbt: DEMO_PSBT }
+        };
+      },
+      extractProposalTxid () { return null; }
+    });
+    hub._mergePersistedTxLabel = () => {};
+    const res = mockRes();
+    await hub._handlePayjoinProposalSubmitRequest({
+      headers: { 'content-type': 'text/plain' },
+      params: { sessionId: 's' },
+      body: DEMO_PSBT
+    }, res);
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.body.errorCode, 'not-enough-money');
+
+    const res2 = mockRes();
+    await hub._handlePayjoinProposalSubmitRequest({
+      headers: { 'content-type': 'text/plain' },
+      params: { sessionId: 's' },
+      query: { v: '2' },
+      body: DEMO_PSBT
+    }, res2);
+    assert.strictEqual(res2.statusCode, 400);
+    assert.strictEqual(res2.body.errorCode, 'version-unsupported');
+  });
+
+  it('BIP78 text/plain with receiver contribution on records the contribution on the proposal', async () => {
     const svc = new PayjoinService({
       network: 'regtest',
       publicOrigin: 'http://127.0.0.1:18080',
       autoAcpBoost: true
     });
     let autoTried = false;
-    svc._tryAutoAcpBoost = async (psbt) => {
+    svc._applyContribution = async (session, proposal) => {
       autoTried = true;
-      return {
-        psbtBase64: `${psbt}-acp`,
-        addedOutpoint: 'deadbeef:0',
-        addedValueSats: 1000,
-        complete: false
-      };
+      proposal.payjoinPsbt = `${proposal.psbt}-payjoin`;
+      proposal.receiverContribution = { ok: true, contributedOutpoint: 'deadbeef:0', contributedValueSats: 1000 };
+      return proposal.receiverContribution;
     };
 
     const session = await svc.createDepositSession({
@@ -229,11 +263,11 @@ describe('Hub BIP78 text/plain proposal HTTP handler', () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.ok(String(res.headers['content-type']).includes('text/plain'));
-    assert.strictEqual(autoTried, true);
-    assert.strictEqual(res.body, `${DEMO_PSBT}-acp`);
+    assert.strictEqual(autoTried, true, 'legacy autoAcpBoost setting still turns the contribution on');
+    assert.strictEqual(res.body, `${DEMO_PSBT}-payjoin`);
   });
 
-  it('JSON proposal path can still disable autoAcpBoost explicitly', async () => {
+  it('JSON proposal path can still disable the contribution explicitly (legacy autoAcpBoost flag)', async () => {
     const hub = Object.create(Hub.prototype);
     const calls = [];
     hub._getPayjoinService = () => ({
@@ -255,7 +289,7 @@ describe('Hub BIP78 text/plain proposal HTTP handler', () => {
     };
     const res = mockRes();
     await hub._handlePayjoinProposalSubmitRequest(req, res);
-    assert.strictEqual(calls[0].autoAcpBoost, false);
+    assert.strictEqual(calls[0].receiverContribution, false);
     assert.strictEqual(res.body.bip78Psbt, DEMO_PSBT);
   });
 });

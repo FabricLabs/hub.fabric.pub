@@ -75,7 +75,7 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     assert.strictEqual(B.ingestChannelMessage({ type: 'ChannelOpen', channelId: 'nope' }), null);
 
     // No chain view yet → no new HTLCs (stale-tip guard). Hosts feed tips from the block hook.
-    const sA = A.channels.sessions.get(opened.channelId);
+    const sA = A.channels.get(opened.channelId);
     assert.throws(() => sA.offerHtlc({ amountSats: 1000, paymentHashHex: '11'.repeat(32), expireAfter: 8000 }), /tip unknown or stale/);
     await A.onBitcoinBlock({ height: 100 });
     await B.onBitcoinBlock({ height: 100 });
@@ -84,7 +84,7 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     // Peer; A offers an HTLC for that blob's payment hash; B's Book fulfils it
     // with K_i from the registry (`preimageFor`), and A learns the key from the
     // `ChannelHtlcFulfill`. Nobody hands the preimage over out of band.
-    const sB = B.channels.sessions.get(opened.channelId);
+    const sB = B.channels.get(opened.channelId);
     const Document = require('@fabric/core/types/document');
     const Peer = require('@fabric/core/types/peer');
     const sellerPeer = new Peer({ listen: false, sealPricedDocuments: true });

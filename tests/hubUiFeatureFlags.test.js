@@ -102,6 +102,19 @@ describe('hubUiFeatureFlags', function () {
     assert.strictEqual(f.bitcoinExplorer, true);
   });
 
+  it('desktop shell opens Federations and Send by default; the Document market preset keeps them off', function () {
+    setupWindowStorage();
+    global.window.fabricDesktop = {};
+    const f = flags.loadHubUiFeatureFlags();
+    assert.strictEqual(f.sidechain, true);
+    assert.strictEqual(f.bitcoinPayments, true);
+    const preset = flags.documentMarketUiFlags();
+    assert.strictEqual(preset.sidechain, false);
+    assert.strictEqual(preset.bitcoinPayments, false);
+    flags.saveHubUiFeatureFlags({ sidechain: false });
+    assert.strictEqual(flags.loadHubUiFeatureFlags().sidechain, false, 'a saved choice wins');
+  });
+
   it('normalizeFlags honors peers false and explicit false for former always-on keys (UI-58)', function () {
     setupWindowStorage();
     flags.saveHubUiFeatureFlags({

@@ -29,10 +29,10 @@ function ingest (peer, frame) {
 }
 
 describe('documentFileShare', function () {
-  it('has a theoretical maximum of MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (90 MiB)', function () {
-    assert.strictEqual(MAX_DOCUMENT_BLOBS, 4096);
+  it('has a theoretical maximum of MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (180 MiB)', function () {
+    assert.strictEqual(MAX_DOCUMENT_BLOBS, 8192);
     assert.strictEqual(FILE_SHARE_BLOB_BYTES, 23040);
-    assert.strictEqual(FILE_SHARE_MAX_BYTES, 90 * 1024 * 1024);
+    assert.strictEqual(FILE_SHARE_MAX_BYTES, 180 * 1024 * 1024);
     assert.throws(
       () => buildFileShareFrames(Buffer.allocUnsafe(FILE_SHARE_MAX_BYTES + 1), { documentId: 'd' }),
       RangeError

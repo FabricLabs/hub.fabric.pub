@@ -56,6 +56,24 @@ const {
 const { toast } = require('../functions/toast');
 const HubPagination = require('./HubPagination');
 const { useHubListPagination } = require('../functions/hubListPagination');
+const strings = require('../locales/en');
+
+const common = strings.common;
+const net = strings.network;
+const pl = net.peerList;
+const plt = pl.table;
+
+const VISUALLY_HIDDEN = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0
+};
 
 /** Default “primary authority” Fabric TCP peer — long-lived hub, high trust, Bitcoin head reference. */
 const DEFAULT_PRIMARY_FABRIC_HUB = 'hub.fabric.pub:7777';
@@ -139,14 +157,14 @@ function UnifiedPeersPaginatedList ({
               onClick={() => handleSort('id')}
               style={{ width: '22%' }}
             >
-              Fabric Peer ID
+              {plt.columns.id}
             </Table.HeaderCell>
             <Table.HeaderCell
               sorted={headerSorted('connection')}
               onClick={() => handleSort('connection')}
               style={{ width: '22%' }}
             >
-              Connection
+              {plt.columns.address}
             </Table.HeaderCell>
             <Table.HeaderCell
               sorted={headerSorted('status')}
@@ -154,7 +172,7 @@ function UnifiedPeersPaginatedList ({
               style={{ width: '12%' }}
               textAlign="center"
             >
-              Status
+              {plt.columns.status}
             </Table.HeaderCell>
             <Table.HeaderCell
               sorted={headerSorted('bytes')}
@@ -162,25 +180,27 @@ function UnifiedPeersPaginatedList ({
               style={{ width: '14%' }}
               textAlign="right"
             >
-              In / Out
+              {plt.columns.bytes}
             </Table.HeaderCell>
             <Table.HeaderCell
               sorted={headerSorted('window')}
               onClick={() => handleSort('window')}
               style={{ width: '16%' }}
               textAlign="right"
-              title="Rolling 10-minute usage vs Bitcoin L1 share (1 MiB / 10 min / 32 peers)"
+              title={plt.columns.windowTitle}
             >
-              10m / budget
+              {plt.columns.window}
             </Table.HeaderCell>
             <Table.HeaderCell
               sorted={headerSorted('seen')}
               onClick={() => handleSort('seen')}
               style={{ width: '10%' }}
             >
-              Seen
+              {plt.columns.seen}
             </Table.HeaderCell>
-            <Table.HeaderCell collapsing textAlign="right" disabled> </Table.HeaderCell>
+            <Table.HeaderCell collapsing textAlign="right" disabled>
+              <span style={VISUALLY_HIDDEN}>{plt.columns.actions}</span>
+            </Table.HeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
@@ -205,7 +225,7 @@ function UnifiedPeersPaginatedList ({
             const lastSeen = peer && (peer.lastSeen || peer.lastMessage);
             const addrNorm = normalizeFabricPeerAddress(address);
             const isPrimaryRow = !meshRow && primaryPeerNorm && (addrNorm === primaryPeerNorm || String(address) === primaryPeerNorm);
-            const connectionStr = peerNativePeeringString(peer, sigHp) || '—';
+            const connectionStr = peerNativePeeringString(peer, sigHp) || common.none;
             const p2pConfirmed = fabricP2PIdentityConfirmed(peer);
             const invN = gp ? inventoryDocCountForFabricPeer(gp, bech32Id || routeTarget) : null;
             const tcpForResync = address && !String(address).startsWith('webrtc:')
@@ -216,17 +236,17 @@ function UnifiedPeersPaginatedList ({
               : String(peer.id || routeTarget);
             const headlineId = bech32Id || fabricPeerPrimaryLabel(peer);
             const tagSummary = [
-              meshRow ? 'Mesh' : null,
-              isPrimaryRow ? 'Primary' : null,
-              p2pConfirmed ? 'P2P id' : null,
-              (!p2pConfirmed && bech32Id && meshRow) ? 'Signaled' : null,
-              invN != null && invN > 0 ? `Docs ${invN}` : null,
-              score != null ? `★${score}` : null,
-              meshRow && misbehavior != null && misbehavior > 0 ? `warn ${misbehavior}` : null
+              meshRow ? plt.tags.browser : null,
+              isPrimaryRow ? plt.tags.primary : null,
+              p2pConfirmed ? plt.tags.verified : null,
+              (!p2pConfirmed && bech32Id && meshRow) ? plt.tags.unverified : null,
+              invN != null && invN > 0 ? plt.tags.documents(invN) : null,
+              score != null ? plt.tags.trust(score) : null,
+              meshRow && misbehavior != null && misbehavior > 0 ? plt.tags.warnings(misbehavior) : null
             ].filter(Boolean).join(' · ');
             const seenShort = lastSeen
               ? new Date(lastSeen).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-              : '—';
+              : common.none;
             return (
               <Table.Row
                 key={rowKey}
@@ -251,7 +271,7 @@ function UnifiedPeersPaginatedList ({
                   {humanLabel ? (
                     <div style={{ fontSize: '0.78rem', color: '#767676', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={
                       meshAlias && nickname && meshAlias !== nickname
-                        ? `${meshAlias} (local: ${nickname})`
+                        ? plt.nicknameTitle(meshAlias, nickname)
                         : humanLabel
                     }>
                       {humanLabel}
@@ -274,11 +294,11 @@ function UnifiedPeersPaginatedList ({
                 </Table.Cell>
                 <Table.Cell textAlign="center" style={{ verticalAlign: 'middle' }}>
                   <span style={{ whiteSpace: 'nowrap', fontSize: '0.85rem' }}>
-                    {meshRow ? <Icon name="exchange" color="teal" title="WebRTC mesh" /> : null}
-                    {isPrimaryRow ? <Icon name="star" color="yellow" title="Primary peer" /> : null}
-                    {p2pConfirmed ? <Icon name="shield" color="blue" title="P2P identity confirmed" /> : null}
+                    {meshRow ? <Icon name="exchange" color="teal" title={plt.icons.browser} /> : null}
+                    {isPrimaryRow ? <Icon name="star" color="yellow" title={plt.icons.primary} /> : null}
+                    {p2pConfirmed ? <Icon name="shield" color="blue" title={plt.icons.verified} /> : null}
                     {invN != null && invN > 0 ? (
-                      <Icon name="book" color="violet" title={`${invN} inventory docs`} />
+                      <Icon name="book" color="violet" title={plt.icons.documents(invN)} />
                     ) : null}
                     <Icon
                       name={isConnected ? 'check circle' : 'minus circle'}
@@ -286,7 +306,9 @@ function UnifiedPeersPaginatedList ({
                       title={status}
                     />
                     <span style={{ marginLeft: '0.25em', color: isConnected ? '#21ba45' : '#767676' }}>
-                      {isConnected ? 'On' : (meshRow ? (status === 'signaling' ? 'Sig' : 'Off') : 'Off')}
+                      {isConnected
+                        ? plt.status.online
+                        : (meshRow && status === 'signaling' ? plt.status.connecting : plt.status.offline)}
                     </span>
                   </span>
                 </Table.Cell>
@@ -294,7 +316,7 @@ function UnifiedPeersPaginatedList ({
                   {(() => {
                     const inn = peer && peer.bytesIn;
                     const out = peer && peer.bytesOut;
-                    if (inn == null && out == null) return '—';
+                    if (inn == null && out == null) return common.none;
                     return `${formatPeerBytes(inn)} / ${formatPeerBytes(out)}`;
                   })()}
                 </Table.Cell>
@@ -308,14 +330,14 @@ function UnifiedPeersPaginatedList ({
                     color: peer && peer.overBudget ? '#9f3a38' : '#666'
                   }}
                   title={peer && peer.budgetBytes
-                    ? `10-minute window vs ${formatPeerBytes(peer.budgetBytes)} L1 share`
-                    : 'Bitcoin L1 share: 1 MiB / 10 min / 32 peers'}
+                    ? plt.windowCellTitle(formatPeerBytes(peer.budgetBytes))
+                    : plt.windowCellTitleDefault}
                 >
                   {(() => {
                     const used = fabricPeerWindowBytes(peer);
                     const budget = peer && Number(peer.budgetBytes);
                     if (!used && !(Number.isFinite(budget) && budget > 0) && !(peer && peer.bytesIn) && !(peer && peer.bytesOut)) {
-                      return '—';
+                      return common.none;
                     }
                     const budgetLabel = Number.isFinite(budget) && budget > 0 ? formatPeerBytes(budget) : '32 KiB';
                     return `${formatPeerBytes(used)} / ${budgetLabel}`;
@@ -331,7 +353,8 @@ function UnifiedPeersPaginatedList ({
                       basic
                       color="red"
                       icon
-                      title="Drop mesh peer"
+                      title={plt.disconnectBrowser}
+                      aria-label={plt.disconnectBrowser}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -348,7 +371,8 @@ function UnifiedPeersPaginatedList ({
                       size="mini"
                       basic
                       icon
-                      title="Fabric resync"
+                      title={plt.resync}
+                      aria-label={plt.resync}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -378,7 +402,7 @@ function UnifiedPeersPaginatedList ({
           }}
         >
           <span style={{ color: '#666', fontSize: '0.88em' }}>
-            Showing {rangeFrom}–{rangeTo} of {total}
+            {net.range(rangeFrom, rangeTo, total)}
           </span>
           <HubPagination
             activePage={page}
@@ -389,8 +413,7 @@ function UnifiedPeersPaginatedList ({
         </div>
       )}
       <p style={{ color: '#767676', fontSize: '0.82em', marginTop: '0.65em', lineHeight: 1.45 }}>
-        Bandwidth is plaintext AMP bytes on each Fabric TCP session. The 10-minute budget is Bitcoin L1
-        (1&nbsp;MiB / 10&nbsp;min) split across 32 peer slots (~32&nbsp;KiB each). Click a column header to sort.
+        {plt.note}
       </p>
     </>
   );
@@ -422,7 +445,7 @@ class PeersPage extends React.Component {
     const { onAddPeer } = this.props;
     const normalized = normalizePeerAddressInput(this.state.addPeerDraft);
     if (!normalized) {
-      toast.warning('Enter a host or host:port (e.g. hub.fabric.pub or 127.0.0.1:7777).', { header: 'Add peer' });
+      toast.warning(pl.addModal.invalid, { header: pl.addModal.title });
       return;
     }
     if (typeof onAddPeer === 'function') {
@@ -643,7 +666,7 @@ class PeersPage extends React.Component {
     const topologyDot = networkStatus
       ? peerTopologyToDot({
         selfId: fabricPeerId,
-        selfLabel: 'This Fabric node',
+        selfLabel: pl.selfLabel,
         directPeers: fabricPeersSorted,
         gossip: topologyGossip
       })
@@ -657,17 +680,21 @@ class PeersPage extends React.Component {
               style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.5em' }}
               role="banner"
             >
-              <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+              <Button basic size="small" as={Link} to="/">
                 <Icon name="arrow left" aria-hidden="true" />
-                Home
+                {pl.home}
               </Button>
               <div style={{ flex: '1 1 14rem', minWidth: 0 }}>
                 <Header as="h2" id="peers-page-heading" style={{ margin: 0 }}>
-                  <Header.Content>Peers</Header.Content>
+                  <Header.Content>{pl.title}</Header.Content>
                 </Header>
                 <p id="peers-page-summary" style={{ margin: '0.4em 0 0', color: '#555', maxWidth: '52rem', lineHeight: 1.55 }}>
-                  <strong>Fabric Peer ID</strong> is the canonical identity for this network: compressed secp256k1 (often shown as bech32m <code>id1…</code>). Signed P2P <code>Message</code> frames bind to that key so recipients can verify authenticity; TCP sessions and inventory relay line up with the same id once <strong>P2P id</strong> is confirmed. Mesh rows show the hub signaling id until the peer is proven on the Fabric wire (<strong>Signaled</strong>). Connection cells use <code>identity@host:port</code> (TCP listen or WebRTC signaling reachability).
+                  {pl.intro}
                 </p>
+                <details className="hub-developer-details" style={{ marginTop: '0.4em', maxWidth: '52rem' }}>
+                  <summary style={{ cursor: 'pointer', color: '#555' }}>{common.developerDetails}</summary>
+                  <p style={{ margin: '0.35em 0 0', color: '#666', fontSize: '0.9em', lineHeight: 1.5 }}>{pl.introDeveloper}</p>
+                </details>
               </div>
             </div>
           </section>
@@ -686,7 +713,7 @@ class PeersPage extends React.Component {
               }}
             >
               <Loader active inline size="small" />
-              <span>Connecting to hub and loading Fabric network status (Fabric Peer ID, Bitcoin height)…</span>
+              <span>{pl.loading}</span>
             </div>
           ) : (
             <>
@@ -696,33 +723,33 @@ class PeersPage extends React.Component {
                   <Grid.Column computer={10} tablet={16}>
                     <Header as="h3" size="small" style={{ marginTop: 0 }}>
                       <Header.Content>
-                        This hub
+                        {pl.self.heading}
                         <Label
                           size="small"
                           style={{ marginLeft: '0.5em', verticalAlign: 'middle' }}
                           color={bridgeFabricPaused ? 'yellow' : (isOnline ? 'green' : 'grey')}
                         >
-                          {isOnline ? (bridgeFabricPaused ? 'Fabric paused' : 'Fabric online') : 'Offline'}
+                          {isOnline ? (bridgeFabricPaused ? pl.self.paused : pl.self.online) : pl.self.offline}
                         </Label>
                       </Header.Content>
                     </Header>
                     <p style={{ margin: '0.25em 0 0.5em', color: '#666', fontSize: '0.92em' }}>
-                      <strong>Fabric state:</strong> {(state && state.status) || 'unknown'}
-                      {bridgeFabricPaused ? ' — hub reachable; Fabric P2P idle until started.' : ''}
+                      <strong>{pl.self.state}</strong> {(state && state.status) || pl.self.stateUnknown}
+                      {bridgeFabricPaused ? <> {pl.self.pausedHint}</> : null}
                     </p>
                     {(shareNodeId || hostPort) ? (
                       <List relaxed size="small" style={{ marginBottom: '0.5em' }}>
                         {shareNodeId ? (
                           <List.Item>
-                            <List.Header>{fabricPeerId ? 'Fabric Peer ID' : 'Node ID (legacy)'}</List.Header>
+                            <List.Header>{fabricPeerId ? pl.self.peerId : pl.self.legacyId}</List.Header>
                             <List.Description>
                               <code
                                 style={{ wordBreak: 'break-all', fontSize: '0.88em', display: 'block', marginTop: '0.25em' }}
-                                title={fabricPeerId ? 'Canonical secp256k1 identity for signed P2P messages and peer rows.' : 'Unstable — upgrade hub for fabricPeerId.'}
+                                title={fabricPeerId ? pl.self.peerIdTitle : pl.self.legacyIdTitle}
                               >{shareNodeId}</code>
                               {legacyUnstableId ? (
                                 <span style={{ fontSize: '0.82em', color: '#886', display: 'block', marginTop: '0.35em' }}>
-                                  Prefer <code>fabricPeerId</code> from the hub for sharing; legacy ids can change with contract state.
+                                  {pl.self.legacyIdNote}
                                 </span>
                               ) : null}
                             </List.Description>
@@ -730,7 +757,7 @@ class PeersPage extends React.Component {
                         ) : null}
                         {hostPort ? (
                           <List.Item>
-                            <List.Header>TCP listen</List.Header>
+                            <List.Header>{pl.self.listen}</List.Header>
                             <List.Description>
                               <code style={{ wordBreak: 'break-all', fontSize: '0.88em' }}>{hostPort}</code>
                             </List.Description>
@@ -758,21 +785,22 @@ class PeersPage extends React.Component {
                               document.execCommand('copy');
                               document.body.removeChild(ta);
                             }
+                            toast.success(pl.self.copied);
                           } catch (e) {}
                         }}
-                        title="Copy pubkey@host:port peering string for native Fabric dial"
+                        title={pl.self.copyAddressTitle}
                       >
                         <Icon name="copy" />
-                        Copy peering string
+                        {pl.self.copyAddress}
                       </Button>
                     ) : null}
                   </Grid.Column>
                   <Grid.Column computer={6} tablet={16}>
-                    <Header as="h3" size="small" style={{ marginTop: 0 }}>Chain &amp; mempool</Header>
+                    <Header as="h3" size="small" style={{ marginTop: 0 }}>{pl.chain.heading}</Header>
                     <Statistic.Group size="mini" widths={2}>
                       <Statistic>
-                        <Statistic.Value>{chainHeight != null ? chainHeight : '—'}</Statistic.Value>
-                        <Statistic.Label>Height</Statistic.Label>
+                        <Statistic.Value>{chainHeight != null ? chainHeight : common.none}</Statistic.Value>
+                        <Statistic.Label>{pl.chain.height}</Statistic.Label>
                       </Statistic>
                       <Statistic>
                         <Statistic.Value text style={{ fontSize: '0.95rem', fontFamily: 'monospace' }}>
@@ -782,38 +810,42 @@ class PeersPage extends React.Component {
                                 {tipShort}
                               </Link>
                             ) : (
-                              <span title={`${tipFull} — enable Bitcoin explorer routes in Admin → Feature visibility`}>{tipShort}</span>
+                              <span title={pl.chain.tipExplorerOff(tipFull)}>{tipShort}</span>
                             )
                           ) : (
-                            '—'
+                            common.none
                           )}
                         </Statistic.Value>
-                        <Statistic.Label>Tip</Statistic.Label>
+                        <Statistic.Label>{pl.chain.tip}</Statistic.Label>
                       </Statistic>
                     </Statistic.Group>
                     <p style={{ margin: '0.35em 0 0', fontSize: '0.88em', color: '#666' }}>
-                      <strong>Network:</strong> {btcNetwork || '—'}
+                      <strong>{pl.chain.network}</strong> {btcNetwork || common.none}
                       {mempoolN != null ? (
                         <span>
                           {' · '}
-                          <strong>Mempool:</strong> {mempoolN} tx
+                          <strong>{pl.chain.mempool}</strong> {pl.chain.mempoolCount(mempoolN)}
                         </span>
                       ) : null}
                       {' · '}
-                      <strong>Peers in view:</strong> {unifiedPeers.length} (TCP + mesh)
+                      <strong>{pl.chain.inView}</strong> {pl.chain.inViewCount(unifiedPeers.length)}
                     </p>
                     {bitcoin && bitcoin.available === false && bitcoin.message ? (
                       <Message warning size="small" style={{ marginTop: '0.65em' }} content={bitcoin.message} />
                     ) : null}
                     <Message info size="small" style={{ marginTop: '0.65em' }}>
-                      <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Block relay</p>
+                      <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>{pl.chain.relayHeading}</p>
                       <p style={{ margin: '0.35em 0 0', fontSize: '0.92em', lineHeight: 1.45 }}>
-                        On new tip (ZMQ <code>hashblock</code>), this hub signs <code>BitcoinBlock</code> P2P messages; peers relay the same wire bytes (duplicates dropped). Compare height and tip with peers after <code>addnode</code> or long regtest chains.
+                        {pl.chain.relayBody}
                       </p>
+                      <details className="hub-developer-details" style={{ marginTop: '0.35em' }}>
+                        <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
+                        <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', lineHeight: 1.45 }}>{pl.chain.relayDeveloper}</p>
+                      </details>
                     </Message>
                     {!(adminPeerToolsToken && String(adminPeerToolsToken).trim()) ? (
                       <p style={{ margin: '0.65em 0 0', fontSize: '0.82em', color: '#777' }}>
-                        <strong>Operator tools:</strong> sign in under Settings → Admin (hub admin token) to send <code>P2P_FLUSH_CHAIN</code> to highly trusted peers from this page.
+                        {pl.chain.operatorHint}
                       </p>
                     ) : null}
                   </Grid.Column>
@@ -825,19 +857,23 @@ class PeersPage extends React.Component {
                       <Divider />
                       <Header as="h3" size="small" color="red">
                         <Icon name="warning sign" />
-                        Operator — chain flush (trusted peers)
+                        {pl.flush.heading}
                       </Header>
                       <Message warning size="small">
                         <p style={{ margin: 0, lineHeight: 1.45 }}>
-                          Sends signed <code>P2P_FLUSH_CHAIN</code> to every <strong>connected</strong> peer whose registry score is above the hub threshold (default 800). Peers that accept it may rewind toward <code>snapshotBlockHash</code> via <code>invalidateblock</code>. Use only with coordinated operators on regtest / playnet / signet / testnet.
+                          {pl.flush.warning}
                         </p>
+                        <details className="hub-developer-details" style={{ marginTop: '0.35em' }}>
+                          <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
+                          <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', lineHeight: 1.45 }}>{pl.flush.developer}</p>
+                        </details>
                       </Message>
                       <Form
                         onSubmit={(e) => {
                           e.preventDefault();
                           const h = String(this.state.flushChainSnapshot || '').trim();
                           if (!/^[0-9a-fA-F]{64}$/.test(h)) {
-                            toast.error('Snapshot must be 64 hex characters (known-good tip after reset).', { header: 'Chain flush' });
+                            toast.error(pl.flush.invalidHash, { header: pl.flush.toastHeader });
                             return;
                           }
                           onSendFlushChainToTrustedPeers({
@@ -845,22 +881,22 @@ class PeersPage extends React.Component {
                             network: String(this.state.flushChainNetwork || '').trim() || undefined,
                             label: String(this.state.flushChainLabel || '').trim() || undefined
                           });
-                          toast.info('Flush chain request sent — check hub logs and peer bitcoinds.', { header: 'P2P_FLUSH_CHAIN', autoClose: 6000 });
+                          toast.info(pl.flush.sent, { header: pl.flush.toastHeader, autoClose: 6000 });
                         }}
                         style={{ maxWidth: '40rem', marginTop: '0.5em' }}
                       >
                         <Form.Field>
-                          <label htmlFor="flush-chain-snapshot">Known-good tip (<code>getbestblockhash</code>)</label>
+                          <label htmlFor="flush-chain-snapshot">{pl.flush.hashLabel}</label>
                           <Input
                             id="flush-chain-snapshot"
-                            placeholder="64-character hex block hash"
+                            placeholder={pl.flush.hashPlaceholder}
                             value={this.state.flushChainSnapshot}
                             onChange={(e) => this.setState({ flushChainSnapshot: e.target.value })}
                             autoComplete="off"
                           />
                         </Form.Field>
                         <Form.Field>
-                          <label htmlFor="flush-chain-network">Network</label>
+                          <label htmlFor="flush-chain-network">{pl.flush.networkLabel}</label>
                           <Input
                             id="flush-chain-network"
                             placeholder="playnet"
@@ -869,10 +905,10 @@ class PeersPage extends React.Component {
                           />
                         </Form.Field>
                         <Form.Field>
-                          <label htmlFor="flush-chain-label">Label (logs)</label>
+                          <label htmlFor="flush-chain-label">{pl.flush.labelLabel}</label>
                           <Input
                             id="flush-chain-label"
-                            placeholder="e.g. federation-round-3-baseline"
+                            placeholder={pl.flush.labelPlaceholder}
                             value={this.state.flushChainLabel}
                             onChange={(e) => this.setState({ flushChainLabel: e.target.value })}
                           />
@@ -884,13 +920,13 @@ class PeersPage extends React.Component {
                             basic
                             disabled={!tipFull}
                             onClick={() => this.setState({ flushChainSnapshot: tipFull || '' })}
-                            title={tipFull ? 'Fill from hub Bitcoin tip in network status' : 'No tip in status'}
+                            title={tipFull ? pl.flush.useTipTitle : pl.flush.noTipTitle}
                           >
-                            Use current tip from status
+                            {pl.flush.useTip}
                           </Button>
                           <Button type="submit" size="small" color="red">
                             <Icon name="send" />
-                            Send P2P_FLUSH_CHAIN
+                            {pl.flush.send}
                           </Button>
                         </div>
                       </Form>
@@ -901,19 +937,26 @@ class PeersPage extends React.Component {
                 <Grid.Row>
                   <Grid.Column width={16}>
                     <Divider />
-                    <Header as="h3" size="small">Primary authority &amp; Payjoin (BIP 77)</Header>
+                    <Header as="h3" size="small">{pl.primary.heading}</Header>
                     <p style={{ margin: '0.35em 0 0', color: '#444', lineHeight: 1.5, maxWidth: '52rem' }}>
-                      Use a long-lived hub (e.g. <code>hub.fabric.pub</code>) as <strong>primary authority</strong>: Fabric TCP carries <code>BitcoinBlock</code> gossip and trust scores. Payjoin v2 (directory + HPKE + OHTTP):{' '}
-                      <a href="https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77" target="_blank" rel="noreferrer">payjoin.org — BIP 77</a>.
-                      {' '}This build uses BIP78 deposit sessions with absolute <code>pj=</code> where enabled; BIP77 Hub-local experimental mailboxes are available under capabilities <code>fabricProtocol</code>. Full v2 directory + OHTTP flows remain a future integration.
+                      {pl.primary.body}
                     </p>
+                    <p style={{ margin: '0.35em 0 0', color: '#444', lineHeight: 1.5, maxWidth: '52rem' }}>
+                      {pl.primary.payjoin}{' '}
+                      <a href="https://payjoin.org/docs/how-it-works/payjoin-v2-bip-77" target="_blank" rel="noreferrer">{pl.primary.payjoinLink}</a>
+                    </p>
+                    <details className="hub-developer-details" style={{ marginTop: '0.35em', maxWidth: '52rem' }}>
+                      <summary style={{ cursor: 'pointer', color: '#555' }}>{common.developerDetails}</summary>
+                      <p style={{ margin: '0.35em 0 0', color: '#666', fontSize: '0.9em', lineHeight: 1.45 }}>{pl.primary.payjoinDeveloper}</p>
+                    </details>
                     <Message info size="small" style={{ marginTop: '0.65em', maxWidth: '52rem' }}>
-                      <Message.Header>Regtest coins from another hub</Message.Header>
+                      <Message.Header>{pl.primary.coinsHeading}</Message.Header>
                       <p style={{ margin: '0.35em 0 0', lineHeight: 1.45, fontSize: '0.95em' }}>
-                        Fabric peers do not move on-chain value. For playnet L1 when your local <Link to="/services/bitcoin/faucet">faucet</Link> is dry,
-                        sync Bitcoin P2P (see <Link to="/services/bitcoin">Bitcoin</Link> → Network), then request sats from a hub that still has wallet balance — e.g.{' '}
-                        <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">hub.fabric.pub/services/bitcoin/faucet</a>
-                        {' '}(same <code>bcrt1…</code> receive address as on your Faucet page).
+                        {pl.primary.coinsBefore} <Link to="/services/bitcoin/faucet">{pl.primary.coinsFaucet}</Link>{' '}
+                        {pl.primary.coinsMiddle} <Link to="/services/bitcoin">{pl.primary.coinsBitcoin}</Link>{' '}
+                        {pl.primary.coinsAfterBitcoin}{' '}
+                        <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">hub.fabric.pub/services/bitcoin/faucet</a>.
+                        {' '}{pl.primary.coinsAfter}
                       </p>
                     </Message>
                     {isLoggedIn && typeof onAddPeer === 'function' ? (
@@ -926,10 +969,10 @@ class PeersPage extends React.Component {
                             writePrimaryPeerAddress(DEFAULT_PRIMARY_FABRIC_HUB);
                             onAddPeer({ address: DEFAULT_PRIMARY_FABRIC_HUB });
                           }}
-                          title="Remember as primary and call AddPeer for the public Fabric hub"
+                          title={pl.primary.addPrimaryTitle}
                         >
                           <Icon name="star" aria-hidden="true" />
-                          Add primary hub ({DEFAULT_PRIMARY_FABRIC_HUB})
+                          {pl.primary.addPrimary(DEFAULT_PRIMARY_FABRIC_HUB)}
                         </Button>
                         <Button
                           size="small"
@@ -937,13 +980,13 @@ class PeersPage extends React.Component {
                           onClick={() => {
                             onAddPeer({ address: DEFAULT_RELAY_PEER });
                           }}
-                          title="Call AddPeer for relay.goon.vc"
+                          title={pl.primary.addRelayTitle}
                         >
                           <Icon name="add" aria-hidden="true" />
-                          Add relay ({DEFAULT_RELAY_PEER})
+                          {pl.primary.addRelay(DEFAULT_RELAY_PEER)}
                         </Button>
                         <span style={{ color: '#666', fontSize: '0.88em' }}>
-                          Saved primary: <code>{readPrimaryPeerAddress()}</code> — starred in the list (peers are shown most recently seen first).
+                          {pl.primary.saved} <code>{readPrimaryPeerAddress()}</code>. {pl.primary.savedNote}
                         </span>
                       </div>
                     ) : null}
@@ -956,41 +999,41 @@ class PeersPage extends React.Component {
                     <Header as="h3" size="small">
                       <Icon name="video" />
                       {' '}
-                      Browser mesh (WebRTC signaling)
+                      {pl.mesh.heading}
                       <Label size="small" color={webrtcCombined.length > 0 ? 'blue' : 'grey'} style={{ marginLeft: '0.5em' }}>
-                        {webrtcCombined.length} registered
+                        {pl.mesh.registered(webrtcCombined.length)}
                       </Label>
                       {webrtcPeers.length > 0 ? (
-                        <Label size="small" basic color="blue" style={{ marginLeft: '0.35em' }} title="Hub signaling registry (may overlap mesh)">
-                          {webrtcPeers.length} signaling
+                        <Label size="small" basic color="blue" style={{ marginLeft: '0.35em' }} title={pl.mesh.onHubTitle}>
+                          {pl.mesh.onHub(webrtcPeers.length)}
                         </Label>
                       ) : null}
                       {localWebrtcPeers.length > 0 ? (
                         <Label size="small" basic color="teal" style={{ marginLeft: '0.35em' }}>
-                          {localWebrtcPeers.length} local mesh
+                          {pl.mesh.local(localWebrtcPeers.length)}
                         </Label>
                       ) : null}
                     </Header>
                     {meshStatus ? (
                       <p style={{ margin: '0.35em 0 0.65em', color: '#555', fontSize: '0.92em' }}>
-                        <strong>Your signaling id:</strong>{' '}
-                        <code style={{ fontSize: '0.85em' }}>{meshStatus.peerId || 'initializing…'}</code>
+                        <strong>{pl.mesh.yourId}</strong>{' '}
+                        <code style={{ fontSize: '0.85em' }}>{meshStatus.peerId || pl.mesh.starting}</code>
                         {' · '}
-                        <strong>Mesh:</strong> {meshStatus.connected}/{meshStatus.maxPeers} connected
-                        {meshStatus.connecting > 0 ? `, ${meshStatus.connecting} connecting` : ''}
+                        <strong>{pl.mesh.connected}</strong> {pl.mesh.connectedCount(meshStatus.connected, meshStatus.maxPeers)}
+                        {meshStatus.connecting > 0 ? pl.mesh.connecting(meshStatus.connecting) : ''}
                         {' · '}
-                        <strong>Ready:</strong> {meshStatus.ready ? 'yes' : 'no'}
+                        <strong>{pl.mesh.ready}</strong> {meshStatus.ready ? common.states.yes : common.states.no}
                       </p>
                     ) : (
                       <p style={{ margin: '0.35em 0 0.65em', color: '#666', fontSize: '0.92em' }}>
-                        Native WebRTC through this hub; rows below correlate to <strong>Fabric Peer ID</strong> when P2P identity is confirmed.
+                        {pl.mesh.intro}
                       </p>
                     )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap', marginBottom: '0.5em' }}>
                       {typeof onRepublishWebRTCOffer === 'function' ? (
-                        <Button size="small" basic onClick={onRepublishWebRTCOffer} title="Republish your offer to hub signaling">
+                        <Button size="small" basic onClick={onRepublishWebRTCOffer} title={pl.mesh.republishTitle}>
                           <Icon name="refresh" />
-                          Republish offer
+                          {pl.mesh.republish}
                         </Button>
                       ) : null}
                       {meshStatus && meshStatus.slotsAvailable > 0 && typeof onDiscoverWebRTCPeers === 'function' ? (
@@ -999,20 +1042,20 @@ class PeersPage extends React.Component {
                             size="small"
                             primary
                             onClick={onDiscoverWebRTCPeers}
-                            title={`Discover peers (${meshStatus.slotsAvailable} slots)`}
+                            title={pl.mesh.discoverTitle(meshStatus.slotsAvailable)}
                           >
                             <Icon name="search" />
-                            Discover peers
+                            {pl.mesh.discover}
                           </Button>
                           <span style={{ color: '#666', fontSize: '0.88em' }}>
-                            {meshStatus.slotsAvailable} slot{meshStatus.slotsAvailable !== 1 ? 's' : ''} free
+                            {pl.mesh.slotsFree(meshStatus.slotsAvailable)}
                           </span>
                         </>
                       ) : null}
                       {typeof onConnectWebRTCPeer === 'function' ? (
-                        <Button size="small" basic onClick={this._openConnectPeerModal} title="Connect by hub signaling id">
+                        <Button size="small" basic onClick={this._openConnectPeerModal} title={pl.mesh.connectByIdTitle}>
                           <Icon name="plug" />
-                          Connect to signaling id…
+                          {pl.mesh.connectById}
                         </Button>
                       ) : null}
                       {meshStatus && meshStatus.connected > 0 && typeof onSendWebRTCTestPing === 'function' ? (
@@ -1024,10 +1067,10 @@ class PeersPage extends React.Component {
                               onSendWebRTCTestPing();
                             } catch (e) {}
                           }}
-                          title="Test ping to all mesh peers"
+                          title={pl.mesh.pingTitle}
                         >
                           <Icon name="signal" />
-                          Ping mesh
+                          {pl.mesh.ping}
                         </Button>
                       ) : null}
                       {localWebrtcPeers.length > 0 && typeof onDisconnectAllWebRTCPeers === 'function' ? (
@@ -1040,15 +1083,15 @@ class PeersPage extends React.Component {
                               onDisconnectAllWebRTCPeers();
                             } catch (e) {}
                           }}
-                          title="Disconnect all local mesh links"
+                          title={pl.mesh.disconnectAllTitle}
                         >
                           <Icon name="unlink" />
-                          Disconnect all
+                          {pl.mesh.disconnectAll}
                         </Button>
                       ) : null}
                     </div>
                     <p style={{ color: '#666', fontStyle: 'italic', margin: 0, lineHeight: 1.45, fontSize: '0.9em' }}>
-                      Mesh peers appear in <strong>Fabric peers</strong> below with a <strong>Mesh</strong> tag, reputation <strong>score</strong> / <strong>misbehavior</strong>, and detail route <code>/peers/&lt;Fabric Peer ID&gt;</code>. Oversized frames, bad gossip, or invalid JSON can trigger disconnects.
+                      {pl.mesh.note}
                     </p>
                   </Grid.Column>
                 </Grid.Row>
@@ -1058,13 +1101,13 @@ class PeersPage extends React.Component {
                     <Grid.Column width={16}>
                       <Divider />
                       <section aria-labelledby="peers-topology-h3" aria-describedby="peers-topology-desc">
-                        <Header as="h3" size="small" id="peers-topology-h3">Peer topology</Header>
+                        <Header as="h3" size="small" id="peers-topology-h3">{pl.topology.heading}</Header>
                         <p id="peers-topology-desc" style={{ color: '#666', marginBottom: '0.65em', lineHeight: 1.45 }}>
-                          <strong>Solid</strong> edges: TCP peers in this snapshot. <strong>Dotted</strong>: ids from <code>P2P_PEER_GOSSIP</code> (~20 min client cache). Use peer detail <strong>Docs</strong> for document-offer requests; add TCP peers for ids you need directly.
+                          {pl.topology.description}
                         </p>
                         <GraphDocumentPreview dotSource={topologyDot} skipIdentityGate />
-                        <details style={{ marginTop: '0.65rem' }}>
-                          <summary style={{ cursor: 'pointer', color: '#555' }}>DOT source</summary>
+                        <details className="hub-developer-details" style={{ marginTop: '0.65rem' }}>
+                          <summary style={{ cursor: 'pointer', color: '#555' }}>{net.dotSource}</summary>
                           <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.75rem', background: '#f7f7f7', padding: '0.5rem', borderRadius: 4 }}>{topologyDot}</pre>
                         </details>
                       </section>
@@ -1081,23 +1124,25 @@ class PeersPage extends React.Component {
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.35em' }}>
               <div>
                 <Header as="h3" style={{ margin: 0 }}>
-                  Fabric peers
+                  {plt.heading}
                   <Label size="small" basic color="green" style={{ marginLeft: '0.5em', verticalAlign: 'middle' }}>
-                    {unifiedPeers.length} in view
+                    {plt.inView(unifiedPeers.length)}
                   </Label>
                 </Header>
                 <p style={{ margin: '0.35em 0 0', color: '#666', fontSize: '0.9em' }}>
-                  {fabricPeersSorted.filter((p) => !isWebrtcTransportPeerRow(p)).length} TCP ·{' '}
-                  {fabricPeersSorted.filter((p) => isWebrtcTransportPeerRow(p)).length} mesh (hub status)
-                  {webrtcExtraRows.length > 0 ? ` · ${webrtcExtraRows.length} mesh (local only)` : ''}
+                  {plt.counts(
+                    fabricPeersSorted.filter((p) => !isWebrtcTransportPeerRow(p)).length,
+                    fabricPeersSorted.filter((p) => isWebrtcTransportPeerRow(p)).length
+                  )}
+                  {webrtcExtraRows.length > 0 ? plt.localOnly(webrtcExtraRows.length) : ''}
                 </p>
               </div>
               {isLoggedIn ? (
                 <Button.Group size="small">
                   {typeof onRefreshPeers === 'function' ? (
-                    <Button icon labelPosition="left" onClick={onRefreshPeers} title="Refresh peer list">
+                    <Button icon labelPosition="left" onClick={onRefreshPeers} title={plt.refreshTitle}>
                       <Icon name="refresh" />
-                      Refresh
+                      {common.actions.refresh}
                     </Button>
                   ) : null}
                   <Button
@@ -1109,7 +1154,7 @@ class PeersPage extends React.Component {
                     }}
                   >
                     <Icon name="add" />
-                    Add peer
+                    {plt.add}
                   </Button>
                 </Button.Group>
               ) : null}
@@ -1125,7 +1170,7 @@ class PeersPage extends React.Component {
               />
             ) : (
               <p style={{ color: '#666', fontStyle: 'italic', marginTop: '0.5em', lineHeight: 1.45 }}>
-                No TCP or mesh peers yet. Default seeds are <code>{DEFAULT_PRIMARY_FABRIC_HUB}</code> and <code>{DEFAULT_RELAY_PEER}</code>, or <strong>Add peer</strong> for another Fabric <code>host:port</code> (<code>7777</code>). Browsers register for WebRTC; connected mesh rows show <strong>Mesh</strong> and reputation.
+                {plt.emptyBefore} <code>{DEFAULT_PRIMARY_FABRIC_HUB}</code> {plt.emptyAnd} <code>{DEFAULT_RELAY_PEER}</code>{plt.emptyAfter}
               </p>
             )}
           </Segment>
@@ -1134,8 +1179,12 @@ class PeersPage extends React.Component {
         <Segment basic style={{ marginTop: '1rem', paddingTop: 0 }} id="peers-page-footer">
           <Divider />
           <p style={{ margin: 0, color: '#777', fontSize: '0.88em', lineHeight: 1.5, maxWidth: '52rem' }}>
-            <strong>Protocol:</strong> Fabric P2P uses secp256k1-signed <code>Message</code> envelopes; the header <code>hash</code> is double-SHA256 of the body so tampering is detected. Sessions and inventory are attributed to the same <strong>Fabric Peer ID</strong> once the TCP path confirms identity. For field semantics see <code>fabric/docs/MESSAGE_SECURITY.md</code> in the Fabric repo.
+            <strong>{pl.footer.heading}</strong> {pl.footer.body}
           </p>
+          <details className="hub-developer-details" style={{ marginTop: '0.35em', maxWidth: '52rem' }}>
+            <summary style={{ cursor: 'pointer', color: '#777', fontSize: '0.88em' }}>{common.developerDetails}</summary>
+            <p style={{ margin: '0.35em 0 0', color: '#777', fontSize: '0.85em', lineHeight: 1.5 }}>{pl.footer.developer}</p>
+          </details>
         </Segment>
 
         <Modal
@@ -1151,10 +1200,10 @@ class PeersPage extends React.Component {
           closeOnDimmerClick
           closeOnEscape
         >
-          <Modal.Header>Add Fabric peer</Modal.Header>
+          <Modal.Header>{pl.addModal.title}</Modal.Header>
           <Modal.Content>
             <p style={{ marginTop: 0, color: '#555' }}>
-              TCP address for Fabric P2P (default port <code>7777</code>). You can paste a full URL — it will be normalized.
+              {pl.addModal.intro}
             </p>
             <Form
               onSubmit={(e) => {
@@ -1163,10 +1212,10 @@ class PeersPage extends React.Component {
               }}
             >
               <Form.Field>
-                <label htmlFor="fabric-add-peer-address">Peer address</label>
+                <label htmlFor="fabric-add-peer-address">{pl.addModal.label}</label>
                 <Input
                   id="fabric-add-peer-address"
-                  placeholder="host:port or host (e.g. hub.fabric.pub)"
+                  placeholder={pl.addModal.placeholder}
                   value={this.state.addPeerDraft}
                   onChange={(e) => this.setState({ addPeerDraft: e.target.value })}
                   onKeyDown={(e) => {
@@ -1181,11 +1230,11 @@ class PeersPage extends React.Component {
           </Modal.Content>
           <Modal.Actions>
             <Button type="button" onClick={this._closeAddPeerModal}>
-              Cancel
+              {common.actions.cancel}
             </Button>
             <Button type="button" primary onClick={this._submitAddPeer}>
               <Icon name="add" />
-              Add peer
+              {pl.addModal.submit}
             </Button>
           </Modal.Actions>
         </Modal>
@@ -1196,14 +1245,14 @@ class PeersPage extends React.Component {
           closeOnDimmerClick
           closeOnEscape
         >
-          <Modal.Header>Connect to WebRTC signaling id</Modal.Header>
+          <Modal.Header>{pl.connectModal.title}</Modal.Header>
           <Modal.Content>
             <p style={{ marginTop: 0, color: '#555', fontSize: '0.92em', lineHeight: 1.45 }}>
-              Hub-registered signaling id (e.g. <code>fabric-bridge-…</code>). After the mesh links, traffic is still attributed to <strong>Fabric Peer ID</strong> when the bridge confirms P2P identity.
+              {pl.connectModal.intro}
             </p>
             <Form onSubmit={(e) => { e.preventDefault(); this._submitConnectPeerModal(); }}>
               <Form.Field>
-                <label htmlFor="peers-connect-peer-id">WebRTC signaling id</label>
+                <label htmlFor="peers-connect-peer-id">{pl.connectModal.label}</label>
                 <Input
                   id="peers-connect-peer-id"
                   placeholder="fabric-bridge-…"
@@ -1215,11 +1264,11 @@ class PeersPage extends React.Component {
           </Modal.Content>
           <Modal.Actions>
             <Button type="button" onClick={this._closeConnectPeerModal}>
-              Cancel
+              {common.actions.cancel}
             </Button>
             <Button type="button" primary onClick={this._submitConnectPeerModal}>
               <Icon name="plug" />
-              Connect
+              {pl.connectModal.submit}
             </Button>
           </Modal.Actions>
         </Modal>

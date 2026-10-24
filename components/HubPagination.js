@@ -11,6 +11,9 @@ const {
   Icon,
   Pagination
 } = require('semantic-ui-react');
+const t = require('../locales/en');
+
+const pg = t.documents.pagination;
 
 class HubPagination extends React.Component {
   render () {
@@ -53,7 +56,8 @@ class HubPagination extends React.Component {
             disabled={disabled || activePage <= 1}
             onClick={(e) => onPageChange(e, { activePage: 1 })}
             style={{ marginRight: '0.5rem' }}
-            title="Jump to first page"
+            title={pg.firstPage}
+            aria-label={pg.firstPage}
             className="ui button"
             type="button"
           >
@@ -90,7 +94,8 @@ class HubPagination extends React.Component {
             disabled={disabled || activePage >= totalPages}
             onClick={(e) => onPageChange(e, { activePage: totalPages })}
             style={{ marginLeft: '0.5rem' }}
-            title="Jump to last page"
+            title={pg.lastPage}
+            aria-label={pg.lastPage}
             className="ui button"
             type="button"
           >

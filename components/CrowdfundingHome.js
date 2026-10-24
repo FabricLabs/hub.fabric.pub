@@ -44,6 +44,17 @@ const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrow
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { SATS_PER_BTC } = require('../constants');
+const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const t = require('../locales/en');
+
+const L = t.payments.crowdfunds;
+
+function identityHowTo (identity) {
+  const state = classifyHubBrowserIdentity(identity);
+  if (state === 'password_locked') return t.common.identity.howToUnlock;
+  if (state === 'watch_only') return t.common.identity.howToImport;
+  return t.common.identity.howToLogIn;
+}
 
 class CrowdfundingHome extends React.Component {
   constructor (props) {
@@ -132,10 +143,10 @@ class CrowdfundingHome extends React.Component {
 
   getAddressPlaceholder (network) {
     const n = String(network || '').toLowerCase();
-    if (n === 'regtest') return "bcrt1... or m/44'/0'/0'/0/0";
-    if (n === 'testnet' || n === 'signet') return 'tb1... or 2N...';
-    if (n === 'mainnet' || n === 'main') return 'bc1... or 3...';
-    return 'address for current network';
+    if (n === 'regtest') return L.addressPlaceholders.regtest;
+    if (n === 'testnet' || n === 'signet') return L.addressPlaceholders.testnet;
+    if (n === 'mainnet' || n === 'main') return L.addressPlaceholders.mainnet;
+    return L.addressPlaceholders.other;
   }
 
   satsToBTC (value) {
@@ -219,7 +230,7 @@ class CrowdfundingHome extends React.Component {
         try { this.props.onRequireUnlock(); } catch (e) {}
       }
       this.setState({
-        cfError: 'Unlock identity so we can derive your payment wallet pubkey at m/44\'/0\'/0\'/0/0.',
+        cfError: `${L.errors.beneficiaryKey} ${identityHowTo(this.getIdentity())}`,
         cfSuccess: null
       });
       return;
@@ -235,7 +246,7 @@ class CrowdfundingHome extends React.Component {
         try { this.props.onRequireUnlock(); } catch (e) {}
       }
       this.setState({
-        cfPayoutErr: 'Cannot derive payout address from wallet context. Unlock identity (or enter any destination manually).'
+        cfPayoutErr: `${L.errors.payoutAddress} ${identityHowTo(this.getIdentity())}`
       });
       return;
     }
@@ -262,24 +273,24 @@ class CrowdfundingHome extends React.Component {
     const admin = readHubAdminTokenFromBrowser(this.props.adminToken);
     if (!admin) {
       this.setState({
-        cfError: 'Save the Hub admin token (Settings / Bitcoin home) to create Taproot campaigns.',
+        cfError: t.common.errors.adminTokenRequired,
         cfSuccess: null
       });
       return;
     }
     const ben = String(this.state.cfBeneficiaryHex || '').trim().toLowerCase();
     if (!/^(02|03)[0-9a-f]{64}$/.test(ben)) {
-      this.setState({ cfError: 'Beneficiary must be a compressed secp256k1 pubkey hex (02 or 03 + 64 hex).', cfSuccess: null });
+      this.setState({ cfError: L.errors.beneficiaryFormat, cfSuccess: null });
       return;
     }
     const goalSats = Math.round(Number(this.state.cfGoalSats || 0));
     const minSats = Math.round(Number(this.state.cfMinSats || 0));
     if (!Number.isFinite(goalSats) || goalSats < 1000 || !Number.isFinite(minSats) || minSats < 546) {
-      this.setState({ cfError: 'Goal must be ≥ 1000 sats; minimum contribution ≥ 546.', cfSuccess: null });
+      this.setState({ cfError: L.errors.goalMin, cfSuccess: null });
       return;
     }
     if (minSats > goalSats) {
-      this.setState({ cfError: 'Minimum contribution cannot exceed goal.', cfSuccess: null });
+      this.setState({ cfError: L.errors.minOverGoal, cfSuccess: null });
       return;
     }
     let refundAfterBlocks = Math.round(Number(this.state.cfRefundAfterBlocks || 1008));
@@ -287,7 +298,7 @@ class CrowdfundingHome extends React.Component {
     this.setState({ cfBusy: true, cfError: null, cfSuccess: null });
     try {
       const res = await createCrowdfundingCampaign(this.state.upstream, {
-        title: String(this.state.cfTitle || 'Crowdfund').trim().slice(0, 200) || 'Crowdfund',
+        title: String(this.state.cfTitle || L.defaultTitle).trim().slice(0, 200) || L.defaultTitle,
         goalSats,
         minContributionSats: minSats,
         beneficiaryPubkeyHex: ben,
@@ -297,8 +308,8 @@ class CrowdfundingHome extends React.Component {
       this.setState({
         cfBusy: false,
         cfSuccess: camp
-          ? `Campaign ${camp.campaignId} — vault ${camp.address}`
-          : 'Campaign created.',
+          ? L.notices.created(camp.campaignId, camp.address)
+          : L.notices.createdPlain,
         cfTitle: ''
       });
       await this.refresh();
@@ -315,23 +326,23 @@ class CrowdfundingHome extends React.Component {
     const amt = Math.round(Number(this.state.cfAcpAmountSats || 0));
     if (!id) return;
     if (!Number.isFinite(amt) || amt < 546) {
-      this.setState({ cfError: 'Set ACP leg amount (sats) ≥ 546.', cfSuccess: null });
+      this.setState({ cfError: L.errors.donationMin, cfSuccess: null });
       return;
     }
     try {
       const data = await fetchCrowdfundingAcpDonationPsbt(this.state.upstream, id, amt);
       const b64 = data && data.psbtBase64 ? String(data.psbtBase64) : '';
-      if (!b64) throw new Error('Hub did not return psbtBase64.');
+      if (!b64) throw new Error(L.errors.noPsbt);
       await copyToClipboard(b64);
       this.setState({
         cfError: null,
-        cfSuccess: `Copied outputs-only PSBT (${amt} sats to campaign). Add inputs; sign with SIGHASH_ALL|ANYONECANPAY (0x81).`
+        cfSuccess: L.notices.donationCopied(amt)
       });
       pushUiNotification({
         id: `cf-acp-${id}-${amt}`,
         kind: 'bitcoin',
-        title: 'ACP crowdfund PSBT copied',
-        subtitle: `${amt} sats output to campaign ${id.slice(0, 8)}…`
+        title: L.notices.donationCopiedTitle,
+        subtitle: L.notices.donationCopiedSubtitle(amt, id.slice(0, 8))
       });
     } catch (error) {
       this.setState({
@@ -343,19 +354,19 @@ class CrowdfundingHome extends React.Component {
 
   async handleCrowdfundingPayjoinToVault (campaign) {
     if (!this.state.payjoinEnabled) {
-      this.setState({ cfError: 'Enable Payjoin (above) for deposit sessions.', cfSuccess: null });
+      this.setState({ cfError: L.errors.payjoinOff, cfSuccess: null });
       return;
     }
     const c = campaign || {};
     const addr = String(c.address || '').trim();
     const cid = String(c.campaignId || '').trim();
     if (!addr) {
-      this.setState({ cfError: 'Campaign has no address.', cfSuccess: null });
+      this.setState({ cfError: L.errors.noAddress, cfSuccess: null });
       return;
     }
     const amountSats = Math.round(Number(this.state.cfPayjoinAmountSats || 0));
     if (!Number.isFinite(amountSats) || amountSats < 1) {
-      this.setState({ cfError: 'Set Payjoin request amount (sats) for the BIP21 link.', cfSuccess: null });
+      this.setState({ cfError: L.errors.payjoinAmount, cfSuccess: null });
       return;
     }
     try {
@@ -363,15 +374,15 @@ class CrowdfundingHome extends React.Component {
       const session = await createPayjoinDeposit(this.state.upstream, receiveWallet, {
         address: addr,
         amountSats,
-        label: String(c.title || 'Crowdfund').slice(0, 80),
+        label: String(c.title || L.defaultTitle).slice(0, 80),
         memo: `crowdfund:${cid}`
       });
       const uri = String(session.bip21Uri || '').trim();
       this.setState({
         cfError: null,
         cfSuccess: uri
-          ? 'Payjoin session points at the campaign vault. Opening Payments with the BIP21 URI…'
-          : 'Payjoin session created.',
+          ? L.notices.payjoinOpening
+          : L.notices.payjoinCreated,
         cfPayjoinBip21: uri,
         cfPayjoinSessionId: String(session.id || '').trim()
       });
@@ -380,8 +391,8 @@ class CrowdfundingHome extends React.Component {
           pushUiNotification({
             id: `cf-pj-${session.id || cid}`,
             kind: 'payjoin',
-            title: 'Payjoin → crowdfund vault',
-            subtitle: `${amountSats} sats`,
+            title: L.notices.payjoinTitle,
+            subtitle: L.notices.payjoinSubtitle(amountSats),
             href: `/payments?bitcoinUri=${encodeURIComponent(uri)}`,
             copyText: uri
           });
@@ -420,7 +431,7 @@ class CrowdfundingHome extends React.Component {
     const feeSats = Math.max(1, Math.round(Number(this.state.cfPayoutFeeSats || 1000)));
     if (!dest) {
       this.setState({
-        cfPayoutErr: 'Enter a beneficiary payout address (bech32), or use Fill from wallet.'
+        cfPayoutErr: L.errors.payoutDest
       });
       return;
     }
@@ -437,7 +448,7 @@ class CrowdfundingHome extends React.Component {
         feeSats
       });
       const b64 = res && res.psbtBase64 ? String(res.psbtBase64) : '';
-      if (!b64) throw new Error('Hub did not return psbtBase64.');
+      if (!b64) throw new Error(L.errors.noPsbt);
       this.setState({
         cfPayoutBusy: false,
         cfPayoutPsbt: b64,
@@ -458,7 +469,7 @@ class CrowdfundingHome extends React.Component {
     if (!row || !row.campaignId || !psbt) return;
     const admin = readHubAdminTokenFromBrowser(this.props.adminToken);
     if (!admin) {
-      this.setState({ cfPayoutErr: 'Admin token required for Hub arbiter co-sign.' });
+      this.setState({ cfPayoutErr: t.common.errors.adminTokenRequired });
       return;
     }
     this.setState({ cfPayoutBusy: true, cfPayoutErr: null });
@@ -470,7 +481,7 @@ class CrowdfundingHome extends React.Component {
         admin
       );
       const nextB64 = res && res.psbtBase64 ? String(res.psbtBase64) : '';
-      if (!nextB64) throw new Error('No psbtBase64 after arbiter sign.');
+      if (!nextB64) throw new Error(L.errors.noArbiterPsbt);
       this.setState({ cfPayoutBusy: false, cfPayoutPsbt: nextB64 });
     } catch (error) {
       this.setState({
@@ -488,7 +499,7 @@ class CrowdfundingHome extends React.Component {
     try {
       const res = await postCrowdfundingPayoutBroadcast(this.state.upstream, row.campaignId, psbt);
       const txid = res && res.txid ? String(res.txid) : '';
-      if (!txid) throw new Error('No txid after broadcast.');
+      if (!txid) throw new Error(L.errors.noBroadcastTxid);
       this.setState({ cfPayoutBusy: false, cfPayoutTxid: txid });
       await this.refresh();
     } catch (error) {
@@ -518,7 +529,7 @@ class CrowdfundingHome extends React.Component {
     if (!row || !row.campaignId) return;
     const admin = readHubAdminTokenFromBrowser(this.props.adminToken);
     if (!admin) {
-      this.setState({ cfRefundErr: 'Admin token required for arbiter refund.' });
+      this.setState({ cfRefundErr: t.common.errors.adminTokenRequired });
       return;
     }
     const dest = String(this.state.cfRefundDest || '').trim();
@@ -528,7 +539,7 @@ class CrowdfundingHome extends React.Component {
     let voutOpt;
     if (voutRaw !== '' && Number.isFinite(Number(voutRaw))) voutOpt = Number(voutRaw);
     if (!dest || !fundedTxid) {
-      this.setState({ cfRefundErr: 'Destination address and funding txid (vault UTXO) are required.' });
+      this.setState({ cfRefundErr: L.errors.refundRequired });
       return;
     }
     this.setState({ cfRefundBusy: true, cfRefundErr: null, cfRefundTxHex: '', cfRefundTxid: null });
@@ -541,7 +552,7 @@ class CrowdfundingHome extends React.Component {
       );
       const hex = res && res.txHex ? String(res.txHex) : '';
       const txid = res && res.txid ? String(res.txid) : '';
-      if (!hex) throw new Error('Hub did not return txHex.');
+      if (!hex) throw new Error(L.errors.noRefundHex);
       this.setState({
         cfRefundBusy: false,
         cfRefundTxHex: hex,
@@ -560,14 +571,14 @@ class CrowdfundingHome extends React.Component {
     if (!hex) return;
     const admin = readHubAdminTokenFromBrowser(this.props.adminToken);
     if (!admin) {
-      this.setState({ cfRefundErr: 'Admin token required to broadcast.' });
+      this.setState({ cfRefundErr: t.common.errors.adminTokenRequired });
       return;
     }
     this.setState({ cfRefundBusy: true, cfRefundErr: null });
     try {
       const out = await broadcastRawTransaction(this.state.upstream, hex, { adminToken: admin });
       const txid = out && (out.txid || out.result) ? String(out.txid || out.result) : '';
-      if (!txid) throw new Error('Broadcast did not return txid.');
+      if (!txid) throw new Error(L.errors.noRefundTxid);
       this.setState({ cfRefundBusy: false, cfRefundTxid: txid });
       await this.refresh();
     } catch (error) {
@@ -596,46 +607,44 @@ class CrowdfundingHome extends React.Component {
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5em', marginBottom: '0.75em' }}>
             <Header as="h2" style={{ margin: 0 }}>
               <Icon name="heart outline" color="red" aria-hidden="true" />
-              <Header.Content>Crowdfunds</Header.Content>
+              <Header.Content>{L.title}</Header.Content>
             </Header>
             <Button primary loading={this.state.refreshing} onClick={() => this.refresh()}>
               <Icon name="refresh" />
-              Refresh
+              {t.common.actions.refresh}
             </Button>
             <Button as={Link} to="/services/bitcoin" basic>
               <Icon name="bitcoin" />
-              Bitcoin
+              {L.bitcoin}
             </Button>
-            <Button as={Link} to="/contracts" basic title="Storage, execution, and Taproot crowdfunds on this hub">
+            <Button as={Link} to="/contracts" basic title={L.contractsTitle}>
               <Icon name="file code" />
-              Contracts
+              {L.contracts}
             </Button>
             {hubUi.bitcoinPayments ? (
-              <Button as={Link} to="/payments" basic>Payments</Button>
+              <Button as={Link} to="/payments" basic>{L.payments}</Button>
             ) : null}
           </div>
-          <p style={{ color: '#666' }}>Taproot campaign vaults on this Hub. Campaigns are stored locally on this node (not synced to other hubs).</p>
+          <p style={{ color: '#666' }}>{L.summary}</p>
         </Segment>
         <Segment id="fabric-bitcoin-crowdfunding" data-testid="hub-crowdfund-page">
-          <Header as='h3'>Crowdfund · ACP · Payjoin to vault</Header>
-          <p style={{ color: '#666', marginBottom: '0.75em' }}>
-            <strong>Step A — ACP:</strong> outputs-only PSBT paying the campaign vault; donors add UTXOs and sign with{' '}
-            <code>SIGHASH_ALL|ANYONECANPAY</code> (0x81), merge until fees clear, broadcast.
-            {' '}<strong>Step B — Payjoin:</strong> a BIP78 deposit session uses the <em>same</em> vault address so payers can use{' '}
-            {hubUi.bitcoinPayments ? (
-              <Link to="/payments#fabric-btc-make-payment-h4">Payments</Link>
-            ) : (
-              <strong>Payments</strong>
-            )}{' '}(e.g. local Payjoin or <strong>ACP + Hub boost</strong>).
-            {' '}
-            <strong>Step C — Payout:</strong> when raised ≥ goal, beneficiary signs the unsigned payout PSBT, then Hub arbiter co-signs (admin), then broadcast.
-            {' '}
-            <strong>Step D — Refund:</strong> after the refund CLTV height (see table), the Hub arbiter can sweep a vault UTXO to a destination you choose (admin): prepare returns a <strong>signed</strong> raw tx — copy hex or broadcast from the modal.
-            {' '}If the goal was met, prefer <strong>Payout</strong> so the beneficiary receives funds via the 2-of-2 path.
-            {' '}Vault balance, UTXO hints, and goal status refresh with <strong>Refresh</strong> above.
-          </p>
+          <Header as='h3'>{L.howTitle}</Header>
+          <List ordered style={{ color: '#666', marginBottom: '0.5em' }}>
+            <List.Item><strong>{L.steps.donation.title}</strong> {L.steps.donation.body}</List.Item>
+            <List.Item>
+              <strong>{L.steps.payjoin.title}</strong> {L.steps.payjoin.before}{' '}
+              {hubUi.bitcoinPayments ? (
+                <Link to="/payments#fabric-btc-make-payment-h4">{L.steps.payjoin.link}</Link>
+              ) : (
+                <strong>{L.steps.payjoin.link}</strong>
+              )}{' '}{L.steps.payjoin.after}
+            </List.Item>
+            <List.Item><strong>{L.steps.payout.title}</strong> {L.steps.payout.body}</List.Item>
+            <List.Item><strong>{L.steps.refund.title}</strong> {L.steps.refund.body}</List.Item>
+          </List>
+          <p style={{ color: '#666', marginBottom: '0.75em' }}>{L.refreshNote}</p>
           <div style={{ maxWidth: '22em', marginBottom: '0.75em' }}>
-            <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35em' }} htmlFor="fabric-cf-share-sats">Default for funder links — BIP21 / Payments (sats)</label>
+            <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35em' }} htmlFor="fabric-cf-share-sats">{L.shareAmount}</label>
             <Input
               id="fabric-cf-share-sats"
               type="number"
@@ -643,25 +652,27 @@ class CrowdfundingHome extends React.Component {
               step="1"
               value={this.state.cfShareAmountSats}
               onChange={(e) => this.setState({ cfShareAmountSats: e.target.value })}
-              aria-label="Default amount in sats for BIP21, QR, and Open Payments links"
+              aria-describedby="fabric-cf-share-sats-hint"
             />
-            <span style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
-              Must be at least each campaign&apos;s min per UTXO (below). Used for Copy BIP21, QR, and Open Payments.
+            <span id="fabric-cf-share-sats-hint" style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
+              {L.shareAmountHint}
             </span>
           </div>
           <Form>
             <Form.Group widths="equal">
               <Form.Field>
-                <label>Title</label>
+                <label htmlFor="fabric-cf-title">{L.campaignTitle}</label>
                 <Input
-                  placeholder="Regtest demo campaign"
+                  id="fabric-cf-title"
+                  placeholder={L.campaignTitlePlaceholder}
                   value={this.state.cfTitle}
                   onChange={(e) => this.setState({ cfTitle: e.target.value })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Goal (sats)</label>
+                <label htmlFor="fabric-cf-goal">{L.goal}</label>
                 <Input
+                  id="fabric-cf-goal"
                   type="number"
                   min="1000"
                   step="1"
@@ -670,22 +681,26 @@ class CrowdfundingHome extends React.Component {
                 />
               </Form.Field>
               <Form.Field>
-                <label>Min per vault UTXO (sats)</label>
+                <label htmlFor="fabric-cf-min">{L.minContribution}</label>
                 <Input
+                  id="fabric-cf-min"
+                  aria-describedby="fabric-cf-min-hint"
                   type="number"
                   min="546"
                   step="1"
                   value={this.state.cfMinSats}
                   onChange={(e) => this.setState({ cfMinSats: e.target.value })}
                 />
-                <span style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
-                  Each separate output sent to the vault must be at least this (policy enforced when building payout).
+                <span id="fabric-cf-min-hint" style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
+                  {L.minContributionHint}
                 </span>
               </Form.Field>
             </Form.Group>
             <Form.Field>
-              <label>Refund path delay (+blocks from tip at create)</label>
+              <label htmlFor="fabric-cf-refund-delay">{L.refundDelay}</label>
               <Input
+                id="fabric-cf-refund-delay"
+                aria-describedby="fabric-cf-refund-delay-hint"
                 type="number"
                 min="48"
                 step="1"
@@ -693,28 +708,30 @@ class CrowdfundingHome extends React.Component {
                 onChange={(e) => this.setState({ cfRefundAfterBlocks: e.target.value })}
                 style={{ maxWidth: '12em' }}
               />
-              <span style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
-                Absolute CLTV height = chain tip at create + this value (minimum 48; default 1008 ≈ one week on mainnet cadence).
+              <span id="fabric-cf-refund-delay-hint" style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
+                {L.refundDelayHint}
               </span>
             </Form.Field>
             <Form.Field>
-              <label>Beneficiary compressed pubkey hex (02/03…)</label>
+              <label htmlFor="fabric-cf-beneficiary">{L.beneficiary}</label>
               <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
                 <Input
-                  placeholder="033…"
+                  id="fabric-cf-beneficiary"
+                  placeholder={L.beneficiaryPlaceholder}
                   value={this.state.cfBeneficiaryHex}
                   onChange={(e) => this.setState({ cfBeneficiaryHex: e.target.value.trim() })}
                   style={{ flex: '1 1 20em', minWidth: '16em', fontFamily: 'monospace', fontSize: '0.9em' }}
                 />
                 <Button type="button" basic onClick={() => this.handleCfFillBeneficiaryFromWallet()}>
-                  Fill from unlocked wallet
+                  {L.useWalletKey}
                 </Button>
               </div>
             </Form.Field>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.65em', alignItems: 'center', marginBottom: '0.65em' }}>
               <Form.Field style={{ marginBottom: 0 }}>
-                <label style={{ display: 'block' }}>ACP output leg (sats)</label>
+                <label style={{ display: 'block' }} htmlFor="fabric-cf-donation-amount">{L.donationAmount}</label>
                 <Input
+                  id="fabric-cf-donation-amount"
                   type="number"
                   min="546"
                   step="1"
@@ -724,8 +741,9 @@ class CrowdfundingHome extends React.Component {
                 />
               </Form.Field>
               <Form.Field style={{ marginBottom: 0 }}>
-                <label style={{ display: 'block' }}>Payjoin request (sats)</label>
+                <label style={{ display: 'block' }} htmlFor="fabric-cf-payjoin-amount">{L.payjoinAmount}</label>
                 <Input
+                  id="fabric-cf-payjoin-amount"
                   type="number"
                   min="1"
                   step="1"
@@ -743,10 +761,10 @@ class CrowdfundingHome extends React.Component {
               onClick={() => this.handleCrowdfundingCreate()}
             >
               <Icon name="plus" />
-              Create Taproot campaign
+              {L.create}
             </Button>
             {!hasAdminToken && (
-              <span style={{ marginLeft: '0.75em', color: '#888', fontSize: '0.9em' }}>Admin token required to create.</span>
+              <span style={{ marginLeft: '0.75em', color: '#888', fontSize: '0.9em' }}>{L.createNeedsToken}</span>
             )}
           </Form>
           {(this.state.cfError || this.state.cfSuccess) && (
@@ -763,7 +781,7 @@ class CrowdfundingHome extends React.Component {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
                 <Button size="small" basic type="button" onClick={() => copyToClipboard(this.state.cfPayjoinBip21)}>
                   <Icon name="copy outline" />
-                  Copy crowdfund BIP21
+                  {L.copyPaymentLink}
                 </Button>
                 <Button
                   as={Link}
@@ -771,32 +789,32 @@ class CrowdfundingHome extends React.Component {
                   primary
                   to={`/payments?bitcoinUri=${encodeURIComponent(this.state.cfPayjoinBip21)}`}
                 >
-                  Open Payments (prefill)
+                  {L.openInPayments}
                 </Button>
                 {this.state.cfPayjoinSessionId && (
                   <span style={{ fontSize: '0.88em', color: '#555' }}>
-                    Session <code>{this.state.cfPayjoinSessionId.slice(0, 12)}…</code>
+                    {L.session} <code>{this.state.cfPayjoinSessionId.slice(0, 12)}…</code>
                   </span>
                 )}
               </div>
             </Message>
           )}
-          <Header as="h4" style={{ marginTop: '1.25em' }}>Campaigns</Header>
+          <Header as="h4" style={{ marginTop: '1.25em' }}>{L.campaignsTitle}</Header>
           {(this.state.loading || this.state.refreshing) && (!this.state.crowdfundingCampaigns || this.state.crowdfundingCampaigns.length === 0) ? (
-            <p style={{ color: '#888' }}>Loading campaigns...</p>
+            <p style={{ color: '#888' }}>{L.loading}</p>
           ) : (!this.state.crowdfundingCampaigns || this.state.crowdfundingCampaigns.length === 0) ? (
-            <p style={{ color: '#888' }}>No campaigns yet. Create one above when Bitcoin is available (admin token required).</p>
+            <p style={{ color: '#888' }}>{L.empty}</p>
           ) : (
             <Table compact celled unstackable>
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Title / id</Table.HeaderCell>
-                  <Table.HeaderCell>Vault address</Table.HeaderCell>
-                  <Table.HeaderCell>Raised</Table.HeaderCell>
-                  <Table.HeaderCell textAlign="center">UTXOs</Table.HeaderCell>
-                  <Table.HeaderCell>Refund CLTV</Table.HeaderCell>
-                  <Table.HeaderCell>Goal</Table.HeaderCell>
-                  <Table.HeaderCell>Actions</Table.HeaderCell>
+                  <Table.HeaderCell>{L.colCampaign}</Table.HeaderCell>
+                  <Table.HeaderCell>{L.colVault}</Table.HeaderCell>
+                  <Table.HeaderCell>{L.colRaised}</Table.HeaderCell>
+                  <Table.HeaderCell textAlign="center">{L.colCoins}</Table.HeaderCell>
+                  <Table.HeaderCell>{L.colRefund}</Table.HeaderCell>
+                  <Table.HeaderCell>{L.colGoal}</Table.HeaderCell>
+                  <Table.HeaderCell>{L.colActions}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -819,22 +837,22 @@ class CrowdfundingHome extends React.Component {
                   const canRefundUi = refundUnlocked && hasAdminToken;
                   const refundTitle = !refundUnlocked
                     ? (rt != null && chainHeight != null && typeof refundEta === 'number'
-                      ? `Refund unlocks in ~${refundEta} blocks (height ${rt})`
-                      : 'Refund unlocks after CLTV height (refresh for chain tip)')
+                      ? L.refundTitles.inBlocks(refundEta, rt)
+                      : L.refundTitles.unknown)
                     : !hasAdminToken
-                      ? 'Admin token required for arbiter refund'
-                      : 'After CLTV: arbiter-signed refund (vault UTXO → destination)';
+                      ? L.refundTitles.needsToken
+                      : L.refundTitles.ready;
                   const payoutTitle = !st
-                    ? 'Refresh (toolbar) to load vault balance from the node'
+                    ? L.payoutTitles.notLoaded
                     : st.error
                       ? String(st.error)
                       : !st.goalMet
-                        ? 'Payout unlocks when raised ≥ goal'
-                        : 'Build payout PSBT (beneficiary signs, then arbiter, then broadcast)';
+                        ? L.payoutTitles.notMet
+                        : L.payoutTitles.ready;
                   return (
                     <Table.Row key={cid || addr}>
                       <Table.Cell>
-                        <div><strong>{row.title || '—'}</strong></div>
+                        <div><strong>{row.title || t.common.none}</strong></div>
                         <div style={{ fontSize: '0.82em', color: '#666', fontFamily: 'monospace' }}>{cid}</div>
                       </Table.Cell>
                       <Table.Cell style={{ fontFamily: 'monospace', fontSize: '0.85em', wordBreak: 'break-all' }} title={addr}>
@@ -848,7 +866,7 @@ class CrowdfundingHome extends React.Component {
                             onClick={() => copyToClipboard(addr)}
                           >
                             <Icon name="copy outline" />
-                            Copy address
+                            {L.copyAddress}
                           </Button>
                           {cid
                             ? (
@@ -859,9 +877,9 @@ class CrowdfundingHome extends React.Component {
                                 href={crowdfundCampaignApiUrl(this.state.upstream, cid) || `#`}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                title="Campaign JSON + live balance"
+                                title={L.viewJsonTitle}
                               >
-                                API
+                                {L.viewJson}
                               </Button>
                               )
                             : null}
@@ -872,7 +890,7 @@ class CrowdfundingHome extends React.Component {
                             disabled={!addr}
                             onClick={() => copyToClipboard(this._bip21ForRow(row))}
                           >
-                            Copy BIP21
+                            {L.copyPaymentLink}
                           </Button>
                           <Button
                             as={Link}
@@ -880,9 +898,9 @@ class CrowdfundingHome extends React.Component {
                             basic
                             to={this._paymentsLinkForRow(row)}
                             disabled={!addr || !hubUi.bitcoinPayments}
-                            title={hubUi.bitcoinPayments ? 'Open Payments with campaign BIP21 prefill' : 'Enable Bitcoin Payments in Admin feature visibility first'}
+                            title={hubUi.bitcoinPayments ? L.openPaymentsTitle : L.paymentsOff}
                           >
-                            Open Payments
+                            {L.openInPayments}
                           </Button>
                           <Button
                             size="mini"
@@ -891,43 +909,43 @@ class CrowdfundingHome extends React.Component {
                             disabled={!addr}
                             onClick={() => this.handleCfShowBip21Qr(row)}
                           >
-                            QR
+                            {L.showQr}
                           </Button>
                         </div>
                       </Table.Cell>
                       <Table.Cell>
                         {st && st.error
-                          ? <span style={{ color: '#a33', fontSize: '0.88em' }} title={st.error}>—</span>
+                          ? <span style={{ color: '#a33', fontSize: '0.88em' }} title={st.error}>{t.common.none}</span>
                           : st
                             ? (
                               <div>
-                                <div>{formatSatsDisplay(st.balanceSats || 0)} sats</div>
+                                <div>{L.raised(formatSatsDisplay(st.balanceSats || 0))}</div>
                                 {pct != null ? (
-                                  <div style={{ fontSize: '0.8em', color: '#888' }}>{pct}% of goal</div>
+                                  <div style={{ fontSize: '0.8em', color: '#888' }}>{L.percentOfGoal(pct)}</div>
                                 ) : null}
-                                {st.goalMet ? <Label size="tiny" color="green" style={{ marginTop: '0.35em' }}>Goal met</Label> : null}
+                                {st.goalMet ? <Label size="tiny" color="green" style={{ marginTop: '0.35em' }}>{L.goalMet}</Label> : null}
                               </div>
                               )
-                            : <span style={{ color: '#aaa' }} title="Use Refresh above">…</span>}
+                            : <span style={{ color: '#aaa' }} title={L.refreshForBalance}>…</span>}
                       </Table.Cell>
                       <Table.Cell textAlign="center">
-                        {st && !st.error ? (st.unspentCount != null ? st.unspentCount : '—') : '—'}
+                        {st && !st.error ? (st.unspentCount != null ? st.unspentCount : t.common.none) : t.common.none}
                       </Table.Cell>
                       <Table.Cell style={{ fontSize: '0.85em' }}>
                         {rt != null ? (
                           <div>
-                            <div>height {rt}</div>
+                            <div>{L.height(rt)}</div>
                             {refundEta === 'active'
-                              ? <div style={{ color: '#2185d0' }}>Refund path active</div>
+                              ? <div style={{ color: '#2185d0' }}>{L.refundOpen}</div>
                               : refundEta != null && typeof refundEta === 'number'
-                                ? <div style={{ color: '#888' }}>{refundEta} blocks to CLTV</div>
+                                ? <div style={{ color: '#888' }}>{L.blocksToGo(refundEta)}</div>
                                 : null}
                           </div>
-                        ) : '—'}
+                        ) : t.common.none}
                       </Table.Cell>
                       <Table.Cell>
-                        {formatSatsDisplay(row.goalSats)} sats
-                        <div style={{ fontSize: '0.8em', color: '#888' }}>min {formatSatsDisplay(row.minContributionSats)}</div>
+                        {L.goalValue(formatSatsDisplay(row.goalSats))}
+                        <div style={{ fontSize: '0.8em', color: '#888' }}>{L.minimum(formatSatsDisplay(row.minContributionSats))}</div>
                       </Table.Cell>
                       <Table.Cell>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35em', alignItems: 'flex-start' }}>
@@ -938,17 +956,17 @@ class CrowdfundingHome extends React.Component {
                             disabled={!cid}
                             onClick={() => this.handleCrowdfundingCopyAcpPsbt(cid)}
                           >
-                            Copy ACP PSBT
+                            {L.copyDonationPsbt}
                           </Button>
                           <Button
                             size="small"
                             primary
                             type="button"
                             disabled={!cid || !addr || !hubUi.bitcoinPayments}
-                            title={hubUi.bitcoinPayments ? 'Create a Payjoin session for this vault' : 'Enable Bitcoin Payments in Admin feature visibility first'}
+                            title={hubUi.bitcoinPayments ? L.payjoinToVaultTitle : L.paymentsOff}
                             onClick={() => this.handleCrowdfundingPayjoinToVault(row)}
                           >
-                            Payjoin → vault
+                            {L.payjoinToVault}
                           </Button>
                       <Button
                         size="small"
@@ -968,7 +986,7 @@ class CrowdfundingHome extends React.Component {
                               cfPayoutHint: null
                             })}
                           >
-                            Payout…
+                            {L.payOut}
                           </Button>
                           <Button
                             size="small"
@@ -995,7 +1013,7 @@ class CrowdfundingHome extends React.Component {
                               });
                             }}
                           >
-                            Refund…
+                            {L.refund}
                           </Button>
                         </div>
                       </Table.Cell>
@@ -1012,10 +1030,7 @@ class CrowdfundingHome extends React.Component {
             closeIcon
           >
             <Modal.Header>
-              Payout campaign
-              {this.state.cfPayoutModal && this.state.cfPayoutModal.title
-                ? ` — ${this.state.cfPayoutModal.title}`
-                : ''}
+              {L.payoutModalTitle(this.state.cfPayoutModal && this.state.cfPayoutModal.title)}
             </Modal.Header>
             <Modal.Content>
               {this.state.cfPayoutModal && this.state.cfPayoutModal.campaignId
@@ -1027,7 +1042,7 @@ class CrowdfundingHome extends React.Component {
                 : null}
               <Form>
                 <Form.Field>
-                  <label htmlFor="fabric-crowdfunding-payout-dest">Beneficiary payout address (bech32)</label>
+                  <label htmlFor="fabric-crowdfunding-payout-dest">{L.payoutAddress}</label>
                   <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
                     <Input
                       id="fabric-crowdfunding-payout-dest"
@@ -1035,18 +1050,18 @@ class CrowdfundingHome extends React.Component {
                       value={this.state.cfPayoutDest}
                       onChange={(e) => this.setState({ cfPayoutDest: e.target.value })}
                       style={{ flex: '1 1 18em', minWidth: '14em' }}
-                      aria-label="Beneficiary payout address (bech32)"
+                      aria-describedby="fabric-crowdfunding-payout-dest-hint"
                     />
                     <Button type="button" basic onClick={() => this.handleCfFillPayoutAddressFromWallet()}>
-                      Fill from wallet (0/0)
+                      {L.useWalletAddress}
                     </Button>
                   </div>
-                  <span style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
-                    Same BIP44 external index 0 as the campaign beneficiary key — convenient default; you may use any destination.
+                  <span id="fabric-crowdfunding-payout-dest-hint" style={{ display: 'block', marginTop: '0.25em', fontSize: '0.82em', color: '#888' }}>
+                    {L.payoutAddressHint}
                   </span>
                 </Form.Field>
                 <Form.Field>
-                  <label htmlFor="fabric-crowdfunding-payout-fee">Fee (sats)</label>
+                  <label htmlFor="fabric-crowdfunding-payout-fee">{L.payoutFee}</label>
                   <Input
                     id="fabric-crowdfunding-payout-fee"
                     type="number"
@@ -1055,7 +1070,6 @@ class CrowdfundingHome extends React.Component {
                     value={this.state.cfPayoutFeeSats}
                     onChange={(e) => this.setState({ cfPayoutFeeSats: e.target.value })}
                     style={{ maxWidth: '10em' }}
-                    aria-label="Payout transaction fee in sats"
                   />
                 </Form.Field>
               </Form>
@@ -1066,7 +1080,7 @@ class CrowdfundingHome extends React.Component {
                 disabled={this.state.cfPayoutBusy || !this.state.cfPayoutModal}
                 onClick={() => this.handleCfPayoutBuildPsbt()}
               >
-                Build unsigned payout PSBT
+                {L.buildPayout}
               </Button>
               {this.state.cfPayoutErr && (
                 <Message negative style={{ marginTop: '1em' }}>
@@ -1082,7 +1096,7 @@ class CrowdfundingHome extends React.Component {
                 ? (
                   <Message style={{ marginTop: '1em' }}>
                     <p style={{ marginBottom: '0.75em' }}>
-                      Beneficiary signs all inputs with their key first. Then Hub arbiter co-sign (admin token), then broadcast.
+                      {L.payoutOrder}
                     </p>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
                       <Button
@@ -1092,26 +1106,26 @@ class CrowdfundingHome extends React.Component {
                         onClick={() => copyToClipboard(this.state.cfPayoutPsbt)}
                       >
                         <Icon name="copy outline" />
-                        Copy PSBT
+                        {L.copyPsbt}
                       </Button>
                       <Button
                         size="small"
                         color="blue"
                         type="button"
                         disabled={this.state.cfPayoutBusy}
-                        title="Sign all inputs with m/44'/0'/0'/0/0 (must match campaign beneficiary pubkey)"
+                        title={L.signWithWalletTitle}
                         onClick={() => this.handleCfPayoutBeneficiarySign()}
                       >
-                        Sign with unlocked wallet
+                        {L.signWithWallet}
                       </Button>
                       <Button
                         size="small"
                         type="button"
                         disabled={this.state.cfPayoutBusy || !hasAdminToken}
-                        title={hasAdminToken ? 'Apply Hub arbiter Schnorr signatures' : 'Admin token required'}
+                        title={hasAdminToken ? L.arbiterSignTitle : L.needsToken}
                         onClick={() => this.handleCfPayoutArbiterSign()}
                       >
-                        Arbiter co-sign
+                        {L.arbiterSign}
                       </Button>
                       <Button
                         size="small"
@@ -1120,7 +1134,7 @@ class CrowdfundingHome extends React.Component {
                         disabled={this.state.cfPayoutBusy}
                         onClick={() => this.handleCfPayoutBroadcast()}
                       >
-                        Broadcast
+                        {L.broadcast}
                       </Button>
                     </div>
                   </Message>
@@ -1129,7 +1143,7 @@ class CrowdfundingHome extends React.Component {
               {this.state.cfPayoutTxid
                 ? (
                   <Message positive style={{ marginTop: '1em' }}>
-                    Broadcast{' '}
+                    {L.broadcastDone}{' '}
                     {hubUi.bitcoinExplorer ? (
                       <Link to={`/services/bitcoin/transactions/${encodeURIComponent(this.state.cfPayoutTxid)}`}>{this.state.cfPayoutTxid}</Link>
                     ) : (
@@ -1140,7 +1154,7 @@ class CrowdfundingHome extends React.Component {
                 : null}
             </Modal.Content>
             <Modal.Actions>
-              <Button type="button" onClick={() => this._closeCfPayoutModal()}>Close</Button>
+              <Button type="button" onClick={() => this._closeCfPayoutModal()}>{t.common.actions.close}</Button>
             </Modal.Actions>
           </Modal>
           <Modal
@@ -1150,10 +1164,7 @@ class CrowdfundingHome extends React.Component {
             closeIcon
           >
             <Modal.Header>
-              Arbiter refund (after CLTV)
-              {this.state.cfRefundModal && this.state.cfRefundModal.title
-                ? ` — ${this.state.cfRefundModal.title}`
-                : ''}
+              {L.refundModalTitle(this.state.cfRefundModal && this.state.cfRefundModal.title)}
             </Modal.Header>
             <Modal.Content>
               {this.state.cfRefundModal && this.state.cfRefundModal.campaignId
@@ -1164,8 +1175,7 @@ class CrowdfundingHome extends React.Component {
                   )
                 : null}
               <Message warning size="small" style={{ marginBottom: '1em' }}>
-                Hub identity signs the refund tapleaf. Use only when the campaign should not pay out via the 2-of-2 path
-                (e.g. goal not met and contributors should receive funds at the address you enter).
+                {L.refundWarning}
               </Message>
               {(() => {
                 const mid = this.state.cfRefundModal && this.state.cfRefundModal.campaignId
@@ -1176,14 +1186,14 @@ class CrowdfundingHome extends React.Component {
                 if (ux.length === 0) return null;
                 return (
                   <div style={{ marginBottom: '1em', fontSize: '0.88em', color: '#555' }}>
-                    <strong>Vault UTXOs</strong> (from node scan; pick one for funding txid / vout):
+                    <strong>{L.vaultCoins}</strong>{' '}{L.vaultCoinsHint}
                     <List relaxed divided style={{ marginTop: '0.5em' }}>
                       {ux.slice(0, 8).map((u, i) => (
                         <List.Item key={`${u.txid}:${u.vout}:${i}`}>
                           <List.Content>
                             <code style={{ wordBreak: 'break-all', fontSize: '0.82em' }}>{u.txid}</code>
-                            {' '}vout {u.vout != null ? u.vout : '—'}
-                            {u.amountSats != null ? ` · ${formatSatsDisplay(u.amountSats)} sats` : ''}
+                            {' '}{L.output(u.vout != null ? u.vout : t.common.none)}
+                            {u.amountSats != null ? ` · ${L.raised(formatSatsDisplay(u.amountSats))}` : ''}
                             <Button
                               size="mini"
                               basic
@@ -1194,7 +1204,7 @@ class CrowdfundingHome extends React.Component {
                                 cfRefundVout: u.vout != null ? String(u.vout) : ''
                               })}
                             >
-                              Use
+                              {L.use}
                             </Button>
                           </List.Content>
                         </List.Item>
@@ -1205,37 +1215,41 @@ class CrowdfundingHome extends React.Component {
               })()}
               <Form>
                 <Form.Field>
-                  <label>Refund destination (bech32)</label>
+                  <label htmlFor="fabric-crowdfunding-refund-dest">{L.refundAddress}</label>
                   <Input
+                    id="fabric-crowdfunding-refund-dest"
                     placeholder={addressPlaceholder}
                     value={this.state.cfRefundDest}
                     onChange={(e) => this.setState({ cfRefundDest: e.target.value })}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Funding txid (payment into vault)</label>
+                  <label htmlFor="fabric-crowdfunding-refund-txid">{L.vaultTxid}</label>
                   <Input
-                    placeholder="64 hex chars"
+                    id="fabric-crowdfunding-refund-txid"
+                    placeholder={L.txidPlaceholder}
                     value={this.state.cfRefundFundedTxid}
                     onChange={(e) => this.setState({ cfRefundFundedTxid: e.target.value.trim() })}
                     style={{ fontFamily: 'monospace', fontSize: '0.88em' }}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Output index (vout)</label>
+                  <label htmlFor="fabric-crowdfunding-refund-vout">{L.outputIndex}</label>
                   <Input
+                    id="fabric-crowdfunding-refund-vout"
                     type="number"
                     min="0"
                     step="1"
-                    placeholder="auto if omitted"
+                    placeholder={L.outputIndexPlaceholder}
                     value={this.state.cfRefundVout}
                     onChange={(e) => this.setState({ cfRefundVout: e.target.value })}
                     style={{ maxWidth: '8em' }}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Fee (sats)</label>
+                  <label htmlFor="fabric-crowdfunding-refund-fee">{L.refundFee}</label>
                   <Input
+                    id="fabric-crowdfunding-refund-fee"
                     type="number"
                     min="1"
                     step="1"
@@ -1252,7 +1266,7 @@ class CrowdfundingHome extends React.Component {
                 disabled={this.state.cfRefundBusy || !this.state.cfRefundModal}
                 onClick={() => this.handleCfRefundPrepare()}
               >
-                Prepare signed refund tx
+                {L.prepareRefund}
               </Button>
               {this.state.cfRefundErr && (
                 <Message negative style={{ marginTop: '1em' }}>
@@ -1263,7 +1277,7 @@ class CrowdfundingHome extends React.Component {
                 ? (
                   <Message style={{ marginTop: '1em' }}>
                     <p style={{ marginBottom: '0.75em' }}>
-                      Signed raw transaction. Broadcast with admin token, or paste into <code>sendrawtransaction</code>.
+                      {L.refundSigned}
                     </p>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
                       <Button
@@ -1273,17 +1287,17 @@ class CrowdfundingHome extends React.Component {
                         onClick={() => copyToClipboard(this.state.cfRefundTxHex)}
                       >
                         <Icon name="copy outline" />
-                        Copy hex
+                        {L.copyHex}
                       </Button>
                       <Button
                         size="small"
                         positive
                         type="button"
                         disabled={this.state.cfRefundBusy || !hasAdminToken}
-                        title={hasAdminToken ? 'POST /services/bitcoin/broadcast' : 'Admin token required'}
+                        title={hasAdminToken ? L.broadcastRefundTitle : L.needsToken}
                         onClick={() => this.handleCfRefundBroadcast()}
                       >
-                        Broadcast
+                        {L.broadcast}
                       </Button>
                     </div>
                   </Message>
@@ -1292,7 +1306,7 @@ class CrowdfundingHome extends React.Component {
               {this.state.cfRefundTxid
                 ? (
                   <Message positive style={{ marginTop: '1em' }}>
-                    Txid{' '}
+                    {L.transactionId}{' '}
                     {hubUi.bitcoinExplorer ? (
                       <Link to={`/services/bitcoin/transactions/${encodeURIComponent(this.state.cfRefundTxid)}`}>
                         {this.state.cfRefundTxid}
@@ -1305,22 +1319,22 @@ class CrowdfundingHome extends React.Component {
                 : null}
             </Modal.Content>
             <Modal.Actions>
-              <Button type="button" onClick={() => this._closeCfRefundModal()}>Close</Button>
+              <Button type="button" onClick={() => this._closeCfRefundModal()}>{t.common.actions.close}</Button>
             </Modal.Actions>
           </Modal>
         </Segment>
         <Modal open={this.state.cfQrOpen} onClose={() => this._closeCfQr()} size="tiny">
-          <Modal.Header>Bitcoin URI (BIP21)</Modal.Header>
+          <Modal.Header>{L.qrTitle}</Modal.Header>
           <Modal.Content style={{ textAlign: 'center' }}>
             {this.state.cfQrDataUrl ? (
-              <img src={this.state.cfQrDataUrl} alt="QR code" style={{ maxWidth: '100%' }} />
+              <img src={this.state.cfQrDataUrl} alt={L.qrAlt} style={{ maxWidth: '100%' }} />
             ) : null}
             {this.state.cfQrUri ? (
               <p style={{ wordBreak: 'break-all', fontSize: '0.85em', marginTop: '0.75em' }}>{this.state.cfQrUri}</p>
             ) : null}
           </Modal.Content>
           <Modal.Actions>
-            <Button type="button" onClick={() => this._closeCfQr()}>Close</Button>
+            <Button type="button" onClick={() => this._closeCfQr()}>{t.common.actions.close}</Button>
           </Modal.Actions>
         </Modal>
       </div>

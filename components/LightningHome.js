@@ -11,6 +11,9 @@ const {
   loadUpstreamSettings,
   payLightningInvoice
 } = require('../functions/bitcoinClient');
+const t = require('../locales/en');
+
+const c = t.bitcoin.lightning;
 
 class LightningHome extends React.Component {
   constructor (props) {
@@ -44,7 +47,7 @@ class LightningHome extends React.Component {
   async createInvoice () {
     const amountSats = Math.round(Number(this.state.invoiceAmountSats || 0));
     if (!Number.isFinite(amountSats) || amountSats <= 0) {
-      this.setState({ result: { error: 'Invoice amount must be greater than zero.' } });
+      this.setState({ result: { error: c.invoiceAmountPositive } });
       return;
     }
     const identity = (this.props && this.props.identity) || {};
@@ -85,49 +88,52 @@ class LightningHome extends React.Component {
   render () {
     const s = this.state.status || {};
     const available = !!(s.available === true || s.status === 'OK' || s.status === 'RUNNING' || s.status === 'STUB');
+    const statusText = s.status
+      ? (c.statusLabels[String(s.status)] || String(s.status))
+      : t.common.states.unavailable;
     return (
       <div className="fade-in">
         <Segment loading={this.state.loading}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5em', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-              <Button as={Link} to="/services/bitcoin" basic size="small">
+              <Button as={Link} to="/services/bitcoin" basic size="small" title={t.bitcoin.shared.backToBitcoinTitle}>
                 <Icon name="arrow left" />
-                Bitcoin
+                {t.bitcoin.shared.backToBitcoin}
               </Button>
               <Header as="h2" style={{ margin: 0 }}>
                 <Icon name="bolt" />
-                <Header.Content>Lightning</Header.Content>
+                <Header.Content>{c.title}</Header.Content>
               </Header>
             </div>
             <Button basic size="small" onClick={() => this.refresh()}>
               <Icon name="refresh" />
-              Refresh
+              {t.common.actions.refresh}
             </Button>
           </div>
           <div style={{ marginTop: '0.6em' }}>
-            <Label color={available ? 'green' : 'grey'} horizontal>{String(s.status || 'unavailable')}</Label>
+            <Label color={available ? 'green' : 'grey'} horizontal>{statusText}</Label>
             {s.node && s.node.alias ? <span style={{ color: '#666' }}>{s.node.alias}</span> : null}
           </div>
         </Segment>
         <Segment>
-          <Header as="h3">Channels</Header>
+          <Header as="h3">{c.channels}</Header>
           {this.state.channels.length === 0 ? (
-            <p style={{ color: '#666' }}>No channels listed.</p>
+            <p style={{ color: '#666' }}>{c.noChannels}</p>
           ) : (
             <Table compact="very" celled>
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Peer</Table.HeaderCell>
-                  <Table.HeaderCell>State</Table.HeaderCell>
-                  <Table.HeaderCell>Capacity</Table.HeaderCell>
+                  <Table.HeaderCell>{c.peer}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.state}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.capacity}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {this.state.channels.map((c, i) => (
-                  <Table.Row key={`${c.short_channel_id || c.id || i}`}>
-                    <Table.Cell><code>{String(c.peer_id || c.destination || '-').slice(0, 24)}</code></Table.Cell>
-                    <Table.Cell>{c.state || c.status || '-'}</Table.Cell>
-                    <Table.Cell>{c.capacity != null ? String(c.capacity) : '-'}</Table.Cell>
+                {this.state.channels.map((ch, i) => (
+                  <Table.Row key={`${ch.short_channel_id || ch.id || i}`}>
+                    <Table.Cell><code>{String(ch.peer_id || ch.destination || t.common.none).slice(0, 24)}</code></Table.Cell>
+                    <Table.Cell>{ch.state || ch.status || t.common.none}</Table.Cell>
+                    <Table.Cell>{ch.capacity != null ? String(ch.capacity) : t.common.none}</Table.Cell>
                   </Table.Row>
                 ))}
               </Table.Body>
@@ -135,24 +141,25 @@ class LightningHome extends React.Component {
           )}
         </Segment>
         <Segment>
-          <Header as="h3">Invoices & Payments</Header>
+          <Header as="h3">{c.invoicesTitle}</Header>
           <Form>
             <Form.Group widths="equal">
               <Form.Field>
-                <label>Create invoice amount (sats)</label>
+                <label htmlFor="lightning-invoice-amount">{c.invoiceAmount}</label>
                 <Input
+                  id="lightning-invoice-amount"
                   type="number"
                   min="1"
                   step="1"
-                  placeholder="500"
                   value={this.state.invoiceAmountSats}
                   onChange={(e) => this.setState({ invoiceAmountSats: e.target.value })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Invoice memo</label>
+                <label htmlFor="lightning-invoice-memo">{c.invoiceMemo}</label>
                 <Input
-                  placeholder="Shown to payer (optional)"
+                  id="lightning-invoice-memo"
+                  placeholder={c.invoiceMemoPlaceholder}
                   value={this.state.invoiceMemo}
                   onChange={(e) => this.setState({ invoiceMemo: e.target.value })}
                 />
@@ -160,28 +167,30 @@ class LightningHome extends React.Component {
             </Form.Group>
             <Button onClick={() => this.createInvoice()} disabled={!available}>
               <Icon name="add circle" />
-              Create Invoice
+              {c.createInvoice}
             </Button>
             <Form.Field style={{ marginTop: '1em' }}>
-              <label>Invoice (BOLT11)</label>
+              <label htmlFor="lightning-invoice-bolt11">{c.invoiceInput}</label>
               <Form.TextArea
+                id="lightning-invoice-bolt11"
                 rows={3}
-                placeholder="lnbc..."
+                placeholder="lnbc…"
                 value={this.state.invoiceInput}
                 onChange={(e) => this.setState({ invoiceInput: e.target.value })}
               />
             </Form.Field>
             <Button basic onClick={() => this.decodeInvoice()} disabled={!available}>
               <Icon name="search" />
-              Decode
+              {c.decode}
             </Button>
             <Button color="green" onClick={() => this.payInvoice()} disabled={!available}>
               <Icon name="bolt" />
-              Pay Invoice
+              {c.pay}
             </Button>
           </Form>
           {this.state.result ? (
             <Message style={{ marginTop: '1em' }} negative={!!this.state.result.error} positive={!this.state.result.error}>
+              <Message.Header>{this.state.result.error ? c.failed : c.response}</Message.Header>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{JSON.stringify(this.state.result, null, 2)}</pre>
             </Message>
           ) : null}

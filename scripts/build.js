@@ -136,7 +136,7 @@ async function main (input = {}) {
     // Do not spread Hub `settings/local.js` into Compiler for the same reason.
     const compiler = new Compiler({
       document: site,
-      title: (input && (input.title || input.name)) || 'hub.fabric.pub',
+      title: (input && (input.title || input.name)) || require('../locales/en').BRAND_MARK,
       skipWebpack: true
     });
     compiler.compileBundle = async () => ({ fullhash: 'prebuilt' });

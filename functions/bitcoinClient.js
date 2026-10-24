@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const BIP32 = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
-const payments = require('bitcoinjs-lib/src/payments');
+const { payments } = require('bitcoinjs-lib');
 const { encodeBitcoinUri } = require('@fabric/core/functions/bip21');
 const {
   readStorageJSON,
@@ -1910,21 +1910,23 @@ async function submitPayjoinProposal (settings = {}, sessionId = '', proposal = 
 }
 
 /**
- * POST .../sessions/:id/acp-hub-boost — Hub appends + signs a wallet input on an ANYONECANPAY|ALL payer PSBT.
+ * POST .../sessions/:id/contribute — Hub adds and signs one wallet input to a stored payjoin
+ * original (BIP78 receiver contribution); the sender then re-signs with SIGHASH_ALL.
  * @param {string} adminToken - setup admin token (Bearer)
- * @param {{ psbt?: string }} [options] - optional PSBT (else server uses latest proposal on session)
+ * @param {{ psbt?: string, bip78Params?: Object }} [options] - optional original PSBT (else the session's latest proposal)
  */
-async function applyPayjoinAcpHubBoost (settings = {}, sessionId = '', adminToken = '', options = {}) {
+async function contributeToPayjoinProposal (settings = {}, sessionId = '', adminToken = '', options = {}) {
   const baseUrl = normalizePayjoinBaseUrl(settings.payjoinBaseUrl || settings.explorerBaseUrl);
   const id = encodeURIComponent(String(sessionId || '').trim());
   if (!baseUrl) throw new Error('Payjoin API base URL is not configured.');
   if (!id) throw new Error('Payjoin session ID is required.');
   const token = String(adminToken || '').trim();
-  if (!token) throw new Error('Admin token is required for ACP Hub boost.');
+  if (!token) throw new Error('Admin token is required for a Hub payjoin contribution.');
   const root = normalizeBaseUrl(baseUrl).replace(/\/+$/, '');
   const body = {};
   if (options && options.psbt) body.psbt = String(options.psbt);
-  const data = await requestJSON(`${root}/sessions/${id}/acp-hub-boost`, {
+  if (options && options.bip78Params) body.bip78Params = options.bip78Params;
+  const data = await requestJSON(`${root}/sessions/${id}/contribute`, {
     method: 'POST',
     body: Object.keys(body).length ? body : undefined,
     apiToken: token
@@ -2154,7 +2156,7 @@ module.exports = {
   fetchPayjoinSessions,
   fetchPayjoinSession,
   submitPayjoinProposal,
-  applyPayjoinAcpHubBoost,
+  contributeToPayjoinProposal,
   generateBlock,
   fetchBitcoinPeers,
   fetchBitcoinNetworkSummary,

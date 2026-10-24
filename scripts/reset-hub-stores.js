@@ -9,7 +9,7 @@
  *   npm run reset:stores -- --setup-only
  *
  * Default also removes Bitcoin/Lightning datadirs and logs next to those stores
- * (same as Admin → Self-destruct for the live process). `--setup-only` leaves chain data.
+ * (same as Admin → Wipe local data for the live process). `--setup-only` leaves chain data.
  */
 
 const path = require('path');

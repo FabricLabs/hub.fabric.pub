@@ -30,9 +30,14 @@ const {
 } = electron;
 
 const settings = require('../settings/local');
-const { fabricMessageSummaryFromHex, parseOpaqueFabricMessageHex } = require('../functions/fabricProtocolUrl');
+const { fabricMessageSummaryFromHex, decodeOpaqueFabricUri } = require('../functions/fabricProtocolUrl');
 const { assertAllowedFabricHub } = require('../functions/fabricHubAllowlist');
 const { hubPaymentsPathFromBitcoinUri } = require('../functions/bitcoinProtocolUrl');
+const {
+  APPROVAL_REQUEST: FABRIC_SIGN_REQUEST,
+  APPROVAL_RESULT: FABRIC_SIGN_RESULT,
+  fabricSignApprovalDialog
+} = require('../functions/fabricSignApprovalDialog');
 const { runDesktopHubStartupProbe, isFabricHubSettingsListPayload } = require('./desktopHubProbe');
 const {
   argvRequestsHidden,
@@ -948,7 +953,8 @@ function spawnHub () {
   delete env.ELECTRON_RUN_AS_NODE;
 
   const child = utilityProcess.fork(hubScript, [], {
-    cwd: appRoot,
+    // Packaged, appRoot is the app.asar file; a utilityProcess with a file cwd exits 1 before running.
+    cwd: app.isPackaged ? userData : appRoot,
     env,
     stdio: 'pipe',
     serviceName: 'Fabric Hub'
@@ -960,8 +966,32 @@ function spawnHub () {
   pipeHubOutput(child.stderr, process.stderr);
   child.on('message', (msg) => {
     if (msg && msg.type === 'ready') setHubStatus('running');
+    if (msg && msg.type === FABRIC_SIGN_REQUEST) void answerFabricSignRequest(child, msg);
   });
   child.once('exit', (code) => onHubExit(child, code));
+}
+
+/** Passport asked the Hub to sign in or link: only a native dialog here can approve it. */
+async function answerFabricSignRequest (child, msg) {
+  let approved = false;
+  try {
+    const options = fabricSignApprovalDialog(msg);
+    notifyWhenAway(options.title, options.message);
+    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    if (parent) {
+      if (!parent.isVisible()) parent.show();
+      parent.focus();
+    }
+    const { response } = parent
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options);
+    approved = response === 0;
+  } catch (e) {
+    console.warn('[DESKTOP] fabric sign approval failed:', e && e.message ? e.message : e);
+  }
+  try {
+    child.postMessage({ type: FABRIC_SIGN_RESULT, id: msg.id, approved });
+  } catch (_) {}
 }
 
 function onHubExit (child, code) {
@@ -1057,25 +1087,29 @@ function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
 }
 
 /**
- * Canonical opaque link: **fabric:deadbeef…** (hex only, serialized {@link Message}).
+ * Canonical opaque link: **fabric:<frame>** (base64url or hex, serialized {@link Message}),
+ * checked by core `decodeFabricUri` (hash, type, author signature when signed).
  * Legacy: fabric://login?…, fabric://message?hex=…, fabric://login?…&messageHex=…
  */
 async function handleFabricProtocolUrl (urlStr) {
-  const opaqueHex = parseOpaqueFabricMessageHex(urlStr);
-  if (opaqueHex) {
-    const fm = fabricMessageSummaryFromHex(opaqueHex);
+  if (/^fabric:(?!\/\/)/i.test(String(urlStr || '').trim())) {
+    const fm = decodeOpaqueFabricUri(urlStr);
     if (fm.ok) {
       deliverLoginPromptPayload({
         kind: 'fabricMessage',
         sessionId: null,
         hubBase: hubBaseFromSettings(),
         fabricMessageHex: fm.hex,
-        fabricMessageSummary: fm.summary,
+        fabricMessageSummary: Object.assign({}, fm.summary, {
+          signed: fm.signed,
+          author: fm.author,
+          verified: fm.verified
+        }),
         fabricMessageOnly: true
       });
-      console.log('[DESKTOP] opaque fabric:<hex> delivered to renderer');
+      console.log('[DESKTOP] opaque fabric: message delivered to renderer');
     } else {
-      console.warn('[DESKTOP] opaque fabric: parse failed:', fm.error);
+      console.warn('[DESKTOP] opaque fabric: rejected:', fm.error);
     }
     return;
   }
@@ -1292,7 +1326,7 @@ function showLoadingWindow () {
     'body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}' +
     '.s{width:28px;height:28px;border:3px solid #ddd;border-top-color:#555;border-radius:50%;animation:r 1s linear infinite}' +
     '@keyframes r{to{transform:rotate(360deg)}}h1{font-size:16px;margin:6px 0 0}p{margin:0;color:#666;font-size:12px}' +
-    '</style></head><body><div class="s"></div><h1>Starting Fabric Hub…</h1><p>Bitcoin, Fabric, and Lightning are coming up.</p></body></html>';
+    '</style></head><body><div class="s"></div><h1>Loading Your Hub...</h1><p>Bitcoin, Fabric, and Lightning are coming up.</p></body></html>';
   const win = new BrowserWindow({
     width: 360,
     height: 200,

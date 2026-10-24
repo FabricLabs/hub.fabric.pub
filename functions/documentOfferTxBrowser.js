@@ -7,7 +7,7 @@
 
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('@fabric/core/types/ecc');
-const inventoryHtlc = require('./inventoryHtlc');
+const Htlc = require('@fabric/core/types/htlc');
 
 bitcoin.initEccLib(ecc);
 
@@ -36,7 +36,7 @@ function signDelivererClaimFromPsbtBase64 (psbtBase64, preimageHex, delivererPri
   const psbt = bitcoin.Psbt.fromBase64(String(psbtBase64 || '').trim());
   const preimage32 = parsePreimage32(preimageHex);
   const priv = parsePriv32(delivererPrivHexOrBuf);
-  return inventoryHtlc.signAndExtractInventoryHtlcSellerClaim({ psbt, preimage32 }, priv);
+  return Htlc.signClaim({ psbt, preimage32 }, priv);
 }
 
 /**
@@ -46,7 +46,7 @@ function signDelivererClaimFromPsbtBase64 (psbtBase64, preimageHex, delivererPri
 function signInitiatorRefundFromPsbtBase64 (psbtBase64, initiatorPrivHexOrBuf) {
   const psbt = bitcoin.Psbt.fromBase64(String(psbtBase64 || '').trim());
   const priv = parsePriv32(initiatorPrivHexOrBuf);
-  return inventoryHtlc.signAndExtractInventoryHtlcBuyerRefund({ psbt }, priv);
+  return Htlc.signRefund({ psbt }, priv);
 }
 
 module.exports = {
