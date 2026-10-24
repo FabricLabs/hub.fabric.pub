@@ -58,9 +58,16 @@ const {
   resolveStartPhases,
   runHubStartPhase
 } = require('../functions/hubLifecycle');
+const {
+  allowedHostsFromSettings,
+  buildContentSecurityPolicy,
+  createLoopbackHostGuard,
+  isTrustedLoopbackRequest
+} = require('../functions/hubHttpLocalTrust');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
 const parseFilesystemJson = require('../functions/parseFilesystemJson');
+const { withDefaultSeedPeers } = require('../functions/hubDefaultPeers');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const hubHeapBounds = require('../functions/hubHeapBounds');
@@ -120,6 +127,7 @@ const PayjoinService = require('../services/payjoin');
 const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
+const MarketService = require('../services/market');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
 const {
@@ -156,8 +164,6 @@ const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SAT
 const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
-const P2P_FILE_CHUNK_BYTES = 1024 * 1024; // exact 1 MiB binary chunks
-const P2P_FILE_CHUNK_TTL_MS = 10 * 60 * 1000; // expire incomplete inbound transfers after 10 minutes
 const FABRIC_PEERING_OFFER_INTERVAL_MS = Number(process.env.FABRIC_PEERING_OFFER_INTERVAL_MS || 30000);
 const INVENTORY_HTLC_MAX_SETTLEMENTS = 2000;
 const INVENTORY_HTLC_TTL_MS = 48 * 3600 * 1000;
@@ -182,6 +188,7 @@ const {
 } = require('../functions/fabricHallmarkBitcoin');
 const { validateEnvelopeV1, buildGenericMessageFromEnvelope } = require('../functions/fabricMessageEnvelope');
 const inventoryRelay = require('../functions/inventoryRelay');
+const documentFileShare = require('../functions/documentFileShare');
 const {
   FABRIC_DOCUMENT_OFFER,
   FABRIC_DOCUMENT_OFFER_RESPONSE,
@@ -459,17 +466,7 @@ class Hub extends Service {
       distributeFeeSats: DEFAULT_DISTRIBUTE_FEE_SATS,
     }, settings);
 
-    if (!callerSetPeers) {
-      const peers = Array.isArray(this.settings.peers) ? this.settings.peers.slice() : [];
-      for (const seed of ['hub.fabric.pub:7777', 'relay.goon.vc:7777']) {
-        const have = peers.some((p) => {
-          const s = String(p || '').replace(/^[^@]+@/, '').trim().toLowerCase();
-          return s === seed;
-        });
-        if (!have) peers.push(seed);
-      }
-      this.settings.peers = peers;
-    }
+    if (!callerSetPeers) this.settings.peers = withDefaultSeedPeers(this.settings.peers);
 
     // Test stability: do not dial production Hub seeds from mocha. Opt in with
     // FABRIC_TEST_ALLOW_DEFAULT_PEERS=1. `merge({}, settings/local.js)` otherwise
@@ -693,6 +690,10 @@ class Hub extends Service {
       ...this.settings.challenge
     });
 
+    this.market = new MarketService({
+      ...this.settings.market
+    });
+
     this.distributedHttp = new FabricDistributedExecutionHTTP({
       basePath: '/services/distributed',
       getManifest: () => this._getDistributedManifestJson(),
@@ -823,6 +824,12 @@ class Hub extends Service {
     require('../components/library');
 
     // HTTP Server
+    /** Names (besides IP literals and localhost) this Hub answers to directly on loopback; see hubHttpLocalTrust. */
+    this._loopbackAllowedHosts = allowedHostsFromSettings(this.settings);
+    const devInlineIdentity = ['1', 'true', 'force'].includes(String(process.env.FABRIC_DEV_PUSH_BROWSER_IDENTITY || ''));
+    const contentSecurityPolicy = String(process.env.FABRIC_HUB_CSP || '').trim() === '0'
+      ? ''
+      : buildContentSecurityPolicy({ allowInlineScripts: devInlineIdentity });
     this.http = new HTTPServer({
       name: 'hub.fabric.pub',
       path: hubAssetsDir(),
@@ -842,9 +849,12 @@ class Hub extends Service {
         '12mb',
       websocket: this.settings.websocket || {},
       middlewares: {
+        loopbackHostGuard: createLoopbackHostGuard({ allowedHosts: this._loopbackAllowedHosts }),
         securityHeaders: (req, res, next) => {
           res.setHeader('X-Frame-Options', 'SAMEORIGIN');
           res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+          if (contentSecurityPolicy) res.setHeader('Content-Security-Policy', contentSecurityPolicy);
           next();
         },
         // BIP78 payjoin clients POST PSBT as text/plain (body-parser json ignores them).
@@ -5887,9 +5897,6 @@ class Hub extends Service {
       }
     }
 
-    const totalChunks = Math.max(1, Math.ceil(buf.length / P2P_FILE_CHUNK_BYTES));
-    const transferId = `${doc.id || (doc.sha256 || 'document')}:${Date.now()}:${crypto.randomBytes(4).toString('hex')}`;
-
     let relayExtras = null;
     if (fileRelayMeta && fileRelayMeta.deliveryFabricId) {
       let ttl = Number(fileRelayMeta.fileRelayTtl);
@@ -5901,29 +5908,24 @@ class Hub extends Service {
       };
     }
 
-    for (let index = 0; index < totalChunks; index++) {
-      const start = index * P2P_FILE_CHUNK_BYTES;
-      const end = start + P2P_FILE_CHUNK_BYTES;
-      const chunkContentBase64 = buf.subarray(start, end).toString('base64');
-      const filePayload = {
-        type: 'P2P_FILE_SEND',
-        actor: { id: this.agent.identity.id },
-        object: {
-          id: doc.id,
-          name: doc.name,
-          mime: doc.mime || 'application/octet-stream',
-          size: doc.size,
-          sha256: doc.sha256 || doc.id,
-          contentBase64: chunkContentBase64,
-          created: doc.created || new Date().toISOString(),
-          target: address,
-          htlcSettlement: true,
-          ...(index === 0 && htlcFileV1Header ? { htlcFileV1: htlcFileV1Header } : {}),
-          ...(relayExtras || {}),
-          part: { transferId, index, total: totalChunks }
-        }
-      };
-      this._sendVectorToPeer(address, ['P2P_FILE_SEND', JSON.stringify(filePayload)]);
+    let share;
+    try {
+      share = documentFileShare.buildFileShareFrames(buf, {
+        documentId: doc.id || doc.sha256,
+        actorId: this.agent.identity.id,
+        fileName: doc.name,
+        mime: doc.mime || 'application/octet-stream',
+        size: doc.size,
+        sha256: doc.sha256 || doc.id,
+        created: doc.created || new Date().toISOString(),
+        htlcFileV1: htlcFileV1Header,
+        relay: relayExtras
+      });
+    } catch (e) {
+      return { status: 'error', message: e && e.message ? e.message : 'file share failed' };
+    }
+    for (const frame of share.frames) {
+      this._sendVectorToPeer(address, ['P2P_FILE_SEND', frame]);
     }
 
     this.recordActivity({
@@ -5934,12 +5936,19 @@ class Hub extends Service {
         name: doc.name,
         mime: doc.mime || 'application/octet-stream',
         size: doc.size,
-        sha256: doc.sha256 || doc.id
+        sha256: doc.sha256 || doc.id,
+        merkleRootHex: share.merkleRootHex,
+        blobTotal: share.blobTotal
       },
       target: address
     });
 
-    return { status: 'success', document: { id: doc.id, name: doc.name } };
+    return {
+      status: 'success',
+      document: { id: doc.id, name: doc.name },
+      merkleRootHex: share.merkleRootHex,
+      blobTotal: share.blobTotal
+    };
   }
 
   async _attachHtlcToInventoryItems (items, message, htlcDirectConn, requesterFabricId, relayReturnHop = null) {
@@ -6629,8 +6638,7 @@ class Hub extends Service {
       return res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
     }
 
-    const addr = (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || '';
-    const isLocal = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+    const isLocal = isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts });
     try {
       const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, paramArray)));
       res.setHeader('Content-Type', 'application/json');
@@ -6988,6 +6996,14 @@ class Hub extends Service {
       };
 
       await this._appendFabricMessage('BitcoinBlock', blockPayload);
+
+      if (this.market && this.market.channelsEnabled && typeof this.market.onBitcoinBlock === 'function') {
+        try {
+          await this.market.onBitcoinBlock({ height: blockPayload.height, tip: blockPayload.tip });
+        } catch (marketErr) {
+          console.warn('[HUB:MARKET] channel block hook:', marketErr && marketErr.message ? marketErr.message : marketErr);
+        }
+      }
 
       if (this.beacon && this.beacon.state && this.beacon.state.status === 'RUNNING') {
         try {
@@ -9725,6 +9741,105 @@ class Hub extends Service {
     });
   }
 
+  _getMarketService () {
+    if (!this.market) return null;
+    if (this.settings && this.settings.market && this.settings.market.enable === false) return null;
+    return this.market;
+  }
+
+  _handleMarketServiceRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) {
+        return res.status(503).json({ available: false, service: 'market', message: 'Market service is disabled on this Hub node.' });
+      }
+      return res.json(market.getCapabilities());
+    });
+  }
+
+  _handleMarketProvidersRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      return res.json({ type: 'MarketProviders', providers: market.listProviders() });
+    });
+  }
+
+  _handleMarketChunksRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      const q = req.query || {};
+      const filter = {};
+      if (q.merkleRootHex) filter.merkleRootHex = String(q.merkleRootHex);
+      if (q.documentId) filter.documentId = String(q.documentId);
+      return res.json({ type: 'MarketChunkIndex', filter, chunks: market.chunkIndex(filter) });
+    });
+  }
+
+  _handleMarketAgentRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      return res.json(market.agentStatus());
+    });
+  }
+
+  /** Admin token (Bearer or body) gate shared by the agent write routes. */
+  _marketAgentAdminOk (req) {
+    const header = String((req.headers && req.headers.authorization) || '');
+    const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+    const token = bearer || (req.body && (req.body.adminToken || req.body.token)) || '';
+    return !!(this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(token));
+  }
+
+  _handleMarketAgentConfigureRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to change the market budget.' });
+      try {
+        return res.json(market.agentConfigure(req.body || {}));
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handleMarketAgentWantRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to register wants.' });
+      try {
+        return res.status(201).json({ type: 'MarketWant', want: market.agentWant(req.body || {}) });
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handleMarketChannelsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      return res.json(market.channelsStatus());
+    });
+  }
+
+  _handleMarketChannelOpenRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const market = this._getMarketService();
+      if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to open channels.' });
+      try {
+        return res.status(201).json(Object.assign({ type: 'ChannelOpened' }, market.channelOpen(req.body || {})));
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
   _handleChallengeServiceRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const challenge = this._getChallengeService();
@@ -9738,7 +9853,10 @@ class Hub extends Service {
       const caps = challenge.getCapabilities();
       const body = {
         ...caps,
-        challenges: challenge.list()
+        challenges: challenge.list(),
+        issued: challenge.listIssued(),
+        commitments: challenge.listCommitments().length,
+        proofs: challenge.listProofs().length
       };
       if (this._state && this._state.content && this._state.content.services) {
         this._state.content.services.challenge = {
@@ -9747,6 +9865,79 @@ class Hub extends Service {
         };
       }
       return res.json(body);
+    });
+  }
+
+  _handleChallengeIssueRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to issue availability challenges.' });
+      try {
+        const body = req.body || {};
+        const issued = challenge.issue({
+          merkleRootHex: body.merkleRootHex,
+          blobHashes: Array.isArray(body.blobHashes) ? body.blobHashes : undefined,
+          blobTotal: body.blobTotal,
+          providerPubkey: body.providerPubkey,
+          contractId: body.contractId || null,
+          epoch: body.epoch,
+          deadlineHeight: body.deadlineHeight,
+          deposit: body.deposit && body.deposit.txid ? { txid: body.deposit.txid, vout: Number(body.deposit.vout) || 0 } : undefined,
+          penaltyAddress: body.penaltyAddress || undefined,
+          minPenaltySats: body.minPenaltySats != null ? Number(body.minPenaltySats) : undefined
+        });
+        return res.status(201).json({ type: 'AvailabilityChallenge', data: issued });
+      } catch (e) {
+        return res.status(400).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  _handleChallengeIssuedRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      const row = challenge.getIssued(req.params && req.params.hash);
+      if (!row) return res.status(404).json({ error: 'unknown challenge' });
+      // The epoch reveal is for the provider that passed; never list it publicly.
+      const copy = Object.assign({}, row);
+      delete copy.reveal;
+      return res.json({ type: 'AvailabilityChallengeRecord', data: copy });
+    });
+  }
+
+  _handleChallengeCommitRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      const out = challenge.commit(req.body || {});
+      if (!out.ok) return res.status(400).json({ error: out.error });
+      await challenge._persist();
+      return res.status(201).json({ type: 'AvailabilityCommitment', data: out });
+    });
+  }
+
+  _handleChallengeRespondRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      const out = challenge.respond(req.body || {});
+      await challenge._persist();
+      return res.status(out.ok ? 200 : 422).json({ type: 'AvailabilityVerdict', data: out });
+    });
+  }
+
+  _handleChallengeProofsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const challenge = this._getChallengeService();
+      if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
+      if (req.method === 'POST') {
+        const body = req.body || {};
+        const out = challenge.recordProof(body, await challenge.chainViewFor(body));
+        return res.status(out.ok ? 201 : 422).json({ type: 'FraudProofRecord', data: out });
+      }
+      return res.json({ type: 'FraudProofList', data: challenge.listProofs() });
     });
   }
 
@@ -11640,8 +11831,13 @@ class Hub extends Service {
         console.error('[HUB] Failed to seed documents index from content store:', err);
       }
 
+      if (this.market && !(this.settings.market && this.settings.market.enable === false)) {
+        this.market.attach({ hub: this, fs: this.fs, key: this._rootKey });
+        await this.market.start();
+      }
+
       if (this.challenge && this.settings.challenge && this.settings.challenge.enable !== false) {
-        this.challenge.attach({ hub: this, fs: this.fs });
+        this.challenge.attach({ hub: this, fs: this.fs, book: this.market ? this.market.book : null, key: this._rootKey });
         await this.challenge.start();
         if (this._state.content.services) {
           const caps = this.challenge.getCapabilities();
@@ -11822,6 +12018,22 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/peering', this._handlePeeringServiceRequest.bind(this));
       this.http._addRoute('GET', '/services/peering/attestation', this._handlePeeringAttestationRequest.bind(this));
       this.http._addRoute('GET', '/services/challenges', this._handleChallengeServiceRequest.bind(this));
+      /* Availability market: issue (admin), commitments / responses / fraud proofs (anyone, signature-verified) */
+      this.http._addRoute('POST', '/services/challenges', this._handleChallengeIssueRequest.bind(this));
+      this.http._addRoute('GET', '/services/challenges/proofs', this._handleChallengeProofsRequest.bind(this));
+      this.http._addRoute('POST', '/services/challenges/proofs', this._handleChallengeProofsRequest.bind(this));
+      this.http._addRoute('POST', '/services/challenges/commitments', this._handleChallengeCommitRequest.bind(this));
+      this.http._addRoute('POST', '/services/challenges/responses', this._handleChallengeRespondRequest.bind(this));
+      this.http._addRoute('GET', '/services/challenges/:hash', this._handleChallengeIssuedRequest.bind(this));
+      /* Document Market: ranked chunk index + local provider telemetry (services/market.js) */
+      this.http._addRoute('GET', '/services/market', this._handleMarketServiceRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/providers', this._handleMarketProvidersRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/chunks', this._handleMarketChunksRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/agent', this._handleMarketAgentRequest.bind(this));
+      this.http._addRoute('PUT', '/services/market/agent', this._handleMarketAgentConfigureRequest.bind(this));
+      this.http._addRoute('POST', '/services/market/agent/wants', this._handleMarketAgentWantRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/channels', this._handleMarketChannelsRequest.bind(this));
+      this.http._addRoute('POST', '/services/market/channels', this._handleMarketChannelOpenRequest.bind(this));
       /* Collaboration: contacts, email invitations, multisig-oriented groups (see functions/hubCollaboration.js) */
       hubCollaboration.registerHttp(this);
       /* Distributed execution: manifest + beacon epoch status (@fabric/core + @fabric/http) */
@@ -12343,7 +12555,7 @@ class Hub extends Service {
           if (!sendRes || sendRes.status !== 'success') {
             return { status: 'error', message: (sendRes && sendRes.message) || 'send failed' };
           }
-          return { status: 'success' };
+          return { status: 'success', merkleRootHex: sendRes.merkleRootHex, blobTotal: sendRes.blobTotal };
         } catch (err) {
           console.error('[HUB] SendPeerFile error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'send failed' };
@@ -13325,6 +13537,32 @@ class Hub extends Service {
         const desiredCopies = Math.max(1, Number(pending ? pending.config?.desiredCopies : config.desiredCopies) || 1);
         const ownerId = config.actorId || (this.agent && this.agent.identity && this.agent.identity.id) || null;
 
+        // Phase 3: when the publisher names eligible providers the contract is a
+        // core `Bond` bounty (per-epoch Taproot outputs the publisher funds; no
+        // Hub-wallet custody). Regtest / signet only — Bond refuses mainnet.
+        let bondRecord = null;
+        const providerPubkeys = Array.isArray(config.providerPubkeys) ? config.providerPubkeys : [];
+        if (providerPubkeys.length) {
+          const ch = this._getChallengeService();
+          if (!ch) return fail('Challenge service required for bounty bonds.');
+          try {
+            const epochs = Math.max(1, Math.floor(Number(config.epochs) || 1));
+            const tip = Number(bitcoin && bitcoin.height) || 0;
+            bondRecord = ch.createBounty({
+              contractId: `pending:${documentId}`,
+              merkleRootHex: config.merkleRootHex || null,
+              providerPubkeys,
+              amountSats,
+              epochs,
+              startEpoch: config.startEpoch,
+              refundAfterHeight: Number(config.refundAfterHeight) || (tip + Math.max(144, epochs * 144)),
+              network: (bitcoin && bitcoin.network) || this.settings.network || 'regtest'
+            });
+          } catch (e) {
+            return fail(`bond: ${e && e.message ? e.message : e}`);
+          }
+        }
+
         try {
           // Lightweight in-memory record for now; can later move to a dedicated
           // contracts collection and Bitcoin-backed escrow.
@@ -13339,6 +13577,8 @@ class Hub extends Service {
             responseDeadline,
             desiredCopies,
             created: new Date().toISOString(),
+            ...(config.merkleRootHex ? { merkleRootHex: String(config.merkleRootHex).toLowerCase() } : {}),
+            ...(bondRecord ? { bond: bondRecord, custody: 'taproot-bounty' } : {}),
             ...(txid ? { txid } : {}),
             ...(verifiedInvoiceMeta && verifiedInvoiceMeta.invoiceAddress
               ? {
@@ -13400,6 +13640,11 @@ class Hub extends Service {
 
           try {
             const ch = this._getChallengeService();
+            if (ch && bondRecord) {
+              // Re-key the bounty seed from the pending id to the real contract id.
+              const pendingBond = ch._bonds.get(`pending:${documentId}`);
+              if (pendingBond) { ch._bonds.delete(`pending:${documentId}`); ch._bonds.set(contractId, pendingBond); }
+            }
             if (ch) await ch.registerFromStorageContract(this._state.content.collections.contracts[contractId]);
           } catch (e) {
             console.warn('[HUB] ChallengeService register failed:', e && e.message ? e.message : e);
@@ -14748,9 +14993,12 @@ class Hub extends Service {
         }
       });
 
-      const inboundFileTransfers = new Map();
-
       const persistIncomingDocument = async (doc, origin) => {
+        const docId = String((doc && doc.id) || '').trim();
+        if (!docId || /[\\/]/.test(docId) || docId.includes('..')) {
+          console.warn('[HUB] Dropping incoming file with unsafe id:', docId);
+          return;
+        }
         const incomingBuffer = Buffer.from(doc.contentBase64, 'base64');
         if (this._validateDocumentSize(incomingBuffer)) {
           console.warn('[HUB] Dropping incoming file (too large):', doc.id);
@@ -14769,7 +15017,9 @@ class Hub extends Service {
           sha256: doc.sha256 || doc.id,
           contentBase64: doc.contentBase64,
           created: doc.created || new Date().toISOString(),
-          receivedFrom: origin && origin.name
+          receivedFrom: origin && origin.name,
+          ...(doc.merkleRootHex ? { merkleRootHex: doc.merkleRootHex } : {}),
+          ...(doc.htlcFileV1 ? { htlcFileV1: doc.htlcFileV1 } : {})
         };
 
         await this.fs.publish(`documents/${normalized.id}.json`, normalized);
@@ -14973,6 +15223,15 @@ class Hub extends Service {
               (ev && ev.signer) || body.pubkeyHex
             );
           }
+          if (t === 'AvailabilityCommitment' || t === 'AvailabilityResponse' || t === 'FraudProof' || t === 'DepositPenaltyPreSig') {
+            const ch = this._getChallengeService();
+            // Timelocked non-response proofs need the deposit outpoint looked up on chain.
+            if (ch) Promise.resolve(ch.ingestContractMessageAsync(body)).catch(() => {});
+          }
+          if (typeof t === 'string' && t.startsWith('Channel')) {
+            const market = this._getMarketService();
+            if (market) market.ingestChannelMessage(body, { sellerId: ev && ev.signer ? String(ev.signer) : undefined });
+          }
         } catch (_) { /* ignore unverified cluster gossip */ }
         if (this.settings && this.settings.debug) {
           const body = (ev && ev.object) || {};
@@ -15030,10 +15289,12 @@ class Hub extends Service {
       this.agent.on('peeringOffer', broadcastPeeringMessage);
 
       // Handle files received from peers via P2P_FILE_SEND. Store and broadcast to clients.
-      this.agent.on('file', async ({ message, origin }) => {
+      // Per-blob frames are verified and reassembled by the core Peer (Tree root + contentSha256).
+      this.agent.on('file', async ({ message, origin, status, buffer, merkleRootHex, error }) => {
         try {
           const obj = message && message.object;
-          if (!obj || !obj.contentBase64 || !obj.id) return;
+          const treeFrame = documentFileShare.isFileShareFrame(obj);
+          if (!obj || (!treeFrame && (!obj.contentBase64 || !obj.id))) return;
 
           const myFabricId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
           if (inventoryRelay.shouldForwardP2pFileChunk(obj, myFabricId)) {
@@ -15059,76 +15320,25 @@ class Hub extends Service {
             return;
           }
 
-          // Best-effort cleanup of stale/incomplete transfers.
-          const now = Date.now();
-          for (const [transferId, state] of inboundFileTransfers.entries()) {
-            if (!state || !state.updatedAt || (now - state.updatedAt) > P2P_FILE_CHUNK_TTL_MS) {
-              inboundFileTransfers.delete(transferId);
+          if (treeFrame) {
+            if (status === 'reject') {
+              console.warn('[HUB] Dropping P2P_FILE_SEND blob:', obj.name, error);
+              return;
             }
-          }
-
-          const part = obj.part;
-          const isChunked = part &&
-            part.transferId &&
-            Number.isInteger(part.index) &&
-            Number.isInteger(part.total) &&
-            part.total > 0;
-
-          if (!isChunked) {
-            await persistIncomingDocument(obj, origin);
+            if (status !== 'complete' || !Buffer.isBuffer(buffer)) return;
+            await persistIncomingDocument(
+              documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex),
+              origin
+            );
             return;
           }
 
-          const transferId = String(part.transferId);
-          if (part.total > 65536 || part.index < 0 || part.index >= part.total) {
-            console.warn('[HUB] Dropping invalid file chunk metadata:', transferId, part);
+          // Legacy whole-file frame (only files small enough to fit one AMP body ever arrive).
+          if (obj.part && Number(obj.part.total) > 1) {
+            console.warn('[HUB] Dropping legacy multi-part P2P_FILE_SEND chunk:', obj.id);
             return;
           }
-
-          let transfer = inboundFileTransfers.get(transferId);
-          if (!transfer) {
-            transfer = {
-              id: obj.id,
-              name: obj.name,
-              mime: obj.mime,
-              size: obj.size,
-              sha256: obj.sha256,
-              created: obj.created,
-              total: part.total,
-              chunks: new Array(part.total),
-              received: 0,
-              updatedAt: now
-            };
-            inboundFileTransfers.set(transferId, transfer);
-          }
-
-          if (transfer.total !== part.total) {
-            console.warn('[HUB] Dropping inconsistent file chunk transfer metadata:', transferId);
-            inboundFileTransfers.delete(transferId);
-            return;
-          }
-
-          transfer.updatedAt = now;
-          if (typeof transfer.chunks[part.index] === 'undefined') {
-            transfer.chunks[part.index] = String(obj.contentBase64);
-            transfer.received += 1;
-          }
-
-          if (transfer.received < transfer.total) return;
-
-          const completeBuffer = Buffer.concat(transfer.chunks.map((chunk) => Buffer.from(chunk, 'base64')));
-          const completeContentBase64 = completeBuffer.toString('base64');
-          inboundFileTransfers.delete(transferId);
-
-          await persistIncomingDocument({
-            id: transfer.id || obj.id,
-            name: transfer.name || obj.name,
-            mime: transfer.mime || obj.mime,
-            size: transfer.size || obj.size,
-            sha256: transfer.sha256 || obj.sha256 || obj.id,
-            created: transfer.created || obj.created,
-            contentBase64: completeContentBase64
-          }, origin);
+          await persistIncomingDocument(obj, origin);
         } catch (err) {
           console.error('[HUB] Failed to handle received file:', err);
         }
@@ -15276,10 +15486,16 @@ class Hub extends Service {
       });
 
       // When this node requested a remote inventory (or relays a response), Fabric delivers a document-offer response here.
-      this.agent.on('inventoryResponse', async ({ message, origin }) => {
+      this.agent.on('inventoryResponse', async ({ message, origin, latencyMs, hops, signerPubkeyHex }) => {
         try {
           if (!message || !isDocumentInventoryResponseType(message.type) || !message.object) return;
           const kind = String((message.object && message.object.kind) || '').trim().toLowerCase();
+          // Ranked chunk index + local RTT telemetry (also for L1 `offerBtc` replies without `kind`).
+          if (this.market) {
+            try {
+              this.market.ingestInventoryResponse({ message, origin, latencyMs, hops, signerPubkeyHex });
+            } catch (_) {}
+          }
           if (!kind) return;
           if (!['documents', 'mainchain', 'mainchain-blocks'].includes(kind)) return;
           const obj = message.object && typeof message.object === 'object' ? message.object : null;

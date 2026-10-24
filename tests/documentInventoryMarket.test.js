@@ -20,10 +20,16 @@ describe('documentInventoryMarket', function () {
   });
 
   it('computes markup list price from bps plus flat sats', function () {
-    assert.strictEqual(market.markupListPrice(100, { markupBps: 1000, markupSats: 0 }), 110);
-    assert.strictEqual(market.markupListPrice(0, { markupBps: 1000, markupSats: 25 }), 25);
-    assert.strictEqual(market.markupListPrice(1, { markupBps: 1000, markupSats: 0 }), 2);
-    assert.strictEqual(market.markupListPrice(50, { markupBps: 0, markupSats: 0, minPriceSats: 80 }), 80);
+    assert.strictEqual(market.markupListPrice(1000, { markupBps: 1000, markupSats: 0 }), 1100);
+    assert.strictEqual(market.markupListPrice(0, { markupBps: 1000, markupSats: 800 }), 800);
+    assert.strictEqual(market.markupListPrice(50, { markupBps: 0, markupSats: 0, minPriceSats: 2000 }), 2000);
+  });
+
+  it('never lists a paid price below the mainnet HTLC minimum', function () {
+    assert.strictEqual(market.HTLC_MINIMUM_SATS, 716);
+    assert.strictEqual(market.markupListPrice(1, { markupBps: 1000, markupSats: 0 }), 716);
+    assert.strictEqual(market.markupListPrice(50, { markupBps: 0, markupSats: 0, minPriceSats: 80 }), 716);
+    assert.strictEqual(market.markupListPrice(0, { markupBps: 1000, markupSats: 0 }), 0, 'free stays free');
   });
 
   it('replaces a peer snapshot and sorts cheapest first', function () {
@@ -85,30 +91,30 @@ describe('documentInventoryMarket', function () {
     const d = market.republishDecision({
       hasLocalFile: true,
       published: false,
-      remoteOffers: [{ purchasePriceSats: 100, local: false }],
+      remoteOffers: [{ purchasePriceSats: 1000, local: false }],
       policy: { republishWithMarkup: true, markupBps: 1000, markupSats: 5 }
     });
     assert.strictEqual(d.action, 'publish');
-    assert.strictEqual(d.costBasisSats, 100);
-    assert.strictEqual(d.purchasePriceSats, 115);
+    assert.strictEqual(d.costBasisSats, 1000);
+    assert.strictEqual(d.purchasePriceSats, 1105);
   });
 
   it('raises an underpriced listing and never lowers an operator price', function () {
     const raise = market.republishDecision({
       hasLocalFile: true,
       published: true,
-      publishedPriceSats: 50,
-      remoteOffers: [{ purchasePriceSats: 100 }],
+      publishedPriceSats: 500,
+      remoteOffers: [{ purchasePriceSats: 1000 }],
       policy: { republishWithMarkup: true, markupBps: 1000, markupSats: 0 }
     });
     assert.strictEqual(raise.action, 'raise');
-    assert.strictEqual(raise.purchasePriceSats, 110);
+    assert.strictEqual(raise.purchasePriceSats, 1100);
 
     const keep = market.republishDecision({
       hasLocalFile: true,
       published: true,
       publishedPriceSats: 5000,
-      remoteOffers: [{ purchasePriceSats: 100 }],
+      remoteOffers: [{ purchasePriceSats: 1000 }],
       policy: { republishWithMarkup: true, markupBps: 1000, markupSats: 0 }
     });
     assert.strictEqual(keep.action, 'skip');
@@ -118,7 +124,7 @@ describe('documentInventoryMarket', function () {
       hasLocalFile: true,
       published: true,
       publishedPriceSats: 5000,
-      remoteOffers: [{ purchasePriceSats: 100 }],
+      remoteOffers: [{ purchasePriceSats: 1000 }],
       policy: {
         republishWithMarkup: true,
         markupBps: 1000,
@@ -127,7 +133,7 @@ describe('documentInventoryMarket', function () {
       }
     });
     assert.strictEqual(lower.action, 'raise');
-    assert.strictEqual(lower.purchasePriceSats, 110);
+    assert.strictEqual(lower.purchasePriceSats, 1100);
   });
 
   it('does not invent a listing without a local blob or on free published docs', function () {

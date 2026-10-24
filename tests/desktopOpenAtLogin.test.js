@@ -62,7 +62,7 @@ describe('desktop open-at-login', function () {
       execPath: '/Applications/Fabric Hub.app/Contents/MacOS/FabricHub'
     });
     assert.strictEqual(mac.openAtLogin, true);
-    assert.strictEqual(mac.openAsHidden, true);
+    assert.strictEqual(mac.openAsHidden, undefined);
     assert.deepStrictEqual(mac.args, [HIDDEN_FLAG]);
     assert.strictEqual(mac.path, undefined);
 

@@ -10,6 +10,7 @@
  */
 
 const { serveSpaShellIfHtmlNavigation } = require('./httpSpaShell');
+const { isTrustedLoopbackRequest } = require('./hubHttpLocalTrust');
 
 const SIGNATURE_MESSAGE_TTL_MS = 10 * 60 * 1000;
 const MAX_SIGNATURE_MESSAGES = 512;
@@ -19,9 +20,8 @@ function sendJson (res, status, obj) {
   res.status(status).send(JSON.stringify(obj));
 }
 
-function isLocalRequest (req) {
-  const addr = (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || '';
-  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+function isLocalRequest (hub, req) {
+  return isTrustedLoopbackRequest(req, { allowedHosts: (hub && hub._loopbackAllowedHosts) || [] });
 }
 
 function getBearerToken (req) {
@@ -73,7 +73,7 @@ function handleSessionsList (hub, req, res) {
     if (serveSpaShellIfHtmlNavigation(hub, req, res)) return;
     resolveRegistry(hub);
     pruneDelegationMessages(hub);
-    if (!isLocalRequest(req)) {
+    if (!isLocalRequest(hub, req)) {
       sendJson(res, 403, { ok: false, error: 'session list is loopback-only' });
       return;
     }
@@ -119,7 +119,7 @@ function handleSessionByIdDestroy (hub, req, res) {
   try {
     resolveRegistry(hub);
     const sessionId = req && req.params && req.params.sessionId ? String(req.params.sessionId).trim() : '';
-    if (isLocalRequest(req) && sessionId) {
+    if (isLocalRequest(hub, req) && sessionId) {
       if (!hub._delegationRegistry.has(sessionId)) {
         sendJson(res, 404, { ok: false, error: 'unknown session' });
         return;

@@ -2,8 +2,11 @@
 
 const assert = require('assert');
 const Message = require('@fabric/core/types/message');
-const { MAGIC_BYTES, HEADER_SIZE } = require('@fabric/core/constants');
+const Peer = require('@fabric/core/types/peer');
+const { MAGIC_BYTES, HEADER_SIZE, MAX_MESSAGE_SIZE } = require('@fabric/core/constants');
+const { merkleRootHexFromBlobHashes } = require('@fabric/core/functions/documentBlobManifest');
 const Hub = require('../services/hub');
+const { FILE_SHARE_BLOB_BYTES, buildFileShareFrames } = require('../functions/documentFileShare');
 
 describe('Hub WebRTC RPC methods', function () {
   this.timeout(120000);
@@ -550,7 +553,7 @@ describe('Hub WebRTC RPC methods', function () {
 
   });
 
-  it('splits SendPeerFile payload into 1MB chunks', async function () {
+  it('splits SendPeerFile payload into AMP-sized Tree blobs', async function () {
     const { methods, hub } = harness;
     assert.ok(methods.SendPeerFile, 'SendPeerFile should be registered');
 
@@ -578,77 +581,83 @@ describe('Hub WebRTC RPC methods', function () {
     );
 
     assert.strictEqual(result.status, 'success');
-    assert.strictEqual(sentVectors.length, 3, 'expected two full 1MB chunks and one remainder');
+    assert.strictEqual(sentVectors.length, Math.ceil(source.length / FILE_SHARE_BLOB_BYTES));
+    assert.strictEqual(result.blobTotal, sentVectors.length);
 
     const parsed = sentVectors.map(({ target, vector }) => {
       assert.strictEqual(target, address);
       assert.strictEqual(vector[0], 'P2P_FILE_SEND');
-      return JSON.parse(vector[1]);
+      assert.ok(Buffer.byteLength(vector[1]) <= MAX_MESSAGE_SIZE, 'every frame fits one AMP body');
+      return JSON.parse(vector[1]).object;
     });
 
-    const total = parsed[0].object.part.total;
-    const transferId = parsed[0].object.part.transferId;
-    assert.strictEqual(total, sentVectors.length, 'part.total should match emitted chunks');
-
-    const indexes = parsed
-      .map((entry) => entry.object.part.index)
-      .sort((a, b) => a - b);
-
-    for (let i = 0; i < indexes.length; i++) {
-      assert.strictEqual(indexes[i], i, 'chunk indexes should be contiguous');
-    }
-
-    for (let i = 0; i < parsed.length; i++) {
-      const entry = parsed[i];
-      assert.strictEqual(entry.object.part.transferId, transferId, 'all chunks should share transferId');
-      const chunkBytes = Buffer.from(entry.object.contentBase64, 'base64').length;
-      if (i < parsed.length - 1) {
-        assert.strictEqual(chunkBytes, oneMB, 'all non-final chunks should be exactly 1MB');
-      } else {
-        assert.strictEqual(chunkBytes, 123, 'final chunk should carry remainder bytes');
-      }
-    }
+    parsed.forEach((obj, i) => {
+      assert.strictEqual(obj.name, 'doc-chunk-test');
+      assert.strictEqual(obj.fileName, 'chunk-test.bin');
+      assert.strictEqual(obj.blobIndex, i, 'blob indexes should be contiguous');
+      assert.strictEqual(obj.blobTotal, parsed.length);
+      assert.strictEqual(obj.merkleRootHex, result.merkleRootHex, 'all blobs share one Tree root');
+    });
+    assert.strictEqual(merkleRootHexFromBlobHashes(parsed.map((obj) => obj.blobHashHex)), result.merkleRootHex);
+    const reassembled = Buffer.concat(parsed.map((obj) => Buffer.from(obj.body, 'base64')));
+    assert.deepStrictEqual(reassembled, source);
   });
 
-  it('reassembles incoming chunked P2P files and persists once complete', async function () {
+  it('persists a P2P file once the core Peer has verified every blob', async function () {
     const { agentHandlers, published } = harness;
     assert.ok(agentHandlers.file, 'file handler should be registered');
 
-    const oneMB = 1024 * 1024;
-    const original = Buffer.alloc((2 * oneMB) + 77, 0x5a);
-    const transferId = `transfer-${Date.now()}`;
-    const chunks = [
-      original.subarray(0, oneMB),
-      original.subarray(oneMB, 2 * oneMB),
-      original.subarray(2 * oneMB)
-    ];
-
-    for (let i = 0; i < chunks.length; i++) {
-      await agentHandlers.file({
-        origin: { name: '127.0.0.1:7999' },
-        message: {
-          object: {
-            id: 'doc-reassembly-test',
-            name: 'reassembly.bin',
-            mime: 'application/octet-stream',
-            size: original.length,
-            sha256: 'doc-reassembly-test',
-            contentBase64: chunks[i].toString('base64'),
-            created: '2026-01-01T00:00:00.000Z',
-            part: {
-              transferId,
-              index: i,
-              total: chunks.length
-            }
-          }
-        }
-      });
+    const original = Buffer.alloc((2 * 1024 * 1024) + 77, 0x5a);
+    const { frames } = buildFileShareFrames(original, {
+      documentId: 'doc-reassembly-test',
+      fileName: 'reassembly.bin',
+      mime: 'application/octet-stream',
+      size: original.length,
+      created: '2026-01-01T00:00:00.000Z'
+    });
+    const peer = new Peer({ listen: false, peers: [] });
+    const origin = { name: '127.0.0.1:7999' };
+    for (const frame of frames) {
+      const message = { type: 'P2P_FILE_SEND', object: JSON.parse(frame).object };
+      await agentHandlers.file(Object.assign({ message, origin }, peer._ingestP2pFileSend(message, origin)));
     }
 
     const documentPublishes = published.filter((item) => item.name === 'documents/doc-reassembly-test.json');
-    assert.strictEqual(documentPublishes.length, 1, 'should persist once after final chunk arrives');
+    assert.strictEqual(documentPublishes.length, 1, 'should persist once after the final blob arrives');
     const stored = documentPublishes[0].value;
-    assert.ok(stored && stored.contentBase64, 'stored document should include content');
+    assert.strictEqual(stored.name, 'reassembly.bin');
+    assert.ok(/^[0-9a-f]{64}$/.test(stored.merkleRootHex));
     assert.deepStrictEqual(Buffer.from(stored.contentBase64, 'base64'), original, 'reassembled content should match original bytes');
+  });
+
+  it('drops rejected blobs, legacy multi-part chunks, and unsafe document ids', async function () {
+    const { agentHandlers, published } = harness;
+    const origin = { name: '127.0.0.1:7999' };
+    const { frames } = buildFileShareFrames(Buffer.from('rejected'), { documentId: 'doc-rejected' });
+    await agentHandlers.file({
+      message: { object: JSON.parse(frames[0]).object },
+      origin,
+      status: 'reject',
+      error: 'blob hash mismatch'
+    });
+    await agentHandlers.file({
+      message: {
+        object: {
+          id: 'doc-legacy-part',
+          name: 'part.bin',
+          contentBase64: Buffer.from('a').toString('base64'),
+          part: { transferId: 't', index: 0, total: 2 }
+        }
+      },
+      origin
+    });
+    await agentHandlers.file({
+      message: { object: { id: '../payjoin/index', name: 'x', contentBase64: Buffer.from('x').toString('base64') } },
+      origin
+    });
+    const names = published.map((item) => item.name);
+    assert.ok(!names.includes('documents/doc-rejected.json'));
+    assert.ok(!names.includes('documents/doc-legacy-part.json'));
+    assert.ok(!names.some((name) => name.includes('..')));
   });
 });

@@ -1665,6 +1665,14 @@ class Bridge extends React.Component {
     }
   }
 
+  /**
+   * Feed a fresh browser-wallet balance into the receive-notice baseline (toast + bell on increases).
+   * @param {{ walletId: string, balanceSats: number, confirmedSats?: number, unconfirmedSats?: number }} detail
+   */
+  noteClientWalletBalance (detail) {
+    this._onClientBalanceUpdate({ detail });
+  }
+
   _onClientBalanceUpdate (ev) {
     try {
       const d = ev && ev.detail;
@@ -4532,6 +4540,8 @@ class Bridge extends React.Component {
               if (doc.id && doc.contentBase64) {
                 if (doc.part && doc.part.transferId != null && doc.part.total != null) {
                   this._handleP2pFileChunk(doc, doc.part);
+                } else if (doc.htlcFileV1) {
+                  this._handleP2pFileChunk(doc, { transferId: `${doc.id}:${doc.merkleRootHex || 'whole'}`, index: 0, total: 1 });
                 } else {
                   const targetId = this._resolveDocumentTargetId(doc.id, doc);
                   this._storeDocument(targetId, { ...doc, receivedFromPeer: true });
@@ -4810,6 +4820,7 @@ class Bridge extends React.Component {
           }
           break;
         case 'JSONPatch':
+        case 'JSON_PATCH':
           // Handle JSONPatch messages (canonical path). Body may be message.body or message.data (Fabric Message.fromRaw sets data; body getter uses raw.data).
           try {
             const bodyRaw = message.body != null ? message.body : (message.data != null && typeof message.data === 'string' ? message.data : (message.data != null && (Buffer.isBuffer(message.data) || (typeof Uint8Array !== 'undefined' && message.data instanceof Uint8Array)) ? Buffer.from(message.data).toString('utf8') : null));

@@ -17,5 +17,11 @@ contextBridge.exposeInMainWorld('fabricDesktop', {
     return () => ipcRenderer.removeListener('fabric-login-prompt', handler);
   },
   pullPendingLoginPrompt: () => ipcRenderer.invoke('fabric:get-pending-login-prompt'),
-  getPaths: () => ipcRenderer.invoke('fabric:get-desktop-paths')
+  getPaths: () => ipcRenderer.invoke('fabric:get-desktop-paths'),
+  secureStore: {
+    available: () => ipcRenderer.invoke('fabric:secure-store-available'),
+    get: (key) => ipcRenderer.invoke('fabric:secure-store-get', key),
+    set: (key, value) => ipcRenderer.invoke('fabric:secure-store-set', { key, value }),
+    remove: (key) => ipcRenderer.invoke('fabric:secure-store-remove', key)
+  }
 });
