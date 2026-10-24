@@ -14,7 +14,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | electron-builder | **`26.18.0`** + overrides `tar@7.5.22`, `builder-util-runtime@9.7.0` |
 | nodemailer | **`10.2.1`** (10.x clears the 9.0.4 advisory set; 9.1.1 still left the addressparser DoS and cross-transport TLS `servername` reuse) |
 | webpack / webpack-dev-server | **`5.112.2`** / **`5.2.6`**; `terser-webpack-plugin@5.6.1`; `uuid@11.1.1` override (sockjs / jayson) |
-| mocha / jsdoc-to-markdown | **`12.0.3`** / **`9.1.3`**, both **devDependencies** (test and `make:api` tooling only) |
+| mocha / c8 / jsdoc-to-markdown | **`12.0.3`** / **`12.0.0`** / **`9.1.3`**, all **devDependencies** (test, coverage, and `make:api` tooling only). mocha 12 resolves `serialize-javascript@7.1.4` (past the `</script` XSS, [GHSA-m5mm-p8h7-m29v](https://github.com/advisories/GHSA-m5mm-p8h7-m29v)) without an override |
 | React Router | **`react-router-dom@7.18.4`** — see residual below; webpack pins CJS entrypoints (see Recommendations) |
 | npm audit (this tree) | **0** (full and `--omit=dev`) |
 
@@ -33,8 +33,6 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | `tar@7.5.22` | electron-builder / node-gyp extraction path |
 | `builder-util-runtime@9.7.0` | electron-updater credential leak class |
 | `elliptic` → `@soatok/elliptic-to-noble` | Existing Hub pin |
-| `serialize-javascript@7.1.4` | mocha + terser-webpack-plugin; &lt;7.1.3 has the `</script` XSS ([GHSA-m5mm-p8h7-m29v](https://github.com/advisories/GHSA-m5mm-p8h7-m29v)) |
-
 Electron ≥42 has no install script: the binary downloads the first time `electron` runs (`npm run desktop`, or `npx install-electron`), so it needs no `allowScripts` entry.
 
 ## Recommendations
