@@ -179,3 +179,6 @@ stores/hub-test-lightning-nc/
 
 # Local Fomantic checkout — compiled CSS/JS already lives in assets/
 libraries/fomantic/
+
+# Twemoji SVGs imported by build:semantic (CC-BY 4.0; see NOTICE there)
+/assets/themes/fabric/assets/twemoji/

@@ -44,7 +44,6 @@ describe('Beacon reorg / prune', function () {
       federationWitnessFailClosed: true
     });
     b._federationValidators = [key.pubkey];
-    b._federationThreshold = 1;
     b._epochChain = Chain.fromBeaconMessages([
       {
         type: 'BEACON_EPOCH',

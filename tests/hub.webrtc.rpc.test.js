@@ -4,7 +4,7 @@ const assert = require('assert');
 const Message = require('@fabric/core/types/message');
 const Peer = require('@fabric/core/types/peer');
 const { MAGIC_BYTES, HEADER_SIZE, MAX_MESSAGE_SIZE } = require('@fabric/core/constants');
-const { merkleRootHexFromBlobHashes } = require('@fabric/core/functions/documentBlobManifest');
+const Document = require('@fabric/core/types/document');
 const Hub = require('../services/hub');
 const { FILE_SHARE_BLOB_BYTES, buildFileShareFrames } = require('../functions/documentFileShare');
 
@@ -598,7 +598,7 @@ describe('Hub WebRTC RPC methods', function () {
       assert.strictEqual(obj.blobTotal, parsed.length);
       assert.strictEqual(obj.merkleRootHex, result.merkleRootHex, 'all blobs share one Tree root');
     });
-    assert.strictEqual(merkleRootHexFromBlobHashes(parsed.map((obj) => obj.blobHashHex)), result.merkleRootHex);
+    assert.strictEqual(Document.rootHexFromBlobHashes(parsed.map((obj) => obj.blobHashHex)), result.merkleRootHex);
     const reassembled = Buffer.concat(parsed.map((obj) => Buffer.from(obj.body, 'base64')));
     assert.deepStrictEqual(reassembled, source);
   });

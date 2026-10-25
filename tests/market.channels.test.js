@@ -41,7 +41,8 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     const keyA = new Key();
     const keyB = new Key();
     const relayed = { a: [], b: [] };
-    const hubFor = (sink) => ({ agent: { relayFrom: async (_from, msg) => { sink.push(JSON.parse(msg.body).object); } }, bitcoin: null, settings: { bitcoin: { network: 'regtest' } } });
+    const chain = { network: 'regtest', height: 0, getTransactionInfo: async () => ({ confirmations: 6 }) };
+    const hubFor = (sink) => ({ agent: { relayFrom: async (_from, msg) => { sink.push(JSON.parse(msg.body).object); } }, bitcoin: chain, settings: { bitcoin: { network: 'regtest' } } });
     const A = new MarketService({ channels: { enable: true } }).attach({ hub: hubFor(relayed.a), fs: fsA, key: keyA });
     const B = new MarketService({ channels: { enable: true } }).attach({ hub: hubFor(relayed.b), fs: fsB, key: keyB });
     const pubB = keyB.public.encodeCompressed('hex');
@@ -67,10 +68,14 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
         while (relayed.b.length) { moved = true; A.ingestChannelMessage(relayed.b.shift(), { sellerId: 'peer-b' }); }
       }
     };
+    // The funding is confirmed (the block hook feeds this from RPC on a real Hub).
+    for (const m of [A, B]) m._ensureChannels().setConfirmations(tx.getId(), 6);
+    // The acceptor checks the channel lifetime against its tip; the funder has none yet.
+    await B.onBitcoinBlock({ height: 100 });
     pump();
     assert.strictEqual(A.channelsStatus().channels[0].fullySigned, true);
     assert.strictEqual(A.channelsStatus().channels[0].status, 'open');
-    const opening = 30000 - 500 - 2 * Channel.DEFAULTS.anchorSats;
+    const opening = 30000 - B.channels.get(opened.channelId).state.feeSats - 2 * Channel.DEFAULTS.anchorSats;
     assert.strictEqual(B.channelsStatus().channels[0].balances.remoteSats, opening);
     assert.strictEqual(B.ingestChannelMessage({ type: 'ChannelOpen', channelId: 'nope' }), null);
 
@@ -136,7 +141,7 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     const Witness = require('@fabric/core/types/witness');
     const fp = Witness.FraudProof.fromBody(proof);
     // Verifiers must know the header is on their chain (ChallengeService#chainViewFor resolves it via bitcoind).
-    const chainView = { headerKnown: (h) => h === blockHash };
+    const chainView = { headerKnown: (h) => h === blockHash, confirmations: (h) => (h === blockHash ? 6 : 0) };
     assert.strictEqual(fp.verify(chainView).ok, true, 'inclusion proof against a known header establishes the broadcast');
     assert.strictEqual(fp.verify(chainView).evidence, 'inclusion');
     assert.strictEqual(breaches[0].justice, null, 'no wallet address without a Bitcoin service');

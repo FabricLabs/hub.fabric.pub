@@ -6,7 +6,7 @@ const Key = require('@fabric/core/types/key');
 const Message = require('@fabric/core/types/message');
 const Peer = require('@fabric/core/types/peer');
 const { HEADER_SIZE, MAX_MESSAGE_SIZE } = require('@fabric/core/constants');
-const { merkleRootHexFromBlobHashes } = require('@fabric/core/functions/documentBlobManifest');
+const Document = require('@fabric/core/types/document');
 const {
   FILE_SHARE_BLOB_BYTES,
   FILE_SHARE_MAX_BYTES,
@@ -64,7 +64,7 @@ describe('documentFileShare', function () {
       assert.strictEqual(obj.merkleRootHex, share.merkleRootHex);
       hashes.push(obj.blobHashHex);
     }
-    assert.strictEqual(merkleRootHexFromBlobHashes(hashes), share.merkleRootHex);
+    assert.strictEqual(Document.rootHexFromBlobHashes(hashes), share.merkleRootHex);
   });
 
   it('core Peer reassembles out-of-order frames and verifies the root', function () {
@@ -98,7 +98,7 @@ describe('documentFileShare', function () {
     bad.object.body = crypto.randomBytes(FILE_SHARE_BLOB_BYTES).toString('base64');
     assert.strictEqual(ingest(peer, JSON.stringify(bad)).status, 'reject');
 
-    // [a, b, c, c] has the same Bitcoin Merkle root as [a, b, c]; contentSha256 catches it.
+    // [a, b, c, c] does not build the root of [a, b, c]: the root commits the blob count.
     const frames = share.frames.map((f) => JSON.parse(f));
     const extra = JSON.parse(JSON.stringify(frames[2]));
     extra.object.blobIndex = 3;
@@ -109,7 +109,7 @@ describe('documentFileShare', function () {
     let last = null;
     for (const frame of forged) last = ingest(peer, frame);
     assert.strictEqual(last.status, 'reject');
-    assert.strictEqual(last.error, 'contentSha256 mismatch');
+    assert.strictEqual(last.error, 'merkle/root mismatch');
   });
 
   it('clips names by encoded size so escapes and emoji cannot overflow a frame', function () {

@@ -6,6 +6,8 @@
  * `FabricLocalNetworkProfile` written by `scripts/deploy.js`.
  */
 
+const { withDefaultSeedPeers } = require('./hubDefaultPeers');
+
 const SETTING_ADDNODES = 'BITCOIN_ADDNODES';
 const SETTING_PEERS = 'FABRIC_PEERS';
 const PROFILE_TYPE = 'FabricLocalNetworkProfile';
@@ -69,6 +71,31 @@ function applyNetworkJoinFromSetup (settings, setup = {}) {
 }
 
 /**
+ * A desktop Hub is never the playnet seed (the shared `settings/local.js` is
+ * that seed's config, so it skips dialing itself). Dial the default Fabric seeds
+ * and, on regtest, `addnode` the playnet bitcoind — unless a private network was
+ * joined, whose peers replace the public ones. Mutates and returns `settings`.
+ * `FABRIC_BITCOIN_SKIP_PLAYNET_PEER` still wins over this default.
+ * @param {Object} settings Hub settings
+ * @param {Object} setup STATE settings map
+ * @returns {Object}
+ */
+function applyDesktopPlaynetDefaults (settings, setup = {}) {
+  const root = settings && typeof settings === 'object' ? settings : {};
+  let joined = false;
+  try {
+    joined = parseHostPortList(setup[SETTING_ADDNODES]).length > 0 ||
+      parseHostPortList(setup[SETTING_PEERS]).length > 0;
+  } catch (_) {
+    joined = true;
+  }
+  if (joined) return root;
+  root.peers = withDefaultSeedPeers(root.peers);
+  root.bitcoin = Object.assign({}, root.bitcoin, { skipPlaynetPeer: false });
+  return root;
+}
+
+/**
  * Validate a network profile and turn it into setup settings.
  * @param {Object|string} profile `network-profile.json` contents
  * @param {Object} [opts]
@@ -106,5 +133,6 @@ module.exports = {
   PROFILE_TYPE,
   parseHostPortList,
   applyNetworkJoinFromSetup,
+  applyDesktopPlaynetDefaults,
   profileToSettings
 };

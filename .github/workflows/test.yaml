@@ -43,6 +43,11 @@ jobs:
     - name: Install Chrome for Puppeteer
       run: npx puppeteer browsers install chrome
       working-directory: hub
+    # Ubuntu 23.10+ AppArmor blocks the unprivileged user namespaces Chrome's
+    # sandbox needs; allow them rather than launching with --no-sandbox.
+    - name: Allow Chrome's sandbox
+      if: runner.os == 'Linux'
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
     - name: Generate coverage report
       run: npm run report:coverage
       working-directory: hub

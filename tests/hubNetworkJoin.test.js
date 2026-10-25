@@ -4,6 +4,7 @@ const assert = require('assert');
 const {
   parseHostPortList,
   applyNetworkJoinFromSetup,
+  applyDesktopPlaynetDefaults,
   profileToSettings
 } = require('../functions/hubNetworkJoin');
 
@@ -41,6 +42,23 @@ describe('hubNetworkJoin', function () {
     const settings = applyNetworkJoinFromSetup({ peers: ['hub.fabric.pub:7777'], bitcoin: {} }, {});
     assert.deepStrictEqual(settings.peers, ['hub.fabric.pub:7777']);
     assert.strictEqual(settings.bitcoin.skipPlaynetPeer, undefined);
+  });
+
+  it('makes a desktop Hub a playnet node: Fabric seeds and regtest addnode', function () {
+    const settings = applyDesktopPlaynetDefaults({
+      peers: ['relay.goon.vc:7777', '127.0.0.1:7778'],
+      bitcoin: { network: 'regtest', skipPlaynetPeer: true }
+    }, {});
+    assert.deepStrictEqual(settings.peers, ['relay.goon.vc:7777', '127.0.0.1:7778', 'hub.fabric.pub:7777']);
+    assert.strictEqual(settings.bitcoin.skipPlaynetPeer, false);
+  });
+
+  it('keeps a joined private network off the playnet', function () {
+    const setup = { BITCOIN_ADDNODES: ['127.0.0.1:30444'], FABRIC_PEERS: '127.0.0.1:30277' };
+    const joined = applyNetworkJoinFromSetup({ peers: ['relay.goon.vc:7777'], bitcoin: { network: 'regtest' } }, setup);
+    const settings = applyDesktopPlaynetDefaults(joined, setup);
+    assert.deepStrictEqual(settings.peers, ['127.0.0.1:30277']);
+    assert.strictEqual(settings.bitcoin.skipPlaynetPeer, true);
   });
 
   it('turns a profile into settings without exposing admin token paths', function () {

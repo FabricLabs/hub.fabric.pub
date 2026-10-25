@@ -2,10 +2,10 @@
 
 const assert = require('assert');
 const Key = require('@fabric/core/types/key');
-const contractPublishAuthority = require('@fabric/core/functions/contractPublishAuthority');
+const Contract = require('@fabric/core/types/contract');
 
 describe('Hub Accept publish signer bridge', function () {
-  it('contractPublishSignerAuthorized gates Accept when authorities listed', function () {
+  it('Contract.publishSignerAuthorized gates Accept when authorities listed', function () {
     const owner = new Key();
     const attacker = new Key();
     const definition = {
@@ -13,11 +13,11 @@ describe('Hub Accept publish signer bridge', function () {
       validators: [owner.pubkey]
     };
     assert.strictEqual(
-      contractPublishAuthority.contractPublishSignerAuthorized(definition, owner.pubkey),
+      Contract.publishSignerAuthorized(definition, owner.pubkey),
       true
     );
     assert.strictEqual(
-      contractPublishAuthority.contractPublishSignerAuthorized(definition, attacker.pubkey),
+      Contract.publishSignerAuthorized(definition, attacker.pubkey),
       false
     );
   });

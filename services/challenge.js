@@ -96,6 +96,7 @@ class ChallengeService extends Service {
     this._headerKnown = null;
     /** @type {function|null} host chain view `(txid) → boolean` (transaction confirmed) */
     this._txConfirmed = null;
+    this._blockConfirmations = null;
   }
 
   static get MARKET_CONTRACT_ID () { return MARKET_CONTRACT_ID; }
@@ -111,6 +112,7 @@ class ChallengeService extends Service {
     if (typeof deps.outpointUnspent === 'function') this._outpointUnspent = deps.outpointUnspent;
     if (typeof deps.headerKnown === 'function') this._headerKnown = deps.headerKnown;
     if (typeof deps.txConfirmed === 'function') this._txConfirmed = deps.txConfirmed;
+    if (typeof deps.blockConfirmations === 'function') this._blockConfirmations = deps.blockConfirmations;
     return this;
   }
 
@@ -169,6 +171,43 @@ class ChallengeService extends Service {
   }
 
   /**
+   * Depth of a block in our chain view (`attach({ blockConfirmations })`, else
+   * Hub bitcoind `getblockheader`); 0 off the best chain, `null` when unknown.
+   * @param {string} blockHash
+   * @returns {Promise<number|null>}
+   */
+  async blockConfirmations (blockHash) {
+    const hash = String(blockHash || '').toLowerCase();
+    if (!HEX64.test(hash)) return null;
+    try {
+      if (this._blockConfirmations) return Number(await this._blockConfirmations(hash)) || 0;
+      const btc = this.hub && this.hub.bitcoin;
+      if (!btc || typeof btc._makeRPCRequest !== 'function') return null;
+      const header = await btc._makeRPCRequest('getblockheader', [hash, true]);
+      return header ? Math.max(0, Number(header.confirmations) || 0) : 0;
+    } catch (e) {
+      return /not found/i.test(String(e && e.message ? e.message : e)) ? 0 : null;
+    }
+  }
+
+  /**
+   * Confirmations of a transaction in our chain view (Hub bitcoind
+   * `getrawtransaction` — wallet / txindex permitting). `null` when unknown.
+   * @param {string} txid
+   * @returns {Promise<number|null>}
+   */
+  async txConfirmations (txid) {
+    const id = String(txid || '').toLowerCase();
+    if (!HEX64.test(id)) return null;
+    try {
+      const btc = this.hub && this.hub.bitcoin;
+      if (!btc || typeof btc._makeRPCRequest !== 'function') return null;
+      const tx = await btc._makeRPCRequest('getrawtransaction', [id, true]);
+      return tx ? Math.max(0, Number(tx.confirmations) || 0) : 0;
+    } catch (_) { return null; }
+  }
+
+  /**
    * Whether a transaction is confirmed in our chain view (`attach({ txConfirmed })`,
    * else Hub bitcoind `getrawtransaction` — wallet / txindex permitting). `null` when unknown.
    * @param {string} txid
@@ -210,11 +249,20 @@ class ChallengeService extends Service {
     if (blockHash) {
       const known = await this.headerKnown(blockHash);
       if (known != null) ctx.headerKnown = (h) => known && String(h || '').toLowerCase() === blockHash;
+      const depth = known ? await this.blockConfirmations(blockHash) : null;
+      if (depth != null) ctx.confirmations = (h) => (String(h || '').toLowerCase() === blockHash ? depth : 0);
     }
     const txid = txidFromHex(txHex);
     if (txid && !ctx.headerKnown) {
-      const confirmed = await this.txConfirmed(txid);
-      if (confirmed != null) ctx.txConfirmed = (id) => confirmed && String(id || '').toLowerCase() === txid;
+      // Core reads `txConfirmed(txid, depth)` as "at least depth deep", so a
+      // boolean is only trusted from a host hook; RPC answers with the count.
+      const count = this._txConfirmed ? null : await this.txConfirmations(txid);
+      if (count != null) {
+        ctx.txConfirmations = (id) => (String(id || '').toLowerCase() === txid ? count : 0);
+      } else {
+        const confirmed = await this.txConfirmed(txid);
+        if (confirmed != null) ctx.txConfirmed = (id) => confirmed && String(id || '').toLowerCase() === txid;
+      }
     }
     return ctx;
   }
@@ -293,7 +341,20 @@ class ChallengeService extends Service {
     return { ok: true, key: k };
   }
 
-  /** @private pre-signature held for a challenge's deposit + deadline */
+  /** @private the registered deposit's answer leaf for a planned round */
+  _answerPathFor (challenge) {
+    const dep = challenge && challenge.deposit;
+    const answerHash = challenge && challenge.answerHashHex ? String(challenge.answerHashHex).toLowerCase() : null;
+    if (!dep || !answerHash) return undefined;
+    const row = this._deposits.get(`${String(dep.txid).toLowerCase()}:${Number(dep.vout) || 0}`);
+    if (!row || !row.deposit || String(row.deposit.answerHashHex || '').toLowerCase() !== answerHash) return undefined;
+    try {
+      const deposit = row.deposit._leaves ? row.deposit : Bond.fromRecord(row.deposit);
+      return Bond.answerPath(deposit);
+    } catch (_) { return undefined; }
+  }
+
+  /** @private pre-signed penalty for a challenge's deposit + deadline */
   _preSigFor (challenge) {
     const dep = challenge && challenge.deposit;
     if (!dep || !challenge.deadlineHeight) return null;
@@ -474,7 +535,10 @@ class ChallengeService extends Service {
    * The signed `deposit` names the publisher's penalty destination
    * (`penaltyAddress` / `minPenaltySats`, from `opts`, the registered deposit, or
    * settings) so a provider pre-signature paying anywhere else never verifies.
-   * @param {object} opts `{ merkleRootHex, blobHashes?, blobTotal?, providerPubkey (x-only hex), contractId?, epoch?, deadlineHeight?, deposit?, penaltyAddress?, minPenaltySats? }`
+   * A timelocked round is only provable when it was planned (`Challenge.planRound`)
+   * and the provider's deposit commits its answer hash: pass the plan's
+   * `nonceHex` + `answerHashHex` (or `bytesFor` to compute them).
+   * @param {object} opts `{ merkleRootHex, blobHashes?, blobTotal?, providerPubkey (x-only hex), contractId?, epoch?, deadlineHeight?, deposit?, penaltyAddress?, minPenaltySats?, nonceHex?, answerHashHex?, bytesFor? }`
    * @returns {object} signed challenge artifact
    */
   issue (opts = {}) {
@@ -506,6 +570,9 @@ class ChallengeService extends Service {
       blobTotal: opts.blobTotal,
       epoch,
       providerPubkey: opts.providerPubkey,
+      nonceHex: opts.nonceHex,
+      answerHashHex: opts.answerHashHex,
+      bytesFor: opts.bytesFor,
       publisherPrivateKey: priv
     }, deposit && deadlineHeight != null ? { deposit, deadlineHeight } : {}));
     const hash = Witness.artifactHash(challenge);
@@ -594,7 +661,7 @@ class ChallengeService extends Service {
       const commitment = this.commitmentFor(ch.merkleRootHex, ch.providerPubkey);
       const penaltyPreSig = this._preSigFor(ch);
       if (!commitment || !penaltyPreSig) continue;
-      const proof = this.challenger.proofFor(ch, null, { commitment, penaltyPreSig, epoch: now, tipHeight: ctx.tipHeight, outpointUnspent: ctx.outpointUnspent });
+      const proof = this.challenger.proofFor(ch, null, { commitment, penaltyPreSig, answerPath: this._answerPathFor(ch), epoch: now, tipHeight: ctx.tipHeight, outpointUnspent: ctx.outpointUnspent });
       if (proof) { const rec = this.recordProof(proof.toBody(), ctx); if (rec.ok) n++; }
     }
     return n;
@@ -622,8 +689,13 @@ class ChallengeService extends Service {
     if (typeof ctx.outpointUnspent === 'function') view.outpointUnspent = ctx.outpointUnspent;
     // Same rule for broadcast evidence: resolved by `chainViewFor` before this call.
     if (typeof ctx.headerKnown === 'function') view.headerKnown = ctx.headerKnown;
+    if (typeof ctx.confirmations === 'function') view.confirmations = ctx.confirmations;
+    if (typeof ctx.txConfirmations === 'function') view.txConfirmations = ctx.txConfirmations;
     if (typeof ctx.txConfirmed === 'function') view.txConfirmed = ctx.txConfirmed;
     const verdict = this.book ? this.book.ingestFraudProof(proof, view) : proof.verify(view);
+    // A peer re-relaying a proof we already hold is not an error.
+    const held = this._proofs.get(proof.hash);
+    if (!verdict.ok && verdict.duplicate && held) return { ok: true, hash: proof.hash, verdict: held.verdict, duplicate: true, penalized: [] };
     if (!verdict.ok) return { ok: false, hash: proof.hash, verdict };
     const hash = proof.hash;
     const fresh = !this._proofs.has(hash);

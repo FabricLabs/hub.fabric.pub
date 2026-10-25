@@ -8,7 +8,7 @@
  */
 
 const constants = require('@fabric/core/constants');
-const { splitBlobs } = require('@fabric/core/functions/documentBlobManifest');
+const Document = require('@fabric/core/types/document');
 
 const { MAX_MESSAGE_SIZE } = constants;
 const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SEALED_BLOB_PARTS;
@@ -58,7 +58,7 @@ function buildFileShareFrames (buffer, meta = {}) {
   const documentId = String(meta.documentId || '').trim();
   if (!documentId) throw new TypeError('documentId required');
 
-  const split = splitBlobs(buf, FILE_SHARE_BLOB_BYTES, documentId);
+  const split = Document.split(buf, FILE_SHARE_BLOB_BYTES, documentId);
   const relay = meta.relay && meta.relay.deliveryFabricId
     ? { deliveryFabricId: String(meta.relay.deliveryFabricId).trim(), fileRelayTtl: meta.relay.fileRelayTtl }
     : {};

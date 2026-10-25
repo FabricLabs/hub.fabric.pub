@@ -4,7 +4,7 @@ npm warn deprecated rimraf@2.6.3: Rimraf versions prior to v4 are no longer supp
 npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
-added 1113 packages, and audited 1114 packages in 48s
+added 1113 packages, and audited 1114 packages in 36s
 
 208 packages are looking for funding
   run `npm fund` for details

@@ -176,19 +176,22 @@ function ensureInstanceKey (dir) {
  * @returns {object}
  */
 function buildFragment (opts) {
-  const { network, instance, dir, key, seedPort, fabricPeers } = opts;
+  const { network, instance, dir, key, seedPort, fabricPeers, bitcoinPeers } = opts;
   const profile = networkProfile(network);
   const ports = instance.ports;
   const isSeed = instance.name === 'seed';
   const extra = profile.extraParams.slice();
   if (isSeed) extra.push('-bind=127.0.0.1');
   if (seedPort && !isSeed) extra.push(`-addnode=127.0.0.1:${seedPort}`);
+  for (const peer of bitcoinPeers || []) extra.push(`-addnode=${peer}`);
   return {
     title: instance.label,
     alias: instance.name,
     port: ports.fabric,
     interface: '127.0.0.1',
     peers: fabricPeers || [],
+    // Busy public Hubs can sit silent for 20 s or more mid-handshake (core's default idle timeout is 5 s).
+    connectTimeout: 60000,
     path: dir,
     fs: { path: dir },
     // The default registry is the developer Hub's stores/hub/peers (public seeds).

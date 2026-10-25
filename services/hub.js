@@ -197,7 +197,6 @@ const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelop
 const documentPaymentHash = require('../functions/documentPaymentHash');
 const sidechainState = require('../functions/sidechainState');
 const trackedApplicationContracts = require('../functions/trackedApplicationContracts');
-const contractPublishAuthority = require('@fabric/core/functions/contractPublishAuthority');
 const contractStatechains = require('../functions/contractStatechains');
 const contractMessageQueue = require('../functions/contractMessageQueue');
 const beaconNetworkGuard = require('@fabric/core/functions/beaconNetworkGuard');
@@ -220,7 +219,6 @@ const federationRegistry = require('../functions/federationRegistry');
 const { normalizeFederationSignatureScheme } = require('../functions/federationSignatureScheme');
 const crowdfundingTaproot = require('../functions/crowdfundingTaproot');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
-const contractSpend = require('@fabric/core/functions/contractSpend');
 const Federation = require('@fabric/core/types/federation');
 
 // Hub Services
@@ -1096,6 +1094,30 @@ class Hub extends Service {
     }
 
     throw new Error('peer connect method unavailable');
+  }
+
+  /**
+   * Dial each configured `settings.peers` entry that is neither connected nor
+   * being dialed. Core dials configured peers once at start and never again, so a
+   * failed first dial (or a dropped session) would otherwise last until restart.
+   * @returns {string[]} addresses dialed
+   */
+  _redialConfiguredPeers () {
+    if (!this.agent || typeof this.agent._connect !== 'function') return [];
+    const connections = this.agent.connections || {};
+    const dialing = this.agent._outboundDialTargets;
+    const dialed = [];
+    for (const entry of Array.isArray(this.settings.peers) ? this.settings.peers : []) {
+      const raw = String(entry || '').replace(/^[^@]+@/, '').trim().toLowerCase();
+      if (!raw) continue;
+      const address = raw.includes(':') ? raw : `${raw}:7777`;
+      if (connections[address] || (dialing && dialing.has(address))) continue;
+      try {
+        this._connectPeer(address);
+        dialed.push(address);
+      } catch (_) {}
+    }
+    return dialed;
   }
 
   /**
@@ -4058,7 +4080,7 @@ class Hub extends Service {
       const acceptedExisting = state.accepted && state.accepted[contractId] ? state.accepted[contractId] : null;
       const publishEntry = pending || acceptedExisting;
       if (publishEntry && publishEntry.definition && publishEntry.signer) {
-        const authorized = contractPublishAuthority.contractPublishSignerAuthorized(
+        const authorized = Contract.publishSignerAuthorized(
           publishEntry.definition,
           publishEntry.signer
         );
@@ -5207,7 +5229,7 @@ class Hub extends Service {
       return { status: 'error', message: 'local tip stateDigest and bitcoinBlockHash required' };
     }
 
-    const tipCheck = contractSpend.validateWithdrawalRequest(request, tip);
+    const tipCheck = Contract.validateWithdrawalRequest(request, tip);
     if (!tipCheck.ok) {
       return { status: 'error', message: tipCheck.error || 'withdrawal request invalid vs tip' };
     }
@@ -5216,7 +5238,7 @@ class Hub extends Service {
       const witnesses = Array.isArray(body.withdrawalWitnesses)
         ? body.withdrawalWitnesses
         : (Array.isArray(body.witnesses) ? body.witnesses : []);
-      const meet = contractSpend.meetWithdrawalWitnessThreshold(
+      const meet = Contract.meetWithdrawalWitnessThreshold(
         request,
         witnesses,
         validators,
@@ -5259,7 +5281,7 @@ class Hub extends Service {
       return { status: 'error', message: 'fundedTxHex is required (full raw tx hex paying the vault)' };
     }
     try {
-      const r = contractSpend.prepareWithdrawalFromRequest({
+      const r = Contract.prepareWithdrawalFromRequest({
         request: Object.assign({}, request, { vaultAddress }),
         tip,
         fundedTxHex,
@@ -5521,7 +5543,7 @@ class Hub extends Service {
 
     let request;
     try {
-      request = contractSpend.buildWithdrawalRequest({
+      request = Contract.buildWithdrawalRequest({
         tip: Object.assign({ contractId: body.contractId || tip.stateDigest }, tip),
         contractId: body.contractId || tip.stateDigest,
         destinationAddress: body.destinationAddress || body.toAddress,
@@ -15438,6 +15460,13 @@ class Hub extends Service {
       // Periodic Fabric peering offer (when below max peers, even if connections don't change)
       this._fabricPeeringOfferIntervalId = setInterval(maybeBroadcastFabricPeeringOffer, FABRIC_PEERING_OFFER_INTERVAL_MS);
 
+      // Keep configured peers (e.g. the playnet seed) connected; `peerRedialMs: 0` turns it off.
+      const peerRedialMs = this.settings.peerRedialMs == null ? 60000 : Number(this.settings.peerRedialMs);
+      if (Number.isFinite(peerRedialMs) && peerRedialMs > 0) {
+        this._configuredPeerRedialTimer = setInterval(() => this._redialConfiguredPeers(), peerRedialMs);
+        if (typeof this._configuredPeerRedialTimer.unref === 'function') this._configuredPeerRedialTimer.unref();
+      }
+
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
       // When the target is this hub's own identity, also broadcast P2P_PEER_ALIAS (UTF-8 nickname).
       // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
@@ -16455,6 +16484,10 @@ class Hub extends Service {
           clearInterval(this._fabricPeeringOfferIntervalId);
           this._fabricPeeringOfferIntervalId = null;
         } catch (e) {}
+      }
+      if (this._configuredPeerRedialTimer) {
+        clearInterval(this._configuredPeerRedialTimer);
+        this._configuredPeerRedialTimer = null;
       }
       if (this._workQueueTimer) {
         try {

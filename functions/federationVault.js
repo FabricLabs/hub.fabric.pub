@@ -15,7 +15,7 @@
  * only after sweeping to the new address.
  *
  * @see @fabric/core/types/policy
- * @see @fabric/core/functions/contractSpend
+ * @see @fabric/core/types/contract
  */
 
 const Policy = require('@fabric/core/types/policy');

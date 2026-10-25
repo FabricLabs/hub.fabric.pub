@@ -180,6 +180,11 @@ if (process.env.FABRIC_HUB_USER_DATA && !process.env.FABRIC_HUB_INTERFACE && !pr
   }
 }
 
+// Desktop: a developer node on the public playnet (Fabric seeds + regtest addnode).
+if (process.env.FABRIC_HUB_USER_DATA) {
+  settings = require('../functions/hubNetworkJoin').applyDesktopPlaynetDefaults({ ...settings }, setup || {});
+}
+
 // Electron / packaged desktop: writable stores + absolute bitcoind datadir under userData
 if (process.env.FABRIC_HUB_USER_DATA) {
   const u = process.env.FABRIC_HUB_USER_DATA;
