@@ -6,7 +6,7 @@
  * `author.kind` is `taproot_contract_pubkey_hash`; wire `Message.raw.author`
  * remains the signer identity when the Hub builds the message.
  *
- * Encryption: `none` for sign-in and open delegation; `chacha20-poly1305-v1` reserves
+ * Encryption: `none` for open messages; `chacha20-poly1305-v1` reserves
  * ciphertext + nonce for privacy-sensitive paths (decrypt outside this module).
  *
  * Multisig: `signers[]` lists parties to notify / threshold (Schnorr MuSig future).

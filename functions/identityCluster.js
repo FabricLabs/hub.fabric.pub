@@ -63,6 +63,24 @@ class IdentityCluster {
     this._edges = new Map();
     /** @type {Set<string>} */
     this._revoked = new Set();
+    /** @type {Map<string, string>} x-only → compressed pubkey, as cross-signs named it */
+    this._compressed = new Map();
+  }
+
+  /** @private */
+  _remember (pubkey) {
+    const hex = String(pubkey || '').trim().toLowerCase();
+    if (/^0[23][a-f0-9]{64}$/.test(hex)) this._compressed.set(hex.slice(2), hex);
+  }
+
+  /**
+   * Compressed pubkey a cross-sign named for this key, or null.
+   * @param {*} pubkey
+   * @returns {string|null}
+   */
+  compressedOf (pubkey) {
+    const k = keyOf(pubkey);
+    return (k && this._compressed.get(k)) || null;
   }
 
   /**
@@ -78,6 +96,8 @@ class IdentityCluster {
     if (local === peer) return { ok: false, reason: 'cannot link a key to itself' };
     const binding = bindingOf(rec);
     if (!binding) return { ok: false, reason: 'invalid session, nonce, or origin' };
+    this._remember(rec.localPubkey);
+    this._remember(rec.peerPubkey);
     const ek = edgeKey(local, peer);
     if (this._revoked.has(revokedKey(ek, binding))) return { ok: false, reason: 'revoked' };
     const forward = dirKey(local, peer);

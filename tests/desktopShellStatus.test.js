@@ -4,7 +4,6 @@ const assert = require('assert');
 const {
   bitcoinStatusLine,
   lightningStatusLine,
-  pendingDelegationRequests,
   restorableWindowBounds,
   trayStatusLines
 } = require('../functions/desktopShellStatus');
@@ -14,20 +13,18 @@ describe('desktop shell status', function () {
     assert.deepStrictEqual(trayStatusLines({ hubStatus: 'starting', peering: { p2p: { connections: 3 } } }), ['Hub: Starting…']);
   });
 
-  it('summarises peers, Bitcoin, Lightning, and waiting signatures', function () {
+  it('summarises peers, Bitcoin, and Lightning', function () {
     const lines = trayStatusLines({
       hubStatus: 'running',
       peering: { p2p: { connections: 1, listening: true } },
       bitcoin: { available: true, network: 'regtest', height: 812, blockchain: { verificationprogress: 1 } },
-      lightning: { available: true, status: 'RUNNING' },
-      pendingSignatures: 2
+      lightning: { available: true, status: 'RUNNING' }
     });
     assert.deepStrictEqual(lines, [
       'Hub: Running',
       'Fabric: 1 peer',
       'Bitcoin (regtest): block 812',
-      'Lightning: running',
-      '2 signature requests waiting'
+      'Lightning: running'
     ]);
   });
 
@@ -38,20 +35,6 @@ describe('desktop shell status', function () {
     );
     assert.strictEqual(bitcoinStatusLine({ available: false }), 'Bitcoin: unavailable');
     assert.strictEqual(lightningStatusLine({ available: false, status: 'NOT_CONFIGURED' }), null);
-  });
-
-  it('announces each pending delegation request once and forgets resolved ones', function () {
-    const seen = new Set();
-    const payload = {
-      sessions: [{ origin: 'https://goon.vc', pendingDelegationMessages: [{ messageId: 'a', purpose: 'login' }] }]
-    };
-    const first = pendingDelegationRequests(payload, seen);
-    assert.strictEqual(first.pending, 1);
-    assert.deepStrictEqual(first.fresh, [{ messageId: 'a', origin: 'https://goon.vc', purpose: 'login' }]);
-    assert.strictEqual(pendingDelegationRequests(payload, seen).fresh.length, 0);
-    const cleared = pendingDelegationRequests({ sessions: [] }, seen);
-    assert.strictEqual(cleared.pending, 0);
-    assert.strictEqual(seen.size, 0);
   });
 
   it('restores window bounds only onto a display that still exists', function () {

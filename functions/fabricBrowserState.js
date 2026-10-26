@@ -34,7 +34,6 @@ const LEGACY_KEY_PATHS = {
   'fabric.hub.identityWizardDismissed': '/hub/identityWizardDismissed',
   'fabric.hub.promoDismissed': '/hub/promoDismissed',
   'fabric.hub.address': '/hub/address',
-  'fabric.delegation': '/delegation',
   'fabric.hub.federationSpendingPrefs': '/preferences/federationSpending',
   'fabric.hub.alertDismissals': '/ui/alertDismissals',
   'fabric:uiNotifications': '/ui/notifications',
@@ -90,7 +89,7 @@ function pathForLegacyKey (legacyKey) {
 /** True when nested `/identity/local` is useless but legacy `fabric.identity.local` may still hold truth. */
 function fabricIdentityLocalNestedLooksEmpty (obj) {
   if (obj == null || typeof obj !== 'object') return true;
-  return !(obj.id || obj.xpub || obj.xprvEnc);
+  return !(obj.id || obj.seal);
 }
 
 function readStorageString (legacyKey) {
@@ -261,9 +260,6 @@ function clearFabricBrowserIdentityLocal () {
       if (w.sessionStorage) {
         w.sessionStorage.removeItem('fabric.identity.unlocked');
       }
-    } catch (e) {}
-    try {
-      w.localStorage.removeItem('fabric.identity.devSeedSuppressedFor');
     } catch (e) {}
     return true;
   } catch (e) {

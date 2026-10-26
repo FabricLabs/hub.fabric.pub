@@ -10,13 +10,13 @@ contextBridge.exposeInMainWorld('fabricDesktop', {
     electron: process.versions.electron,
     chrome: process.versions.chrome
   },
-  onLoginPrompt: (cb) => {
+  onMessagePrompt: (cb) => {
     if (typeof cb !== 'function') return () => {};
     const handler = (_e, payload) => cb(payload);
-    ipcRenderer.on('fabric-login-prompt', handler);
-    return () => ipcRenderer.removeListener('fabric-login-prompt', handler);
+    ipcRenderer.on('fabric-message-prompt', handler);
+    return () => ipcRenderer.removeListener('fabric-message-prompt', handler);
   },
-  pullPendingLoginPrompt: () => ipcRenderer.invoke('fabric:get-pending-login-prompt'),
+  pullPendingMessagePrompt: () => ipcRenderer.invoke('fabric:get-pending-message-prompt'),
   getPaths: () => ipcRenderer.invoke('fabric:get-desktop-paths'),
   secureStore: {
     available: () => ipcRenderer.invoke('fabric:secure-store-available'),

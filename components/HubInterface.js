@@ -7,10 +7,10 @@ const {
   BROWSER_DATABASE_TOKEN_TABLE
 } = require('../constants');
 const {
-  DELEGATION_STORAGE_KEY,
-  notifyDelegationStorageChanged,
-  hasExternalSigningDelegation
-} = require('../functions/fabricDelegationLocal');
+  refreshPassportSession,
+  endPassportSession,
+  watchIdentityFromSession
+} = require('../functions/passportSession');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const {
   readStorageString,
@@ -57,17 +57,14 @@ const {
 
 // Fabric Types
 const {
-  buildLocalFabricIdentityPayload,
-  fabricPlaintextSigningUnlockable
-} = require('../functions/fabricHubLocalIdentity');
-const {
-  deriveFabricAccountIdentityKeys,
-  fabricRootXpubFromMasterXprv
-} = require('../functions/fabricAccountDerivedIdentity');
-const {
-  applyFabricDevBrowserSeedBootstrap,
-  mergeUnlockedSessionIntoIdentity
-} = require('../functions/fabricBrowserIdentityDev');
+  STORAGE_KEY: IDENTITY_STORAGE_KEY,
+  isAccountVault,
+  readStoredIdentity,
+  lockIdentity,
+  unlockedIdentity,
+  switchVaultAccount
+} = require('../functions/hubAccountVault');
+const { applyFabricDevBrowserSeedBootstrap, suppressActiveDevSeed } = require('../functions/fabricBrowserIdentityDev');
 const {
   fundLocalKeyFromHubFaucet,
   shouldAutoFundDesktopLocalKey,
@@ -381,14 +378,11 @@ function HubAlertStackLocationGate ({ adminToken }) {
 const {
   getSpendWalletContext,
   fetchWalletSummaryWithCache,
-  loadUpstreamSettings,
-  saveSpendXpubWatchForIdentity,
-  clearSpendXpubWatch
+  loadUpstreamSettings
 } = require('../functions/bitcoinClient');
 const { ToastContainer, toast: toastify, Slide } = require('react-toastify');
 const { toast } = require('../functions/toast');
 const SecurityHome = require('./SecurityHome');
-const SecuritySessionHome = require('./SecuritySessionHome');
 const SettingsHome = require('./SettingsHome');
 const CollaborationHome = require('./CollaborationHome');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
@@ -402,7 +396,7 @@ const FederationContractInviteModal = require('./FederationContractInviteModal')
 const CollaborationInviteModal = require('./CollaborationInviteModal');
 const FeaturesPage = require('./FeaturesPage');
 const SidechainHome = require('./SidechainHome');
-const DelegationSigningModal = require('./DelegationSigningModal');
+const FabricMessagePrompt = require('./FabricMessagePrompt');
 const AdminHome = require('./AdminHome');
 const BeaconFederationHome = require('./BeaconFederationHome');
 
@@ -531,36 +525,19 @@ class HubInterface extends React.Component {
 
     try {
       if (typeof window !== 'undefined') {
+        const parsed = readStorageJSON(IDENTITY_STORAGE_KEY, null);
         try {
-          applyFabricDevBrowserSeedBootstrap();
+          initialLocalIdentity = readStoredIdentity(parsed).identity;
         } catch (_) {}
-        const parsed = readStorageJSON('fabric.identity.local', null);
-        if (parsed && (parsed.id || parsed.xpub)) {
-          try {
-            const bl = buildLocalFabricIdentityPayload(parsed);
-            if (bl.resolved && bl.record) {
-              const r = bl.record;
-              initialLocalIdentity = {
-                id: r.id,
-                xpub: r.xpub,
-                xprv: null,
-                passwordProtected: !!r.passwordProtected,
-                plaintextUnlockAvailable: !!r.plaintextUnlockAvailable,
-                fabricIdentityMode: r.fabricIdentityMode || undefined,
-                fabricHdRole: r.fabricHdRole || undefined,
-                fabricAccountIndex:
-                  r.fabricAccountIndex != null ? Math.floor(Number(r.fabricAccountIndex)) : undefined,
-                masterXpub: r.masterXpub || undefined,
-                linkedFromDesktop: !!parsed.linkedFromDesktop
-              };
-              initialLocalIdentity = mergeUnlockedSessionIntoIdentity(initialLocalIdentity);
-              initialHasLockedIdentity = !!(
-                !initialLocalIdentity.xprv &&
-                (initialLocalIdentity.passwordProtected || initialLocalIdentity.plaintextUnlockAvailable)
-              );
-            }
-          } catch (e) {}
-        }
+        try {
+          const dev = applyFabricDevBrowserSeedBootstrap({ hasStoredIdentity: !!initialLocalIdentity });
+          if (dev.ok && dev.identity) initialLocalIdentity = dev.identity;
+        } catch (_) {}
+        initialHasLockedIdentity = !!(
+          initialLocalIdentity &&
+          !initialLocalIdentity.xprv &&
+          initialLocalIdentity.passwordProtected
+        );
 
         try {
           let dismissed = readStorageString('fabric.hub.identityWizardDismissed') === '1';
@@ -641,7 +618,6 @@ class HubInterface extends React.Component {
     this._dismissFederationInviteBanner = this._dismissFederationInviteBanner.bind(this);
     this._openIdentityModalForUser = this._openIdentityModalForUser.bind(this);
     this._closeHubIdentityModal = this._closeHubIdentityModal.bind(this);
-    this._clearUnlockedSessionOnClose = this._clearUnlockedSessionOnClose.bind(this);
     this._verifySetupUiSecret = this._verifySetupUiSecret.bind(this);
     /** Coalesce rapid Bridge / page unlock prompts so the identity modal does not strobe. */
     this._openIdentityModalCoolDownUntil = 0;
@@ -911,14 +887,6 @@ class HubInterface extends React.Component {
     this.setState({ uiIdentityOpen: false });
   }
 
-  _clearUnlockedSessionOnClose () {
-    try {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        window.sessionStorage.removeItem('fabric.identity.unlocked');
-      }
-    } catch (_) {}
-  }
-
   openIdentityManager () {
     if (typeof this.props.onOpenIdentityManager === 'function') {
       this.props.onOpenIdentityManager();
@@ -938,29 +906,35 @@ class HubInterface extends React.Component {
   }
 
   _hubIdentityUiSnapshotKey (info) {
-    if (!info || (!info.id && !info.xpub)) return '';
+    if (!info || !info.id) return '';
     const hasX = !!(info.xprv && String(info.xprv).trim());
-    const plainAvail = !!info.plaintextUnlockAvailable;
     const acct = info.fabricAccountIndex != null && info.fabricAccountIndex !== ''
       ? String(Math.floor(Number(info.fabricAccountIndex)))
       : '';
-    const mode = info.fabricIdentityMode ? String(info.fabricIdentityMode) : '';
-    const hd = info.fabricHdRole ? String(info.fabricHdRole) : '';
-    return `${String(info.id || '')}|${String(info.xpub || '')}|${hasX ? '1' : '0'}|${info.passwordProtected ? '1' : '0'}|${plainAvail ? '1' : '0'}|${info.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}|${hd}`;
+    return [
+      info.id,
+      info.network || '',
+      acct,
+      hasX ? '1' : '0',
+      info.passwordProtected ? '1' : '0',
+      info.linkedFromPassport ? '1' : '0',
+      info.wallet ? '1' : '0'
+    ].join('|');
+  }
+
+  _clearIdentityWizardPending () {
+    try {
+      writeStorageString('fabric.hub.identityWizardPending', '');
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
+      }
+    } catch (e) {}
   }
 
   _handleIdentityManagerLocalChange (info) {
-    if (info && (info.id || info.xpub)) {
-      try {
-        writeStorageString('fabric.hub.identityWizardPending', '');
-        if (typeof window !== 'undefined' && window.sessionStorage) {
-          window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
-        }
-      } catch (e) {}
-    }
+    if (info && info.id) this._clearIdentityWizardPending();
     this.setState((prev) => {
-      if (!info) {
-        try { clearSpendXpubWatch(); } catch (_) {}
+      if (!info || !info.id) {
         if (!prev.uiLocalIdentity && !prev.uiHasLockedIdentity) return {};
         return {
           uiLocalIdentity: null,
@@ -969,69 +943,11 @@ class HubInterface extends React.Component {
           clientBalanceLoading: false
         };
       }
-      const prevId = prev.uiLocalIdentity && prev.uiLocalIdentity.id != null
-        ? String(prev.uiLocalIdentity.id) : '';
-      const nextId = info.id != null ? String(info.id) : '';
-      const prevXpub = prev.uiLocalIdentity && prev.uiLocalIdentity.xpub != null
-        ? String(prev.uiLocalIdentity.xpub) : '';
-      const nextXpub = info.xpub != null ? String(info.xpub) : '';
-      const sameIdentity = !!prev.uiLocalIdentity && prevId === nextId && prevXpub === nextXpub;
-      if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv && !info.xprv && !sameIdentity) {
-        return {};
-      }
-      const hasXprv = !!(info.xprv && String(info.xprv).trim());
-      const passwordProtected = !!info.passwordProtected;
-      const plaintextUnlockAvailable =
-        info.plaintextUnlockAvailable != null
-          ? !!info.plaintextUnlockAvailable
-          : (!!prev.uiLocalIdentity &&
-            !!prev.uiLocalIdentity.plaintextUnlockAvailable &&
-            prevId === nextId &&
-            prevXpub === nextXpub &&
-            !hasXprv &&
-            !passwordProtected);
-      const linkedFromDesktop = info.linkedFromDesktop != null
-        ? !!info.linkedFromDesktop
-        : !!(prev.uiLocalIdentity && prev.uiLocalIdentity.linkedFromDesktop);
-      const nextIdentity = {
-        id: info.id,
-        xpub: info.xpub,
-        xprv: hasXprv ? info.xprv : undefined,
-        passwordProtected,
-        linkedFromDesktop
-      };
-      if (info.fabricIdentityMode != null && info.fabricIdentityMode !== '') {
-        nextIdentity.fabricIdentityMode = info.fabricIdentityMode;
-      } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.fabricIdentityMode) {
-        nextIdentity.fabricIdentityMode = prev.uiLocalIdentity.fabricIdentityMode;
-      }
-      if (info.fabricAccountIndex != null && info.fabricAccountIndex !== '') {
-        nextIdentity.fabricAccountIndex = Math.floor(Number(info.fabricAccountIndex));
-      } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.fabricAccountIndex != null) {
-        nextIdentity.fabricAccountIndex = prev.uiLocalIdentity.fabricAccountIndex;
-      }
-      if (info.fabricHdRole != null && String(info.fabricHdRole).trim() !== '') {
-        nextIdentity.fabricHdRole = info.fabricHdRole;
-      } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.fabricHdRole) {
-        nextIdentity.fabricHdRole = prev.uiLocalIdentity.fabricHdRole;
-      }
-      if (info.masterXprv != null && String(info.masterXprv).trim()) {
-        nextIdentity.masterXprv = info.masterXprv;
-      } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.masterXprv && hasXprv) {
-        nextIdentity.masterXprv = prev.uiLocalIdentity.masterXprv;
-      }
-      if (info.masterXpub != null && String(info.masterXpub).trim()) {
-        nextIdentity.masterXpub = info.masterXpub;
-      } else if (prev.uiLocalIdentity && prev.uiLocalIdentity.masterXpub) {
-        nextIdentity.masterXpub = prev.uiLocalIdentity.masterXpub;
-      }
-      if (plaintextUnlockAvailable && !hasXprv && !passwordProtected) {
-        nextIdentity.plaintextUnlockAvailable = true;
-      }
-      const nextHasLocked = !hasXprv && (passwordProtected || !!nextIdentity.plaintextUnlockAvailable);
+      const nextIdentity = Object.assign({}, info);
+      const nextHasLocked = !nextIdentity.xprv && !!nextIdentity.passwordProtected;
       if (
         this._hubIdentityUiSnapshotKey(prev.uiLocalIdentity) === this._hubIdentityUiSnapshotKey(nextIdentity) &&
-        !!prev.uiHasLockedIdentity === !!nextHasLocked
+        !!prev.uiHasLockedIdentity === nextHasLocked
       ) {
         return {};
       }
@@ -1045,7 +961,7 @@ class HubInterface extends React.Component {
   _handleIdentityManagerLockStateChange (locked) {
     this.setState((prev) => {
       if (prev.uiLocalIdentity && prev.uiLocalIdentity.xprv) return {};
-      const hasIdent = !!(prev.uiLocalIdentity && (prev.uiLocalIdentity.id || prev.uiLocalIdentity.xpub));
+      const hasIdent = !!(prev.uiLocalIdentity && prev.uiLocalIdentity.id);
       if (locked && !hasIdent) return {};
       if (!!prev.uiHasLockedIdentity === !!locked) return {};
       return { uiHasLockedIdentity: !!locked };
@@ -1058,28 +974,10 @@ class HubInterface extends React.Component {
   }
 
   _handleIdentityManagerUnlockSuccess (identityInfo) {
-    if (identityInfo && typeof identityInfo === 'object' && (identityInfo.id || identityInfo.xpub)) {
-      try {
-        writeStorageString('fabric.hub.identityWizardPending', '');
-        if (typeof window !== 'undefined' && window.sessionStorage) {
-          window.sessionStorage.removeItem('fabric.hub.wantIdentityWizard');
-        }
-      } catch (e) {}
-      const next = {
-        id: identityInfo.id,
-        xpub: identityInfo.xpub,
-        xprv: identityInfo.xprv || undefined,
-        passwordProtected: !!identityInfo.passwordProtected
-      };
-      if (identityInfo.fabricIdentityMode) next.fabricIdentityMode = identityInfo.fabricIdentityMode;
-      if (identityInfo.fabricAccountIndex != null) {
-        next.fabricAccountIndex = Math.floor(Number(identityInfo.fabricAccountIndex));
-      }
-      if (identityInfo.fabricHdRole) next.fabricHdRole = identityInfo.fabricHdRole;
-      if (identityInfo.masterXprv) next.masterXprv = identityInfo.masterXprv;
-      if (identityInfo.masterXpub) next.masterXpub = identityInfo.masterXpub;
+    if (identityInfo && typeof identityInfo === 'object' && identityInfo.id) {
+      this._clearIdentityWizardPending();
       this.setState({
-        uiLocalIdentity: next,
+        uiLocalIdentity: Object.assign({}, identityInfo),
         uiHasLockedIdentity: false,
         uiIdentityOpen: false
       });
@@ -1089,17 +987,10 @@ class HubInterface extends React.Component {
   }
 
   _handleIdentityManagerForget () {
-    try { this._clearUnlockedSessionOnClose(); } catch (_) {}
-    try { removeStorageKey(DELEGATION_STORAGE_KEY); } catch (_) {}
+    void endPassportSession();
     try { removeStorageKey('fabric.linkedDevices'); } catch (_) {}
-    try { notifyDelegationStorageChanged(); } catch (_) {}
-    try {
-      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && chrome.storage.local.remove) {
-        chrome.storage.local.remove(['fabric.identity.ext']);
-      }
-    } catch (_) {}
     try { clearFabricBrowserIdentityLocal(); } catch (_) {}
-    try { clearSpendXpubWatch(); } catch (_) {}
+    try { suppressActiveDevSeed(); } catch (_) {}
     this.setState({
       uiLocalIdentity: null,
       uiHasLockedIdentity: false,
@@ -1113,86 +1004,57 @@ class HubInterface extends React.Component {
     }
   }
 
-  _fabricAccountChange (nextAccountIndex) {
+  /**
+   * Switch to another (account, network) pair of the same seed. Unlocked, any
+   * pair derives; locked, only pairs the vault has cached (else the identity
+   * modal opens to unlock).
+   * @param {number} nextAccountIndex
+   * @param {string} [nextNetwork]
+   */
+  _fabricAccountChange (nextAccountIndex, nextNetwork) {
     try {
-      const ai = Math.floor(Number(nextAccountIndex));
-      if (!Number.isFinite(ai) || ai < 0) return;
-      let parsed = null;
+      const account = Math.floor(Number(nextAccountIndex));
+      if (!Number.isFinite(account) || account < 0) return;
+      const current = this.state.uiLocalIdentity || null;
+      if (!current || current.fabricIdentityMode !== 'account') return;
+      const network = nextNetwork || current.network || 'regtest';
+      const master = current.masterXprv ? String(current.masterXprv).trim() : '';
+      let vault = null;
       try {
-        parsed = readStorageJSON('fabric.identity.local', null);
+        vault = readStorageJSON(IDENTITY_STORAGE_KEY, null);
       } catch (_) {}
-      if (!parsed || parsed.fabricIdentityMode !== 'account') return;
-      if (parsed.passwordProtected) return;
-      if (parsed.fabricHdRole === 'accountNode' || parsed.fabricHdRole === 'watchAccount') return;
-      // Strict at-rest storage clears masters; prefer the unlocked in-memory / session key.
-      const unlocked = this.state.uiLocalIdentity || {};
-      let master = String(unlocked.masterXprv || unlocked.xprv || '').trim();
-      if (!master) {
+      let next = null;
+      if (isAccountVault(vault)) {
         try {
-          const sess = JSON.parse(window.sessionStorage.getItem('fabric.identity.unlocked') || 'null');
-          master = String((sess && (sess.masterXprv || sess.xprv)) || '').trim();
-        } catch (_) {}
+          const switched = switchVaultAccount(vault, { account, network, master: master || undefined });
+          writeStorageJSON(IDENTITY_STORAGE_KEY, switched.vault);
+          next = switched.identity;
+        } catch (e) {
+          if (e && e.code === 'FABRIC_ACCOUNT_LOCKED') {
+            this._openIdentityModalForUser();
+            return;
+          }
+          throw e;
+        }
+      } else if (master) {
+        next = Object.assign(unlockedIdentity(master, { account, network }), {
+          passwordProtected: !!current.passwordProtected,
+          devSeed: !!current.devSeed
+        });
+      } else {
+        return;
       }
-      if (!master) return;
-
-      const dk = deriveFabricAccountIdentityKeys(master, ai, 0);
-      const fromUnlockedXp = unlocked.masterXpub && String(unlocked.masterXpub).trim();
-      const fromParsedXp = parsed.masterXpub && String(parsed.masterXpub).trim();
-      const masterXp = fromUnlockedXp || fromParsedXp || fabricRootXpubFromMasterXprv(master);
-      const nextPayload = Object.assign({}, parsed, {
-        fabricIdentityMode: 'account',
-        fabricAccountIndex: ai,
-        id: dk.id,
-        xpub: dk.xpub,
-        masterXpub: masterXp
-      });
-      writeStorageJSON('fabric.identity.local', nextPayload);
-
-      this.setState((prev) => {
-        const loc = prev.uiLocalIdentity || {};
-        const hadKey = !!(loc && loc.xprv);
-        if (hadKey) {
-          const mx =
-            parsed.masterXpub && String(parsed.masterXpub).trim()
-              ? String(parsed.masterXpub).trim()
-              : fabricRootXpubFromMasterXprv(master);
-          return {
-            uiLocalIdentity: {
-              ...loc,
-              id: dk.id,
-              xpub: dk.xpub,
-              xprv: dk.xprv,
-              fabricIdentityMode: 'account',
-              fabricAccountIndex: ai,
-              masterXprv: master,
-              masterXpub: mx
-            },
-            uiHasLockedIdentity: false
-          };
-        }
-
-        try {
-          const bl = buildLocalFabricIdentityPayload(nextPayload);
-          if (!bl.resolved || !bl.record) return {};
-          const r = bl.record;
-          return {
-            uiLocalIdentity: Object.assign({}, loc, {
-              id: r.id,
-              xpub: r.xpub,
-              passwordProtected: !!r.passwordProtected,
-              plaintextUnlockAvailable: !!r.plaintextUnlockAvailable,
-              fabricIdentityMode: 'account',
-              fabricAccountIndex: ai,
-              masterXpub: r.masterXpub
-            }),
-            uiHasLockedIdentity: !!(r.passwordProtected || r.plaintextUnlockAvailable)
-          };
-        } catch (_) {
-          return {};
-        }
+      if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearDecryptedDocuments === 'function') {
+        try { this.bridgeRef.current.clearDecryptedDocuments(); } catch (_) {}
+      }
+      this.setState({
+        uiLocalIdentity: next,
+        uiHasLockedIdentity: !next.xprv && !!next.passwordProtected,
+        clientBalance: null
       });
     } catch (e) {
       console.error('[HUB]', 'Fabric account switch failed:', safeIdentityErr(e));
+      try { toast.error(t.identity.accountControls.switchFailed); } catch (_) {}
     }
   }
 
@@ -1308,6 +1170,12 @@ class HubInterface extends React.Component {
       }
     });
     this._refreshAdminTokenIfNeeded();
+    void refreshPassportSession().then((view) => {
+      const prev = this.state.uiLocalIdentity;
+      const watch = watchIdentityFromSession(view);
+      if (!prev || !prev.linkedFromPassport || !watch || watch.id !== prev.id) return;
+      this.setState({ uiLocalIdentity: Object.assign({}, prev, { wallet: watch.wallet }) });
+    });
     this._refreshClientBalance().then(() => {
       void this._maybeAutoFundDesktopLocalKey();
     }).catch(() => {
@@ -1317,7 +1185,7 @@ class HubInterface extends React.Component {
       const d = e && e.detail;
       if (d && d.operation && d.operation.path === '/bitcoin') {
         const idn = this.state.uiLocalIdentity || null;
-        if (!idn || !idn.xpub) return;
+        if (!idn || !idn.wallet) return;
         // One tx raises both `hashtx` and `rawtx` (and a block re-pushes status): coalesce the burst.
         if (this._bitcoinPatchRefreshTimer) clearTimeout(this._bitcoinPatchRefreshTimer);
         this._bitcoinPatchRefreshTimer = setTimeout(() => {
@@ -1328,12 +1196,10 @@ class HubInterface extends React.Component {
     };
     this._onClientBalanceUpdate = () => {
       const idn = this.state.uiLocalIdentity || null;
-      if (idn && idn.xpub) this._refreshClientBalance();
+      if (idn && idn.wallet) this._refreshClientBalance();
     };
     if (typeof window !== 'undefined') {
       // Strict lock policy: always clear unlocked key material on close/unload.
-      this._clearUnlockedSessionOnClose();
-      window.addEventListener('beforeunload', this._clearUnlockedSessionOnClose);
       window.addEventListener('globalStateUpdate', this._onGlobalStateUpdate);
       window.addEventListener('clientBalanceUpdate', this._onClientBalanceUpdate);
       this._onFabricHubAdminTokenSaved = () => {
@@ -1398,8 +1264,6 @@ class HubInterface extends React.Component {
       if (this._onFabricOpenIdentityManager) {
         window.removeEventListener('fabricOpenIdentityManager', this._onFabricOpenIdentityManager);
       }
-      window.removeEventListener('beforeunload', this._clearUnlockedSessionOnClose);
-      this._clearUnlockedSessionOnClose();
       if (this._adminTokenRefreshInterval) clearInterval(this._adminTokenRefreshInterval);
     }
   }
@@ -1407,11 +1271,9 @@ class HubInterface extends React.Component {
   componentDidUpdate (prevProps, prevState) {
     const prevId = prevState.uiLocalIdentity || {};
     const nextId = this.state.uiLocalIdentity || {};
-    const prevXpub = prevId.xpub;
-    const nextXpub = nextId.xpub;
-    const prevFab = prevId.fabricAccountIndex;
-    const nextFab = nextId.fabricAccountIndex;
-    if (prevXpub !== nextXpub || prevFab !== nextFab) this._refreshClientBalance();
+    const prevWallet = prevId.wallet && prevId.wallet.segwit ? prevId.wallet.segwit.xpub : '';
+    const nextWallet = nextId.wallet && nextId.wallet.segwit ? nextId.wallet.segwit.xpub : '';
+    if (prevWallet !== nextWallet || prevId.network !== nextId.network) this._refreshClientBalance();
   }
 
   async _maybeAutoFundDesktopLocalKey () {
@@ -1505,9 +1367,6 @@ class HubInterface extends React.Component {
           fromCache: !!summary._fromCache
         };
         this.setState({ clientBalance: nextClient, clientBalanceLoading: false });
-        if (identity && String(identity.xprv || '').trim()) {
-          try { saveSpendXpubWatchForIdentity(identity, wallet); } catch (_) {}
-        }
         /* Feed the Bridge directly, not via a `clientBalanceUpdate` event: this component listens to that
          * event and would refetch in a loop. Cached rows are skipped so a stale fallback cannot rewind
          * the baseline and re-announce the same receive. */
@@ -1531,36 +1390,13 @@ class HubInterface extends React.Component {
 
   _handleLockIdentity () {
     const local = this.state.uiLocalIdentity;
-    if (!local || !local.xprv) return;
-    let plaintextStored = false;
+    if (!local || !local.xprv || !local.passwordProtected) return;
     try {
-      const p = readStorageJSON('fabric.identity.local', null);
-      plaintextStored = !!(p && fabricPlaintextSigningUnlockable(p));
-    } catch (_) {}
-    if (!local.passwordProtected && !plaintextStored) return;
-    try {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        window.sessionStorage.removeItem('fabric.identity.unlocked');
-      }
       if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearDecryptedDocuments === 'function') {
         try { this.bridgeRef.current.clearDecryptedDocuments(); } catch (e) {}
       }
-      const next = {
-        id: local.id,
-        xpub: local.xpub,
-        passwordProtected: !!local.passwordProtected
-      };
-      if (local.fabricIdentityMode) next.fabricIdentityMode = local.fabricIdentityMode;
-      if (local.fabricHdRole != null && String(local.fabricHdRole).trim() !== '') {
-        next.fabricHdRole = local.fabricHdRole;
-      }
-      if (local.fabricAccountIndex != null) next.fabricAccountIndex = local.fabricAccountIndex;
-      if (local.masterXpub) next.masterXpub = local.masterXpub;
-      if (plaintextStored && !local.passwordProtected) {
-        next.plaintextUnlockAvailable = true;
-      }
       this.setState({
-        uiLocalIdentity: next,
+        uiLocalIdentity: lockIdentity(local),
         uiHasLockedIdentity: true
       });
     } catch (e) {
@@ -1724,7 +1560,8 @@ class HubInterface extends React.Component {
 
     // Identity is local-browser identity only. Do not fall back to props auth.
     const local = this.state.uiLocalIdentity;
-    const hasLocal = local && (local.id || local.xpub);
+    const hasLocal = !!(local && local.id);
+    const hubNetwork = bitcoin && bitcoin.network ? String(bitcoin.network).toLowerCase() : 'regtest';
     const effectiveAuth = hasLocal ? local : null;
     // Locked chip: derive only from shell identity fields — never trust orphan uiHasLockedIdentity when
     // local is empty (TopPanel still merges persisted storage into the chip and could show "Locked"
@@ -1732,7 +1569,7 @@ class HubInterface extends React.Component {
     const effectiveHasLockedIdentity = !!(
       hasLocal &&
       !local.xprv &&
-      (local.passwordProtected || local.plaintextUnlockAvailable)
+      local.passwordProtected
     );
     const publicHubVisitor = computePublicHubVisitor({
       localIdentity: local,
@@ -1782,7 +1619,7 @@ class HubInterface extends React.Component {
               onStateUpdate={this.handleBridgeStateUpdate}
               responseCapture={this.responseCapture}
             />
-            <DelegationSigningModal bridgeRef={this.bridgeRef} />
+            <FabricMessagePrompt />
             <FederationContractInviteModal
               open={this.state.federationInviteModalOpen}
               detail={this.state.federationInviteDetail}
@@ -1928,6 +1765,7 @@ class HubInterface extends React.Component {
               <FabricPostSetupIdentityWizard
                 hubAdminToken={this.state.adminToken}
                 currentIdentity={local}
+                defaultNetwork={hubNetwork}
                 onLocalIdentityChange={this._handleIdentityManagerLocalChange}
                 onUnlockSuccess={this._handleIdentityManagerUnlockSuccess}
                 onLockStateChange={this._handleIdentityManagerLockStateChange}
@@ -2044,6 +1882,7 @@ class HubInterface extends React.Component {
                       key="fabric-identity-manager"
                       hubAdminToken={this.state.adminToken}
                       currentIdentity={this.state.uiLocalIdentity}
+                      defaultNetwork={hubNetwork}
                       onLocalIdentityChange={this._handleIdentityManagerLocalChange}
                       onLockStateChange={this._handleIdentityManagerLockStateChange}
                       onUnlockSuccess={this._handleIdentityManagerUnlockSuccess}
@@ -2258,32 +2097,6 @@ class HubInterface extends React.Component {
                         const text = (this.state.uiSignMessageText || '').trim();
                         if (!text) return;
                         const bridge = this.bridgeRef && this.bridgeRef.current;
-                        const useDelegation = hasExternalSigningDelegation() &&
-                          bridge && typeof bridge.signArbitraryTextDelegated === 'function';
-                        if (useDelegation) {
-                          this.setState({ uiSignMessageBusy: true, uiSignMessageResult: null });
-                          toast.info(t.shell.signModal.externalConfirm, { duration: 12000, header: t.shell.signModal.externalHeader });
-                          void (async () => {
-                            let result = null;
-                            try {
-                              result = await bridge.signArbitraryTextDelegated(text);
-                            } catch (e) {
-                              console.error('[HUB]', 'Delegated sign failed:', safeIdentityErr(e));
-                            }
-                            this.setState({
-                              uiSignMessageBusy: false,
-                              uiSignMessageResult: result,
-                              uiVerifyMessageText: result ? text : this.state.uiVerifyMessageText,
-                              uiVerifyPublicKey: result ? result.publicKey : this.state.uiVerifyPublicKey,
-                              uiVerifySignature: result ? result.signature : this.state.uiVerifySignature,
-                              uiVerifyResult: null
-                            });
-                            if (!result) {
-                              toast.warning(t.shell.signModal.externalCancelled, { header: t.shell.signModal.externalHeader });
-                            }
-                          })();
-                          return;
-                        }
                         const result = bridge && typeof bridge.signArbitraryText === 'function' ? bridge.signArbitraryText(text) : null;
                         this.setState({
                           uiSignMessageResult: result,
@@ -2340,14 +2153,12 @@ class HubInterface extends React.Component {
                         if (this.bridgeRef && this.bridgeRef.current && typeof this.bridgeRef.current.clearAllDocuments === 'function') {
                           try { this.bridgeRef.current.clearAllDocuments(); } catch (e) {}
                         }
-                        try { clearSpendXpubWatch(); } catch (_) {}
-                        try { this._clearUnlockedSessionOnClose(); } catch (_) {}
                         try {
                           if (typeof window !== 'undefined') {
                             clearFabricBrowserIdentityLocal();
-                            removeStorageKey(DELEGATION_STORAGE_KEY);
+                            suppressActiveDevSeed();
+                            void endPassportSession();
                             removeStorageKey('fabric.linkedDevices');
-                            notifyDelegationStorageChanged();
                             removeStorageKey('fabric:documents');
                             if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && chrome.storage.local.remove) {
                               chrome.storage.local.remove(['fabric.identity.ext']);
@@ -3032,7 +2843,7 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/security"
-                    element={hubPv(<SecurityHome />)}
+                    element={hubPv(<SecurityHome identity={this.state.uiLocalIdentity} />)}
                   />
                   <Route
                     path="/admin/beacon-federation"
@@ -3064,10 +2875,6 @@ class HubInterface extends React.Component {
                   <Route
                     path="/settings"
                     element={<SettingsHome publicHubVisitor={publicHubVisitor} />}
-                  />
-                  <Route
-                    path="/sessions/:sessionId"
-                    element={hubPv(<SecuritySessionHome />)}
                   />
                   <Route
                     path="/sessions"

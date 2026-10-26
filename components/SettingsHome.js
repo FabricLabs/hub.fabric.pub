@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Settings overview: links into security/delegation UI (REST `/sessions` remains the Fabric API).
+ * Settings overview: links into Security (Passport session + linked devices).
  */
 
 const React = require('react');

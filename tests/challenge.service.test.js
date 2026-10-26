@@ -70,7 +70,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
       xOnly: Buffer.from(schnorr.getPublicKey(provPriv)).toString('hex')
     };
     const book = new DocumentBook();
-    const hub = { beacon: { state: { clock } }, market: { book }, _rootKey: key, agent: null };
+    const hub = { beacon: { state: { clock } }, market: { book }, _fabricKey: key, agent: null };
     const fs = memoryFs();
     const svc = new ChallengeService({ enable: true }).attach({ hub, fs });
     const doc = Document.seal(crypto.randomBytes(6000), { chunkBytes: 2048, documentId: 'd' });
@@ -163,7 +163,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     const compressed = (p) => Buffer.from(signerFromPriv32(p).publicKey).toString('hex');
 
     const { svc, hub, fs, provider, doc, hashes, root, publisherPubkey } = fixture(20);
-    const pubPriv = Buffer.isBuffer(hub._rootKey.private) ? hub._rootKey.private : Buffer.from(hub._rootKey.private, 'hex');
+    const pubPriv = Buffer.isBuffer(hub._fabricKey.private) ? hub._fabricKey.private : Buffer.from(hub._fabricKey.private, 'hex');
     let tip = 500;
     let unspent = true;
     svc.attach({ tipHeight: () => tip, outpointUnspent: () => unspent });
@@ -235,7 +235,7 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     const p2wpkh = (pub) => bitcoinjs.payments.p2wpkh({ pubkey: Buffer.from(pub, 'hex'), network: bitcoinjs.networks.regtest }).address;
 
     const { svc, hub, provider, doc, hashes, root } = fixture(20);
-    const pubPriv = Buffer.isBuffer(hub._rootKey.private) ? hub._rootKey.private : Buffer.from(hub._rootKey.private, 'hex');
+    const pubPriv = Buffer.isBuffer(hub._fabricKey.private) ? hub._fabricKey.private : Buffer.from(hub._fabricKey.private, 'hex');
     const publisherDest = p2wpkh(compressed(pubPriv));
     svc.settings.penaltyAddress = publisherDest;
     svc.settings.minPenaltySats = 25000;

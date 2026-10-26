@@ -163,8 +163,9 @@ async function postPayjoinProposalWithDesktopFallback (pjUrl, psbtBase64, opts =
 
 /**
  * @param {object} opts
- * @param {string} opts.xprv
+ * @param {string} opts.xprv SegWit account key (`m/84'/B'/n'`)
  * @param {string} opts.xpub
+ * @param {string} [opts.standardXprv] Standard account key (`m/44'/B'/n'`) for its wpkh coins
  * @param {string} opts.networkName - Hub network id (regtest, mainnet, …)
  * @param {Array<{ txid: string, vout: number, amount?: number, amountSats?: number, desc?: string }>} opts.utxos
  * @param {string} opts.payAddress - BIP21 address (output)
@@ -199,9 +200,14 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
   const decodeNetwork = bip32NetworkForKeys(xpub, opts.networkName);
   const bip32 = BIP32Factory(ecc);
   const root = bip32.fromBase58(xprv, decodeNetwork);
+  const standardXprv = String(opts.standardXprv || '').trim();
+  const standardRoot = standardXprv ? bip32.fromBase58(standardXprv, decodeNetwork) : null;
+  const rootFor = (u) => (u && u.account === 'standard' ? standardRoot : root);
 
-  /** Greedy largest-first for coin selection only; BIP-69 orders the unsigned PSBT later. */
+  /** Greedy largest-first for coin selection only; BIP-69 orders the unsigned PSBT later. P2WPKH coins only. */
   const sorted = utxos
+    .filter((u) => !u.desc || /^wpkh\(/i.test(String(u.desc)))
+    .filter((u) => !!rootFor(u))
     .map((u) => ({
       ...u,
       _sats: Math.round(Number(u.amountSats != null ? u.amountSats : (u.amount != null ? u.amount * SATS_PER_BTC : 0)))
@@ -267,7 +273,8 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
 
     const ci = chainIndexFromDescriptor(u.desc);
     if (!ci) throw new Error('UTXO missing descriptor path (chain/index). Refresh UTXOs from Hub with a current Core.');
-    const child = root.derive(ci.chain).derive(ci.index);
+    const inputRoot = rootFor(u);
+    const child = inputRoot.derive(ci.chain).derive(ci.index);
     const pay = bitcoin.payments.p2wpkh({ pubkey: child.publicKey, network });
     if (!pay.output || Buffer.compare(pay.output, out.script) !== 0) {
       throw new Error('Descriptor path does not match UTXO script for ' + u.txid + ':' + u.vout);
@@ -282,7 +289,7 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
         value: out.value
       },
       bip32Derivation: [{
-        masterFingerprint: root.fingerprint,
+        masterFingerprint: inputRoot.fingerprint,
         path: `m/${ci.chain}/${ci.index}`,
         pubkey: child.publicKey
       }]
@@ -303,18 +310,9 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
     if (o.address === changeAddress && outputs.length > 1) changeOutputIndex = i;
   }
 
+  const roots = [root, standardRoot].filter(Boolean);
   for (let i = 0; i < psbt.data.inputs.length; i++) {
-    const child = (() => {
-      const ders = psbt.data.inputs[i].bip32Derivation || [];
-      const m = ders[0];
-      if (!m || !m.path) return null;
-      const parts = String(m.path).split('/').filter(Boolean);
-      if (parts.length < 2) return null;
-      const chain = Number(parts[parts.length - 2]);
-      const idx = Number(parts[parts.length - 1]);
-      if (!Number.isFinite(chain) || !Number.isFinite(idx)) return null;
-      return root.derive(chain).derive(idx);
-    })();
+    const child = derivationChild(roots, psbt.data.inputs[i].bip32Derivation);
     if (!child || !child.privateKey) throw new Error('Cannot derive signing key for input ' + i);
     const kp = ecpair.fromPrivateKey(child.privateKey);
     psbt.signInput(i, kp, sighashTypes);
@@ -331,6 +329,24 @@ async function buildOriginalSignedPayjoinPsbt (opts = {}) {
       ? { additionalFeeOutputIndex: changeOutputIndex, maxAdditionalFeeContribution: Math.ceil(P2WPKH_INPUT_VBYTES * feeSatPerVbyte) }
       : {}
   };
+}
+
+/**
+ * Signing child for a PSBT input's first key path, from the root whose
+ * fingerprint the path names.
+ * @private
+ */
+function derivationChild (roots, ders) {
+  const m = (ders || [])[0];
+  if (!m || !m.path) return null;
+  const parts = String(m.path).split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  const chain = Number(parts[parts.length - 2]);
+  const idx = Number(parts[parts.length - 1]);
+  if (!Number.isFinite(chain) || !Number.isFinite(idx)) return null;
+  const fp = m.masterFingerprint ? Buffer.from(m.masterFingerprint) : null;
+  const root = roots.find((r) => fp && Buffer.from(r.fingerprint).equals(fp)) || (roots.length === 1 ? roots[0] : null);
+  return root ? root.derive(chain).derive(idx) : null;
 }
 
 /** @private */
@@ -431,12 +447,15 @@ function checkPayjoinProposal (originalBase64, proposalBase64, opts = {}) {
  * @param {string} xprv
  * @param {string} xpub - for network decode only
  * @param {string} networkName
+ * @param {string} [standardXprv] Standard account key, when any input is one of its coins
  */
-function signOurPayjoinInputs (psbtBase64, ours, xprv, xpub, networkName) {
+function signOurPayjoinInputs (psbtBase64, ours, xprv, xpub, networkName, standardXprv) {
   const network = networkFromName(networkName);
   const decodeNetwork = bip32NetworkForKeys(xpub, networkName);
   const bip32 = BIP32Factory(ecc);
-  const root = bip32.fromBase58(String(xprv).trim(), decodeNetwork);
+  const roots = [String(xprv).trim(), String(standardXprv || '').trim()]
+    .filter(Boolean)
+    .map((k) => bip32.fromBase58(k, decodeNetwork));
   const psbt = bitcoin.Psbt.fromBase64(String(psbtBase64 || '').trim(), { network });
   const list = Array.isArray(ours) ? ours : [];
   const byOutpoint = new Map(list.filter((o) => o && typeof o === 'object').map((o) => [o.outpoint, o]));
@@ -455,13 +474,8 @@ function signOurPayjoinInputs (psbtBase64, ours, xprv, xpub, networkName) {
   });
 
   for (const idx of targets) {
-    const ders = psbt.data.inputs[idx].bip32Derivation || [];
-    const m = ders[0];
-    if (!m || !m.path) continue;
-    const parts = String(m.path).split('/').filter(Boolean);
-    const chain = Number(parts[parts.length - 2]);
-    const i = Number(parts[parts.length - 1]);
-    const child = root.derive(chain).derive(i);
+    const child = derivationChild(roots, psbt.data.inputs[idx].bip32Derivation);
+    if (!child || !child.privateKey) continue;
     const kp = ecpair.fromPrivateKey(child.privateKey);
     psbt.signInput(idx, kp, [bitcoin.Transaction.SIGHASH_ALL]);
   }

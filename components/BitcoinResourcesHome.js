@@ -90,8 +90,8 @@ class BitcoinResourcesHome extends React.Component {
   }
 
   componentDidUpdate (prevProps) {
-    const prev = prevProps && prevProps.identity && prevProps.identity.xpub;
-    const next = this.props && this.props.identity && this.props.identity.xpub;
+    const prev = prevProps && prevProps.identity && prevProps.identity.wallet && prevProps.identity.wallet.segwit && prevProps.identity.wallet.segwit.xpub;
+    const next = this.props && this.props.identity && this.props.identity.wallet && this.props.identity.wallet.segwit && this.props.identity.wallet.segwit.xpub;
     if (prev !== next) {
       const identity = (this.props && this.props.identity) || {};
       this.setState({ wallet: getSpendWalletContext(identity) });
@@ -207,12 +207,11 @@ class BitcoinResourcesHome extends React.Component {
       { id: 'campaignArbiterSign', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-sign-arbiter' },
       { id: 'campaignBroadcast', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-broadcast' },
       { id: 'campaignRefund', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/refund-prepare' },
+      { id: 'sessionChallenge', method: 'POST', path: '/sessions/challenges' },
       { id: 'sessionCreate', method: 'POST', path: '/sessions' },
-      { id: 'session', method: 'GET', path: '/sessions/:sessionId' },
-      { id: 'sessionAudit', method: 'GET', path: '/sessions/:sessionId/delegation/audit' },
-      { id: 'sessionRevoke', method: 'DELETE', path: '/sessions/:sessionId' },
-      { id: 'sessionSign', method: 'POST', path: '/sessions/:sessionId/signatures' },
-      { id: 'sessions', method: 'GET', path: '/sessions' },
+      { id: 'sessionSelf', method: 'POST', path: '/sessions/self' },
+      { id: 'session', method: 'GET', path: '/sessions/current' },
+      { id: 'sessionRevoke', method: 'DELETE', path: '/sessions/current' },
       { id: 'rpc', method: 'POST', path: '/services/rpc' },
       { id: 'lightning', method: 'GET', path: '/services/lightning' },
       { id: 'lightningChannels', method: 'GET', path: '/services/lightning/channels' },

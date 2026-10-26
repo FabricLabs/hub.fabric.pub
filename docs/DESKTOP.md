@@ -8,12 +8,13 @@ The desktop shell runs the same Hub **Node** process as `npm start` and opens a 
 | `scripts/startup/` | OS launchers packed as `resources/startup/` (macOS command + LaunchAgent, Windows cmd/vbs, Linux sh + XDG desktop) |
 | `functions/desktopOpenAtLogin.js` | Login-item payload, XDG autostart, `desktop-shell.json` |
 | `functions/desktopShellPolicy.js` | Navigation / external-link / IPC-sender / permission / Payjoin-target rules |
-| `functions/desktopShellStatus.js` | Tray status lines, delegation notifications, window-bounds restore |
+| `functions/desktopShellStatus.js` | Tray status lines, window-bounds restore |
+| `functions/fabricSignApprovalDialog.js` | Native dialog for Passport sign and link requests (Decline by default, lists exactly what is shared) |
 | `functions/desktopSecureStore.js` | `safeStorage`-encrypted `secure-store.json` for the admin token |
 | `functions/desktopLogFile.js` | Rotating, secret-scrubbed `logs/fabric-hub.log` |
-| `scripts/desktop-preload.js` | Exposes `window.fabricDesktop` (`isDesktopShell`, platform, versions, `onLoginPrompt`, `pullPendingLoginPrompt`, `getPaths`, `payjoinPost`, `secureStore`) |
+| `scripts/desktop-preload.js` | Exposes `window.fabricDesktop` (`isDesktopShell`, platform, versions, `onMessagePrompt`, `pullPendingMessagePrompt`, `getPaths`, `payjoinPost`, `secureStore`) |
 | `scripts/desktopHubProbe.js` | Startup HTTP/P2P probes (whether to use an existing loopback Hub) |
-| `components/DelegationSigningModal.js` | In-app Semantic UI modals for **fabric://login** approval and **delegation** signature queue (replaces native OS dialogs) |
+| `components/FabricMessagePrompt.js` | In-app viewer for opaque `fabric:` frames (author or "Not signed"); it signs nothing |
 | `dist/` | **electron-builder** output (gitignored): installers / unpacked apps |
 
 Writable state (LevelDB, Bitcoin regtest data, Hub `STATE`) lives under the OS **userData** directory when env `FABRIC_HUB_USER_DATA` is set (the desktop shell always sets this).
@@ -62,32 +63,37 @@ With the **desktop Hub** running on loopback (HTTP default **8080**, Fabric P2P 
 - Node **22.x** (see `package.json` `engines`)
 - **Build the browser bundle first** — installers expect `assets/` populated (`npm run build` / `build:browser`)
 
-## Browser login via desktop (`fabric:` protocol)
-The **only** supported custom scheme for this flow is **`fabric:`** (e.g. `fabric://login?sessionId=...&hub=...`). Fabric Hub **re-registers** as the default `fabric:` handler on every app launch and on **macOS activate** (dock icon), so running this app overrides handlers left by other installers or dev builds. Packaged installs also declare `fabric` via **electron-builder** (`package.json` → `build.protocols`). If the wrong app still opens, quit it, start **Fabric Hub** once, then try **Log in with Fabric Hub (desktop)** again.
+## Signing in (Passport v2)
+The Hub signs browsers in with Passport v2 (spec: `@fabric/core` `docs/PASSPORT.md`), mounted by `functions/hubPassport.js`:
 
-To use the **same Fabric identity as this Hub node** in a normal browser (e.g. Chrome on `http://127.0.0.1:8080`):
+| Route | What it does |
+|---|---|
+| `POST /sessions/challenges` | A `PASSPORT_CHALLENGE` for this Hub's pinned origin, plus the HttpOnly `fabric.passport` binding cookie |
+| `POST /sessions { assertion }` | Redeems once with that cookie and sets the HttpOnly `fabric.session` cookie |
+| `GET` / `DELETE /sessions/current` | Reads / ends the session |
+| `POST /sessions/self` | **Desktop shell only.** Signs this window in as the Hub's own identity (**Identity → Sign in as this Hub**). Direct loopback socket, no proxy headers, `Origin` equal to the Hub's own loopback origin. |
 
-1. Run the **Fabric Hub desktop** app so the Hub is listening on loopback.
-2. In the browser, open **Identity** → **Log in with Fabric Hub (desktop)**.
-3. The UI creates a short-lived session and triggers **`fabric://login?sessionId=...&hub=...`** (your current origin is the `hub` query parameter for the desktop app to call back).
-4. The OS opens the desktop app (if registered as the `fabric` protocol handler). The shell **POST**s to `{hub}/sessions/:sessionId/signatures` after you approve; the Hub accepts **loopback** TCP **or** a caller whose **Origin** / **Referer** matches the pending session’s browser **origin** (so a LAN hub URL still works when the UI was opened at that origin). The Hub records the **signature** for that login session.
-5. The browser **polls** `GET /sessions/:sessionId` until the session is `signed`, then stores an **xpub-only** identity in `localStorage` and records the link under **`fabric.linkedDevices`**.
+Origins are pinned: loopback on the Hub port (`127.0.0.1`, `localhost`, `[::1]`), `FABRIC_HUB_PUBLIC_ORIGIN`, `payjoin.publicOrigin`, and each `FABRIC_HUB_ALLOWED_HOSTS` name on the Hub port. The `Host` header never adds one. The page never stores a token.
 
-**REST surface:** `POST /sessions` (create session, body `{ origin }` — off loopback, the same **Origin** / **Referer** / **Sec-Fetch-Site**+**Host** rules must match that `origin`), `GET /sessions/:sessionId` (poll; while **pending**, response includes **`message`**, **`origin`**, **`nonce`**, and **`acceptsClientSignature: true`**), `POST /sessions/:sessionId/signatures` completes the session in one of two modes:
+There is no `fabric://login` link and no QR login: the desktop app can't tell which page launched a link, so a phishing page could have used one to get a login for another site. The Hub never signs for another site's session and never gives a browser access to its own key.
 
-1. **Client-signed player login** (Passport, any Fabric wallet) — body `{ signature, pubkeyHex, identity: { id, xpub } }` where `signature` is BIP340 Schnorr over the **server-stored** challenge. Crypto verification is the authenticator; the Hub does **not** use its root key.
-2. **Hub self-sign** (legacy “link browser to this Hub node”) — empty / non-client body; Hub signs with its root key. Requires **loopback** TCP **or** **Origin** / **Referer** / same-site **Host** matching the pending session origin.
+### The desktop Hub as a Passport signer
+Passport can ask this Hub to answer a sign-in with the Hub's identity instead of a key held in the extension. The Hub must first be paired with that Passport:
 
-**`localhost`** and **`127.0.0.1`** with the same port are treated as the same origin for those checks so a browser tab on `http://localhost:…` can pair with Electron on `http://127.0.0.1:…`. The first **`signed`** poll response **retires** the ephemeral desktop `sessionId` (a second GET returns **404**; the browser keeps **`delegationToken`**). For clients that are not **loopback**, polling requires **Origin**, **Referer**, or same-site **Sec-Fetch-Site** + **Host** to match the registered `origin`. The **Electron** main process **GET**s the session and delivers the payload to the renderer (**IPC** + optional pull); **`DelegationSigningModal`** (Hub) or an application **`FabricLoginModal`** shows an **in-app** confirmation modal (origin + message to sign), then **POST**s signatures only if the user approves. Same **`/sessions`** collection shape as downstream apps inheriting Hub; completion uses a **signatures** subresource instead of a `sign` verb.
+1. In Passport, add the desktop Hub as a device. Passport makes a device-link offer on the Hub's loopback `/device-links`.
+2. The Hub shows a native dialog with a six-digit code; Passport shows the same code. Approve only if they match.
+3. From then on, a sign-in in the browser can be answered by the Hub: Passport sends a `PASSPORT_SIGN_REQUEST`, the Hub shows a native dialog naming the site, the account, and exactly what is shared, and on approval returns a `PASSPORT_ASSERTION` signed by its identity key (account 0 on the challenge's network, `signer: 'hub'`).
 
-**Hex `Message` links:** canonical **`fabric:<hex>`** (opaque, no `//`); legacy **`fabric://message?hex=…`** and **`fabric://login?…&messageHex=…`**. Parsed in **`functions/fabricProtocolUrl.js`**; envelope JSON **`docs/FABRIC_MESSAGE_ENVELOPE.md`**.
+Routes (`functions/fabricLocalSignerHub.js` on `@fabric/http` `fabricLocalSigner`): `GET /services/fabric/identity`, `POST /services/fabric/sign`, `POST /services/fabric/link { sessionId }`. They answer only a direct loopback socket naming a loopback `Host` whose `Origin` is Passport: a Chrome build listed in `FABRIC_PASSPORT_EXTENSION_IDS` / `settings.passport.extensionIds`, or any Firefox build (`moz-extension://`). Sign requests must come from a device in the Hub's identity cluster; each nonce works once; requests from before the Hub started are refused. Link and sign prompts are separate, link prompts come at most every 30 seconds, and a dialog closes when its request expires. A CLI Hub has no dialog and serves none of these routes.
 
-### Mutual device-link (`fabric://link`)
-Separate seeds per app (Passport / Hub browser / downstream applications). Hub Identity → **Create link offer** → `POST /device-links` → `fabric://link?sessionId&hub`. Responder approves (application protocol handler or Passport **Approve with Passport** / `FABRIC_DEVICE_LINK_REQUEST`), then the initiator countersigns. Challenge: `fabric:device-link:1:<nonce>:<initiatorId>:<responderId>:<label>`. Routes: `POST|GET /device-links`, `POST /device-links/:id/signatures`. See `functions/fabricDeviceLink.js`.
+### `fabric:` links
+The Hub registers the **`fabric:`** scheme on every launch and on **macOS activate**, and declares it via **electron-builder** (`package.json` → `build.protocols`). It opens:
 
-**Verification:** the poll response includes `message`, `signature`, and `pubkeyHex`. You can paste those into **Identity → Verify signature** in the UI to confirm the Hub key signed the challenge.
+- **`fabric:<frame>`** (opaque, no `//`) and legacy **`fabric://message?hex=…`** — shown read-only in **`FabricMessagePrompt`** with the author or "Not signed". Nothing is signed from it. Parsed in **`functions/fabricProtocolUrl.js`**; envelope JSON **`docs/FABRIC_MESSAGE_ENVELOPE.md`**.
+- **`fabric://link?…`** — handed to the Identity device-link UI.
 
-This path is for **demonstration** on localhost; production should use HTTPS on the hub, sane **CORS** defaults, and (for remote hubs) the same **origin** discipline the server already applies off loopback.
+### Mutual device-link
+Separate seeds per app (Passport / Hub browser / downstream applications). Hub Identity → **Create link offer** → `POST /device-links`. The responder approves (Passport **Approve with Passport**, or the app that owns the offer), then the initiator countersigns. Strings are `fabric:device-link:3:offer:…` and `fabric:device-link:3:link:…`, naming the session, nonce, ids, label, and origin. Routes: `POST|GET /device-links`, `POST /device-links/:id/signatures`. See `functions/fabricDeviceLink.js`.
 
 ## BIP21 `bitcoin:` (payments)
 The desktop app registers the **`bitcoin:`** scheme (alongside **`fabric:`**) on launch and on macOS **activate**, and declares it in **electron-builder** (`package.json` → `build.protocols`). Opening a **`bitcoin:`** link (OS default handler, second instance, or **`open` on macOS**) loads **Bitcoin Payments → Make Payment** with fields prefilled:
@@ -96,11 +102,6 @@ The desktop app registers the **`bitcoin:`** scheme (alongside **`fabric:`**) on
 - **Payjoin** (`…&pj=<https endpoint>`) → query param **`bitcoinUri`** (full URI) so the UI can parse `pj=` and use the Payjoin path.
 
 Another wallet may already own **`bitcoin:`** on your system; set **Fabric Hub** as the default handler in OS settings if you want these links to open here.
-
-### Delegation & external signing
-**Browser activity stream:** delegation signing requests appear in the **Notifications** / **Activity** streams, tagged **`#delegation`**. Approve/reject in the **desktop** shell uses **`DelegationSigningModal`** (in-app modal), not a native OS dialog.
-
-After a successful desktop link, the browser receives a **`delegationToken`** (`fabric.delegation` in `localStorage`) and shows **External signing enabled** on **Identity** / **`/settings/security`**. Signing intents use **`DELEGATION_SIGNATURE_REQUEST`** / **`DELEGATION_SIGNATURE_RESOLUTION`**; RPC **`PostDelegationSignatureMessage`**, **`GetDelegationSignatureMessage`**, **`ResolveDelegationSignatureMessage`** on **`POST /services/rpc`**. **`GET /sessions/:sessionId/delegation/audit`**, **`GET|DELETE /sessions/:sessionId`**, loopback **`GET /sessions`**. **SPA:** **`/settings/security`** (list), **`/sessions/:id`** (per-token UI); **`/sessions`**, **`/security`** → **`/settings/security`**. Toasts: **`functions/toast.js`**, **react-toastify**.
 
 ## Commands
 ```bash
@@ -160,8 +161,8 @@ Manual wiring (same `--hidden` flag):
 - **Linux:** `resources/startup/linux/fabrichub-startup.sh` or the sample `.desktop` under `~/.config/autostart/`
 
 ### Tray status, notifications, menu
-- The tray lists the Hub state (starting / running / restarting / stopped, or "using the Hub already running"), then — polled every 30 s from loopback `GET /services/peering`, `/services/bitcoin`, `/services/lightning`, and `/sessions` — Fabric peer count, Bitcoin height or sync %, Lightning state, and waiting delegation signature requests (also the dock / launcher badge).
-- When the window is hidden or not focused, a `fabric:` login prompt, a `fabric:<hex>` message, or a new delegation signature request raises a native notification; clicking it brings the window up. Nothing is signed from the notification.
+- The tray lists the Hub state (starting / running / restarting / stopped, or "using the Hub already running"), then — polled every 30 s from loopback `GET /services/peering`, `/services/bitcoin`, and `/services/lightning` — Fabric peer count, Bitcoin height or sync %, and Lightning state.
+- When the window is hidden or not focused, a Passport sign or link request or a `fabric:` message raises a native notification; clicking it brings the window up. Nothing is signed from the notification: Passport requests are answered only in their native dialog.
 - Tray / **File** menu: **Restart Hub**, **Reveal Hub data folder**, **Reveal logs**. Tray **Keep computer awake** (`powerSaveBlocker` `prevent-app-suspension`, off by default; `FABRIC_DESKTOP_PREVENT_SLEEP=1|0` forces it).
 - The app menu has no **Reload** / **DevTools** in packaged builds (DevTools are disabled outright) unless `FABRIC_DESKTOP_DEVTOOLS=1`; `npm run desktop` keeps them.
 - Window size, position, and maximized state come back on the next launch (only onto a display that still exists).

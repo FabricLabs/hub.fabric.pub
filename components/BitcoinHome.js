@@ -218,8 +218,8 @@ class BitcoinHome extends React.Component {
   }
 
   componentDidUpdate (prevProps, prevState) {
-    const prevId = prevProps && prevProps.identity && prevProps.identity.xpub;
-    const nextId = this.props && this.props.identity && this.props.identity.xpub;
+    const prevId = prevProps && prevProps.identity && prevProps.identity.wallet && prevProps.identity.wallet.segwit && prevProps.identity.wallet.segwit.xpub;
+    const nextId = this.props && this.props.identity && this.props.identity.wallet && this.props.identity.wallet.segwit && this.props.identity.wallet.segwit.xpub;
     if (prevId !== nextId) this.refresh();
     if (prevState.refreshing && !this.state.refreshing) {
       this._syncBitcoinHashScroll();

@@ -13,12 +13,6 @@
  *   `SCREAMING_SNAKE` for protocol-ish names (`P2P_CHAT_MESSAGE`, …).
  */
 
-/** @deprecated Prefer {@link DELEGATION_SIGNATURE_REQUEST}. Old client localStorage rows. */
-const LEGACY_DELEGATION_SIGN_REQUEST = 'DELEGATION_SIGN_REQUEST';
-
-const DELEGATION_SIGNATURE_REQUEST = 'DELEGATION_SIGNATURE_REQUEST';
-const DELEGATION_SIGNATURE_RESOLUTION = 'DELEGATION_SIGNATURE_RESOLUTION';
-
 /** GenericMessage / activity envelope: document delivery reward offer (sidechain + L1 demo). */
 const DOCUMENT_OFFER = 'DOCUMENT_OFFER';
 
@@ -42,27 +36,12 @@ const CONTRACT_MESSAGE_LOG = (appNs && appNs.LOG_TYPES && appNs.LOG_TYPES.Contra
 const FEDERATION_SIGN_REQUEST = (appNs && appNs.ACTIVITY_TYPES && appNs.ACTIVITY_TYPES.FederationSignRequest) || 'FederationSignRequest';
 const FEDERATION_SIGN_RESPONSE = (appNs && appNs.ACTIVITY_TYPES && appNs.ACTIVITY_TYPES.FederationSignResponse) || 'FederationSignResponse';
 
-/**
- * Whether `m` is a delegation-signing activity row (pending UI / notifications).
- * Accepts the legacy alias written before the name was aligned with the Fabric log.
- * @param {{ type?: string }|null|undefined} m
- */
-function isDelegationSignatureRequestActivity (m) {
-  if (!m || typeof m !== 'object') return false;
-  const t = m.type;
-  return t === DELEGATION_SIGNATURE_REQUEST || t === LEGACY_DELEGATION_SIGN_REQUEST;
-}
-
 module.exports = {
-  LEGACY_DELEGATION_SIGN_REQUEST,
-  DELEGATION_SIGNATURE_REQUEST,
-  DELEGATION_SIGNATURE_RESOLUTION,
   DOCUMENT_OFFER,
   FEDERATION_CONTRACT_INVITE,
   FEDERATION_CONTRACT_INVITE_RESPONSE,
   CONTRACT_PUBLISH_LOG,
   CONTRACT_MESSAGE_LOG,
   FEDERATION_SIGN_REQUEST,
-  FEDERATION_SIGN_RESPONSE,
-  isDelegationSignatureRequestActivity
+  FEDERATION_SIGN_RESPONSE
 };

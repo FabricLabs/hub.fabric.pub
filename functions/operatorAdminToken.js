@@ -3,9 +3,9 @@
 /**
  * Hub operator admin tokens (Schnorr `OP_IDENTITY` / `sub=admin`).
  *
- * The local developer environment is the production publisher: the same
- * `FABRIC_XPRV` is Hub `_rootKey` (HD master) and the Fabric Peer identity
- * (BIP44 `m/44'/7777|7778'/…`). Tokens minted from either key must verify.
+ * Tokens are signed by the Hub identity key — `m/44'/F'/0'/0/0` of
+ * `FABRIC_XPRV` on the Hub's network, the Fabric Peer identity — never by the
+ * master itself (`functions/hubAccount.js` `hubServerKeys`).
  */
 
 const Token = require('@fabric/core/types/token');

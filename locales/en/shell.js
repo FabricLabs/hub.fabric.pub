@@ -32,7 +32,7 @@ module.exports = {
     collaboration: 'Collaboration',
     beaconFederation: 'Beacon Federation',
     federations: 'Federations',
-    security: 'Security & delegation',
+    security: 'Security',
     distributedManifest: 'Distributed manifest (JSON)',
     federationVault: 'Federation vault (JSON)',
     openSettings: 'Open settings',
@@ -85,6 +85,8 @@ module.exports = {
     buttonTitleLogin: 'Log in',
     buttonLabelLocked: 'Locked. Unlock your Fabric identity.',
     buttonLabelWatchOnly: 'Watch-only Fabric identity. Open options.',
+    buttonTitlePassport: 'Logged in with Fabric Passport. Your keys stay in Passport.',
+    buttonLabelPassport: 'Fabric identity from Passport. Open identity options.',
     buttonLabelLogin: 'Log in or create a Fabric identity'
   },
   notFound: {
@@ -156,10 +158,7 @@ module.exports = {
     invalid: 'Signature is not valid for this message and key.',
     close: 'Close',
     sign: 'Sign',
-    verify: 'Verify',
-    externalHeader: 'Desktop signing',
-    externalConfirm: 'Confirm the signature in the Fabric Hub desktop app…',
-    externalCancelled: 'Signing was cancelled or timed out.'
+    verify: 'Verify'
   },
   destroyModal: {
     title: 'Remove identity',
@@ -198,7 +197,7 @@ module.exports = {
     title: 'Log in with a Fabric identity',
     body: 'This page uses your keys and this Hub’s wallet tools. Create or unlock an identity to continue.',
     openIdentity: 'Log in',
-    security: 'Security & delegation',
+    security: 'Security',
     home: 'Home'
   },
   clientNeedsHub: {

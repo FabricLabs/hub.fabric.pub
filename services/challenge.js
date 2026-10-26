@@ -107,7 +107,7 @@ class ChallengeService extends Service {
     if (deps.book) this.book = deps.book;
     if (deps.key) this.key = deps.key;
     if (!this.book && this.hub && this.hub.market && this.hub.market.book) this.book = this.hub.market.book;
-    if (!this.key && this.hub && this.hub._rootKey) this.key = this.hub._rootKey;
+    if (!this.key && this.hub && this.hub._fabricKey) this.key = this.hub._fabricKey;
     if (typeof deps.tipHeight === 'function') this._tipHeight = deps.tipHeight;
     if (typeof deps.outpointUnspent === 'function') this._outpointUnspent = deps.outpointUnspent;
     if (typeof deps.headerKnown === 'function') this._headerKnown = deps.headerKnown;

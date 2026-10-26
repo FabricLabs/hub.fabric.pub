@@ -37,8 +37,7 @@ const OPERATOR_REEXPORTS = [
   'hubSetupStores',
   'hubStoreReset',
   'peerIdentity',
-  'peerListFormat',
-  'siteLoginSessionFetch'
+  'peerListFormat'
 ];
 
 describe('Hub PR #16 review coverage', function () {

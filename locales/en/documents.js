@@ -283,7 +283,7 @@ module.exports = {
       needKeyThen: 'Then open Distribute again.',
       noLocalKeyTitle: 'Signing happens outside this browser',
       noLocalKeyBody: 'Invoice and contract requests still reach the Hub through your session. Pay the storage address from any wallet you trust. If you use desktop signing, approve prompts in the Hub app, and on a shared computer end the session under',
-      securityLink: 'Security & delegation',
+      securityLink: 'Security',
       steps: {
         request: '1. Request invoice',
         pay: '2. Pay',
@@ -418,7 +418,7 @@ module.exports = {
     summary: 'Peers can pay you to host their files. Accept an offer to send the peer a payment address; once they pay, a storage contract starts.',
     externalTitle: 'Signing happens outside this browser',
     externalBody: 'This browser has no Fabric private key, so storage contract requests go to the Hub without its signature. Approve any signing prompts in the desktop app. On a shared computer, end the session under',
-    securityLink: 'Security & delegation',
+    securityLink: 'Security',
     from: (who) => `From ${who}`,
     unknownSender: 'an unknown peer',
     accept: 'Accept',

@@ -72,7 +72,7 @@ function relayIdentityCrossSign (hub, object) {
   let msg = null;
   try {
     msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
-    if (hub._rootKey && hub._rootKey.private) msg.signWithKey(hub._rootKey);
+    if (hub._fabricKey) msg.signWithKey(hub._fabricKey);
   } catch (_) {
     msg = null;
   }

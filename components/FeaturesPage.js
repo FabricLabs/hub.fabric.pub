@@ -30,20 +30,13 @@ function FeaturesPage (props) {
       setIdentityButtonLabel(t.common.identity.login);
       return;
     }
-    let sessionUnlocked = null;
-    try {
-      const unlockedRaw = window.sessionStorage && window.sessionStorage.getItem('fabric.identity.unlocked');
-      if (unlockedRaw) sessionUnlocked = JSON.parse(unlockedRaw);
-    } catch (_) {
-      sessionUnlocked = null;
-    }
     let local = null;
     try {
       local = readStorageJSON('fabric.identity.local', null);
     } catch (_) {
       local = null;
     }
-    setIdentityButtonLabel(featuresPageIdentityButtonLabelFromStorage(local, sessionUnlocked));
+    setIdentityButtonLabel(featuresPageIdentityButtonLabelFromStorage(local));
   }, []);
 
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((n) => n + 1)), []);

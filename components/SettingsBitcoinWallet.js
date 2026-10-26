@@ -1,16 +1,13 @@
 'use strict';
 
 /**
- * Settings: explain Bitcoin derivation under the Fabric identity master.
+ * Settings: the active Fabric account's wallet (SegWit + watched standard account).
  */
 
 const React = require('react');
 const { Link } = require('react-router-dom');
 const { Header, Icon, Message, Segment } = require('semantic-ui-react');
-const {
-  getBitcoinBip44AccountForIdentity,
-  getSpendWalletContext
-} = require('../functions/bitcoinClient');
+const { getSpendWalletContext } = require('../functions/bitcoinClient');
 const {
   classifyHubBrowserIdentity,
   fabricIdentityNeedFullKeyPlain
@@ -26,10 +23,10 @@ function trimMiddle (s, left = 14, right = 10) {
 }
 
 function SettingsBitcoinWallet ({ identity }) {
-  const masterXpub = identity && (identity.masterXpub || identity.xpub)
-    ? String(identity.masterXpub || identity.xpub)
-    : '';
-  const acct = getBitcoinBip44AccountForIdentity(identity || {});
+  const wallet = identity && identity.wallet ? identity.wallet : null;
+  const segwitPath = wallet && wallet.segwit && wallet.segwit.path ? String(wallet.segwit.path) : '';
+  const standardPath = wallet && wallet.standard && wallet.standard.path ? String(wallet.standard.path) : '';
+  const acct = identity && identity.fabricAccountIndex != null ? Number(identity.fabricAccountIndex) : 0;
   const spend = React.useMemo(() => getSpendWalletContext(identity || {}), [identity]);
   const identityKind = classifyHubBrowserIdentity(identity || {});
 
@@ -42,7 +39,16 @@ function SettingsBitcoinWallet ({ identity }) {
         </Header>
         <p style={{ color: '#666', margin: '0 0 1em', maxWidth: '40rem', lineHeight: 1.45 }}>
           {c.intro}
-          {' '}{c.pathLead} <code style={{ whiteSpace: 'nowrap' }}>{`m/44'/0'/${acct}'`}</code> {c.pathTail(acct)}
+          {segwitPath ? (
+            <React.Fragment>
+              {' '}{c.pathLead} <code style={{ whiteSpace: 'nowrap' }}>{segwitPath}</code> {c.pathTail(acct)}
+            </React.Fragment>
+          ) : null}
+          {standardPath ? (
+            <React.Fragment>
+              {' '}{c.standardLead} <code style={{ whiteSpace: 'nowrap' }}>{standardPath}</code> {c.standardTail}
+            </React.Fragment>
+          ) : null}
         </p>
         <Message info size="small" style={{ marginBottom: '1em' }}>
           <Message.Header>{c.walletsTitle}</Message.Header>
@@ -58,23 +64,25 @@ function SettingsBitcoinWallet ({ identity }) {
         </Message>
       </section>
 
-      {masterXpub ? (
+      {spend && spend.xpub ? (
         <Message size="small" info style={{ marginBottom: '1em' }}>
-          <p style={{ margin: 0, fontSize: '0.9em', wordBreak: 'break-all' }}>
-            <strong>{c.masterXpub}</strong> <code>{masterXpub}</code>
-          </p>
-          {spend && spend.walletId && spend.xpub ? (
-            <p style={{ margin: '0.65em 0 0', fontSize: '0.88em', color: '#333' }}>
+          {spend.walletId ? (
+            <p style={{ margin: 0, fontSize: '0.88em', color: '#333' }}>
               <strong>{c.walletIdLead}</strong> {c.walletIdNote}{' '}
               <code style={{ wordBreak: 'break-all' }}>{spend.walletId}</code>
             </p>
           ) : null}
-          {spend && spend.xpub ? (
-            <p style={{ margin: '0.5em 0 0', fontSize: '0.85em', color: '#555' }}>
-              <strong>{c.accountXpub(acct)}</strong>{' '}
-              <code title={spend.xpub}>{trimMiddle(spend.xpub, 18, 18)}</code>
+          <p style={{ margin: '0.5em 0 0', fontSize: '0.85em', color: '#555' }}>
+            <strong>{c.segwitXpub(acct)}</strong>{' '}
+            <code title={spend.xpub}>{trimMiddle(spend.xpub, 18, 18)}</code>
+          </p>
+          {spend.standardXpub ? (
+            <p style={{ margin: '0.35em 0 0', fontSize: '0.85em', color: '#555' }}>
+              <strong>{c.standardXpub(acct)}</strong>{' '}
+              <code title={spend.standardXpub}>{trimMiddle(spend.standardXpub, 18, 18)}</code>
             </p>
-          ) : identityKind === 'password_locked' || identityKind === 'watch_only' ? (
+          ) : null}
+          {!spend.hasPrivateKey && (identityKind === 'password_locked' || identityKind === 'watch_only') ? (
             <p style={{ margin: '0.65em 0 0', fontSize: '0.88em', color: '#8a6d3b' }}>
               {identityKind === 'password_locked' ? c.lockedNote : c.watchOnlyNote}
             </p>

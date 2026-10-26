@@ -20,7 +20,7 @@ function mintAdmin (issuer) {
 }
 
 describe('operatorAdminToken', function () {
-  it('accepts a token minted from the HD master (Hub _rootKey)', function () {
+  it('accepts a token minted from the given key', function () {
     const master = new Key();
     const token = mintAdmin(master);
     assert.strictEqual(isOperatorAdminToken(token, master), true);
@@ -70,54 +70,50 @@ describe('operatorAdminToken', function () {
 
 describe('Hub._verifyOperatorAdminToken', function () {
   // Accept/Reject *handler* coverage lives in `tests/hub.operatorAccept.test.js`.
-  // This block pins the shared gate those handlers call, covering the cases a
-  // handler test does not reach: an unset `agent.key`, and the ordering contract
-  // between `setup.verifyAdminToken` and the Schnorr key check.
+  // This block pins the shared gate those handlers call: only the identity key
+  // (`_fabricKey`) issues admin tokens, and `setup.verifyAdminToken` may
+  // short-circuit but never veto.
   const verify = (context, token) => Hub.prototype._verifyOperatorAdminToken.call(context, token);
 
-  it('accepts tokens minted from either _rootKey or agent.key', function () {
+  it('accepts tokens from the identity key and refuses the root key', function () {
     const master = new Key();
-    const derived = master.derive(DERIVE);
-    const context = { _rootKey: master, agent: { key: derived }, setup: null };
-    assert.strictEqual(verify(context, mintAdmin(master)), true);
-    assert.strictEqual(verify(context, mintAdmin(derived)), true);
+    const identity = master.derive(DERIVE);
+    const context = { _rootKey: master, _fabricKey: identity, setup: null };
+    assert.strictEqual(verify(context, mintAdmin(identity)), true);
+    assert.strictEqual(verify(context, mintAdmin(master)), false);
   });
 
   it('rejects a foreign operator, a non-admin capability, and an empty token', function () {
     const master = new Key();
-    const context = { _rootKey: master, agent: { key: master.derive(DERIVE) }, setup: null };
+    const identity = master.derive(DERIVE);
+    const context = { _rootKey: master, _fabricKey: identity, setup: null };
     assert.strictEqual(verify(context, mintAdmin(new Key())), false);
     assert.strictEqual(verify(context, new Token({
       capability: 'OP_IDENTITY',
-      issuer: master,
+      issuer: identity,
       subject: 'operator'
     }).toSignedString()), false);
     assert.strictEqual(verify(context, ''), false);
     assert.strictEqual(verify(context, null), false);
   });
 
-  it('skips an unset agent.key instead of throwing', function () {
+  it('refuses every token without an identity key', function () {
     const master = new Key();
-    const token = mintAdmin(master);
-    for (const agent of [null, undefined, {}, { key: null }]) {
-      assert.strictEqual(verify({ _rootKey: master, agent, setup: null }, token), true);
-    }
-    // With no usable issuer at all the token cannot be honoured.
-    assert.strictEqual(verify({ _rootKey: null, agent: null, setup: null }, token), false);
+    const token = mintAdmin(master.derive(DERIVE));
+    assert.strictEqual(verify({ _rootKey: master, _fabricKey: null, setup: null }, token), false);
   });
 
   it('does not depend on setup.verifyAdminToken to accept a valid token', function () {
-    const master = new Key();
+    const identity = new Key().derive(DERIVE);
     let consulted = 0;
     const context = {
-      _rootKey: master,
-      agent: { key: master.derive(DERIVE) },
+      _fabricKey: identity,
       setup: { verifyAdminToken: () => { consulted++; return false; } }
     };
-    assert.strictEqual(verify(context, mintAdmin(master)), true);
+    assert.strictEqual(verify(context, mintAdmin(identity)), true);
     assert.strictEqual(consulted, 1, 'setup is tried first but must not veto a key-valid token');
     // A setup that approves anything is still the documented short-circuit.
-    const approving = { _rootKey: master, agent: null, setup: { verifyAdminToken: () => true } };
+    const approving = { _fabricKey: null, setup: { verifyAdminToken: () => true } };
     assert.strictEqual(verify(approving, mintAdmin(new Key())), true);
   });
 });

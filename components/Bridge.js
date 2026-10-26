@@ -32,11 +32,10 @@ const t = require('../locales/en');
 
 const notices = t.notices;
 const { toast } = require('../functions/toast');
-const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
+const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
 const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput, findFabricPeerRow } = require('../functions/peerIdentity');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
-const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
 const {
   fabricTcpInventoryTarget,
@@ -57,7 +56,7 @@ const {
   fabricIdentityChatDisabledReasonPlain,
   fabricIdentityPeerDisabledReasonPlain
 } = require('../functions/hubIdentityUiHints');
-const { store: fabricBrowserStateStore, readStorageJSON } = require('../functions/fabricBrowserState');
+const { store: fabricBrowserStateStore } = require('../functions/fabricBrowserState');
 const BridgeMessageCollection = require('../types/bridgeMessageCollection');
 const {
   HUB_FABRIC_SESSION_ID,
@@ -1274,18 +1273,11 @@ class Bridge extends React.Component {
    * @returns {string|null}
    */
   _getIdentityId () {
-    // Prefer an extended public key (xpub) as the stable public identifier,
-    // falling back to shorter ids only when necessary.
+    // The Fabric identity id; the identity xpub is never published.
     const auth = this.props && this.props.auth;
-    if (auth) {
-      if (auth.xpub) return auth.xpub;
-      if (auth.id) return auth.id;
-    }
-
+    if (auth && auth.id) return String(auth.id);
     const key = this._getIdentityKey();
-    if (!key) return null;
-    if (key.xpub) return key.xpub;
-    return key.id || null;
+    return key && key.id ? String(key.id) : null;
   }
 
   /**
@@ -1632,10 +1624,7 @@ class Bridge extends React.Component {
 
   _persistMessages () {
     const messages = this.globalState.messages || {};
-    const keys = Object.keys(messages).filter((k) => {
-      const m = messages[k];
-      return !(m && isDelegationSignatureRequestActivity(m));
-    });
+    const keys = Object.keys(messages);
     const filtered = {};
     for (const k of keys) filtered[k] = messages[k];
     // Cap at 500 messages to avoid localStorage bloat
@@ -1891,86 +1880,6 @@ class Bridge extends React.Component {
         subtitle: `${label} · ${txid.slice(0, 14)}…`,
         href: uf.bitcoinExplorer ? `/services/bitcoin/transactions/${encodeURIComponent(txid)}` : undefined,
         copyText: txid
-      });
-    } catch (e) { /* ignore */ }
-  }
-
-  /**
-   * Activity stream row for Hub delegation signing (same panel as public chat; channel #delegation).
-   */
-  _emitDelegationSignRequestActivity ({ messageId, preview, purpose }) {
-    if (!messageId) return;
-    const id = `delegation-${messageId}`;
-    const actorId = this._getIdentityId() || 'local';
-    const created = Date.now();
-    this.globalState.messages = this.globalState.messages || {};
-    this.globalState.messages[id] = {
-      type: DELEGATION_SIGNATURE_REQUEST,
-      actor: { id: actorId },
-      object: {
-        content: typeof preview === 'string' ? preview : '',
-        purpose: typeof purpose === 'string' ? purpose : 'sign',
-        messageId,
-        created,
-        channel: 'delegation',
-        status: 'pending'
-      },
-      status: 'pending'
-    };
-    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-      detail: {
-        operation: { op: 'add', path: `/messages/${id}`, value: this.globalState.messages[id] },
-        globalState: this.globalState
-      }
-    }));
-    try {
-      const pv = typeof preview === 'string' ? preview : '';
-      pushUiNotification({
-        id: `delegation-req-${messageId}`,
-        kind: 'delegation',
-        title: notices.delegation.requestTitle,
-        subtitle: (pv && pv.slice(0, 120)) || notices.delegation.requestSubtitle,
-        href: '/settings/security',
-        copyText: String(messageId)
-      });
-    } catch (e) { /* ignore */ }
-  }
-
-  _resolveDelegationSignRequestActivity (messageId, resolution) {
-    if (!messageId) return;
-    const id = `delegation-${messageId}`;
-    const cur = this.globalState.messages && this.globalState.messages[id];
-    if (!cur || !isDelegationSignatureRequestActivity(cur)) return;
-    const status = resolution === 'approved'
-      ? 'approved'
-      : resolution === 'timeout'
-        ? 'timeout'
-        : 'rejected';
-    this.globalState.messages[id] = Object.assign({}, cur, {
-      status: 'resolved',
-      object: Object.assign({}, cur.object, {
-        status,
-        resolvedAt: Date.now()
-      })
-    });
-    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
-      detail: {
-        operation: { op: 'replace', path: `/messages/${id}`, value: this.globalState.messages[id] },
-        globalState: this.globalState
-      }
-    }));
-    try {
-      const label = status === 'approved'
-        ? notices.delegation.approved
-        : status === 'timeout'
-          ? notices.delegation.timedOut
-          : notices.delegation.rejected;
-      pushUiNotification({
-        id: `delegation-done-${messageId}`,
-        kind: 'delegation_resolved',
-        title: label,
-        subtitle: String(messageId),
-        href: '/settings/security'
       });
     } catch (e) { /* ignore */ }
   }
@@ -2432,10 +2341,6 @@ class Bridge extends React.Component {
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
       capabilities: ['data-channel']
     };
-    const key = this._getIdentityKey();
-    if (key && key.xpub && isLikelyBip32ExtendedKey(String(key.xpub))) {
-      meta.xpub = String(key.xpub).trim();
-    }
     const ns = this.state && (this.state.networkStatus || this.state.lastNetworkStatus);
     const fp = ns && ns.fabricPeerId != null ? String(ns.fabricPeerId).trim() : '';
     if (fp) meta.fabricPeerId = fp;
@@ -3666,73 +3571,6 @@ class Bridge extends React.Component {
   }
 
   /**
-   * External signing: post a `DELEGATION_SIGNATURE_REQUEST` Fabric message (JSON-RPC) and poll until the desktop resolves it.
-   * Requires delegation JSON in localStorage (`fabricDelegationLocal` key; set after desktop browser login).
-   * @param {string} text
-   * @returns {Promise<{ signature: string, publicKey: string }|null>}
-   */
-  async signArbitraryTextDelegated (text) {
-    if (typeof window === 'undefined') return null;
-    const d = readStorageJSON(DELEGATION_STORAGE_KEY, null);
-    if (!d) return null;
-    const token = d && d.token;
-    if (!token && d && d.externalSigning === false) return null;
-    if (!token) return null;
-    const origin = window.location.origin;
-    let jsonRpcSeq = 0;
-    const rpc = async (method, params) => {
-      jsonRpcSeq += 1;
-      const res = await fetch(`${origin}/services/rpc`, {
-        method: 'POST',
-        headers: this._hubJsonRpcHttpHeaders(),
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: jsonRpcSeq,
-          method,
-          params: [params]
-        }),
-        cache: 'no-store'
-      });
-      const body = await res.json().catch(() => ({}));
-      if (body && body.error) return { rpcError: body.error.message || notices.rpc.error };
-      return body && body.result != null ? body.result : null;
-    };
-    const postResult = await rpc('PostDelegationSignatureMessage', {
-      sessionToken: token,
-      message: String(text),
-      purpose: 'arbitrary'
-    });
-    if (!postResult || postResult.rpcError || !postResult.ok || !postResult.messageId) return null;
-    const messageId = postResult.messageId;
-    this._emitDelegationSignRequestActivity({
-      messageId,
-      preview: postResult.preview || String(text).slice(0, 400),
-      purpose: postResult.purpose || 'arbitrary'
-    });
-    const deadline = Date.now() + 5 * 60 * 1000;
-    while (Date.now() < deadline) {
-      await new Promise((res) => setTimeout(res, 500));
-      const pj = await rpc('GetDelegationSignatureMessage', {
-        sessionToken: token,
-        messageId
-      });
-      if (!pj || pj.rpcError) continue;
-      if (pj.ok === false) continue;
-      if (pj.status === 'pending') continue;
-      if (pj.status === 'rejected') {
-        this._resolveDelegationSignRequestActivity(messageId, 'rejected');
-        return null;
-      }
-      if (pj.status === 'approved' && pj.signature) {
-        this._resolveDelegationSignRequestActivity(messageId, 'approved');
-        return { signature: pj.signature, publicKey: pj.pubkeyHex, tag: SIGNING_TAGS.DELEGATION };
-      }
-    }
-    this._resolveDelegationSignRequestActivity(messageId, 'timeout');
-    return null;
-  }
-
-  /**
    * Verifies a Schnorr signature for arbitrary text.
    * @param {string} text - The original message
    * @param {string} signatureHex - The signature (64-byte hex)
@@ -3759,7 +3597,7 @@ class Bridge extends React.Component {
       const key = new Key({ public: publicKeyHex.trim() });
       const sig = Buffer.from(signatureHex.trim(), 'hex');
       if (sig.length !== 64) return false;
-      const tags = tag ? [tag] : [SIGNING_TAGS.SIGN, SIGNING_TAGS.DELEGATION];
+      const tags = tag ? [tag] : [SIGNING_TAGS.SIGN];
       return tags.some((t) => key.verifySchnorr(text, sig, t));
     } catch (error) {
       console.error('[BRIDGE]', 'Error verifying text:', safeIdentityErr(error));
@@ -3769,7 +3607,7 @@ class Bridge extends React.Component {
 
   /**
    * True when the Bridge has a key that can produce Schnorr signatures (xprv / private material).
-   * Watch-only and desktop-delegated identities use xpub-only {@link Key} — JSONCall may be sent unsigned.
+   * Watch-only identities (Passport sign-in) use xpub-only {@link Key} — JSONCall may be sent unsigned.
    */
   _canSignOutgoing () {
     const k = this.settings.signingKey || this.key;
@@ -3796,7 +3634,7 @@ class Bridge extends React.Component {
 
     if (!this._canSignOutgoing()) {
       if (this.settings.debug) {
-        console.debug('[BRIDGE]', 'Watch-only or delegated identity (public key only) — sending unsigned');
+        console.debug('[BRIDGE]', 'Watch-only identity (public key only) — sending unsigned');
       }
       return message;
     }
@@ -3875,7 +3713,7 @@ class Bridge extends React.Component {
 
   /**
    * Sends a Fabric wire message over WebSocket (or WebRTC). Signs via `signMessage` when
-   * `_canSignOutgoing()`; otherwise sends the same buffer unsigned (watch-only / delegated clients).
+   * `_canSignOutgoing()`; otherwise sends the same buffer unsigned (watch-only clients).
    * @param {Buffer} message - The message to send
    * @param {Boolean} preferWebRTC - Whether to prefer WebRTC over WebSocket
    */
@@ -6395,7 +6233,7 @@ class Bridge extends React.Component {
   /**
    * Create an Execution contract (sandboxed opcode program stored on the hub).
    * Uses the same signing rules as other JSONCalls: unsigned when identity is public-key only
-   * (e.g. desktop delegation); Hub policy applies.
+   * (e.g. a Passport sign-in); Hub policy applies.
    * @param {Object} config - `{ name?: string, program: { steps: [...] } }`
    */
   sendCreateExecutionContractRequest (config = {}) {

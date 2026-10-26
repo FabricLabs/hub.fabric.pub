@@ -72,7 +72,7 @@ describe('adversarialEnvironment.basics (@fabric/hub)', function () {
       }
     };
     const base = {
-      identity: { xpub: 'tpubExample' },
+      identity: { id: 'dev', wallet: { segwit: { xpub: 'tpubExample' } } },
       clientBalance: { balanceSats: 0 }
     };
     assert.strictEqual(shouldAutoFundDesktopLocalKey(Object.assign({}, base, { network: 'regtest' })), true);

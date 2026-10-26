@@ -9,7 +9,6 @@ const { MemoryRouter, Routes, Route } = require('react-router-dom');
 const t = require('../locales/en');
 const IdentityManager = require('../components/IdentityManager');
 const SecurityHome = require('../components/SecurityHome');
-const SecuritySessionHome = require('../components/SecuritySessionHome');
 
 const copy = t.identity;
 
@@ -30,29 +29,26 @@ function visibleText (html) {
     .replace(/\s+/g, ' ');
 }
 
-const PUBLIC_IDENTITY = { id: 'id1examplefabricidentity', xpub: 'xpub6Example' };
+const PUBLIC_IDENTITY = { id: 'id1examplefabricidentity', pubkey: '02' + '22'.repeat(32) };
 
 describe('Identity and security copy', function () {
   this.timeout(15000);
 
-  it('Security page explains sessions and warns about the session link', function () {
+  it('Security page explains the Passport session without REST paths', function () {
     const html = render(React.createElement(SecurityHome), '/settings/security');
     const text = visibleText(html);
     assert.ok(text.includes(copy.security.summary));
-    assert.ok(html.includes('data-testid="security-session-token-warning"'));
-    assert.ok(text.includes(copy.security.tokenWarning));
+    assert.ok(text.includes(copy.security.session.off));
     assert.ok(!/\/sessions\b/.test(text), 'no REST paths in visible copy');
   });
 
-  it('Session page warns that its link contains a secret token', function () {
-    const html = render(
-      React.createElement(Routes, null,
-        React.createElement(Route, { path: '/sessions/:sessionId', element: React.createElement(SecuritySessionHome) })
-      ),
-      '/sessions/abc123'
-    );
-    assert.ok(html.includes('data-testid="delegation-session-token-warning"'));
-    assert.ok(visibleText(html).includes(copy.securitySession.tokenWarning));
+  it('Passport identity offers to share the wallet and shows no xpub', function () {
+    const html = render(React.createElement(IdentityManager, {
+      currentIdentity: { id: 'id1passport', pubkey: '02' + '11'.repeat(32), linkedFromPassport: true }
+    }));
+    const text = visibleText(html);
+    assert.ok(html.includes('data-testid="identity-passport-signing"'));
+    assert.ok(!/[xt]pub[1-9A-HJ-NP-Za-km-z]{20}/.test(html), 'no extended public key');
   });
 
   it('Login chooser offers each method once, with matching back buttons', function () {
@@ -73,13 +69,15 @@ describe('Identity and security copy', function () {
     const text = visibleText(html);
     assert.ok(text.includes(copy.manager.keyStatus.lockedPassword));
     assert.ok(text.includes(copy.manager.unlock.submit));
-    assert.ok(!text.includes(copy.manager.keyStatus.watchOnly));
+    assert.ok(!text.includes(copy.manager.keyStatus.session));
   });
 
-  it('Watch-only identity says so instead of asking for a password', function () {
-    const html = render(React.createElement(IdentityManager, { currentIdentity: PUBLIC_IDENTITY }));
+  it('Passport identity says the keys stay in Passport instead of asking for a password', function () {
+    const html = render(React.createElement(IdentityManager, {
+      currentIdentity: Object.assign({ linkedFromPassport: true }, PUBLIC_IDENTITY)
+    }));
     const text = visibleText(html);
-    assert.ok(text.includes(copy.manager.keyStatus.watchOnly));
+    assert.ok(text.includes(copy.manager.keyStatus.session));
     assert.ok(!html.includes('id="fabric-identity-unlock-password"'));
     assert.ok(!text.includes(copy.manager.keyStatus.lockedPassword));
   });

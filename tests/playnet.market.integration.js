@@ -897,13 +897,13 @@ describe('Playnet market (simulation + optional mesh)', function () {
 
         const pubkeys = hubs
           .map((hub) => {
-            const k = hub._rootKey && hub._rootKey.pubkey;
+            const k = hub._cosignerKey && hub._cosignerKey.pubkey;
             if (!k) return '';
             return Buffer.isBuffer(k) ? k.toString('hex') : String(k).trim();
           })
           .filter((x) => x.length === 66 || x.length === 64 || x.length === 130);
 
-        assert.ok(pubkeys.length === n, 'each hub should expose a root pubkey hex');
+        assert.ok(pubkeys.length === n, 'each hub should expose a cosigner pubkey hex');
         const threshold = Math.max(1, Math.min(3, pubkeys.length));
 
         for (const hub of hubs) {
@@ -1174,7 +1174,7 @@ describe('Playnet market (simulation + optional mesh)', function () {
         }
 
         const pubkeys = hubs.map((hub) => {
-          const k = hub._rootKey && hub._rootKey.pubkey;
+          const k = hub._cosignerKey && hub._cosignerKey.pubkey;
           if (!k) return '';
           return Buffer.isBuffer(k) ? k.toString('hex') : String(k).trim();
         }).filter((x) => x.length >= 64);

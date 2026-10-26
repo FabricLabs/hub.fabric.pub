@@ -7,61 +7,62 @@ const {
 } = require('semantic-ui-react');
 
 const {
-  plaintextMasterFromStored
-} = require('../../functions/fabricHubLocalIdentity');
+  STORAGE_KEY,
+  ACCOUNT_NETWORKS,
+  isAccountVault,
+  cachedAccounts
+} = require('../../functions/hubAccountVault');
 const { readStorageJSON } = require('../../functions/fabricBrowserState');
 const t = require('../../locales/en');
 
 const copy = t.identity.accountControls;
 
-/** Highest Fabric BIP44 account index shown in Hub quick-switch UI (still one HD wallet). */
+/** Highest account index offered in the quick switcher (any index derives). */
 const MAX_VISIBLE_ACCOUNT_INDEX = 24;
 
 /**
- * Dropdown to switch the Fabric-protocol account index (same mnemonics HD tree, new id/xpub/signing subtree).
- *
- * Disabled when encrypted identity is locked (master not decryptable locally without password interaction).
+ * Account + network switcher for the browser's sealed identity. Each pair
+ * derives its own identity, wallet, and cosigner keys from the one seed.
+ * Unlocked, any pair can be chosen; locked, only pairs used before (their
+ * public keys are cached in the vault).
  *
  * @param {object} props
  * @param {object|null} props.localIdentity
- * @param {function(number):void} props.onFabricAccountChange
+ * @param {function(number, string):void} props.onFabricAccountChange `(account, network)`
  */
 function FabricIdentityAccountControls (props) {
   const local = props.localIdentity || null;
   const onChange = props && typeof props.onFabricAccountChange === 'function'
     ? props.onFabricAccountChange
     : null;
-  const modeOk = !!(local && local.fabricIdentityMode === 'account');
-  let stored = null;
+  if (!local || local.fabricIdentityMode !== 'account' || !onChange) return null;
+
+  let vault = null;
   try {
-    stored = typeof window !== 'undefined' ? readStorageJSON('fabric.identity.local', null) : null;
+    vault = typeof window !== 'undefined' ? readStorageJSON(STORAGE_KEY, null) : null;
   } catch (e) {
-    stored = null;
+    vault = null;
   }
-  const diskMaster = !!(stored && plaintextMasterFromStored(stored));
-  const memMaster = !!(local && String(local.masterXprv || '').trim());
-  const role = stored && stored.fabricHdRole != null ? String(stored.fabricHdRole) : '';
-  const switchBlocked = role === 'accountNode' || role === 'watchAccount';
+  const unlocked = !!(local.masterXprv && String(local.masterXprv).trim());
+  const cached = isAccountVault(vault) ? cachedAccounts(vault) : [];
+  if (!unlocked && !cached.length) return null;
 
-  /** Need HD master to pivot account index; account-node or watch-only identities cannot switch. */
-  const canSwitch =
-    modeOk &&
-    (diskMaster || memMaster) &&
-    !switchBlocked;
+  const account = Math.max(0, Math.floor(Number(local.fabricAccountIndex)) || 0);
+  const network = local.network || 'regtest';
+  const isCached = (a, n) => cached.some((c) => c.account === a && c.network === n);
 
-  const idxRaw = local && local.fabricAccountIndex != null ? local.fabricAccountIndex : 0;
-  const idx = Math.max(0, Math.min(MAX_VISIBLE_ACCOUNT_INDEX, Math.floor(Number(idxRaw)) || 0));
-
-  if (!modeOk || !onChange) return null;
-
-  let blockedTitle = copy.blockedWatchOnly;
-  if (switchBlocked) blockedTitle = copy.blockedAccountKey;
-  else if (stored && stored.passwordProtected) blockedTitle = copy.blockedLocked;
-
-  const options = [];
-  for (let i = 0; i <= MAX_VISIBLE_ACCOUNT_INDEX; i++) {
-    options.push({ key: `fab-acct-${i}`, text: copy.option(i), value: i });
+  const accountOptions = [];
+  const maxAccount = Math.max(MAX_VISIBLE_ACCOUNT_INDEX, account, ...cached.map((c) => c.account));
+  for (let i = 0; i <= maxAccount; i++) {
+    const usable = unlocked || isCached(i, network);
+    if (!usable && i !== account) continue;
+    accountOptions.push({ key: `fab-acct-${i}`, text: copy.option(i), value: i });
   }
+  const networkOptions = ACCOUNT_NETWORKS
+    .filter((n) => unlocked || n === network || isCached(account, n))
+    .map((n) => ({ key: `fab-net-${n}`, text: copy.networks[n] || n, value: n }));
+
+  const title = unlocked ? copy.title : copy.blockedLocked;
 
   return (
     <>
@@ -72,16 +73,31 @@ function FabricIdentityAccountControls (props) {
         id="fabric-hub-fabric-account-select"
         selection
         compact
-        value={idx}
-        options={options}
-        disabled={!canSwitch}
-        title={
-          !canSwitch ? blockedTitle : copy.title
-        }
+        value={account}
+        options={accountOptions}
+        disabled={accountOptions.length < 2}
+        title={title}
         onChange={(e, d) => {
           const v = d && (d.value != null ? Number(d.value) : NaN);
-          if (!Number.isFinite(v) || v < 0) return;
-          onChange(Math.floor(v));
+          if (!Number.isFinite(v) || v < 0 || v === account) return;
+          onChange(Math.floor(v), network);
+        }}
+      />
+      <Header as="label" htmlFor="fabric-hub-fabric-network-select" style={{ margin: '0 0.5em', marginBottom: 0 }}>
+        {copy.networkLabel}
+      </Header>
+      <Dropdown
+        id="fabric-hub-fabric-network-select"
+        selection
+        compact
+        value={network}
+        options={networkOptions}
+        disabled={networkOptions.length < 2}
+        title={title}
+        onChange={(e, d) => {
+          const v = d && d.value != null ? String(d.value) : '';
+          if (!v || v === network) return;
+          onChange(account, v);
         }}
       />
     </>

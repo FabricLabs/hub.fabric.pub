@@ -43,7 +43,7 @@ describe('TopPanel identity label behavior', function () {
     const html = renderTopPanel({
       auth: null,
       localIdentity: {
-        xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8',
+        id: 'fabricid1234567890abcdef',
         xprv: 'xprv9s21ZrQH143K3...'
       },
       hasLocalIdentity: true,
@@ -51,15 +51,15 @@ describe('TopPanel identity label behavior', function () {
     });
 
     assert.ok(!html.includes('>Log in<'), 'should not render Log in after local unlock');
-    assert.ok(html.includes('xpub6CUG'), 'should render local identity-derived label');
+    assert.ok(html.includes('fabricid'), 'should render the Fabric ID');
+    assert.ok(!html.includes('xpub'), 'never an extended key');
   });
 
-  it('shows Watch-only for xpub-only identity (not password Locked)', function () {
+  it('shows Watch-only for an identity with no key and no password (not password Locked)', function () {
     const html = renderTopPanel({
       auth: null,
       localIdentity: {
-        id: 'id1',
-        xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8'
+        id: 'id1'
       },
       hasLocalIdentity: true,
       hasLockedIdentity: false
@@ -69,12 +69,32 @@ describe('TopPanel identity label behavior', function () {
     assert.ok(!html.includes('>Locked<'), 'Locked is reserved for password-protected key in memory');
   });
 
+  it('shows a Passport login as the identity, not Watch-only', function () {
+    const html = renderTopPanel({
+      publicHubVisitor: false,
+      showHubNav: true,
+      auth: null,
+      localIdentity: {
+        id: 'passportid1234567890',
+        wallet: { segwit: { xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8' } },
+        linkedFromPassport: true
+      },
+      hasLocalIdentity: true,
+      hasLockedIdentity: false,
+      clientBalance: { balanceSats: 1000 }
+    });
+
+    assert.ok(html.includes('hub-identity-chip-passport'), 'Passport chip rendered');
+    assert.ok(html.includes('passport…34567890'), 'chip shows the Fabric ID');
+    assert.ok(!html.includes('Watch-only'), 'Passport login is not watch-only');
+    assert.ok(html.includes('1,000 sats'), 'wallet chip shows the balance of the shared wallet');
+  });
+
   it('shows Locked when password-protected identity has no xprv in memory', function () {
     const html = renderTopPanel({
       auth: null,
       localIdentity: {
         id: 'id1',
-        xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8',
         passwordProtected: true
       },
       hasLocalIdentity: true,
@@ -89,7 +109,7 @@ describe('TopPanel identity label behavior', function () {
       auth: null,
       localIdentity: {
         id: 'id1',
-        xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8',
+        wallet: { segwit: { xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8' } },
         passwordProtected: true
       },
       hasLocalIdentity: true,
@@ -106,7 +126,6 @@ describe('TopPanel identity label behavior', function () {
       auth: null,
       localIdentity: {
         id: '02' + 'ab'.repeat(32),
-        xpub: 'xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKp8MS4fN5f8m6v1n9Tk5V9p6WmR5AqYeR8',
         xprv: 'xprv9s21ZrQH143K3...'
       },
       hasLocalIdentity: true,

@@ -3,7 +3,7 @@
 module.exports = {
   manager: {
     title: 'Fabric identity',
-    introPostSetup: 'Create or restore the keys this browser signs with. The Hub starts with Fabric account 0 from your recovery phrase; you can switch accounts later from the identity menu without a new recovery phrase.',
+    introPostSetup: 'Create or restore the keys this browser signs with. The Hub starts with account 0 on this Hub’s Bitcoin network; you can switch accounts or networks later from the identity menu without a new recovery phrase.',
     introUses: 'While your key is unlocked in this browser, the Wallet chip in the top bar, Bitcoin receive addresses, and',
     introDocuments: 'documents',
     introDocumentsAfter: '(encrypting, publishing, and paid distribution) use this identity.',
@@ -12,11 +12,12 @@ module.exports = {
     introReopen: 'To come back here, choose Manage identity in the identity menu, or open',
     introReopenSettings: 'Settings',
     introReopenAfter: '→ Fabric identity.',
-    xpubLabel: 'Extended public key (xpub)',
     idLabel: 'Fabric ID',
-    externalSigning: 'External signing is on. Your private keys stay in Fabric Hub desktop, and this browser holds only your public key. To sign, choose Sign a message in the identity menu and confirm each request in the desktop app.',
+    accountLabel: (n, network) => `Account ${n} on ${network}`,
+    passportSigning: 'Signed in with Fabric Passport. Your keys stay in Passport, and this browser holds only a session for your Fabric ID. Passport does not sign Hub actions yet: to send, publish, or chat from this browser, restore your recovery phrase or a backup file here.',
+    passportShowWallet: 'Show my wallet here',
     settingsLink: 'Settings',
-    securityLink: 'Security & delegation',
+    securityLink: 'Security',
     signerPassport: 'Fabric Passport',
     signerDesktop: 'Fabric Hub (desktop)',
     devices: {
@@ -28,7 +29,7 @@ module.exports = {
       fallbackName: 'Device',
       emptyCanLink: 'No linked devices yet. Use Link another device below, or approve a link from Passport, Android, or Fabric Hub desktop.',
       emptyLocked: 'No linked devices yet. Approve a link from Passport, Android, or Fabric Hub desktop, or unlock your identity with your password to start one from this browser.',
-      emptyWatchOnly: 'No linked devices yet. Approve a link from Passport, Android, or Fabric Hub desktop. This identity is watch-only, so it cannot start a link from this browser until you import your full key.',
+      emptySession: 'No linked devices yet. Approve a link from Passport, Android, or Fabric Hub desktop.',
       revokeFailed: 'Could not revoke the device. Try again.'
     },
     linkDevice: {
@@ -44,7 +45,7 @@ module.exports = {
       linkedFallback: 'Linked device',
       needKey: {
         locked: 'Unlock your identity with your password before linking another device.',
-        watchOnly: 'Watch-only identities cannot link devices. Import your full key or recovery phrase first.',
+        session: 'A Passport session cannot start a link. Approve it from Passport instead.',
         none: 'Create or restore a Fabric identity before linking another device.'
       },
       prepareFailed: 'Could not prepare the device link. Try again.',
@@ -58,8 +59,7 @@ module.exports = {
       label: 'Private key:',
       unlocked: 'unlocked in this browser.',
       lockedPassword: 'locked. Unlock it with your password below.',
-      lockedPlaintext: 'locked. Set a password below to unlock it.',
-      watchOnly: 'not in this browser. This identity is watch-only: import your full key or recovery phrase to sign.',
+      session: 'not in this browser. Your keys stay in Passport.',
       autoLockIn: (n) => `It locks automatically about ${n} after you unlock.`,
       autoLockOff: 'Automatic locking is off. Use Lock identity below when you are done.'
     },
@@ -68,74 +68,53 @@ module.exports = {
       off: 'Never (lock manually)',
       minutes: (n) => `${n} minutes`,
       hours: (n) => (n === 1 ? '1 hour' : `${n} hours`),
-      hint: 'Removes your private key from memory this long after you unlock, while this tab stays open.'
+      hint: 'Removes your private keys from memory this long after you unlock, while this tab stays open.'
     },
     copyId: 'Copy Fabric ID',
     lock: 'Lock identity',
     backup: {
-      usesIdentityPassword: 'Encrypted backups use your identity password, the one you unlock with. There is no separate backup password.',
-      passwordLabel: (min) => `Backup file password (at least ${min} characters)`,
-      download: 'Download encrypted backup',
-      downloadTitle: 'Download an encrypted backup of this identity, including its private key.',
-      needKey: {
-        locked: 'Unlock your identity with your password to download a backup.',
-        watchOnly: 'Watch-only identities have no private key to back up. Import your full key or recovery phrase first.'
-      },
-      needIdentityPassword: 'Your backup is encrypted with your identity password. Lock your identity, unlock it again with your password, then download the backup.',
-      filePasswordShort: (min) => `Choose a backup file password of at least ${min} characters.`,
-      exportFailed: 'Could not create the backup file. Try again.',
-      accountOnly: 'Download account key backup',
-      accountOnlyTitle: 'An encrypted backup of this Fabric account’s signing key only, without your recovery phrase. Use it when your recovery phrase is stored somewhere else.'
+      download: 'Download backup file',
+      downloadTitle: 'Your keys, locked with your password. Restoring it needs the same password.',
+      note: 'The backup file is locked with the password you unlock with. It does not contain your recovery phrase.',
+      exportFailed: 'Could not create the backup file. Try again.'
     },
     passwords: {
       tooShort: (min) => `Use a password of at least ${min} characters.`,
       mismatch: 'The passwords do not match. Type them again.'
     },
-    plaintext: {
-      title: 'Set a password to protect your key',
-      body: 'This identity’s private key is saved in this browser without a password. Choose a password to encrypt it. You will need this password every time you unlock.',
-      password: 'New password',
-      confirm: 'Confirm new password',
-      submit: 'Encrypt and unlock',
-      failed: 'Could not encrypt your identity. Try again.',
-      missing: 'Enter and confirm a password to encrypt this identity.'
+    lockPassword: {
+      password: 'Password for this browser',
+      confirm: 'Confirm password',
+      hint: (min) => `At least ${min} characters. It locks your keys in this browser and in backup files, and you need it every time you unlock. It is not part of your recovery phrase: if you forget it, restore from your recovery phrase.`
+    },
+    passphrase: {
+      label: 'Extra passphrase (optional)',
+      placeholder: 'Only if you want one',
+      hint: 'Some wallets call it a 25th word. It changes which keys your recovery phrase makes, so you need it, with the phrase, to restore. Leave it empty if you are not sure.'
     },
     unlock: {
-      password: 'Identity password',
-      hint: 'The password you chose when you created or encrypted this identity. It also encrypts your backups.',
+      password: 'Password',
+      hint: 'The password you chose when you created or restored this identity in this browser.',
       submit: 'Unlock identity',
-      missing: 'Enter your identity password to unlock.',
-      failed: 'Could not unlock. Check your password and try again. If it still fails, restore from your recovery phrase or a backup file.',
+      missing: 'Enter your password to unlock.',
+      failed: 'Could not unlock. Check your password and try again. If it still fails, restore from your recovery phrase.',
       noStorage: 'This browser does not allow local storage, so your identity cannot be saved here.',
-      noStored: 'No identity is saved in this browser.',
-      notEncrypted: 'The identity saved in this browser is not password-protected.'
+      noStored: 'No identity is saved in this browser.'
     },
     forget: {
       button: 'Remove identity',
       title: 'Remove this identity from this browser?',
       warning: 'This permanently deletes the keys and documents stored in this browser.',
-      recover: 'You can restore this identity later only with your recovery phrase, your extended private key (xprv), or an encrypted backup file. Without one of them, this identity and its documents cannot be recovered.',
+      recover: 'You can restore this identity later only with your recovery phrase (and extra passphrase, if you used one) or a backup file and its password. Without them, this identity and its documents cannot be recovered.',
       question: 'Do you want to continue?',
       confirm: 'Delete identity and documents'
     },
-    generating: {
-      intro: 'Creating a new identity in this browser. Your keys are made on this device and are not sent anywhere.',
-      wait: 'Creating your keys…'
-    },
-    newPassword: {
-      intro: 'Choose a password to protect your new identity in this browser.',
-      password: 'Password',
-      confirm: 'Confirm password',
-      hint: (min) => `At least ${min} characters. You will need it every time you unlock this identity here. If you forget it, you can restore from your recovery phrase.`,
-      missing: 'Enter and confirm a password.',
-      continue: 'Continue to backup',
-      regenerate: 'Generate a different recovery phrase'
-    },
-    backupReview: {
-      title: 'Save your recovery phrase before you continue',
-      body: 'Your recovery phrase is the only way to restore this identity if you clear this browser or lose this device. Fabric cannot recover it for you.',
-      keepSafe: 'Write it on paper or save it in a password manager, and keep it offline and private. Anyone who has it controls this identity. Never type it into a website or share it with anyone, including support.',
-      steps: 'Show each item below, write it down or copy it, then confirm at the bottom.',
+    create: {
+      title: 'Create a new identity',
+      intro: 'Your keys are made on this device and are not sent anywhere.',
+      phraseTitle: 'Save your recovery phrase',
+      body: 'Your recovery phrase is the only way to restore this identity if you clear this browser or lose this device. Fabric cannot recover it for you, and this browser does not keep it after this step.',
+      keepSafe: 'Write it on paper or save it in a password manager, and keep it offline and private. Anyone who has it controls this identity and its funds. Never type it into a website or share it with anyone, including support.',
       phraseLabel: 'Recovery phrase',
       phraseNote: '12 words. Most wallets can restore from these.',
       phraseHidden: 'Hidden. Choose Show recovery phrase to see it.',
@@ -143,105 +122,78 @@ module.exports = {
       hidePhrase: 'Hide recovery phrase',
       copyPhrase: 'Copy recovery phrase',
       copyPhraseTitle: 'Show the phrase first so you can check what you copy.',
-      xprvLabel: 'Extended private key (xprv)',
-      xprvNote: 'The same key in a single line. You can restore it with Load from backup.',
-      xprvHidden: 'Hidden. Choose Show private key to see it.',
-      showXprv: 'Show private key',
-      hideXprv: 'Hide private key',
-      copyXprv: 'Copy private key',
-      copyXprvTitle: 'Show the private key first so you can check what you copy.',
-      downloadNote: 'The backup file is encrypted with the password you chose in the previous step.',
-      passwordMissing: (min) => `Choose a password of at least ${min} characters in the previous step first.`,
-      acknowledge: 'I have saved my recovery phrase, private key, or backup file somewhere safe. I understand this identity cannot be recovered without one of them.',
-      finish: 'Log in with this identity',
-      finishTitle: 'Confirm that you saved your backup first.',
-      missingKey: 'The new key is missing. Start again with Generate new identity.'
+      regenerate: 'Generate a different recovery phrase',
+      acknowledge: 'I have saved my recovery phrase, and my extra passphrase if I chose one. I understand this identity cannot be recovered without them.',
+      submit: 'Create identity',
+      submitTitle: 'Confirm that you saved your recovery phrase first.',
+      failed: 'Could not create your identity. Try again.'
     },
     chooser: {
       prompt: 'How do you want to log in?',
       passport: 'Log in with Passport',
       passportTitle: 'Approve the login in the Fabric Passport browser extension.',
-      extension: 'Log in with the Hub extension',
-      extensionTitle: 'Use the identity saved in the Fabric Hub browser extension.',
-      desktop: 'Log in with Fabric Hub (desktop)',
-      desktopTitle: 'Open the Fabric Hub desktop app and log in with the same identity as that Hub.',
-      existing: 'Use a public key (watch-only)',
-      generate: 'Generate new identity',
+      hubSelf: 'Sign in as this Hub',
+      hubSelfTitle: 'Use this Hub’s own Fabric identity in this window.',
+      generate: 'Create new identity',
       backup: 'Load from backup',
       restore: 'Restore from recovery phrase',
       restoreTitle: 'Restore the same keys as other BIP39 wallets from your recovery words.'
     },
     backToChooser: 'Back to login options',
-    existing: {
-      title: 'Use a public key (watch-only)',
-      intro: 'Paste your extended public key (xpub). It is saved only in this browser. This identity is watch-only: you can see balances and receive addresses, but you cannot decrypt documents, publish, or spend. To do those, import your full key or recovery phrase, or log in with Fabric Hub desktop or Passport.',
-      label: 'Extended public key (xpub)',
-      placeholder: 'xpub…',
-      submit: 'Use this public key',
-      missing: 'Paste an extended public key (xpub) to continue.',
-      invalid: 'That is not a valid extended public key. Check that you copied the whole xpub.'
-    },
     importBackup: {
       title: 'Load from backup',
-      intro: 'Choose a Fabric identity backup file (.json). If the backup is encrypted, enter its password before you choose the file.',
-      developer: 'Accepts plaintext backups, version 2 encrypted backups, and JSON that contains xprv / xpub or a mnemonic (with optional bip39Passphrase / passphrase).',
-      passwordLabel: 'Backup password (only for encrypted backups)',
+      intro: 'Choose a Fabric identity backup file (.json), then enter the password it was locked with.',
       fileLabel: 'Backup file',
-      needsPassword: (min) => `This backup is encrypted. Enter its password (at least ${min} characters) above, then choose the file again.`,
-      decryptFailed: 'Could not decrypt the backup. Check the password and try again.',
-      idMismatch: 'This backup file is damaged: its Fabric ID does not match its key.',
-      mnemonicFailed: 'Could not restore from the recovery phrase in this file.',
-      noKey: 'This file does not contain a Fabric identity key.',
-      rebuildFailed: 'Could not read the identity in this backup file.',
-      failed: 'Could not load this backup file.',
+      passwordLabel: 'Password',
+      submit: 'Load and unlock',
+      missingFile: 'Choose a backup file first.',
+      notBackup: 'This file is not a Fabric identity backup. Older backup files cannot be loaded: restore from your recovery phrase instead.',
+      failed: 'Could not unlock this backup. Check the password and try again.',
       readFailed: 'Could not read the file. Choose it again.'
     },
     restore: {
       title: 'Restore from recovery phrase',
       howTitle: 'Before you start',
       how: [
-        'Enter your recovery phrase, usually 12 or 24 words. If you added an extra passphrase when the wallet was created (sometimes called a 25th word), enter it too. This is not the password that protects an identity in this browser.',
-        'This gives you the same keys as Generate new identity and other standard BIP39 wallets. If you have a backup file, Load from backup is quicker and avoids typing mistakes.',
+        'Enter your recovery phrase, usually 12 or 24 words. If you added an extra passphrase when the wallet was created (sometimes called a 25th word), enter it too.',
+        'Then choose a password for this browser. It locks your keys here; it is not part of your recovery phrase.',
         'A wrong or missing extra passphrase does not show an error. It restores a different identity instead. After restoring, check that your Fabric ID or an address matches what you expect.'
       ],
       safety: 'Only type your recovery phrase on a device you trust, and never on a website you did not open yourself.',
       phraseLabel: 'Recovery phrase',
       phrasePlaceholder: 'Enter your words separated by spaces',
-      passphraseLabel: 'Extra passphrase (optional)',
-      passphrasePlaceholder: 'Only if your wallet used one',
       replace: 'Replace the identity already saved in this browser',
       submit: 'Restore and unlock',
-      failed: 'Could not restore from this recovery phrase. Check the words and try again.'
-    },
-    generate: {
-      title: 'Generate new identity',
-      intro: 'Create a new identity with a 12-word recovery phrase. Your keys are made on this device and are not sent anywhere.',
-      submit: 'Generate new identity',
-      failed: 'Could not generate a new identity. Try again.',
-      saveFailed: 'Could not save your new identity in this browser. Try again.'
+      failed: 'Could not restore from this recovery phrase. Check the words and try again.',
+      existing: 'An identity is already saved in this browser. Tick Replace to overwrite it.'
     },
     login: {
-      verifyFailed: 'Could not verify the login. Try again.',
-      noXpub: 'The Hub did not return a public key for this login. Try again.',
-      extensionEmpty: 'The Fabric Hub extension has no identity yet. Create or restore one in the extension, then try again.',
-      invalidSession: 'This login session is not valid. Start the login again.',
-      passportTimeout: 'Passport did not approve the login in time. Try again.',
-      desktopTimeout: 'Fabric Hub desktop did not answer in time. Open the desktop app, then try again.',
-      rejected: 'The Hub rejected this login. If the Hub is behind a proxy, check that it forwards the original host and origin.',
-      noSessions: 'This site cannot complete logins. Open a running Hub and log in there.',
-      startFailed: (status) => `Could not start the login (status ${status}). Try again.`,
-      noChallenge: 'The Hub did not send a login message to sign. Try again.',
-      passportRejected: 'Passport did not approve the login.'
+      verifyFailed: 'Could not verify the sign-in. Try again.',
+      passportTimeout: 'Passport did not approve the sign-in in time. Try again.',
+      passportRejected: 'Passport did not approve the sign-in.',
+      passportMissing: 'Fabric Passport was not detected. Install or enable the extension, then reload this page.',
+      passportOutdated: 'Update Fabric Passport to sign in here. This Hub uses Passport v2.',
+      passportBusy: 'Passport is already showing a sign-in. Approve or decline it there first.',
+      passportPurpose: 'Sign in to this Fabric Hub'
     },
+    saveFailed: 'Could not save your identity in this browser. Try again.',
     errorTitle: 'Something went wrong'
   },
   accountControls: {
     label: 'Fabric account',
+    networkLabel: 'Network',
     option: (n) => `Account ${n}`,
-    title: 'Each account is a separate signing key from the same recovery phrase. The Hub uses account 0 by default.',
-    blockedAccountKey: 'This identity holds a single account key, so it cannot switch accounts. Restore from your recovery phrase to use other accounts.',
-    blockedLocked: 'Unlock your identity with your password to switch accounts.',
-    blockedWatchOnly: 'Watch-only identities cannot switch accounts. Import your full key or recovery phrase first.'
+    networks: {
+      mainnet: 'Mainnet',
+      testnet: 'Testnet',
+      testnet4: 'Testnet4',
+      signet: 'Signet',
+      regtest: 'Regtest'
+    },
+    title: 'Each account and network has its own identity, wallet, and cosigner key, all from the same recovery phrase.',
+    blockedLocked: 'Unlock your identity with your password to switch to an account or network you have not used yet.',
+    blockedSession: 'Passport sessions cannot switch accounts here. Switch accounts in Passport.',
+    switchFailed: 'Could not switch accounts. Unlock your identity and try again.'
   },
   postSetupWizard: {
     title: 'Create your Fabric identity',
@@ -386,10 +338,9 @@ module.exports = {
     complete: 'Complete setup'
   },
   security: {
-    title: 'Security & delegation',
-    summary: 'All delegation sessions for this Hub are managed on this page. When you log in with Fabric Hub desktop, your private keys stay in the desktop app and this browser asks it to sign. You approve or reject each signature in a confirmation window.',
-    pathNote: 'The browser path /sessions redirects to this page. The delegation REST API is still served at /sessions.',
-    tokenWarning: 'Session links contain a secret token. Do not share, post, or bookmark them, and keep them off screen shares. Anyone who has a session link can use that session.',
+    title: 'Security',
+    summary: 'Your sign-in to this Hub and the devices that share your Fabric identity. When you sign in with Passport, your keys stay in Passport (or the desktop app it is linked to) and this browser holds only a session.',
+    pathNote: 'The browser paths /sessions and /security open this page. The sign-in API is served at /sessions.',
     related: 'Related:',
     payments: 'Bitcoin payments',
     paymentsNote: 'receive, send from the Hub wallet, or use Payjoin',
@@ -406,71 +357,23 @@ module.exports = {
       fallbackName: 'Device',
       revokeFailed: 'Could not revoke the device. Try again.'
     },
-    external: {
-      title: 'External signing',
-      on: 'External signing is on for this browser. Approve or reject each request in the confirmation window.',
-      off: 'External signing is off. To have Fabric Hub desktop sign for this browser, open the identity menu and choose Log in with Fabric Hub (desktop).',
-      tokenLabel: 'Session token:',
-      openSession: 'Open session details',
-      linked: (when) => `Linked ${when}`,
-      end: 'End delegation for this browser',
-      loadFailed: 'Could not load the delegation session for this browser. Refresh the page to try again.',
-      endFailed: 'Could not end delegation for this browser. Try again.'
-    },
-    sessions: {
-      title: 'Active delegation sessions on this Hub',
-      intro: 'When you open this page on the same computer as the Hub, it lists every open delegation session. Ending a session signs that browser out; it must log in again before it can sign.',
-      refresh: 'Refresh sessions',
-      token: 'Token',
-      origin: 'Origin',
-      linked: 'Linked',
-      session: 'Session',
-      empty: 'No active delegation sessions.',
-      end: 'End session',
-      listFailed: 'Could not list delegation sessions. Refresh to try again.',
-      endFailed: 'Could not end the delegation session. Try again.'
+    session: {
+      title: 'Signed in with Passport',
+      on: (signer) => `This browser is signed in to this Hub. ${signer} signed the sign-in.`,
+      off: 'This browser is not signed in with Passport. Open the identity menu and choose Log in with Passport.',
+      signers: { passport: 'Passport', hub: 'Fabric Hub desktop', gooncitizen: 'GoonCitizen' },
+      identity: 'Identity:',
+      network: (network) => `Network: ${network}`,
+      walletShared: 'You shared your wallet with this sign-in, so this Hub can show its balance.',
+      walletNotShared: 'You did not share your wallet. This Hub knows your identity only.',
+      expires: (when) => `Ends ${when}`,
+      end: 'Sign out',
+      endFailed: 'Could not sign out. Try again.'
     }
   },
-  securitySession: {
-    back: 'Back to Security & delegation',
-    title: 'Delegation session',
-    summary: 'Details and signing history for one browser delegation session. To check a signature from this session, choose Sign a message in the identity menu and verify it with the Hub verification key below.',
-    tokenWarning: 'This page address contains the session’s secret token. Do not share, post, or bookmark it, and keep it off screen shares. Anyone who has the link can use this session.',
-    refresh: 'Refresh history',
-    missingId: 'This link has no session token. Open the session from Security & delegation.',
-    httpStatus: (status) => `The Hub answered with status ${status}. Check that the session is still active, then try again.`,
-    notOk: 'The Hub did not return the history for this session. Try again.',
-    errorTitle: 'Could not load this delegation session',
-    tokenLabel: 'Token:',
-    loading: 'Loading session…',
-    detailsTitle: 'Session',
-    tokenNote: 'The full token appears only in this page address and on Security & delegation. The Hub shows just a short preview here.',
-    tokenPreview: 'Token preview',
-    origin: 'Origin',
-    linked: 'Linked',
-    label: 'Label',
-    labelFallback: 'Browser',
-    identityId: 'Identity ID',
-    keyTitle: 'Hub verification key',
-    keyIntro: 'The Hub’s public key. Use it to verify signatures made for this session.',
-    keyDeveloper: 'Compressed secp256k1 public key, hex encoded.',
-    keyMissing: 'The Hub did not return its public key. Refresh to try again.',
-    pendingTitle: 'Pending signature requests',
-    pendingEmpty: 'No signature requests are waiting.',
-    messageId: 'Message ID',
-    preview: 'Preview',
-    purpose: 'Purpose',
-    logTitle: 'Signing history',
-    logIntro: 'Signature requests for this session and whether each was approved or rejected. Newest entries are at the bottom.',
-    logEmpty: 'No requests yet.',
-    sequence: 'Sequence',
-    type: 'Type',
-    summaryColumn: 'Summary'
-  },
-  delegation: {
-    loginTitle: 'Approve browser login',
-    messageTitle: 'Fabric message',
-    fromContract: 'Requested by an execution contract run on this Hub.',
+  messagePrompt: {
+    title: 'Fabric message',
+    fromContract: 'An execution contract run on this Hub asks for this message to be signed.',
     contentsHeading: 'Message contents',
     signers: (n) => `Other signers to notify: ${n}`,
     type: 'Type',
@@ -479,25 +382,9 @@ module.exports = {
     signedBy: 'Signed by',
     unsigned: 'Not signed — anyone could have made this message.',
     noBody: 'This message has no body.',
-    loginIntro: 'A browser tab is asking to link to this Hub identity so this app can sign for it. Approve only if you started this login.',
-    origin: 'Origin',
-    nonce: 'Nonce',
-    messageToSign: 'Message you will sign',
-    signingDeveloper: 'BIP340 Schnorr signature over the UTF-8 bytes of the message.',
-    emptyMessage: 'The message is empty.',
-    messageOnlyNote: 'This link carries a Fabric message only. It does not start a browser login.',
-    messageOnlyDeveloper: 'Opaque fabric:<hex> link, or legacy fabric://message?hex=… link.',
-    approveLogin: 'Sign and approve',
-    loginFailed: 'Could not complete the browser login. Start the login again from the browser tab.',
-    loginSigned: 'Browser login signed.',
-    signTitle: 'Approve signature request',
-    purpose: 'Purpose',
-    purposeFallback: 'Sign',
-    reject: 'Reject',
-    approve: 'Approve',
-    approved: 'Signature request approved.',
-    rejected: 'Signature request rejected.',
-    resolveFailed: 'Could not send your answer to the signature request. Try again.'
+    viewOnly: 'This is for review only. Opening a Fabric link never signs anything or signs you in.',
+    needsKey: 'Signing this needs your full key. Unlock or import your identity in this browser, then sign it from the contract page.',
+    developer: 'Opaque fabric:<frame> link, fabric://message?hex=… link, or a contract run’s sign request.'
   },
   qrScanner: {
     title: 'Scan QR code',

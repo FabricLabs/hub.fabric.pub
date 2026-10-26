@@ -47,8 +47,8 @@ module.exports = {
       body: 'Contacts, including ones from peers, multisig groups, and email invitations.'
     },
     security: {
-      title: 'Security & delegation',
-      body: 'Desktop and external signing sessions, delegation tokens, and the audit trail for each token.'
+      title: 'Security',
+      body: 'Your Passport sign-in to this Hub and the devices that share your Fabric identity.'
     },
     admin: {
       title: 'Admin',

@@ -645,14 +645,6 @@ describe('@fabric/hub', function () {
           assert.ok(raw.includes('<html'), 'Should serve SPA shell');
         });
 
-        it('should return HTML shell for GET /sessions/:id with text/html (session detail)', async function () {
-          const response = await makeRequest('GET', '/sessions/test-token', null, { Accept: 'text/html' });
-          assert.strictEqual(response.status, 200);
-          assert.ok(response.headers['content-type'].includes('text/html'));
-          const raw = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
-          assert.ok(raw.includes('<html'), 'Should serve SPA shell for refresh on session detail');
-        });
-
         it('should return HTML shell for nested UI paths (e.g. /services/bitcoin/resources)', async function () {
           const response = await makeRequest('GET', '/services/bitcoin/resources', null, { 'Accept': 'text/html' });
 
@@ -818,96 +810,197 @@ describe('@fabric/hub', function () {
         });
       });
 
-      it('GET /sessions/:sessionId/delegation/audit returns 403 without Bearer token', async function () {
-        const response = await makeRequest('GET', '/sessions/not-a-real-token/delegation/audit', null, { Accept: 'application/json' });
-        assert.strictEqual(response.status, 403);
-        assert.strictEqual(response.body.ok, false);
-      });
+      describe('Passport v2 sessions', function () {
+        const { FIXTURE_SEED } = require('@fabric/core/constants');
+        const { importSeed, deriveAccount } = require('@fabric/core/functions/accountKeys');
+        const { signAssertion } = require('@fabric/core/functions/passport');
+        const MASTER = importSeed(FIXTURE_SEED);
 
-      it('DELETE /sessions/:sessionId returns 404 for unknown delegation token (loopback)', async function () {
-        const response = await makeRequest('DELETE', '/sessions/not-a-delegation-token-xyz', null, { Accept: 'application/json' });
-        assert.strictEqual(response.status, 404);
-        assert.strictEqual(response.body.ok, false);
-      });
+        function cookieFrom (response, name) {
+          const list = [].concat(response.headers['set-cookie'] || []);
+          for (const line of list) {
+            const first = String(line).split(';')[0];
+            const eq = first.indexOf('=');
+            if (first.slice(0, eq).trim() === name) return first.slice(eq + 1);
+          }
+          return null;
+        }
 
-      it('desktop login GET /sessions/:id returns signed payload once then 404 (ephemeral session retired)', async function () {
-        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
-        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
-        assert.strictEqual(create.body.ok, true);
-        assert.strictEqual(create.body.acceptsClientSignature, true);
-        const sid = create.body.sessionId;
-        assert.ok(typeof sid === 'string' && sid.length > 16);
+        async function signIn () {
+          const challenge = await makeRequest('POST', '/sessions/challenges', { request: [] }, { Accept: 'application/json', Origin: baseUrl });
+          assert.strictEqual(challenge.status, 200, JSON.stringify(challenge.body));
+          const binding = cookieFrom(challenge, 'fabric.passport');
+          assert.ok(binding, 'binding cookie set');
+          const account = deriveAccount(MASTER, { account: 0, network: challenge.body.network });
+          const assertion = signAssertion({
+            challenge: challenge.body.challenge,
+            origin: baseUrl,
+            signer: 'passport'
+          }, account.identity.key).uri;
+          const session = await makeRequest('POST', '/sessions', { assertion }, {
+            Accept: 'application/json',
+            Origin: baseUrl,
+            Cookie: `fabric.passport=${binding}`
+          });
+          return { challenge, session, account, binding, assertion };
+        }
 
-        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {});
-        assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
-        assert.strictEqual(sign.body.ok, true);
-        assert.strictEqual(sign.body.signer, 'hub');
+        it('challenge → assertion → /sessions/current → sign out', async function () {
+          const { session, account } = await signIn();
+          assert.strictEqual(session.status, 200, JSON.stringify(session.body));
+          assert.strictEqual(session.body.session.identity.pubkey, account.identity.pubkey.toLowerCase());
+          assert.strictEqual(session.body.session.signer, 'passport');
+          assert.strictEqual(session.body.session.wallet, undefined, 'no wallet without consent');
+          assert.strictEqual(session.body.token, undefined, 'browser clients get a cookie, not a token');
+          const token = cookieFrom(session, 'fabric.session');
+          assert.ok(token);
+          const setCookie = [].concat(session.headers['set-cookie']).join('\n');
+          assert.ok(/fabric\.session=[^;]+;[^\n]*HttpOnly/i.test(setCookie));
+          assert.ok(/fabric\.session=[^;]+;[^\n]*SameSite=Strict/i.test(setCookie));
 
-        const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
-        assert.strictEqual(g1.status, 200);
-        assert.strictEqual(g1.body.status, 'signed');
-        assert.ok(g1.body.delegationToken);
+          const current = await makeRequest('GET', '/sessions/current', null, { Accept: 'application/json', Cookie: `fabric.session=${token}` });
+          assert.strictEqual(current.status, 200);
+          assert.strictEqual(current.body.session.identity.id, session.body.session.identity.id);
 
-        const g2 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
-        assert.strictEqual(g2.status, 404);
-        assert.strictEqual(g2.body.ok, false);
-
-        const tok = g1.body.delegationToken;
-        const unauthToken = await makeRequest('GET', `/sessions/${encodeURIComponent(tok)}`, null, { Accept: 'application/json' });
-        assert.strictEqual(unauthToken.status, 404);
-        const authedToken = await makeRequest('GET', `/sessions/${encodeURIComponent(tok)}`, null, {
-          Accept: 'application/json',
-          Authorization: 'Bearer ' + tok
+          const end = await makeRequest('DELETE', '/sessions/current', null, { Accept: 'application/json', Origin: baseUrl, Cookie: `fabric.session=${token}` });
+          assert.strictEqual(end.status, 200);
+          const after = await makeRequest('GET', '/sessions/current', null, { Accept: 'application/json', Cookie: `fabric.session=${token}` });
+          assert.strictEqual(after.status, 401);
         });
-        assert.strictEqual(authedToken.status, 200);
-        assert.strictEqual(authedToken.body.ok, true);
-        assert.strictEqual(authedToken.body.kind, 'delegation');
-      });
 
-      it('desktop login accepts a client-signed SiteLoginResponse', async function () {
-        const Key = require('@fabric/core/types/key');
-        const Identity = require('@fabric/core/types/identity');
-        const { signSiteLoginResponse } = require('@fabric/core/functions/fabricSiteLogin');
-        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
-        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
-        const sid = create.body.sessionId;
-        const message = create.body.message;
-        assert.ok(typeof message === 'string' && message.length > 20);
-        const nonce = message.split(':')[3];
+        it('refuses an assertion without its binding cookie, and replays', async function () {
+          const challenge = await makeRequest('POST', '/sessions/challenges', {}, { Accept: 'application/json', Origin: baseUrl });
+          assert.strictEqual(challenge.status, 200);
+          const account = deriveAccount(MASTER, { account: 1, network: challenge.body.network });
+          const assertion = signAssertion({ challenge: challenge.body.challenge, origin: baseUrl, signer: 'passport' }, account.identity.key).uri;
+          const noBinding = await makeRequest('POST', '/sessions', { assertion }, { Accept: 'application/json', Origin: baseUrl });
+          assert.notStrictEqual(noBinding.status, 200);
 
-        const ident = new Identity(new Key());
-        const fabric = signSiteLoginResponse({
-          origin: baseUrl,
-          nonce,
-          signer: 'passport',
-          xpub: ident.fabricKey.xpub
-        }, ident.fabricKey).uri;
-        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, { fabric });
-        assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
-        assert.strictEqual(sign.body.ok, true);
-        assert.strictEqual(sign.body.pubkeyHex, ident.fabricKey.pubkey.toLowerCase());
-
-        const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
-        assert.strictEqual(g1.status, 200);
-        assert.strictEqual(g1.body.status, 'signed');
-        assert.ok(g1.body.delegationToken);
-      });
-
-      it('desktop login refuses a raw client signature', async function () {
-        const Key = require('@fabric/core/types/key');
-        const Identity = require('@fabric/core/types/identity');
-        const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
-        assert.strictEqual(create.status, 200, JSON.stringify(create.body));
-        const sid = create.body.sessionId;
-        const ident = new Identity(new Key());
-        const fabricKey = ident.fabricKey;
-        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
-          signature: fabricKey.signSchnorr(Buffer.from(create.body.message, 'utf8'), 'Fabric/Sign').toString('hex'),
-          pubkeyHex: fabricKey.pubkey,
-          identity: { id: ident.id, xpub: fabricKey.xpub }
+          const ok = await signIn();
+          assert.strictEqual(ok.session.status, 200);
+          const replay = await makeRequest('POST', '/sessions', { assertion: ok.assertion }, {
+            Accept: 'application/json',
+            Origin: baseUrl,
+            Cookie: `fabric.passport=${ok.binding}`
+          });
+          assert.notStrictEqual(replay.status, 200, 'each challenge redeems once');
         });
-        assert.strictEqual(sign.status, 400, JSON.stringify(sign.body));
-        assert.strictEqual(sign.body.ok, false);
+
+        it('refuses a challenge for an origin that is not pinned', async function () {
+          const response = await makeRequest('POST', '/sessions/challenges', {}, { Accept: 'application/json', Origin: 'https://evil.example' });
+          assert.strictEqual(response.status, 403);
+        });
+
+        it('refuses an assertion redeemed from another origin', async function () {
+          const challenge = await makeRequest('POST', '/sessions/challenges', {}, { Accept: 'application/json', Origin: baseUrl });
+          const binding = cookieFrom(challenge, 'fabric.passport');
+          const account = deriveAccount(MASTER, { account: 2, network: challenge.body.network });
+          const assertion = signAssertion({ challenge: challenge.body.challenge, origin: baseUrl, signer: 'passport' }, account.identity.key).uri;
+          const response = await makeRequest('POST', '/sessions', { assertion }, {
+            Accept: 'application/json',
+            Origin: 'https://evil.example',
+            Cookie: `fabric.passport=${binding}`
+          });
+          assert.strictEqual(response.status, 403);
+        });
+      });
+
+      describe('H1 regression: the Hub key signs nothing for a web page', function () {
+        const jsonApi = { Accept: 'application/json' };
+
+        it('POST /sessions/self is not served outside the desktop app', async function () {
+          const response = await makeRequest('POST', '/sessions/self', {}, { ...jsonApi, Origin: baseUrl });
+          assert.strictEqual(response.status, 404);
+        });
+
+        it('the old desktop-login signature route is gone', async function () {
+          const response = await makeRequest('POST', '/sessions/anything/signatures', {}, jsonApi);
+          assert.notStrictEqual(response.status, 200);
+          assert.ok(!response.body || !response.body.signer, 'no Hub signature is returned');
+        });
+
+        it('the delegation audit route is gone', async function () {
+          const response = await makeRequest('GET', '/sessions/anything/delegation/audit', null, jsonApi);
+          assert.notStrictEqual(response.status, 200);
+        });
+
+        it('delegation and arbitrary-signing RPC methods are not registered', async function () {
+          for (const method of [
+            'PostDelegationSignatureMessage',
+            'GetDelegationSignatureMessage',
+            'ResolveDelegationSignatureMessage',
+            'SignArbitraryText'
+          ]) {
+            const response = await makeRequest('POST', '/services/rpc', {
+              jsonrpc: '2.0',
+              id: 1,
+              method,
+              params: [{ message: 'sign me', sessionToken: 'x', sessionId: 'x', messageId: 'x', status: 'approved' }]
+            }, jsonApi);
+            if (response.status === 404) continue;
+            assert.ok(response.body && response.body.error, `${method} must not answer: ${JSON.stringify(response.body)}`);
+            assert.ok(!response.body.result, `${method} returned a result`);
+          }
+        });
+
+        it('no unauthenticated route or RPC makes the root key sign, or reveals it', async function () {
+          const root = hub._rootKey;
+          if (!root || !root.private) return this.skip();
+          assert.ok(hub._fabricKey && hub._fabricKey.pubkey !== root.pubkey, 'the Hub signs with a derived identity key');
+          const calls = [];
+          const restore = [];
+          for (const name of ['sign', 'signSchnorr', 'signSchnorrHash', 'signHash']) {
+            if (typeof root[name] !== 'function') continue;
+            const original = root[name];
+            root[name] = function (...args) {
+              calls.push(name);
+              return original.apply(this, args);
+            };
+            restore.push(() => { root[name] = original; });
+          }
+          const bodies = [];
+          try {
+            for (const route of ['/services/peering', '/services/peering/attestation', '/services/federations', '/settings']) {
+              const response = await makeRequest('GET', route, null, jsonApi);
+              bodies.push(JSON.stringify(response.body || ''));
+            }
+            const challenge = await makeRequest('POST', '/sessions/challenges', {}, { ...jsonApi, Origin: baseUrl });
+            bodies.push(JSON.stringify(challenge.body || ''));
+            for (const [method, params] of [
+              ['GetNetworkStatus', []],
+              ['ListPeers', []],
+              ['GetPeeringAttestation', []],
+              ['ListDocuments', []],
+              ['ListTrackedApplicationContracts', []],
+              ['GetSidechainState', []],
+              ['SubmitChatMessage', [{ content: 'h1 regression', actor: { username: 'test' } }]],
+              ['CreateDocument', [{ content: Buffer.from('h1').toString('base64'), name: 'h1.txt', mime: 'text/plain' }]]
+            ]) {
+              const response = await makeRequest('POST', '/services/rpc', { jsonrpc: '2.0', id: 1, method, params }, jsonApi);
+              bodies.push(JSON.stringify(response.body || ''));
+            }
+          } finally {
+            restore.forEach((fn) => fn());
+          }
+          assert.deepStrictEqual(calls, [], 'the root key signed something');
+          const rootPubkey = String(root.pubkey);
+          const rootXOnly = rootPubkey.slice(2);
+          for (const text of bodies) {
+            assert.ok(!text.includes(String(root.xpub)), 'the root xpub is never served');
+            assert.ok(!text.includes(rootPubkey) && !text.includes(rootXOnly), 'the root pubkey is never served');
+          }
+        });
+
+        it('the local signer routes are not served outside the desktop app', async function () {
+          for (const [method, route] of [
+            ['GET', '/services/fabric/identity'],
+            ['POST', '/services/fabric/sign'],
+            ['POST', '/services/fabric/link']
+          ]) {
+            const response = await makeRequest(method, route, method === 'POST' ? {} : null, jsonApi);
+            assert.notStrictEqual(response.status, 200, `${method} ${route}`);
+          }
+        });
       });
 
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {

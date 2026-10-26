@@ -4,29 +4,23 @@
 const React = require('react');
 const { Link } = require('react-router-dom');
 
-// Fabric Types
-const Key = require('@fabric/core/types/key');
-const Identity = require('@fabric/core/types/identity');
-
 // Semantic UI
 const {
-  Accordion,
   Button,
   Checkbox,
-  Divider,
   Form,
   Header,
   Icon,
-  Label,
   Message,
   Modal,
   Segment
 } = require('semantic-ui-react');
 
 const {
-  DELEGATION_STORAGE_KEY,
-  notifyDelegationStorageChanged
-} = require('../functions/fabricDelegationLocal');
+  setPassportSession,
+  endPassportSession,
+  watchIdentityFromSession
+} = require('../functions/passportSession');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const {
   readStorageJSON,
@@ -35,35 +29,20 @@ const {
   removeStorageKey,
   clearFabricBrowserIdentityLocal
 } = require('../functions/fabricBrowserState');
-
 const {
-  encryptFabricIdentityBackupPayload,
-  decryptFabricIdentityBackupToPayload
-} = require('../functions/fabricIdentityBackupCrypto');
-
-const {
+  STORAGE_KEY,
   LOCAL_IDENTITY_PASSWORD_MIN,
-  buildLocalFabricIdentityPayload,
-  fabricPlaintextSigningUnlockable,
-  unlockedSessionFromDecryptedMaster,
-  encryptLocalIdentityAtRest,
-  decryptLocalIdentityMasterMaterial
-} = require('../functions/fabricHubLocalIdentity');
-const {
-  storeUnlockedIdentityFromMnemonic
-} = require('../functions/fabricBrowserIdentityDev');
+  isAccountVault,
+  readStoredIdentity,
+  lockIdentity,
+  masterFromMnemonic,
+  generateMnemonic,
+  createVault,
+  unlockVault,
+  identitySigner
+} = require('../functions/hubAccountVault');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const FabricHubAdminTokenNotice = require('./fabricIdentity/FabricHubAdminTokenNotice');
-const {
-  deriveFabricAccountIdentityKeys,
-  fabricRootXpubFromMasterXprv,
-  identityFromFabricProtocolSigningXprv
-} = require('../functions/fabricAccountDerivedIdentity');
-const {
-  verifyFabricDesktopLoginSignedPayload,
-  buildFabricIdentitySignedPayload,
-  resolveFabricSigningIdentity
-} = require('../functions/fabricDesktopLoginVerify');
 const {
   DEVICE_LINK_OFFER_TAG,
   DEVICE_LINK_TAG,
@@ -75,6 +54,7 @@ const {
   cancelDeviceLinkSession,
   verifyDeviceLinkResponder
 } = require('../functions/fabricDeviceLinkClient');
+const { buildFabricIdentitySignedPayload } = require('@fabric/core/functions/fabricIdentitySchnorr');
 const {
   STORAGE_LINKED_DEVICES,
   readLinkedDevices,
@@ -82,7 +62,6 @@ const {
   publishHubIdentityCrossSign,
   revokeLinkedDevice
 } = require('../functions/fabricLinkedDevices');
-const { buildFabricAccountSubtreeBackupInner } = require('../functions/fabricIdentityCapabilities');
 const {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
   readFabricIdentityLockTimeoutMinutes,
@@ -90,12 +69,16 @@ const {
   lockTimeoutMinutesToMs
 } = require('../functions/fabricIdentityLockPrefs');
 const { useHubHttpAvailable } = require('./hubUiRuntime');
-const { fetchSiteLoginSession, createSiteLoginSessionRequest } = require('../functions/siteLoginSessionFetch');
+const {
+  passportStatus,
+  loginWithPassport
+} = require('../functions/passportSiteLogin');
 const t = require('../locales/en');
 
 const copy = t.identity.manager;
+const networkNames = t.identity.accountControls.networks;
 
-/** Long xpub / Bech32 strings must wrap or mobile modals overflow and the viewport strobes. */
+/** Long Bech32 strings must wrap or mobile modals overflow and the viewport strobes. */
 const identityMonospaceBlockStyle = {
   display: 'block',
   margin: '0.35em 0 0.75em',
@@ -114,11 +97,134 @@ const identityMonospaceBlockStyle = {
   overflowX: 'auto'
 };
 
+const inputStyle = { width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' };
+const hintStyle = { marginTop: '0.35em', color: '#666', fontSize: '0.9em', lineHeight: 1.45 };
+
+/** Sealing and unsealing are synchronous and slow on purpose; let the spinner paint first. */
+function nextTick () {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function storedRecord () {
+  try {
+    if (typeof window === 'undefined') return null;
+    return readStorageJSON(STORAGE_KEY, null);
+  } catch (_) {
+    return null;
+  }
+}
+
+function copyIdentity (identity) {
+  return identity && identity.id ? Object.assign({}, identity) : null;
+}
+
+function identityAnchorKey (i) {
+  if (!i || !i.id) return '';
+  const acct = i.fabricAccountIndex != null ? String(Math.floor(Number(i.fabricAccountIndex))) : '';
+  return [
+    i.id,
+    i.network || '',
+    acct,
+    i.passwordProtected ? '1' : '0',
+    i.linkedFromPassport ? '1' : '0',
+    i.wallet ? '1' : '0'
+  ].join('|');
+}
+
+/**
+ * Password + confirm fields for the lock password.
+ * @param {{ idPrefix: string, value: string, confirm: string, onChange: function, onConfirmChange: function, disabled: boolean }} props
+ */
+function LockPasswordFields (props) {
+  const hintId = `${props.idPrefix}-hint`;
+  return (
+    <>
+      <Form.Field>
+        <label htmlFor={`${props.idPrefix}`}>{copy.lockPassword.password}</label>
+        <input
+          id={props.idPrefix}
+          type="password"
+          aria-describedby={hintId}
+          autoComplete="new-password"
+          value={props.value}
+          disabled={props.disabled}
+          onChange={(e) => props.onChange(e.target.value)}
+          style={inputStyle}
+        />
+      </Form.Field>
+      <Form.Field>
+        <label htmlFor={`${props.idPrefix}-confirm`}>{copy.lockPassword.confirm}</label>
+        <input
+          id={`${props.idPrefix}-confirm`}
+          type="password"
+          autoComplete="new-password"
+          value={props.confirm}
+          disabled={props.disabled}
+          onChange={(e) => props.onConfirmChange(e.target.value)}
+          style={inputStyle}
+        />
+        <div id={hintId} style={hintStyle}>{copy.lockPassword.hint(LOCAL_IDENTITY_PASSWORD_MIN)}</div>
+      </Form.Field>
+    </>
+  );
+}
+
+/**
+ * BIP39 passphrase (the derivation password; never stored).
+ * @param {{ id: string, value: string, onChange: function, disabled: boolean }} props
+ */
+function PassphraseField (props) {
+  return (
+    <Form.Field>
+      <label htmlFor={props.id}>{copy.passphrase.label}</label>
+      <input
+        id={props.id}
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder={copy.passphrase.placeholder}
+        value={props.value}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.value)}
+        style={inputStyle}
+      />
+      <div style={hintStyle}>{copy.passphrase.hint}</div>
+    </Form.Field>
+  );
+}
+
+function lockPasswordProblem (a, b) {
+  const pwd = String(a || '');
+  if (pwd.trim().length < LOCAL_IDENTITY_PASSWORD_MIN) return copy.passwords.tooShort(LOCAL_IDENTITY_PASSWORD_MIN);
+  if (pwd !== String(b || '')) return copy.passwords.mismatch;
+  return null;
+}
+
+/**
+ * The browser's Fabric identity: one seed, kept only as a master xprv sealed
+ * by the lock password (a core `FabricAccountVault`), or a Passport session.
+ * Account and network switching lives in the top bar
+ * (`FabricIdentityAccountControls`).
+ *
+ * @param {object} props
+ * @param {object|null} [props.currentIdentity] The Hub shell's in-memory identity (authoritative when set).
+ * @param {string} [props.defaultNetwork] Network for new identities (the Hub's Bitcoin network).
+ * @param {string} [props.initialLoginMethod] `generate` | `import` | `restore`
+ * @param {boolean} [props.postSetupFlow]
+ * @param {boolean} [props.suppressForgetAndLinkedChrome]
+ * @param {number} [props.lockTimeoutMs] Tests only.
+ * @param {string} [props.hubAdminToken]
+ * @param {function} [props.onLocalIdentityChange]
+ * @param {function} [props.onLockStateChange]
+ * @param {function} [props.onUnlockSuccess]
+ * @param {function} [props.onForgetIdentity]
+ */
 function IdentityManager (props) {
   const hubHttpAvailable = useHubHttpAvailable();
   const lockTimeoutMsFromTests = (props && typeof props.lockTimeoutMs === 'number' && props.lockTimeoutMs > 0)
     ? props.lockTimeoutMs
     : null;
+  const defaultNetwork = props.defaultNetwork || 'regtest';
 
   const [lockTimeoutMinutes, setLockTimeoutMinutes] = React.useState(() => {
     try {
@@ -128,7 +234,6 @@ function IdentityManager (props) {
       return DEFAULT_LOCK_TIMEOUT_MINUTES;
     }
   });
-
   const lockTimeoutMs = lockTimeoutMsFromTests != null
     ? lockTimeoutMsFromTests
     : lockTimeoutMinutesToMs(lockTimeoutMinutes);
@@ -136,94 +241,38 @@ function IdentityManager (props) {
   const suppressForget = !!(props && props.suppressForgetAndLinkedChrome);
 
   const [localIdentity, setLocalIdentity] = React.useState(() => {
-    // Parent identity is authoritative when provided (prevents lock/watch-only state drifting from shell).
-    if (props.currentIdentity && (props.currentIdentity.id || props.currentIdentity.xpub)) {
-      return {
-        id: props.currentIdentity.id,
-        xpub: props.currentIdentity.xpub,
-        xprv: props.currentIdentity.xprv || null,
-        passwordProtected: !!props.currentIdentity.passwordProtected,
-        plaintextUnlockAvailable: !!props.currentIdentity.plaintextUnlockAvailable,
-        linkedFromDesktop: !!props.currentIdentity.linkedFromDesktop,
-        fabricIdentityMode: props.currentIdentity.fabricIdentityMode || null,
-        fabricAccountIndex: props.currentIdentity.fabricAccountIndex != null
-          ? Math.floor(Number(props.currentIdentity.fabricAccountIndex))
-          : undefined,
-        fabricHdRole: props.currentIdentity.fabricHdRole || null,
-        masterXprv: props.currentIdentity.masterXprv || null,
-        masterXpub: props.currentIdentity.masterXpub || null
-      };
-    }
-
+    if (props.currentIdentity && props.currentIdentity.id) return copyIdentity(props.currentIdentity);
     try {
-      let hasStorage = false;
-      try {
-        hasStorage = (typeof window !== 'undefined');
-      } catch (e) {
-        hasStorage = false;
-      }
-      if (!hasStorage) return null;
-      const parsed = readStorageJSON('fabric.identity.local', null);
-      if (!parsed) return null;
-
-      const bl = buildLocalFabricIdentityPayload(parsed);
-      if (bl.resolved && bl.record) {
-        const r = bl.record;
-        return {
-          id: r.id,
-          xpub: r.xpub,
-          xprv: null,
-          passwordProtected: !!r.passwordProtected,
-          plaintextUnlockAvailable: !!r.plaintextUnlockAvailable,
-          fabricIdentityMode: r.fabricIdentityMode || undefined,
-          fabricAccountIndex:
-            r.fabricAccountIndex != null ? Math.floor(Number(r.fabricAccountIndex)) : undefined,
-          fabricHdRole: r.fabricHdRole || undefined,
-          masterXpub: r.masterXpub || null,
-          masterXprv: null,
-          linkedFromDesktop: false
-        };
-      }
-
-      return null;
+      return readStoredIdentity(storedRecord()).identity;
     } catch (e) {
       console.warn('[IDENTITY]', 'Failed to restore local identity:', safeIdentityErr(e));
       return null;
     }
   });
+
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [showConfirmForget, setShowConfirmForget] = React.useState(false);
-  const [signature, setSignature] = React.useState(null);
-  const [pendingSeed, setPendingSeed] = React.useState(null); // { mnemonic, xprv }
-  const [seedConfirmed, setSeedConfirmed] = React.useState(false); // when true, show final backup/login screen
-  const [xpubInput, setXpubInput] = React.useState('');
-  const [identityPassword, setIdentityPassword] = React.useState('');
-  const [identityPasswordConfirm, setIdentityPasswordConfirm] = React.useState('');
-  const [unlockPassword, setUnlockPassword] = React.useState('');
-  /** Legacy plaintext-at-rest: set password, encrypt on disk, then unlock in one step. */
-  const [plaintextMigrationPassword, setPlaintextMigrationPassword] = React.useState('');
-  const [plaintextMigrationPasswordConfirm, setPlaintextMigrationPasswordConfirm] = React.useState('');
-  /** Password for JSON export (v2 encrypted backup). */
-  const [backupExportPassword, setBackupExportPassword] = React.useState('');
-  const [backupExportBusy, setBackupExportBusy] = React.useState(false);
-  const [importBackupFilePassword, setImportBackupFilePassword] = React.useState('');
-  const [isGenerating, setIsGenerating] = React.useState(false);
-  const [showSeedPhrase, setShowSeedPhrase] = React.useState(false);
-  const [showBackupKey, setShowBackupKey] = React.useState(false);
   const [loginMethod, setLoginMethod] = React.useState(() => (
     props.initialLoginMethod != null ? props.initialLoginMethod : null
-  )); // 'existing' | 'generate' | 'import' | 'restoreMnemonic' | null
-  const [devMnemonicText, setDevMnemonicText] = React.useState('');
-  const [devBip39Passphrase, setDevBip39Passphrase] = React.useState('');
-  const [devMnemonicReplace, setDevMnemonicReplace] = React.useState(false);
-  /** User must check before finishing a newly generated identity (backup discipline). */
+  ));
+  const [newMnemonic, setNewMnemonic] = React.useState(null);
+  const [showPhrase, setShowPhrase] = React.useState(false);
   const [backupAcknowledged, setBackupAcknowledged] = React.useState(false);
+  const [passphrase, setPassphrase] = React.useState('');
+  const [lockPassword, setLockPassword] = React.useState('');
+  const [lockPasswordConfirm, setLockPasswordConfirm] = React.useState('');
+  const [restorePhrase, setRestorePhrase] = React.useState('');
+  const [restoreReplace, setRestoreReplace] = React.useState(false);
+  const [importVault, setImportVault] = React.useState(null);
+  const [importPassword, setImportPassword] = React.useState('');
+  const [unlockPassword, setUnlockPassword] = React.useState('');
   const [deviceLinkBusy, setDeviceLinkBusy] = React.useState(false);
   const [deviceLinkOffer, setDeviceLinkOffer] = React.useState(null);
   const [deviceLinkQr, setDeviceLinkQr] = React.useState(null);
   const [linkedDevicesRev, setLinkedDevicesRev] = React.useState(0);
   const deviceLinkPollRef = React.useRef(null);
+  const passportWaitRef = React.useRef(null);
   const linkedDevices = React.useMemo(() => readLinkedDevices(), [linkedDevicesRev, localIdentity]);
 
   React.useEffect(() => {
@@ -244,138 +293,68 @@ function IdentityManager (props) {
     return () => { cancelled = true; };
   }, [deviceLinkOffer && deviceLinkOffer.protocolUrl]);
 
-  const usesDiskEncryptionPasswordForBackup = !!(
-    localIdentity &&
-    localIdentity.passwordProtected &&
-    localIdentity.xprv
-  );
-
-  const resolveBackupEncryptionPassword = React.useCallback(() => {
-    if (usesDiskEncryptionPasswordForBackup) {
-      const u = String(unlockPassword || '').trim();
-      return u.length >= LOCAL_IDENTITY_PASSWORD_MIN ? u : '';
+  React.useEffect(() => {
+    if (loginMethod === 'generate' && !newMnemonic && !localIdentity) {
+      try {
+        setNewMnemonic(generateMnemonic());
+      } catch (e) {
+        setError(t.common.errors.withReason(copy.create.failed, e && e.message));
+      }
     }
-    return String(backupExportPassword || '').trim();
-  }, [usesDiskEncryptionPasswordForBackup, unlockPassword, backupExportPassword]);
+  }, [loginMethod, newMnemonic, localIdentity]);
 
-  const resetSeedState = () => {
-    setPendingSeed(null);
-    setSeedConfirmed(false);
-    setIdentityPassword('');
-    setIdentityPasswordConfirm('');
-    setIsGenerating(false);
-    setShowSeedPhrase(false);
-    setShowBackupKey(false);
-    setUnlockPassword('');
-    setPlaintextMigrationPassword('');
-    setPlaintextMigrationPasswordConfirm('');
-    setBackupExportPassword('');
-    setBackupExportBusy(false);
-    setDevMnemonicText('');
-    setDevBip39Passphrase('');
-    setDevMnemonicReplace(false);
+  const clearSecrets = () => {
+    setNewMnemonic(null);
+    setShowPhrase(false);
     setBackupAcknowledged(false);
-    setLoginMethod(props.initialLoginMethod != null ? props.initialLoginMethod : null);
+    setPassphrase('');
+    setLockPassword('');
+    setLockPasswordConfirm('');
+    setRestorePhrase('');
+    setRestoreReplace(false);
+    setImportVault(null);
+    setImportPassword('');
   };
 
   const backToLoginChooser = () => {
+    clearSecrets();
+    setError(null);
     if (props.postSetupFlow) setLoginMethod('generate');
     else setLoginMethod(props.initialLoginMethod != null ? props.initialLoginMethod : null);
   };
 
-  // Derive lock state: password-protected or plaintext-on-disk awaiting unlock (no signing key in memory).
-  const isLocked = !!(localIdentity && localIdentity.id && localIdentity.xpub &&
-    !localIdentity.xprv &&
-    !!(localIdentity.passwordProtected || localIdentity.plaintextUnlockAvailable));
+  const isPassport = !!(localIdentity && localIdentity.linkedFromPassport);
+  const isLocked = !!(localIdentity && localIdentity.id && !localIdentity.xprv && localIdentity.passwordProtected);
   let keyState = 'none';
   if (localIdentity && localIdentity.xprv) keyState = 'unlocked';
   else if (isLocked) keyState = 'locked';
-  else if (localIdentity && (localIdentity.id || localIdentity.xpub)) keyState = 'watchOnly';
+  else if (localIdentity && localIdentity.id) keyState = 'session';
 
-  const prevHadSigningKeyRef = React.useRef(false);
   React.useEffect(() => {
-    const has = !!(localIdentity && localIdentity.xprv);
-    if (prevHadSigningKeyRef.current && !has) {
-      setUnlockPassword('');
-    }
-    prevHadSigningKeyRef.current = has;
-  }, [localIdentity]);
+    if (!localIdentity || !localIdentity.xprv) setUnlockPassword('');
+  }, [localIdentity && localIdentity.xprv]);
 
-  // Automatically re-lock after timeout — password identities and plaintext-derived identities alike.
   React.useEffect(() => {
-    if (!localIdentity || !localIdentity.xprv || !lockTimeoutMs) return;
-    const shouldTimedRelock = !!(localIdentity.passwordProtected || localIdentity.plaintextUnlockAvailable);
-    if (!shouldTimedRelock) return;
-
+    if (!localIdentity || !localIdentity.xprv || !localIdentity.passwordProtected || !lockTimeoutMs) return undefined;
     const timer = setTimeout(() => {
-      setLocalIdentity((prev) => {
-        if (!prev || !prev.xprv) return prev;
-        const next = { ...prev, xprv: null };
-        if (prev.fabricIdentityMode === 'account') {
-          next.masterXprv = null;
-        }
-        if (!prev.passwordProtected) {
-          try {
-            const parsed = readStorageJSON('fabric.identity.local', null);
-            if (parsed && fabricPlaintextSigningUnlockable(parsed)) next.plaintextUnlockAvailable = true;
-          } catch (e) {}
-        }
-        return next;
-      });
+      setLocalIdentity((prev) => (prev && prev.xprv ? lockIdentity(prev) : prev));
     }, lockTimeoutMs);
-
-    return () => {
-      clearTimeout(timer);
-    };
+    return () => clearTimeout(timer);
   }, [localIdentity && localIdentity.xprv, lockTimeoutMs]);
 
-  function identityAnchorKey (i) {
-    if (!i || (!i.id && !i.xpub)) return '';
-    const acct = i.fabricAccountIndex != null && i.fabricAccountIndex !== ''
-      ? String(Math.floor(Number(i.fabricAccountIndex)))
-      : '';
-    const mode = i.fabricIdentityMode ? String(i.fabricIdentityMode) : '';
-    const hd = i.fabricHdRole ? String(i.fabricHdRole) : '';
-    return `${String(i.id || '')}|${String(i.xpub || '')}|${i.passwordProtected ? '1' : '0'}|${i.plaintextUnlockAvailable ? '1' : '0'}|${i.linkedFromDesktop ? '1' : '0'}|${mode}|${acct}|${hd}`;
-  }
-
-  // Anchor key only (no xprv): avoid local<->parent lock/unlock echo loops that can flicker the modal.
+  // Anchor key only: avoid local <-> parent lock/unlock echo loops that can flicker the modal.
   const parentIdentityKey = identityAnchorKey(props.currentIdentity);
-
-  // Keep modal state aligned with Hub shell when parent identity changes (forget, desktop link, etc.).
   React.useEffect(() => {
     const p = props.currentIdentity;
-    if (!p || (!p.id && !p.xpub)) {
+    if (!p || !p.id) {
       setLocalIdentity((prev) => (prev ? null : prev));
       return;
     }
     setLocalIdentity((prev) => {
-      if (identityAnchorKey(prev) === identityAnchorKey(p)) {
-        const prevHasXprv = !!(prev && prev.xprv);
-        const parentHasXprv = !!p.xprv;
-        const needsKeyFlow = !!(
-          (p && p.passwordProtected) ||
-          (prev && prev.passwordProtected) ||
-          (p && p.plaintextUnlockAvailable) ||
-          (prev && prev.plaintextUnlockAvailable)
-        );
-        if (!needsKeyFlow || prevHasXprv === parentHasXprv) return prev;
-      }
-      return {
-        id: p.id,
-        xpub: p.xpub,
-        xprv: p.xprv || null,
-        passwordProtected: !!p.passwordProtected,
-        plaintextUnlockAvailable: !!p.plaintextUnlockAvailable,
-        linkedFromDesktop: !!p.linkedFromDesktop,
-        fabricIdentityMode: p.fabricIdentityMode || null,
-        fabricAccountIndex: p.fabricAccountIndex != null ? Math.floor(Number(p.fabricAccountIndex)) : undefined,
-        fabricHdRole: p.fabricHdRole || undefined,
-        masterXprv: p.masterXprv || null,
-        masterXpub: p.masterXpub || null
-      };
+      if (identityAnchorKey(prev) === identityAnchorKey(p) && !!(prev && prev.xprv) === !!p.xprv) return prev;
+      return copyIdentity(p);
     });
-  }, [parentIdentityKey]);
+  }, [parentIdentityKey, !!(props.currentIdentity && props.currentIdentity.xprv)]);
 
   const onLocalIdentityChangeRef = React.useRef(props.onLocalIdentityChange);
   const onLockStateChangeRef = React.useRef(props.onLockStateChange);
@@ -384,360 +363,274 @@ function IdentityManager (props) {
     onLockStateChangeRef.current = props.onLockStateChange;
   });
 
-  // Notify parent when the local identity changes so outer UI (TopPanel) and Bridge can update.
-  // Include xprv when available so Bridge can encrypt documents.
-  // Callback ref avoids a render loop when the parent passes an inline function that changes every render.
+  // The shell keeps the unlocked keys in memory for wallet, documents, and account switching.
   React.useEffect(() => {
     const cb = onLocalIdentityChangeRef.current;
-    if (typeof cb !== 'function') return;
-    if (localIdentity && localIdentity.id && localIdentity.xpub) {
-      const pw = !!localIdentity.passwordProtected;
-      const plainAvail = !!(
-        localIdentity.plaintextUnlockAvailable &&
-        !localIdentity.xprv &&
-        !pw
-      );
-      cb({
-        id: localIdentity.id,
-        xpub: localIdentity.xpub,
-        xprv: localIdentity.xprv || undefined,
-        passwordProtected: pw,
-        ...(plainAvail ? { plaintextUnlockAvailable: true } : {}),
-        ...(localIdentity.fabricIdentityMode ? { fabricIdentityMode: localIdentity.fabricIdentityMode } : {}),
-        ...(localIdentity.fabricAccountIndex != null
-          ? { fabricAccountIndex: localIdentity.fabricAccountIndex }
-          : {}),
-        ...(localIdentity.fabricHdRole ? { fabricHdRole: localIdentity.fabricHdRole } : {}),
-        ...(localIdentity.masterXprv ? { masterXprv: localIdentity.masterXprv } : {}),
-        ...(localIdentity.masterXpub ? { masterXpub: localIdentity.masterXpub } : {})
-      });
-    } else {
-      cb(null);
-    }
+    if (typeof cb === 'function') cb(copyIdentity(localIdentity));
   }, [localIdentity]);
 
-  // Notify parent when lock state changes so header can show lock icon.
-  // Only report "locked" when user can unlock (password-protected), not for xpub-only.
   React.useEffect(() => {
     const cb = onLockStateChangeRef.current;
-    if (typeof cb !== 'function') return;
-    cb(isLocked);
+    if (typeof cb === 'function') cb(isLocked);
   }, [isLocked]);
 
-  // Sync identity to chrome.storage when running in extension popup (enables Login with Extension on Hub page).
-  React.useEffect(() => {
-    try {
-      if (typeof chrome === 'undefined' || !chrome.storage?.local || !chrome.runtime?.id) return;
-      if (localIdentity && localIdentity.xpub) {
-        const payload = {
-          id: localIdentity.id,
-          xpub: localIdentity.xpub,
-          passwordProtected: !!localIdentity.passwordProtected,
-          fabricIdentityMode: localIdentity.fabricIdentityMode || undefined,
-          fabricAccountIndex: localIdentity.fabricAccountIndex,
-          fabricHdRole: localIdentity.fabricHdRole || undefined,
-          masterXpub: localIdentity.masterXpub || undefined
-        };
-        chrome.storage.local.set({ 'fabric.identity.ext': payload });
-      } else {
-        chrome.storage.local.remove('fabric.identity.ext');
-      }
-    } catch (e) {}
-  }, [localIdentity]);
-
-  const [extensionAvailable, setExtensionAvailable] = React.useState(false);
-  const desktopPollIntervalRef = React.useRef(null);
-  const passportWaitRef = React.useRef(null);
-
-  React.useEffect(() => {
-    return () => {
-      if (desktopPollIntervalRef.current) {
-        clearInterval(desktopPollIntervalRef.current);
-        desktopPollIntervalRef.current = null;
-      }
-      if (passportWaitRef.current) {
-        window.removeEventListener('message', passportWaitRef.current);
-        passportWaitRef.current = null;
-      }
-    };
+  React.useEffect(() => () => {
+    if (passportWaitRef.current) {
+      passportWaitRef.current();
+      passportWaitRef.current = null;
+    }
   }, []);
 
-  React.useEffect(() => {
-    const check = () => setExtensionAvailable(!!(typeof window !== 'undefined' && window.__FABRIC_HUB_EXTENSION__?.isAvailable));
-    check();
-    const timer = setTimeout(check, 300);
-    return () => clearTimeout(timer);
-  }, []);
+  const finishUnlocked = (identity) => {
+    clearSecrets();
+    setError(null);
+    setLocalIdentity(identity);
+    if (typeof props.onUnlockSuccess === 'function') props.onUnlockSuccess(copyIdentity(identity));
+  };
 
-  const applySignedSiteLogin = React.useCallback((j, sessionId, origin, signerLabel) => {
-    const loginVerify = verifyFabricDesktopLoginSignedPayload(j, { sessionId, origin });
-    if (!loginVerify.ok) {
-      return { ok: false, error: loginVerify.error || copy.login.verifyFailed };
-    }
-    if (j.delegationToken) {
-      try {
-        writeStorageJSON(DELEGATION_STORAGE_KEY, {
-          token: j.delegationToken,
-          externalSigning: true,
-          hubOrigin: origin,
-          linkedAt: new Date().toISOString(),
-          signer: signerLabel || 'client'
-        });
-        notifyDelegationStorageChanged();
-      } catch (e) {}
-    }
-    const xpub = j.identity && j.identity.xpub;
-    const rid = j.identity && j.identity.id;
-    if (!xpub) return { ok: false, error: copy.login.noXpub };
-    const k = new Key({ xpub });
-    const ident = new Identity(k);
-    const resolvedId = rid != null ? String(rid) : String(ident.id);
-    const payload = {
-      id: resolvedId,
-      xpub,
-      linkedFromDesktop: signerLabel === 'desktop',
-      linkedFromPassport: signerLabel === 'passport'
-    };
+  const saveVault = (vault) => {
     try {
-      writeStorageJSON('fabric.identity.local', payload);
-    } catch (e) {}
-    mergeLinkedDevice({
-      kind: signerLabel === 'passport' ? 'fabric-passport' : 'fabric-desktop',
-      hubOrigin: origin,
-      fabricId: resolvedId,
-      linkedAt: new Date().toISOString(),
-      label: signerLabel === 'passport' ? copy.signerPassport : copy.signerDesktop
-    });
-    setLinkedDevicesRev((n) => n + 1);
-    setLocalIdentity({
-      id: resolvedId,
-      xpub,
-      xprv: null,
-      passwordProtected: false,
-      linkedFromDesktop: !!payload.linkedFromDesktop,
-      linkedFromPassport: !!payload.linkedFromPassport
-    });
-    if (typeof props.onLocalIdentityChange === 'function') {
-      props.onLocalIdentityChange({
-        id: resolvedId,
-        xpub,
-        xprv: undefined,
-        passwordProtected: false
-      });
+      writeStorageJSON(STORAGE_KEY, vault);
+      return true;
+    } catch (_) {
+      setError(copy.saveFailed);
+      return false;
     }
-    if (typeof props.onUnlockSuccess === 'function') {
-      props.onUnlockSuccess({
-        id: resolvedId,
-        xpub,
-        xprv: null,
-        passwordProtected: false
-      });
-    }
-    return { ok: true };
-  }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
+  };
 
-  const handleLoginWithExtension = React.useCallback(async () => {
-    if (!window.__FABRIC_HUB_EXTENSION__?.getIdentity) return;
+  /** Seal a master from a recovery phrase into a new vault and unlock it. */
+  const createFromPhrase = async (mnemonic, failedCopy) => {
+    const problem = lockPasswordProblem(lockPassword, lockPasswordConfirm);
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setBusy(true);
     setError(null);
+    await nextTick();
     try {
-      const identity = await window.__FABRIC_HUB_EXTENSION__.getIdentity();
-      if (!identity || !identity.xpub) {
-        setError(copy.login.extensionEmpty);
+      const master = masterFromMnemonic(mnemonic, passphrase);
+      const created = createVault({ master, lockPassword, account: 0, network: defaultNetwork });
+      if (!saveVault(created.vault)) return;
+      finishUnlocked(created.identity);
+    } catch (e) {
+      console.error('[IDENTITY]', 'Create identity failed:', safeIdentityErr(e));
+      setError(t.common.errors.withReason(failedCopy, e && e.message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreate = () => {
+    if (!newMnemonic || !backupAcknowledged) return;
+    void createFromPhrase(newMnemonic, copy.create.failed);
+  };
+
+  const handleRestore = () => {
+    const phrase = String(restorePhrase || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!phrase) {
+      setError(copy.restore.failed);
+      return;
+    }
+    if (isAccountVault(storedRecord()) && !restoreReplace) {
+      setError(copy.restore.existing);
+      return;
+    }
+    void createFromPhrase(phrase, copy.restore.failed);
+  };
+
+  const handleImportFile = (file) => {
+    setError(null);
+    setImportVault(null);
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(String(reader.result || ''));
+      } catch (_) {
+        parsed = null;
+      }
+      if (!isAccountVault(parsed)) {
+        setError(copy.importBackup.notBackup);
         return;
       }
-      // Extension → page only delivers watch-only fields (xpub + id). xprv never crosses postMessage into
-      // the page JS realm; import or unlock a full key here when you need signing or decryption.
-      try {
-        if (typeof window !== 'undefined') {
-          const toStore = { id: identity.id, xpub: identity.xpub, passwordProtected: !!identity.passwordProtected };
-          writeStorageJSON('fabric.identity.local', toStore);
-        }
-      } catch (e) {}
-      setLocalIdentity({
-        id: identity.id,
-        xpub: identity.xpub,
-        xprv: identity.xprv || null,
-        passwordProtected: !!identity.passwordProtected
+      setImportVault(parsed);
+    };
+    reader.onerror = () => setError(copy.importBackup.readFailed);
+    reader.readAsText(file);
+  };
+
+  const handleImport = async () => {
+    if (!importVault) {
+      setError(copy.importBackup.missingFile);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    await nextTick();
+    try {
+      const identity = unlockVault(importVault, importPassword);
+      if (!saveVault(importVault)) return;
+      finishUnlocked(identity);
+    } catch (e) {
+      setError(copy.importBackup.failed);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUnlock = async () => {
+    const record = storedRecord();
+    if (!isAccountVault(record)) {
+      setError(copy.unlock.noStored);
+      return;
+    }
+    if (!unlockPassword) {
+      setError(copy.unlock.missing);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    await nextTick();
+    try {
+      finishUnlocked(unlockVault(record, unlockPassword));
+    } catch (e) {
+      setError(copy.unlock.failed);
+    } finally {
+      setUnlockPassword('');
+      setBusy(false);
+    }
+  };
+
+  const handleDownloadBackup = () => {
+    const record = storedRecord();
+    if (!isAccountVault(record)) {
+      setError(copy.unlock.noStored);
+      return;
+    }
+    try {
+      const blob = new Blob([JSON.stringify(record, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'fabric-identity-backup.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(t.common.errors.withReason(copy.backup.exportFailed, e && e.message));
+    }
+  };
+
+  /**
+   * Watch-only identity from a Hub Passport session: the identity id and
+   * pubkey always, wallet xpubs only when the user shared them this time.
+   * The wallet is kept in memory, never in storage.
+   */
+  const applyPassportSession = React.useCallback((session) => {
+    const watch = watchIdentityFromSession(session);
+    if (!watch) return { ok: false, error: copy.login.verifyFailed };
+    const fromPassport = watch.signer === 'passport';
+    const stored = {
+      id: watch.id,
+      pubkey: watch.pubkey,
+      network: watch.network,
+      signer: watch.signer,
+      linkedFromPassport: true
+    };
+    try {
+      writeStorageJSON(STORAGE_KEY, stored);
+    } catch (e) {}
+    mergeLinkedDevice({
+      kind: fromPassport ? 'fabric-passport' : 'fabric-desktop',
+      hubOrigin: window.location.origin,
+      fabricId: watch.id,
+      linkedAt: new Date().toISOString(),
+      label: fromPassport ? copy.signerPassport : copy.signerDesktop
+    });
+    setLinkedDevicesRev((n) => n + 1);
+    const next = Object.assign({}, stored, { xprv: null, passwordProtected: false, wallet: watch.wallet });
+    setLocalIdentity(next);
+    if (typeof props.onUnlockSuccess === 'function') props.onUnlockSuccess(next);
+    return { ok: true };
+  }, [props.onUnlockSuccess]);
+
+  const clearPassportWait = React.useCallback(() => {
+    if (passportWaitRef.current) {
+      const cancel = passportWaitRef.current;
+      passportWaitRef.current = null;
+      cancel();
+    }
+  }, []);
+
+  /**
+   * Sign in with Fabric Passport (v2): the Hub issues a challenge, Passport
+   * (or a desktop app it is linked to) signs it over a private port, and the
+   * Hub sets an HttpOnly session cookie. `wallet` asks to share wallet xpubs.
+   */
+  const runPassportLogin = React.useCallback(async ({ wallet = false } = {}) => {
+    if (typeof window === 'undefined') return;
+    clearPassportWait();
+    setError(null);
+    const passport = passportStatus(document);
+    if (passport !== 'ready') {
+      setError(passport === 'outdated' ? copy.login.passportOutdated : copy.login.passportMissing);
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await loginWithPassport({
+        window,
+        wallet,
+        purpose: copy.login.passportPurpose,
+        onPending: ({ cancel }) => { passportWaitRef.current = cancel; }
       });
-      if (typeof props.onLocalIdentityChange === 'function') {
-        props.onLocalIdentityChange({
-          id: identity.id,
-          xpub: identity.xpub,
-          xprv: identity.xprv,
-          passwordProtected: !!identity.passwordProtected
-        });
+      passportWaitRef.current = null;
+      if (!result.ok) {
+        if (result.error === 'cancelled') return;
+        if (result.error === 'timeout') throw new Error(copy.login.passportTimeout);
+        if (result.error === 'busy') throw new Error(copy.login.passportBusy);
+        if (result.error === 'passport_outdated') throw new Error(copy.login.passportOutdated);
+        throw new Error(t.common.errors.withReason(copy.login.passportRejected, result.error === 'rejected' ? '' : result.error));
       }
-      if (identity.xprv && typeof props.onUnlockSuccess === 'function') {
-        props.onUnlockSuccess(identity);
-      }
+      const applied = applyPassportSession(result.session);
+      if (!applied.ok) throw new Error(applied.error || copy.login.verifyFailed);
     } catch (e) {
       setError((e && e.message) ? e.message : String(e));
     } finally {
       setBusy(false);
     }
-  }, [props.onLocalIdentityChange, props.onUnlockSuccess]);
+  }, [applyPassportSession, clearPassportWait]);
 
-  const clearDesktopLoginPoll = React.useCallback(() => {
-    if (desktopPollIntervalRef.current) {
-      clearInterval(desktopPollIntervalRef.current);
-      desktopPollIntervalRef.current = null;
-    }
-  }, []);
+  const handleLoginWithPassport = React.useCallback(() => runPassportLogin({ wallet: false }), [runPassportLogin]);
+  const handleShowPassportWallet = React.useCallback(() => runPassportLogin({ wallet: true }), [runPassportLogin]);
 
-  const clearPassportWait = React.useCallback(() => {
-    if (passportWaitRef.current) {
-      window.removeEventListener('message', passportWaitRef.current);
-      passportWaitRef.current = null;
-    }
-  }, []);
-
-  const pollSiteLoginSigned = React.useCallback((sessionId, pollSecret, origin, signerLabel) => {
-    const maxAttempts = 360;
-    let attempts = 0;
-    // Same-origin only — relative /sessions avoids Semgrep SSRF on `${origin}/…`.
-    const pollOrigin = (origin && origin === window.location.origin)
-      ? origin
-      : window.location.origin;
-    // Hub session ids are hex/UUID-shaped; reject anything else before fetch.
-    const sid = String(sessionId || '').trim();
-    if (!/^[0-9a-fA-F-]{8,128}$/.test(sid)) {
-      setBusy(false);
-      setError(copy.login.invalidSession);
-      return;
-    }
-    clearDesktopLoginPoll();
-    desktopPollIntervalRef.current = setInterval(() => {
-      attempts++;
-      if (attempts > maxAttempts) {
-        clearDesktopLoginPoll();
-        clearPassportWait();
-        setBusy(false);
-        setError(signerLabel === 'passport'
-          ? copy.login.passportTimeout
-          : copy.login.desktopTimeout);
-        return;
-      }
-      void (async () => {
-        try {
-          const pollHeaders = {};
-          if (pollSecret) pollHeaders['X-Fabric-Poll-Secret'] = pollSecret;
-          // Fetch lives under libs/hub-operator (Codacy-ignored); sid validated above.
-          const r = await fetchSiteLoginSession(sid, pollHeaders);
-          const j = await r.json().catch(() => ({}));
-          if (r.status === 403) {
-            clearDesktopLoginPoll();
-            clearPassportWait();
-            setBusy(false);
-            setError((j && j.error) ? String(j.error) : copy.login.rejected);
-            return;
-          }
-          if (!j.ok || j.status !== 'signed' || !j.identity) return;
-          const applied = applySignedSiteLogin(j, sid, pollOrigin, signerLabel);
-          clearDesktopLoginPoll();
-          clearPassportWait();
-          setBusy(false);
-          if (!applied.ok) {
-            setError(applied.error || copy.login.verifyFailed);
-          }
-        } catch (err) {
-          clearDesktopLoginPoll();
-          clearPassportWait();
-          setBusy(false);
-          setError(t.common.errors.withReason(copy.login.verifyFailed, err && err.message));
-        }
-      })();
-    }, 600);
-  }, [applySignedSiteLogin, clearDesktopLoginPoll, clearPassportWait]);
-
-  const createSiteLoginSession = React.useCallback(async () => {
-    const origin = window.location.origin;
-    const res = await createSiteLoginSessionRequest(origin);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok || !data.sessionId) {
-      if (res.status === 404) throw new Error(copy.login.noSessions);
-      throw new Error((data && data.error) || copy.login.startFailed(res.status));
-    }
-    return { ...data, origin };
-  }, []);
-
-  const handleLoginWithDesktop = React.useCallback(async () => {
+  /** Desktop shell only: sign in to this Hub as the Hub's own identity (`POST /sessions/self`). */
+  const handleSignInAsHub = React.useCallback(async () => {
     if (typeof window === 'undefined') return;
-    if (window.fabricDesktop && window.fabricDesktop.isDesktopShell) return;
-    clearDesktopLoginPoll();
-    clearPassportWait();
-    setBusy(true);
     setError(null);
+    setBusy(true);
     try {
-      const data = await createSiteLoginSession();
-      const sessionId = data.sessionId;
-      const pollSecret = typeof data.pollSecret === 'string' ? data.pollSecret : '';
-      const origin = data.origin;
-      const protocolUrl = data.protocolUrl || (`fabric://login?sessionId=${encodeURIComponent(sessionId)}&hub=${encodeURIComponent(origin)}`);
-      pollSiteLoginSigned(sessionId, pollSecret, origin, 'desktop');
-      const a = document.createElement('a');
-      a.href = protocolUrl;
-      a.rel = 'noopener noreferrer';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      const res = await fetch('/sessions/self', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: '{}'
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.session) throw new Error(t.common.errors.withReason(copy.login.verifyFailed, body.error || res.status));
+      setPassportSession(body.session);
+      const applied = applyPassportSession(body.session);
+      if (!applied.ok) throw new Error(applied.error || copy.login.verifyFailed);
     } catch (e) {
-      clearDesktopLoginPoll();
       setError((e && e.message) ? e.message : String(e));
+    } finally {
       setBusy(false);
     }
-  }, [clearDesktopLoginPoll, clearPassportWait, createSiteLoginSession, pollSiteLoginSigned]);
-
-  /**
-   * Client-signed site login via Fabric Passport (same /sessions contract as desktop).
-   * Content script listens for FABRIC_SITE_LOGIN_REQUEST on this origin.
-   */
-  const handleLoginWithPassport = React.useCallback(async () => {
-    if (typeof window === 'undefined') return;
-    if (window.fabricDesktop && window.fabricDesktop.isDesktopShell) return;
-    clearDesktopLoginPoll();
-    clearPassportWait();
-    setBusy(true);
-    setError(null);
-    try {
-      const data = await createSiteLoginSession();
-      const sessionId = data.sessionId;
-      const message = data.message;
-      const pollSecret = typeof data.pollSecret === 'string' ? data.pollSecret : '';
-      const origin = data.origin;
-      if (!message) {
-        throw new Error(copy.login.noChallenge);
-      }
-      passportWaitRef.current = (event) => {
-        if (event.origin !== window.location.origin) return;
-        const d = event.data;
-        if (!d || d.source !== 'fabric-passport' || d.type !== 'FABRIC_SITE_LOGIN_RESULT') return;
-        clearPassportWait();
-        if (!d.ok) {
-          clearDesktopLoginPoll();
-          setBusy(false);
-          setError(t.common.errors.withReason(copy.login.passportRejected, d.error));
-          return;
-        }
-        // Passport posts the signature to Hub; keep polling until status=signed.
-      };
-      window.addEventListener('message', passportWaitRef.current);
-      window.postMessage({
-        source: 'fabric-site',
-        type: 'FABRIC_SITE_LOGIN_REQUEST',
-        sessionId,
-        hub: origin,
-        origin,
-        message
-      }, origin);
-      pollSiteLoginSigned(sessionId, pollSecret, origin, 'passport');
-    } catch (e) {
-      clearDesktopLoginPoll();
-      clearPassportWait();
-      setError((e && e.message) ? e.message : String(e));
-      setBusy(false);
-    }
-  }, [clearDesktopLoginPoll, clearPassportWait, createSiteLoginSession, pollSiteLoginSigned]);
+  }, [applyPassportSession]);
 
   const clearDeviceLinkPoll = React.useCallback(() => {
     if (deviceLinkPollRef.current) {
@@ -754,12 +647,11 @@ function IdentityManager (props) {
    */
   const handleCreateDeviceLink = React.useCallback(async () => {
     if (typeof window === 'undefined') return;
-    if (!localIdentity || !localIdentity.xprv || !localIdentity.xpub) {
-      const lockedNow = !!(localIdentity && (localIdentity.passwordProtected || localIdentity.plaintextUnlockAvailable));
-      const hasPublic = !!(localIdentity && (localIdentity.id || localIdentity.xpub));
-      setError(lockedNow
+    const signing = identitySigner(localIdentity);
+    if (!signing) {
+      setError(keyState === 'locked'
         ? copy.linkDevice.needKey.locked
-        : (hasPublic ? copy.linkDevice.needKey.watchOnly : copy.linkDevice.needKey.none));
+        : (keyState === 'session' ? copy.linkDevice.needKey.session : copy.linkDevice.needKey.none));
       return;
     }
     clearDeviceLinkPoll();
@@ -768,15 +660,13 @@ function IdentityManager (props) {
     const origin = window.location.origin;
     const label = copy.linkDevice.browserLabel;
     try {
-      const key = new Key({ xprv: localIdentity.xprv });
-      const signing = resolveFabricSigningIdentity(key);
-      const ownId = String(signing.identityId);
-      const ownXpub = signing.fabricKey.xpub;
+      const ownId = signing.id;
+      const resolved = { fabricKey: signing.fabricKey, identityId: ownId };
       const prepared = await prepareDeviceLinkOffer({
         hubBase: origin,
         origin,
         label,
-        identity: { id: ownId, xpub: ownXpub }
+        identity: { id: ownId, xpub: signing.fabricKey.xpub }
       });
       if (!prepared.ok) {
         setError(prepared.error || copy.linkDevice.prepareFailed);
@@ -794,7 +684,7 @@ function IdentityManager (props) {
         setDeviceLinkBusy(false);
         return;
       }
-      const offerSigned = buildFabricIdentitySignedPayload(signing, offerMessage, DEVICE_LINK_OFFER_TAG);
+      const offerSigned = buildFabricIdentitySignedPayload(resolved, offerMessage, DEVICE_LINK_OFFER_TAG);
       const created = await commitDeviceLinkOffer({
         hubBase: origin,
         origin,
@@ -839,7 +729,7 @@ function IdentityManager (props) {
           role: 'initiator'
         });
         setLinkedDevicesRev((n) => n + 1);
-        void publishHubIdentityCrossSign(key, responder.pubkeyHex, { sessionId, nonce, origin });
+        void publishHubIdentityCrossSign(signing, responder.pubkeyHex, { sessionId, nonce, origin });
         setDeviceLinkOffer(null);
         setDeviceLinkBusy(false);
       };
@@ -876,7 +766,7 @@ function IdentityManager (props) {
                 stop(copy.linkDevice.declined);
                 return;
               }
-              const signed = buildFabricIdentitySignedPayload(signing, checked.linkMessage, DEVICE_LINK_TAG);
+              const signed = buildFabricIdentitySignedPayload(resolved, checked.linkMessage, DEVICE_LINK_TAG);
               const done = await postDeviceLinkSignature(origin, sessionId, {
                 role: 'initiator',
                 signature: signed.signature,
@@ -907,16 +797,12 @@ function IdentityManager (props) {
       setError((e && e.message) ? e.message : String(e));
       setDeviceLinkBusy(false);
     }
-  }, [localIdentity, clearDeviceLinkPoll]);
+  }, [localIdentity, keyState, clearDeviceLinkPoll]);
 
   const handleRevokeLinkedDevice = React.useCallback(async (device) => {
     if (!device) return;
     setError(null);
-    let key = null;
-    try {
-      if (localIdentity && localIdentity.xprv) key = new Key({ xprv: localIdentity.xprv });
-    } catch (_) { key = null; }
-    const r = await revokeLinkedDevice(device, key);
+    const r = await revokeLinkedDevice(device, identitySigner(localIdentity));
     if (!r.ok) {
       setError(r.error || copy.devices.revokeFailed);
       return;
@@ -924,17 +810,543 @@ function IdentityManager (props) {
     setLinkedDevicesRev((n) => n + 1);
   }, [localIdentity]);
 
-  const plaintextKeyMaterialOnDisk = React.useMemo(() => {
+  const handleForget = () => {
     try {
-      const parsed = readStorageJSON('fabric.identity.local', null);
-      return !!(parsed && fabricPlaintextSigningUnlockable(parsed));
-    } catch (_) {
-      return false;
+      if (typeof props.onForgetIdentity === 'function') props.onForgetIdentity();
+      if (typeof window !== 'undefined') {
+        void endPassportSession();
+        try { removeStorageKey(STORAGE_LINKED_DEVICES); } catch (eLink) {}
+        clearFabricBrowserIdentityLocal();
+        removeStorageKey('fabric:documents');
+      }
+    } catch (e) {
+      console.error('[IDENTITY]', 'Forget identity error:', safeIdentityErr(e));
     }
-  }, [localIdentity && localIdentity.xpub]);
+    setShowConfirmForget(false);
+    clearSecrets();
+    setLocalIdentity(null);
+  };
 
   const showFabricHubAdminNotice = !!readHubAdminTokenFromBrowser(props.hubAdminToken) &&
     (props.postSetupFlow || readStorageString('fabric.hub.identityWizardPending') === '1');
+  const isDesktopShell = !!(typeof window !== 'undefined' && window.fabricDesktop && window.fabricDesktop.isDesktopShell);
+  const hasStoredVault = isAccountVault(storedRecord());
+
+  const backButton = (
+    <Button basic size="small" style={{ marginLeft: '0.5em' }} disabled={busy} onClick={backToLoginChooser}>
+      <Icon name="arrow left" aria-hidden="true" />
+      {copy.backToChooser}
+    </Button>
+  );
+
+  const renderIdentity = () => (
+    <>
+      <p style={{ marginBottom: 0, marginTop: '0.25em' }}><strong>{copy.idLabel}</strong></p>
+      <code style={identityMonospaceBlockStyle}>{localIdentity.id}</code>
+      {!isPassport && localIdentity.network ? (
+        <p style={{ color: '#666', marginTop: 0 }} data-testid="identity-account">
+          {copy.accountLabel(
+            localIdentity.fabricAccountIndex != null ? localIdentity.fabricAccountIndex : 0,
+            networkNames[localIdentity.network] || localIdentity.network
+          )}
+        </p>
+      ) : null}
+      {!suppressForget && isPassport ? (
+        <Message info size="small" style={{ marginTop: '0.75em' }} data-testid="identity-passport-signing">
+          <Icon name="id badge" aria-hidden="true" />
+          {copy.passportSigning}
+          {' '}
+          <Link to="/settings/security">{copy.securityLink}</Link>
+          {!localIdentity.wallet && hubHttpAvailable ? (
+            <div style={{ marginTop: '0.5em' }}>
+              <Button size="small" basic disabled={busy} loading={busy} onClick={handleShowPassportWallet} data-testid="identity-passport-wallet">
+                <Icon name="bitcoin" aria-hidden="true" />
+                {copy.passportShowWallet}
+              </Button>
+            </div>
+          ) : null}
+        </Message>
+      ) : null}
+      {suppressForget ? null : linkedDevices.length > 0 ? (
+        <Segment style={{ marginTop: '1em' }}>
+          <Header as="h4" size="small">
+            <Icon name="linkify" aria-hidden="true" />
+            {copy.devices.title}
+          </Header>
+          <p style={{ color: '#666', fontSize: '0.95em' }}>
+            {copy.devices.intro}{' '}
+            {copy.devices.revokeWhere}{' '}
+            <Link to="/settings/security">{copy.securityLink}</Link>.
+          </p>
+          <details className="hub-developer-details">
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.devices.developer}</p>
+          </details>
+          <ul style={{ margin: '0.5em 0 0 1em' }}>
+            {linkedDevices.map((d, i) => (
+              <li key={i} style={{ marginBottom: '0.45em' }}>
+                <strong>{d.label || d.kind || copy.devices.fallbackName}</strong>
+                {d.peerFabricId ? (
+                  <span> — <code style={{ fontSize: '0.85em' }}>{String(d.peerFabricId).slice(0, 18)}…</code></span>
+                ) : null}
+                {d.hubOrigin ? ` — ${d.hubOrigin}` : ''}
+                {d.linkedAt ? ` (${new Date(d.linkedAt).toLocaleString()})` : ''}
+                {' '}
+                <Button size="mini" negative basic disabled={busy} onClick={() => void handleRevokeLinkedDevice(d)}>
+                  {copy.devices.revoke}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </Segment>
+      ) : (
+        <p style={{ color: '#888', fontSize: '0.92em', marginTop: '0.75em', marginBottom: 0 }}>
+          {keyState === 'unlocked'
+            ? copy.devices.emptyCanLink
+            : (keyState === 'locked' ? copy.devices.emptyLocked : copy.devices.emptySession)}
+        </p>
+      )}
+      {!suppressForget && keyState === 'unlocked' ? (
+        <Segment style={{ marginTop: '1em' }}>
+          <Header as="h4" size="small">
+            <Icon name="qrcode" aria-hidden="true" />
+            {copy.linkDevice.title}
+          </Header>
+          <p style={{ color: '#666', fontSize: '0.95em' }}>{copy.linkDevice.intro}</p>
+          <details className="hub-developer-details" style={{ marginBottom: '0.5em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.linkDevice.developer}</p>
+          </details>
+          <Button size="small" primary loading={deviceLinkBusy} disabled={deviceLinkBusy} onClick={() => void handleCreateDeviceLink()}>
+            <Icon name="linkify" aria-hidden="true" />
+            {copy.linkDevice.create}
+          </Button>
+          {deviceLinkOffer && deviceLinkOffer.protocolUrl ? (
+            <div style={{ marginTop: '0.75em' }}>
+              <p style={{ marginBottom: '0.35em', fontSize: '0.9em' }}>{copy.linkDevice.scanHint}</p>
+              {deviceLinkQr ? (
+                <img
+                  src={deviceLinkQr}
+                  alt={copy.linkDevice.qrAlt}
+                  width={196}
+                  height={196}
+                  style={{ background: '#fff', borderRadius: 4, marginBottom: 8 }}
+                />
+              ) : null}
+              <code style={identityMonospaceBlockStyle}>{deviceLinkOffer.protocolUrl}</code>
+              <Button
+                size="mini"
+                onClick={() => {
+                  try {
+                    void navigator.clipboard.writeText(deviceLinkOffer.protocolUrl);
+                  } catch (_) {}
+                  const a = document.createElement('a');
+                  a.href = deviceLinkOffer.protocolUrl;
+                  a.rel = 'noopener noreferrer';
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                }}
+              >
+                {copy.linkDevice.copyOpen}
+              </Button>
+              <Button
+                size="mini"
+                style={{ marginLeft: '0.35em' }}
+                onClick={() => {
+                  try {
+                    window.postMessage({
+                      source: 'fabric-site',
+                      type: 'FABRIC_DEVICE_LINK_REQUEST',
+                      sessionId: deviceLinkOffer.sessionId,
+                      hub: window.location.origin,
+                      origin: window.location.origin
+                    }, window.location.origin);
+                  } catch (_) {}
+                }}
+              >
+                {copy.linkDevice.approvePassport}
+              </Button>
+            </div>
+          ) : null}
+        </Segment>
+      ) : null}
+      <p style={{ color: '#666' }}>
+        <strong>{copy.keyStatus.label}</strong>{' '}
+        {keyState === 'unlocked'
+          ? copy.keyStatus.unlocked
+          : (keyState === 'locked' ? copy.keyStatus.lockedPassword : copy.keyStatus.session)}
+        {keyState === 'unlocked' && lockTimeoutMs ? (
+          <span> {copy.keyStatus.autoLockIn(t.common.plural(Math.round(lockTimeoutMs / 60000), 'minute'))}</span>
+        ) : null}
+        {keyState === 'unlocked' && !lockTimeoutMs ? <span> {copy.keyStatus.autoLockOff}</span> : null}
+      </p>
+      {!isPassport && lockTimeoutMsFromTests == null ? (
+        <Form style={{ marginTop: '0.35em', marginBottom: '0.5em', maxWidth: 420 }}>
+          <Form.Field>
+            <label htmlFor="fabric-identity-auto-lock">{copy.autoLock.label}</label>
+            <select
+              id="fabric-identity-auto-lock"
+              value={lockTimeoutMinutes}
+              onChange={(e) => {
+                const v = Math.floor(Number(e.target.value));
+                if (!Number.isFinite(v)) return;
+                setLockTimeoutMinutes(v);
+                try {
+                  writeFabricIdentityLockTimeoutMinutes(v);
+                } catch (err) {}
+              }}
+              style={inputStyle}
+            >
+              <option value={0}>{copy.autoLock.off}</option>
+              <option value={5}>{copy.autoLock.minutes(5)}</option>
+              <option value={15}>{copy.autoLock.minutes(15)}</option>
+              <option value={30}>{copy.autoLock.minutes(30)}</option>
+              <option value={60}>{copy.autoLock.hours(1)}</option>
+              <option value={120}>{copy.autoLock.hours(2)}</option>
+              <option value={240}>{copy.autoLock.hours(4)}</option>
+              <option value={480}>{copy.autoLock.hours(8)}</option>
+            </select>
+            <div style={hintStyle}>{copy.autoLock.hint}</div>
+          </Form.Field>
+        </Form>
+      ) : null}
+      {keyState === 'locked' ? (
+        <Form
+          style={{ marginTop: '0.75em', maxWidth: 420 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleUnlock();
+          }}
+        >
+          <Form.Field>
+            <label htmlFor="fabric-identity-unlock-password">{copy.unlock.password}</label>
+            <input
+              id="fabric-identity-unlock-password"
+              type="password"
+              aria-describedby="fabric-identity-unlock-password-hint"
+              autoComplete="current-password"
+              value={unlockPassword}
+              disabled={busy}
+              onChange={(e) => setUnlockPassword(e.target.value)}
+              style={inputStyle}
+            />
+            <div id="fabric-identity-unlock-password-hint" style={hintStyle}>{copy.unlock.hint}</div>
+          </Form.Field>
+          <Button type="submit" primary size="small" icon labelPosition="left" loading={busy} disabled={busy}>
+            <Icon name="unlock" aria-hidden="true" />
+            {copy.unlock.submit}
+          </Button>
+        </Form>
+      ) : null}
+      <div style={{ marginTop: '0.75em', display: 'flex', flexWrap: 'wrap', gap: '0.5em' }}>
+        <Button
+          size="small"
+          icon
+          labelPosition="left"
+          onClick={() => {
+            try {
+              if (typeof navigator !== 'undefined' && navigator.clipboard) navigator.clipboard.writeText(localIdentity.id);
+            } catch (e) {}
+          }}
+        >
+          <Icon name="copy" aria-hidden="true" />
+          {copy.copyId}
+        </Button>
+        {!isPassport && hasStoredVault ? (
+          <Button size="small" icon labelPosition="left" title={copy.backup.downloadTitle} onClick={handleDownloadBackup}>
+            <Icon name="download" aria-hidden="true" />
+            {copy.backup.download}
+          </Button>
+        ) : null}
+        {keyState === 'unlocked' ? (
+          <Button
+            size="small"
+            icon
+            labelPosition="left"
+            onClick={() => setLocalIdentity((prev) => lockIdentity(prev))}
+          >
+            <Icon name="lock" aria-hidden="true" />
+            {copy.lock}
+          </Button>
+        ) : null}
+      </div>
+      {!isPassport && hasStoredVault ? (
+        <p style={hintStyle}>{copy.backup.note}</p>
+      ) : null}
+      {!suppressForget ? (
+        <>
+          <Button
+            size="small"
+            basic
+            color="red"
+            icon
+            labelPosition="left"
+            style={{ marginTop: '1em' }}
+            onClick={() => setShowConfirmForget(true)}
+          >
+            <Icon name="trash" aria-hidden="true" />
+            {copy.forget.button}
+          </Button>
+          <Modal
+            open={showConfirmForget}
+            onClose={() => setShowConfirmForget(false)}
+            closeOnDimmerClick={false}
+            closeOnDocumentClick={false}
+            closeOnEscape={false}
+            size="small"
+          >
+            <Header icon="trash" content={copy.forget.title} />
+            <Modal.Content>
+              <p><strong>{copy.forget.warning}</strong></p>
+              <p>{copy.forget.recover}</p>
+              <p>{copy.forget.question}</p>
+            </Modal.Content>
+            <Modal.Actions>
+              <Button onClick={() => setShowConfirmForget(false)}>{t.common.actions.cancel}</Button>
+              <Button color="red" onClick={handleForget}>
+                <Icon name="trash" aria-hidden="true" />
+                {copy.forget.confirm}
+              </Button>
+            </Modal.Actions>
+          </Modal>
+        </>
+      ) : null}
+    </>
+  );
+
+  const renderCreate = () => (
+    <>
+      <Header as="h4">{copy.create.title}</Header>
+      <p style={{ color: '#666' }}>{copy.create.intro}</p>
+      <Message warning>
+        <Message.Header>{copy.create.phraseTitle}</Message.Header>
+        <p>{copy.create.body}</p>
+        <p>{copy.create.keepSafe}</p>
+      </Message>
+      <p style={{ marginBottom: 0 }}><strong>{copy.create.phraseLabel}</strong></p>
+      <p style={{ color: '#666', margin: '0.15em 0 0' }}>{copy.create.phraseNote}</p>
+      <code style={identityMonospaceBlockStyle} data-testid="identity-new-phrase">
+        {showPhrase && newMnemonic ? newMnemonic : copy.create.phraseHidden}
+      </code>
+      <Button size="small" basic disabled={!newMnemonic} onClick={() => setShowPhrase((v) => !v)}>
+        <Icon name={showPhrase ? 'eye slash' : 'eye'} aria-hidden="true" />
+        {showPhrase ? copy.create.hidePhrase : copy.create.showPhrase}
+      </Button>
+      <Button
+        size="small"
+        basic
+        disabled={!showPhrase || !newMnemonic}
+        title={showPhrase ? undefined : copy.create.copyPhraseTitle}
+        onClick={() => {
+          try {
+            void navigator.clipboard.writeText(newMnemonic);
+          } catch (_) {}
+        }}
+      >
+        <Icon name="copy" aria-hidden="true" />
+        {copy.create.copyPhrase}
+      </Button>
+      <Button
+        size="small"
+        basic
+        disabled={busy}
+        onClick={() => {
+          setShowPhrase(false);
+          setBackupAcknowledged(false);
+          setNewMnemonic(generateMnemonic());
+        }}
+      >
+        <Icon name="refresh" aria-hidden="true" />
+        {copy.create.regenerate}
+      </Button>
+      <Form style={{ marginTop: '1em', maxWidth: 420 }}>
+        <PassphraseField id="fabric-identity-new-passphrase" value={passphrase} onChange={setPassphrase} disabled={busy} />
+        <LockPasswordFields
+          idPrefix="fabric-identity-new-password"
+          value={lockPassword}
+          confirm={lockPasswordConfirm}
+          onChange={setLockPassword}
+          onConfirmChange={setLockPasswordConfirm}
+          disabled={busy}
+        />
+        <Form.Field>
+          <Checkbox
+            checked={backupAcknowledged}
+            onChange={(e, d) => setBackupAcknowledged(!!d.checked)}
+            label={copy.create.acknowledge}
+          />
+        </Form.Field>
+      </Form>
+      <div style={{ marginTop: '0.75em' }}>
+        <Button
+          primary
+          size="small"
+          icon
+          labelPosition="left"
+          loading={busy}
+          disabled={busy || !newMnemonic || !backupAcknowledged}
+          title={backupAcknowledged ? undefined : copy.create.submitTitle}
+          onClick={handleCreate}
+        >
+          <Icon name="shield" aria-hidden="true" />
+          {copy.create.submit}
+        </Button>
+        {!props.postSetupFlow ? backButton : null}
+      </div>
+    </>
+  );
+
+  const renderRestore = () => (
+    <>
+      <Header as="h4">{copy.restore.title}</Header>
+      <Message info size="small">
+        <Message.Header>{copy.restore.howTitle}</Message.Header>
+        <ul style={{ margin: '0.5em 0 0 1em', paddingLeft: '0.5em' }}>
+          {copy.restore.how.map((line, i) => <li key={i}>{line}</li>)}
+        </ul>
+        <p style={{ marginTop: '0.5em' }}>{copy.restore.safety}</p>
+      </Message>
+      <Form style={{ maxWidth: 520 }}>
+        <Form.Field>
+          <label htmlFor="fabric-restore-mnemonic">{copy.restore.phraseLabel}</label>
+          <textarea
+            id="fabric-restore-mnemonic"
+            rows={3}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={copy.restore.phrasePlaceholder}
+            value={restorePhrase}
+            disabled={busy}
+            onChange={(e) => setRestorePhrase(e.target.value)}
+          />
+        </Form.Field>
+        <PassphraseField id="fabric-restore-bip39-pass" value={passphrase} onChange={setPassphrase} disabled={busy} />
+        <LockPasswordFields
+          idPrefix="fabric-restore-password"
+          value={lockPassword}
+          confirm={lockPasswordConfirm}
+          onChange={setLockPassword}
+          onConfirmChange={setLockPasswordConfirm}
+          disabled={busy}
+        />
+        {hasStoredVault ? (
+          <Form.Field>
+            <Checkbox
+              checked={restoreReplace}
+              onChange={(e, d) => setRestoreReplace(!!d.checked)}
+              label={copy.restore.replace}
+            />
+          </Form.Field>
+        ) : null}
+      </Form>
+      <div style={{ marginTop: '0.75em' }}>
+        <Button primary size="small" icon labelPosition="left" loading={busy} disabled={busy} onClick={handleRestore}>
+          <Icon name="redo" aria-hidden="true" />
+          {copy.restore.submit}
+        </Button>
+        {backButton}
+      </div>
+    </>
+  );
+
+  const renderImport = () => (
+    <>
+      <Header as="h4">{copy.importBackup.title}</Header>
+      <p style={{ color: '#666' }}>{copy.importBackup.intro}</p>
+      <Form
+        style={{ maxWidth: 420 }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleImport();
+        }}
+      >
+        <Form.Field>
+          <label htmlFor="fabric-import-backup-file">{copy.importBackup.fileLabel}</label>
+          <input
+            id="fabric-import-backup-file"
+            type="file"
+            accept="application/json,.json"
+            disabled={busy}
+            onChange={(e) => handleImportFile(e.target.files && e.target.files[0])}
+          />
+        </Form.Field>
+        <Form.Field>
+          <label htmlFor="fabric-import-backup-pwd">{copy.importBackup.passwordLabel}</label>
+          <input
+            id="fabric-import-backup-pwd"
+            type="password"
+            autoComplete="current-password"
+            value={importPassword}
+            disabled={busy}
+            onChange={(e) => setImportPassword(e.target.value)}
+            style={inputStyle}
+          />
+        </Form.Field>
+        <Button type="submit" primary size="small" icon labelPosition="left" loading={busy} disabled={busy || !importVault}>
+          <Icon name="upload" aria-hidden="true" />
+          {copy.importBackup.submit}
+        </Button>
+        {backButton}
+      </Form>
+    </>
+  );
+
+  const renderChooser = () => (
+    <>
+      <p style={{ color: '#666' }}>{copy.chooser.prompt}</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', maxWidth: 320 }}>
+        {hubHttpAvailable && typeof window !== 'undefined' && !props.postSetupFlow && !isDesktopShell ? (
+          <Button
+            primary
+            fluid
+            icon
+            labelPosition="left"
+            loading={busy}
+            disabled={busy}
+            onClick={handleLoginWithPassport}
+            title={copy.chooser.passportTitle}
+          >
+            <Icon name="id badge" aria-hidden="true" />
+            {copy.chooser.passport}
+          </Button>
+        ) : null}
+        {hubHttpAvailable && !props.postSetupFlow && isDesktopShell ? (
+          <Button
+            fluid
+            icon
+            labelPosition="left"
+            loading={busy}
+            disabled={busy}
+            onClick={handleSignInAsHub}
+            title={copy.chooser.hubSelfTitle}
+          >
+            <Icon name="desktop" aria-hidden="true" />
+            {copy.chooser.hubSelf}
+          </Button>
+        ) : null}
+        <Button fluid icon labelPosition="left" color="green" onClick={() => setLoginMethod('generate')}>
+          <Icon name="shield" aria-hidden="true" />
+          {copy.chooser.generate}
+        </Button>
+        <Button fluid icon labelPosition="left" onClick={() => setLoginMethod('import')}>
+          <Icon name="upload" aria-hidden="true" />
+          {copy.chooser.backup}
+        </Button>
+        <Button fluid icon labelPosition="left" title={copy.chooser.restoreTitle} onClick={() => setLoginMethod('restore')}>
+          <Icon name="redo" aria-hidden="true" />
+          {copy.chooser.restore}
+        </Button>
+      </div>
+    </>
+  );
+
+  let body = null;
+  if (localIdentity) body = renderIdentity();
+  else if (loginMethod === 'generate') body = renderCreate();
+  else if (loginMethod === 'restore') body = renderRestore();
+  else if (loginMethod === 'import') body = renderImport();
+  else body = renderChooser();
 
   return (
     <Segment basic style={{ minWidth: 0, maxWidth: '100%' }}>
@@ -960,1607 +1372,7 @@ function IdentityManager (props) {
         )}
       </p>
       <div>
-        {localIdentity ? (
-          <>
-            <p style={{ marginBottom: 0 }}><strong>{copy.xpubLabel}</strong></p>
-            <code style={identityMonospaceBlockStyle}>{localIdentity.xpub}</code>
-            <p style={{ marginBottom: 0, marginTop: '0.25em' }}><strong>{copy.idLabel}</strong></p>
-            <code style={identityMonospaceBlockStyle}>{localIdentity.id}</code>
-            {!suppressForget && localIdentity.linkedFromDesktop ? (
-              <Message info size="small" style={{ marginTop: '0.75em' }}>
-                <Icon name="shield" aria-hidden="true" />
-                {copy.externalSigning}
-                {' '}
-                <Link to="/settings">{copy.settingsLink}</Link>
-                {' · '}
-                <Link to="/settings/security">{copy.securityLink}</Link>
-              </Message>
-            ) : null}
-            {!suppressForget && linkedDevices.length > 0 ? (
-              <Segment style={{ marginTop: '1em' }}>
-                <Header as="h4" size="small">
-                  <Icon name="linkify" aria-hidden="true" />
-                  {copy.devices.title}
-                </Header>
-                <p style={{ color: '#666', fontSize: '0.95em' }}>
-                  {copy.devices.intro}{' '}
-                  {copy.devices.revokeWhere}{' '}
-                  <Link to="/settings/security">{copy.securityLink}</Link>.
-                </p>
-                <details className="hub-developer-details">
-                  <summary>{t.common.developerDetails}</summary>
-                  <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.devices.developer}</p>
-                </details>
-                <ul style={{ margin: '0.5em 0 0 1em' }}>
-                  {linkedDevices.map((d, i) => (
-                    <li key={i} style={{ marginBottom: '0.45em' }}>
-                      <strong>{d.label || d.kind || copy.devices.fallbackName}</strong>
-                      {d.peerFabricId ? (
-                        <span> — <code style={{ fontSize: '0.85em' }}>{String(d.peerFabricId).slice(0, 18)}…</code></span>
-                      ) : null}
-                      {d.hubOrigin ? ` — ${d.hubOrigin}` : ''}
-                      {d.linkedAt ? ` (${new Date(d.linkedAt).toLocaleString()})` : ''}
-                      {' '}
-                      <Button
-                        size="mini"
-                        negative
-                        basic
-                        disabled={busy}
-                        onClick={() => void handleRevokeLinkedDevice(d)}
-                      >
-                        {copy.devices.revoke}
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </Segment>
-            ) : suppressForget ? null : (
-              <p style={{ color: '#888', fontSize: '0.92em', marginTop: '0.75em', marginBottom: 0 }}>
-                {keyState === 'unlocked'
-                  ? copy.devices.emptyCanLink
-                  : (keyState === 'locked' ? copy.devices.emptyLocked : copy.devices.emptyWatchOnly)}
-              </p>
-            )}
-            {!suppressForget && localIdentity.xprv ? (
-              <Segment style={{ marginTop: '1em' }}>
-                <Header as="h4" size="small">
-                  <Icon name="qrcode" aria-hidden="true" />
-                  {copy.linkDevice.title}
-                </Header>
-                <p style={{ color: '#666', fontSize: '0.95em' }}>
-                  {copy.linkDevice.intro}
-                </p>
-                <details className="hub-developer-details" style={{ marginBottom: '0.5em' }}>
-                  <summary>{t.common.developerDetails}</summary>
-                  <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.linkDevice.developer}</p>
-                </details>
-                <Button
-                  size="small"
-                  primary
-                  loading={deviceLinkBusy}
-                  disabled={deviceLinkBusy}
-                  onClick={() => void handleCreateDeviceLink()}
-                >
-                  <Icon name="linkify" aria-hidden="true" />
-                  {copy.linkDevice.create}
-                </Button>
-                {deviceLinkOffer && deviceLinkOffer.protocolUrl ? (
-                  <div style={{ marginTop: '0.75em' }}>
-                    <p style={{ marginBottom: '0.35em', fontSize: '0.9em' }}>
-                      {copy.linkDevice.scanHint}
-                    </p>
-                    {deviceLinkQr ? (
-                      <img
-                        src={deviceLinkQr}
-                        alt={copy.linkDevice.qrAlt}
-                        width={196}
-                        height={196}
-                        style={{ background: '#fff', borderRadius: 4, marginBottom: 8 }}
-                      />
-                    ) : null}
-                    <code style={identityMonospaceBlockStyle}>{deviceLinkOffer.protocolUrl}</code>
-                    <Button
-                      size="mini"
-                      onClick={() => {
-                        try {
-                          void navigator.clipboard.writeText(deviceLinkOffer.protocolUrl);
-                        } catch (_) {}
-                        const a = document.createElement('a');
-                        a.href = deviceLinkOffer.protocolUrl;
-                        a.rel = 'noopener noreferrer';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                      }}
-                    >
-                      {copy.linkDevice.copyOpen}
-                    </Button>
-                    <Button
-                      size="mini"
-                      style={{ marginLeft: '0.35em' }}
-                      onClick={() => {
-                        try {
-                          window.postMessage({
-                            source: 'fabric-site',
-                            type: 'FABRIC_DEVICE_LINK_REQUEST',
-                            sessionId: deviceLinkOffer.sessionId,
-                            hub: window.location.origin,
-                            origin: window.location.origin
-                          }, window.location.origin);
-                        } catch (_) {}
-                      }}
-                    >
-                      {copy.linkDevice.approvePassport}
-                    </Button>
-                  </div>
-                ) : null}
-              </Segment>
-            ) : null}
-            <p style={{ color: '#666' }}>
-              <strong>{copy.keyStatus.label}</strong>{' '}
-              {localIdentity.xprv
-                ? copy.keyStatus.unlocked
-                : (isLocked
-                  ? (localIdentity.passwordProtected
-                    ? copy.keyStatus.lockedPassword
-                    : copy.keyStatus.lockedPlaintext)
-                  : copy.keyStatus.watchOnly)}
-              {localIdentity.xprv && lockTimeoutMs ? (
-                <span> {copy.keyStatus.autoLockIn(t.common.plural(Math.round(lockTimeoutMs / 60000), 'minute'))}</span>
-              ) : null}
-              {localIdentity.xprv && !lockTimeoutMs ? (
-                <span> {copy.keyStatus.autoLockOff}</span>
-              ) : null}
-            </p>
-            {lockTimeoutMsFromTests == null ? (
-              <Form style={{ marginTop: '0.35em', marginBottom: '0.5em', maxWidth: 420 }}>
-                <Form.Field>
-                  <label htmlFor="fabric-identity-auto-lock">{copy.autoLock.label}</label>
-                  <select
-                    id="fabric-identity-auto-lock"
-                    value={lockTimeoutMinutes}
-                    onChange={(e) => {
-                      const v = Math.floor(Number(e.target.value));
-                      if (!Number.isFinite(v)) return;
-                      setLockTimeoutMinutes(v);
-                      try {
-                        writeFabricIdentityLockTimeoutMinutes(v);
-                      } catch (err) {}
-                    }}
-                    style={{ width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' }}
-                  >
-                    <option value={0}>{copy.autoLock.off}</option>
-                    <option value={5}>{copy.autoLock.minutes(5)}</option>
-                    <option value={15}>{copy.autoLock.minutes(15)}</option>
-                    <option value={30}>{copy.autoLock.minutes(30)}</option>
-                    <option value={60}>{copy.autoLock.hours(1)}</option>
-                    <option value={120}>{copy.autoLock.hours(2)}</option>
-                    <option value={240}>{copy.autoLock.hours(4)}</option>
-                    <option value={480}>{copy.autoLock.hours(8)}</option>
-                  </select>
-                  <div style={{ marginTop: '0.35em', color: '#888', fontSize: '0.88em', lineHeight: 1.45 }}>
-                    {copy.autoLock.hint}
-                  </div>
-                </Form.Field>
-              </Form>
-            ) : null}
-            <Button
-              size="small"
-              icon
-              labelPosition="left"
-              onClick={() => {
-                try {
-                  if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                    navigator.clipboard.writeText(localIdentity.id);
-                  }
-                } catch (e) {}
-              }}
-            >
-              <Icon name="copy" aria-hidden="true" />
-              {copy.copyId}
-            </Button>
-            {usesDiskEncryptionPasswordForBackup ? (
-              <Message info size="small" style={{ marginTop: '0.75em', maxWidth: '42rem' }}>
-                {copy.backup.usesIdentityPassword}
-              </Message>
-            ) : (
-              <Form style={{ marginTop: '0.75em', maxWidth: 420 }}>
-                <Form.Field>
-                  <label htmlFor="fabric-backup-password">
-                    {copy.backup.passwordLabel(LOCAL_IDENTITY_PASSWORD_MIN)}
-                  </label>
-                  <input
-                    id="fabric-backup-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={backupExportPassword}
-                    onChange={(e) => setBackupExportPassword(e.target.value)}
-                    disabled={backupExportBusy}
-                    style={{ width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' }}
-                  />
-                </Form.Field>
-              </Form>
-            )}
-            <Button
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginLeft: '0.5em', marginTop: '0.5em' }}
-              loading={backupExportBusy}
-              disabled={backupExportBusy || !localIdentity || !localIdentity.xprv}
-              title={
-                localIdentity && localIdentity.xprv
-                  ? copy.backup.downloadTitle
-                  : (keyState === 'locked' ? copy.backup.needKey.locked : copy.backup.needKey.watchOnly)
-              }
-              onClick={() => {
-                (async () => {
-                  if (!localIdentity || !localIdentity.xprv || !localIdentity.xpub) {
-                    setError(keyState === 'locked' ? copy.backup.needKey.locked : copy.backup.needKey.watchOnly);
-                    return;
-                  }
-                  const pwd = resolveBackupEncryptionPassword();
-                  if (!pwd || pwd.length < LOCAL_IDENTITY_PASSWORD_MIN) {
-                    setError(
-                      usesDiskEncryptionPasswordForBackup
-                        ? copy.backup.needIdentityPassword
-                        : copy.backup.filePasswordShort(LOCAL_IDENTITY_PASSWORD_MIN)
-                    );
-                    return;
-                  }
-                  try {
-                    setBackupExportBusy(true);
-                    setError(null);
-                    const inner = {
-                      type: 'fabric-identity-backup-inner',
-                      version: 1,
-                      id: localIdentity.id || undefined,
-                      xpub: localIdentity.xpub || undefined,
-                      xprv: String(localIdentity.xprv)
-                    };
-                    const envelope = await encryptFabricIdentityBackupPayload(inner, pwd);
-                    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'fabric-identity-backup.enc.json';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                  } catch (err) {
-                    setError(t.common.errors.withReason(copy.backup.exportFailed, err && err.message));
-                  } finally {
-                    setBackupExportBusy(false);
-                  }
-                })();
-              }}
-            >
-              <Icon name="download" aria-hidden="true" />
-              {copy.backup.download}
-            </Button>
-            {localIdentity &&
-            localIdentity.fabricIdentityMode === 'account' &&
-            localIdentity.xprv &&
-            localIdentity.fabricHdRole !== 'accountNode' &&
-            localIdentity.fabricHdRole !== 'watchAccount' ? (
-              <Button
-                size="small"
-                icon
-                labelPosition="left"
-                style={{ marginLeft: '0.5em', marginTop: '0.5em' }}
-                loading={backupExportBusy}
-                disabled={backupExportBusy || !localIdentity || !localIdentity.xpub}
-                title={copy.backup.accountOnlyTitle}
-                onClick={() => {
-                  (async () => {
-                    if (!localIdentity || !localIdentity.xpub || !localIdentity.xprv) return;
-                    const pwd = resolveBackupEncryptionPassword();
-                    if (!pwd || pwd.length < LOCAL_IDENTITY_PASSWORD_MIN) {
-                      setError(
-                        usesDiskEncryptionPasswordForBackup
-                          ? copy.backup.needIdentityPassword
-                          : copy.backup.filePasswordShort(LOCAL_IDENTITY_PASSWORD_MIN)
-                      );
-                      return;
-                    }
-                    try {
-                      setBackupExportBusy(true);
-                      setError(null);
-                      const ai =
-                        localIdentity.fabricAccountIndex != null
-                          ? Math.floor(Number(localIdentity.fabricAccountIndex))
-                          : 0;
-                      const inner = buildFabricAccountSubtreeBackupInner({
-                        fabricAccountIndex: ai,
-                        id: localIdentity.id,
-                        xpub: localIdentity.xpub,
-                        xprv: localIdentity.xprv
-                      });
-                      const envelope = await encryptFabricIdentityBackupPayload(inner, pwd);
-                      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = 'fabric-identity-account-backup.enc.json';
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                      URL.revokeObjectURL(url);
-                    } catch (err) {
-                      setError(t.common.errors.withReason(copy.backup.exportFailed, err && err.message));
-                    } finally {
-                      setBackupExportBusy(false);
-                    }
-                  })();
-                }}
-              >
-                <Icon name="download" aria-hidden="true" />
-                {copy.backup.accountOnly}
-              </Button>
-            ) : null}
-            {localIdentity.xprv && (localIdentity.passwordProtected || plaintextKeyMaterialOnDisk) ? (
-              <Button
-                size="small"
-                basic
-                icon
-                labelPosition="left"
-                onClick={() => {
-                  setLocalIdentity((prev) => {
-                    if (!prev || !prev.xprv) return prev;
-                    if (prev.passwordProtected) return { ...prev, xprv: null, ...(prev.fabricIdentityMode === 'account' ? { masterXprv: null } : {}) };
-                    try {
-                      const parsed = readStorageJSON('fabric.identity.local', null);
-                      if (parsed && fabricPlaintextSigningUnlockable(parsed)) {
-                        return {
-                          ...prev,
-                          xprv: null,
-                          masterXprv: prev.fabricIdentityMode === 'account' ? null : prev.masterXprv,
-                          plaintextUnlockAvailable: true,
-                          passwordProtected: false
-                        };
-                      }
-                    } catch (e) {}
-                    return {
-                      ...prev,
-                      xprv: null,
-                      ...(prev.fabricIdentityMode === 'account' ? { masterXprv: null } : {})
-                    };
-                  });
-                }}
-              >
-                <Icon name="lock" aria-hidden="true" />
-                {copy.lock}
-              </Button>
-            ) : null}
-            {!localIdentity.xprv && isLocked && localIdentity.plaintextUnlockAvailable && !localIdentity.passwordProtected ? (
-              <div style={{ marginTop: '0.75em', maxWidth: 420 }}>
-                <Message warning size="small">
-                  <Message.Header>{copy.plaintext.title}</Message.Header>
-                  <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
-                    {copy.plaintext.body}
-                  </p>
-                </Message>
-                <Form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (busy) return;
-                    const a = String(plaintextMigrationPassword || '').trim();
-                    const b = String(plaintextMigrationPasswordConfirm || '').trim();
-                    if (!a || !b) {
-                      setError(copy.plaintext.missing);
-                      return;
-                    }
-                    if (a.length < LOCAL_IDENTITY_PASSWORD_MIN) {
-                      setError(copy.passwords.tooShort(LOCAL_IDENTITY_PASSWORD_MIN));
-                      return;
-                    }
-                    if (a !== b) {
-                      setError(copy.passwords.mismatch);
-                      return;
-                    }
-                    setBusy(true);
-                    setError(null);
-                    (async () => {
-                      try {
-                        const parsed = readStorageJSON('fabric.identity.local', null);
-                        if (!parsed) throw new Error(copy.unlock.noStored);
-                        const encrypted = encryptLocalIdentityAtRest(parsed, a);
-                        writeStorageJSON('fabric.identity.local', encrypted);
-                        const material = decryptLocalIdentityMasterMaterial(encrypted, a);
-                        const nextIdentity = unlockedSessionFromDecryptedMaster(material, encrypted);
-                        setPlaintextMigrationPassword('');
-                        setPlaintextMigrationPasswordConfirm('');
-                        setLocalIdentity(nextIdentity);
-                        if (typeof props.onUnlockSuccess === 'function') {
-                          props.onUnlockSuccess(nextIdentity);
-                        }
-                      } catch (err) {
-                        setError(t.common.errors.withReason(copy.plaintext.failed, err && err.message));
-                      } finally {
-                        setBusy(false);
-                      }
-                    })();
-                  }}
-                >
-                  <Form.Field>
-                    <label htmlFor="fabric-identity-encrypt-password">{copy.plaintext.password}</label>
-                    <input
-                      id="fabric-identity-encrypt-password"
-                      type="password"
-                      autoComplete="new-password"
-                      value={plaintextMigrationPassword}
-                      onChange={(e) => setPlaintextMigrationPassword(e.target.value)}
-                    />
-                  </Form.Field>
-                  <Form.Field>
-                    <label htmlFor="fabric-identity-encrypt-password-confirm">{copy.plaintext.confirm}</label>
-                    <input
-                      id="fabric-identity-encrypt-password-confirm"
-                      type="password"
-                      autoComplete="new-password"
-                      value={plaintextMigrationPasswordConfirm}
-                      onChange={(e) => setPlaintextMigrationPasswordConfirm(e.target.value)}
-                    />
-                  </Form.Field>
-                  <Button
-                    type="submit"
-                    primary
-                    size="small"
-                    icon
-                    labelPosition="left"
-                    disabled={busy}
-                    style={{ marginTop: '0.5em' }}
-                  >
-                    <Icon name="lock" aria-hidden="true" />
-                    {copy.plaintext.submit}
-                  </Button>
-                </Form>
-              </div>
-            ) : null}
-            {!localIdentity.xprv && isLocked && localIdentity.passwordProtected ? (
-              <>
-                <Form
-                  style={{ marginTop: '0.75em', maxWidth: 360 }}
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (busy) return;
-                    const pwd = String(unlockPassword || '').trim();
-                    if (!pwd) {
-                      setError(copy.unlock.missing);
-                      return;
-                    }
-                    setBusy(true);
-                    setError(null);
-                    (async () => {
-                      try {
-                        let hasStorage = false;
-                        try {
-                          hasStorage = (typeof window !== 'undefined');
-                        } catch (e) {
-                          hasStorage = false;
-                        }
-                        if (!hasStorage) {
-                          throw new Error(copy.unlock.noStorage);
-                        }
-                        const parsed = readStorageJSON('fabric.identity.local', null);
-                        if (!parsed) throw new Error(copy.unlock.noStored);
-                        if (parsed && parsed.passwordProtected && parsed.xprvEnc && parsed.passwordSalt) {
-                          const xprv = decryptLocalIdentityMasterMaterial(parsed, pwd);
-                          const nextIdentity = unlockedSessionFromDecryptedMaster(xprv, parsed);
-                          setLocalIdentity(nextIdentity);
-                          setError(null);
-                          if (typeof props.onUnlockSuccess === 'function') {
-                            props.onUnlockSuccess(nextIdentity);
-                          }
-                        } else {
-                          throw new Error(copy.unlock.notEncrypted);
-                        }
-                      } catch (err) {
-                        console.error('[IDENTITY]', 'Unlock failed:', safeIdentityErr(err));
-                        setError(copy.unlock.failed);
-                      } finally {
-                        setBusy(false);
-                      }
-                    })();
-                  }}
-                >
-                  <Form.Field>
-                    <label htmlFor="fabric-identity-unlock-password">{copy.unlock.password}</label>
-                    <input
-                      id="fabric-identity-unlock-password"
-                      type="password"
-                      autoComplete="current-password"
-                      aria-describedby="fabric-identity-unlock-password-hint"
-                      value={unlockPassword}
-                      onChange={(e) => setUnlockPassword(e.target.value)}
-                    />
-                    <div id="fabric-identity-unlock-password-hint" style={{ marginTop: '0.35em', color: '#888', fontSize: '0.88em', lineHeight: 1.45 }}>
-                      {copy.unlock.hint}
-                    </div>
-                  </Form.Field>
-                  <Button
-                    type="submit"
-                    primary
-                    size="small"
-                    icon
-                    labelPosition="left"
-                    style={{ marginTop: '0.5em' }}
-                    disabled={busy}
-                  >
-                    <Icon name="unlock" aria-hidden="true" />
-                    {copy.unlock.submit}
-                  </Button>
-                </Form>
-              </>
-            ) : null}
-            {!suppressForget ? (
-              <>
-            <Button
-              size="small"
-              basic
-              color="red"
-              icon
-              labelPosition="left"
-              onClick={() => setShowConfirmForget(true)}
-            >
-              <Icon name="trash" aria-hidden="true" />
-              {copy.forget.button}
-            </Button>
-            <Modal
-              open={showConfirmForget}
-              onClose={() => setShowConfirmForget(false)}
-              closeOnDimmerClick={false}
-              closeOnDocumentClick={false}
-              closeOnEscape={false}
-              size="small"
-            >
-              <Header icon="trash" content={copy.forget.title} />
-              <Modal.Content>
-                <p>
-                  <strong>{copy.forget.warning}</strong>
-                </p>
-                <p>{copy.forget.recover}</p>
-                <p>{copy.forget.question}</p>
-              </Modal.Content>
-              <Modal.Actions>
-                <Button onClick={() => setShowConfirmForget(false)}>
-                  {t.common.actions.cancel}
-                </Button>
-                <Button
-                  color="red"
-                  onClick={() => {
-                    try {
-                      if (typeof props.onForgetIdentity === 'function') {
-                        props.onForgetIdentity();
-                      }
-                      let hasStorage = false;
-                      try {
-                        hasStorage = (typeof window !== 'undefined');
-                      } catch (e) {
-                        hasStorage = false;
-                      }
-                      if (hasStorage) {
-                        try {
-                          removeStorageKey(DELEGATION_STORAGE_KEY);
-                        } catch (eDel) {}
-                        try {
-                          removeStorageKey(STORAGE_LINKED_DEVICES);
-                        } catch (eLink) {}
-                        try {
-                          notifyDelegationStorageChanged();
-                        } catch (eNo) {}
-                        try {
-                          if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && chrome.storage.local.remove) {
-                            chrome.storage.local.remove(['fabric.identity.ext']);
-                          }
-                        } catch (eExt) {}
-                        clearFabricBrowserIdentityLocal();
-                        removeStorageKey('fabric:documents');
-                      }
-                    } catch (e) {
-                      console.error('[IDENTITY]', 'Forget identity error:', safeIdentityErr(e));
-                    }
-                    setShowConfirmForget(false);
-                    setLocalIdentity(null);
-                    setSignature(null);
-                  }}
-                >
-                  <Icon name="trash" aria-hidden="true" />
-                  {copy.forget.confirm}
-                </Button>
-              </Modal.Actions>
-            </Modal>
-              </>
-            ) : null}
-          </>
-        ) : isGenerating ? (
-          <>
-            <p style={{ color: '#666' }}>
-              {copy.generating.intro}
-            </p>
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '2em 0'
-              }}
-            >
-              <Icon name="spinner" loading size="huge" aria-hidden="true" />
-              <p role="status" style={{ marginTop: '1em', color: '#666' }}>{copy.generating.wait}</p>
-            </div>
-          </>
-        ) : pendingSeed && !seedConfirmed ? (
-          <>
-            <p style={{ color: '#666' }}>
-              {copy.newPassword.intro}
-            </p>
-            <Form style={{ marginTop: '0.75em' }}>
-              <Form.Field>
-                <label htmlFor="fabric-identity-new-password">{copy.newPassword.password}</label>
-                <input
-                  id="fabric-identity-new-password"
-                  type="password"
-                  aria-describedby="fabric-identity-new-password-hint"
-                  autoComplete="new-password"
-                  value={identityPassword}
-                  onChange={(e) => setIdentityPassword(e.target.value)}
-                />
-              </Form.Field>
-              <Form.Field>
-                <label htmlFor="fabric-identity-new-password-confirm">{copy.newPassword.confirm}</label>
-                <input
-                  id="fabric-identity-new-password-confirm"
-                  type="password"
-                  autoComplete="new-password"
-                  value={identityPasswordConfirm}
-                  onChange={(e) => setIdentityPasswordConfirm(e.target.value)}
-                />
-              </Form.Field>
-              <div id="fabric-identity-new-password-hint" style={{ marginTop: '0.5em', color: '#666', fontSize: '0.9em' }}>
-                {copy.newPassword.hint(LOCAL_IDENTITY_PASSWORD_MIN)}
-              </div>
-            </Form>
-            <div style={{ marginTop: '0.75em' }}>
-              <Button
-                primary
-                size="small"
-                icon
-                labelPosition="left"
-                disabled={busy}
-                onClick={() => {
-                  const a = String(identityPassword || '').trim();
-                  const b = String(identityPasswordConfirm || '').trim();
-                  if (!a || !b) {
-                    setError(copy.newPassword.missing);
-                    return;
-                  }
-                  if (a.length < LOCAL_IDENTITY_PASSWORD_MIN) {
-                    setError(copy.passwords.tooShort(LOCAL_IDENTITY_PASSWORD_MIN));
-                    return;
-                  }
-                  if (a !== b) {
-                    setError(copy.passwords.mismatch);
-                    return;
-                  }
-                  setError(null);
-                  // Keep the generated seed in-memory and show backup details next.
-                  // Final persistence/login happens in the "Login with this identity" step.
-                  setBackupAcknowledged(false);
-                  setSeedConfirmed(true);
-                }}
-              >
-                <Icon name="arrow right" aria-hidden="true" />
-                {copy.newPassword.continue}
-              </Button>
-              <Button
-                basic
-                size="small"
-                style={{ marginLeft: '0.5em' }}
-                disabled={busy}
-                onClick={() => {
-                  setError(null);
-                  resetSeedState();
-                }}
-              >
-                {t.common.actions.cancel}
-              </Button>
-              <Button
-                basic
-                size="small"
-                icon
-                labelPosition="left"
-                style={{ marginLeft: '0.5em' }}
-                loading={busy}
-                disabled={busy}
-                onClick={async () => {
-                  setError(null);
-                  setBusy(true);
-                  setIsGenerating(true);
-                  setPendingSeed(null);
-                  try {
-                    const generate = () => {
-                      const key = new Key();
-                      if (!key.mnemonic || !key.xprv) {
-                        throw new Error(copy.generate.failed);
-                      }
-                      return key;
-                    };
-                    const delay = new Promise((resolve) => setTimeout(resolve, 1500));
-                    const key = generate();
-                    await delay;
-                    setPendingSeed({
-                      mnemonic: key.mnemonic,
-                      xprv: key.xprv
-                    });
-                    setSeedConfirmed(false);
-                    setIdentityPassword('');
-                    setIdentityPasswordConfirm('');
-                  } catch (e) {
-                    console.error('[IDENTITY]', 'Regenerate identity failed:', safeIdentityErr(e));
-                    setError(t.common.errors.withReason(copy.generate.failed, e && e.message));
-                  } finally {
-                    setIsGenerating(false);
-                    setBusy(false);
-                  }
-                }}
-              >
-                <Icon name="refresh" aria-hidden="true" />
-                {copy.newPassword.regenerate}
-              </Button>
-            </div>
-          </>
-        ) : pendingSeed && seedConfirmed ? (
-          <>
-            <Message warning style={{ maxWidth: '42rem' }}>
-              <Message.Header>{copy.backupReview.title}</Message.Header>
-              <p style={{ margin: '0.5em 0 0', lineHeight: 1.5 }}>
-                {copy.backupReview.body}
-              </p>
-              <p style={{ margin: '0.5em 0 0', lineHeight: 1.5 }}>
-                {copy.backupReview.keepSafe}
-              </p>
-            </Message>
-            <p style={{ color: '#666' }}>
-              {copy.backupReview.steps}
-            </p>
-            {pendingSeed.mnemonic && (
-              <>
-                <p><strong>{copy.backupReview.phraseLabel}</strong> {copy.backupReview.phraseNote}</p>
-                <Segment inverted color="blue">
-                  {showSeedPhrase ? (
-                    <code style={{ whiteSpace: 'pre-wrap' }}>{pendingSeed.mnemonic}</code>
-                  ) : (
-                    <span style={{ color: '#ccd', fontStyle: 'italic' }}>
-                      {copy.backupReview.phraseHidden}
-                    </span>
-                  )}
-                </Segment>
-                <Button
-                  size="small"
-                  basic
-                  icon
-                  labelPosition="left"
-                  onClick={() => setShowSeedPhrase((v) => !v)}
-                >
-                  <Icon name={showSeedPhrase ? 'eye slash' : 'eye'} aria-hidden="true" />
-                  {showSeedPhrase ? copy.backupReview.hidePhrase : copy.backupReview.showPhrase}
-                </Button>
-                <Button
-                  size="small"
-                  basic
-                  icon
-                  labelPosition="left"
-                  disabled={!showSeedPhrase}
-                  title={!showSeedPhrase ? copy.backupReview.copyPhraseTitle : undefined}
-                  onClick={() => {
-                    try {
-                      if (typeof navigator !== 'undefined' && navigator.clipboard && pendingSeed.mnemonic) {
-                        navigator.clipboard.writeText(pendingSeed.mnemonic);
-                      }
-                    } catch (e) {}
-                  }}
-                >
-                  <Icon name="copy" aria-hidden="true" />
-                  {copy.backupReview.copyPhrase}
-                </Button>
-              </>
-            )}
-            <p style={{ marginTop: '0.75em' }}><strong>{copy.backupReview.xprvLabel}</strong> {copy.backupReview.xprvNote}</p>
-            <Segment>
-              {showBackupKey ? (
-                <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{pendingSeed.xprv}</code>
-              ) : (
-                <span style={{ color: '#666', fontStyle: 'italic' }}>
-                  {copy.backupReview.xprvHidden}
-                </span>
-              )}
-            </Segment>
-            <Button
-              size="small"
-              basic
-              icon
-              labelPosition="left"
-              onClick={() => setShowBackupKey((v) => !v)}
-            >
-              <Icon name={showBackupKey ? 'eye slash' : 'eye'} aria-hidden="true" />
-              {showBackupKey ? copy.backupReview.hideXprv : copy.backupReview.showXprv}
-            </Button>
-            <Button
-              size="small"
-              icon
-              labelPosition="left"
-              disabled={!showBackupKey}
-              title={!showBackupKey ? copy.backupReview.copyXprvTitle : undefined}
-              onClick={() => {
-                try {
-                  if (typeof navigator !== 'undefined' && navigator.clipboard && pendingSeed.xprv) {
-                    navigator.clipboard.writeText(pendingSeed.xprv);
-                  }
-                } catch (e) {}
-              }}
-            >
-              <Icon name="copy" aria-hidden="true" />
-              {copy.backupReview.copyXprv}
-            </Button>
-            <Message info size="small" style={{ marginTop: '0.75em', maxWidth: '42rem' }}>
-              {copy.backupReview.downloadNote}
-            </Message>
-            <Button
-              size="small"
-              icon
-              labelPosition="left"
-              loading={backupExportBusy}
-              disabled={backupExportBusy || !(pendingSeed && pendingSeed.xprv)}
-              onClick={() => {
-                (async () => {
-                  const xprv = pendingSeed && pendingSeed.xprv;
-                  if (!xprv) return;
-                  const pwd = String(identityPassword || '').trim();
-                  if (!pwd || pwd.length < LOCAL_IDENTITY_PASSWORD_MIN) {
-                    setError(copy.backupReview.passwordMissing(LOCAL_IDENTITY_PASSWORD_MIN));
-                    return;
-                  }
-                  setBackupExportBusy(true);
-                  setError(null);
-                  try {
-                    const backupPayload = {
-                      type: 'fabric-identity-backup-inner',
-                      version: 1,
-                      mnemonic: pendingSeed.mnemonic || undefined,
-                      xprv
-                    };
-                    try {
-                      const identity = new Identity({ xprv });
-                      if (identity && identity.id && identity.key && identity.key.xpub) {
-                        backupPayload.id = String(identity.id);
-                        backupPayload.xpub = String(identity.key.xpub);
-                      }
-                    } catch (e) {}
-                    const envelope = await encryptFabricIdentityBackupPayload(backupPayload, pwd);
-                    const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'fabric-identity-backup.enc.json';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                  } catch (err) {
-                    setError(t.common.errors.withReason(copy.backup.exportFailed, err && err.message));
-                  } finally {
-                    setBackupExportBusy(false);
-                  }
-                })();
-              }}
-            >
-              <Icon name="download" aria-hidden="true" />
-              {copy.backup.download}
-            </Button>
-            <Form style={{ marginTop: '1.25em', maxWidth: '42rem' }}>
-              <Form.Field>
-                <Checkbox
-                  checked={backupAcknowledged}
-                  onChange={(e, d) => setBackupAcknowledged(!!(d && d.checked))}
-                  label={copy.backupReview.acknowledge}
-                />
-              </Form.Field>
-            </Form>
-            <Button
-              primary
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginTop: '0.75em' }}
-              disabled={busy || !backupAcknowledged}
-              title={!backupAcknowledged ? copy.backupReview.finishTitle : undefined}
-              onClick={() => {
-                setBusy(true);
-                setError(null);
-                try {
-                  const masterXprv = pendingSeed && pendingSeed.xprv;
-                  if (!masterXprv) throw new Error(copy.backupReview.missingKey);
-                  const pwd = String(identityPassword || '').trim();
-                  if (!pwd || pwd.length < LOCAL_IDENTITY_PASSWORD_MIN) {
-                    setError(copy.backupReview.passwordMissing(LOCAL_IDENTITY_PASSWORD_MIN));
-                    setBusy(false);
-                    return;
-                  }
-                  const fabricAccountIndex = 0;
-                  const dk = deriveFabricAccountIdentityKeys(String(masterXprv).trim(), fabricAccountIndex, 0);
-                  const masterXpub = fabricRootXpubFromMasterXprv(String(masterXprv).trim());
-                  let hasStorage = false;
-                  try {
-                    hasStorage = (typeof window !== 'undefined');
-                  } catch (e) {
-                    hasStorage = false;
-                  }
-                  if (!hasStorage) throw new Error(copy.unlock.noStorage);
-                  const plaintextPayload = {
-                    fabricIdentityMode: 'account',
-                    fabricAccountIndex,
-                    masterXpub,
-                    masterXprv: String(masterXprv).trim(),
-                    id: dk.id,
-                    xpub: dk.xpub,
-                    passwordProtected: false
-                  };
-                  const payload = encryptLocalIdentityAtRest(plaintextPayload, pwd);
-                  writeStorageJSON('fabric.identity.local', payload);
-                  const storedPayload = readStorageJSON('fabric.identity.local', null);
-                  const material = decryptLocalIdentityMasterMaterial(storedPayload, pwd);
-                  const nextIdent = unlockedSessionFromDecryptedMaster(material, storedPayload);
-                  setLocalIdentity(nextIdent);
-                  if (typeof props.onLocalIdentityChange === 'function') {
-                    props.onLocalIdentityChange({
-                      id: nextIdent.id,
-                      xpub: nextIdent.xpub,
-                      xprv: nextIdent.xprv,
-                      passwordProtected: true,
-                      fabricIdentityMode: nextIdent.fabricIdentityMode,
-                      fabricAccountIndex: nextIdent.fabricAccountIndex,
-                      masterXprv: nextIdent.masterXprv,
-                      masterXpub: nextIdent.masterXpub
-                    });
-                  }
-                  if (typeof props.onUnlockSuccess === 'function') {
-                    props.onUnlockSuccess(nextIdent);
-                  }
-                  resetSeedState();
-                } catch (e) {
-                  console.error('[IDENTITY]', 'Save local identity failed:', safeIdentityErr(e));
-                  setError(t.common.errors.withReason(copy.generate.saveFailed, e && e.message));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <Icon name="sign-in" aria-hidden="true" />
-              {copy.backupReview.finish}
-            </Button>
-          </>
-        ) : loginMethod === null ? (
-          <>
-            <p style={{ color: '#666' }}>
-              {copy.chooser.prompt}
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', maxWidth: 320 }}>
-              {hubHttpAvailable && typeof window !== 'undefined' && !props.postSetupFlow && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
-                <Button
-                  primary
-                  fluid
-                  icon
-                  labelPosition="left"
-                  loading={busy}
-                  disabled={busy}
-                  onClick={handleLoginWithPassport}
-                  title={copy.chooser.passportTitle}
-                >
-                  <Icon name="id badge" aria-hidden="true" />
-                  {copy.chooser.passport}
-                </Button>
-              ) : null}
-              {extensionAvailable && !props.postSetupFlow ? (
-                <Button
-                  fluid
-                  icon
-                  labelPosition="left"
-                  loading={busy}
-                  disabled={busy}
-                  onClick={handleLoginWithExtension}
-                  title={copy.chooser.extensionTitle}
-                >
-                  <Icon name="puzzle piece" aria-hidden="true" />
-                  {copy.chooser.extension}
-                </Button>
-              ) : null}
-              {hubHttpAvailable && typeof window !== 'undefined' && !props.postSetupFlow && !(window.fabricDesktop && window.fabricDesktop.isDesktopShell) ? (
-                <Button
-                  fluid
-                  icon
-                  labelPosition="left"
-                  loading={busy}
-                  disabled={busy}
-                  onClick={handleLoginWithDesktop}
-                  title={copy.chooser.desktopTitle}
-                >
-                  <Icon name="desktop" aria-hidden="true" />
-                  {copy.chooser.desktop}
-                </Button>
-              ) : null}
-              <Button
-                primary={!hubHttpAvailable || !!(typeof window !== 'undefined' && window.fabricDesktop && window.fabricDesktop.isDesktopShell)}
-                fluid
-                icon
-                labelPosition="left"
-                onClick={() => setLoginMethod('existing')}
-                color='blue'
-              >
-                <Icon name="key" aria-hidden="true" />
-                {copy.chooser.existing}
-              </Button>
-              <Button
-                fluid
-                icon
-                labelPosition="left"
-                onClick={() => setLoginMethod('generate')}
-                color='green'
-              >
-                <Icon name="shield" aria-hidden="true" />
-                {copy.chooser.generate}
-              </Button>
-              {!props.postSetupFlow ? (
-              <Button
-                fluid
-                icon
-                labelPosition="left"
-                onClick={() => {
-                  setLoginMethod('import');
-                  setError(null);
-                }}
-                color='purple'
-              >
-                <Icon name="download" aria-hidden="true" />
-                {copy.chooser.backup}
-              </Button>
-              ) : null}
-              <Button
-                fluid
-                icon
-                labelPosition="left"
-                onClick={() => {
-                  setLoginMethod('restoreMnemonic');
-                  setError(null);
-                }}
-                title={copy.chooser.restoreTitle}
-                color='black'
-              >
-                <Icon name="history" aria-hidden="true" />
-                {copy.chooser.restore}
-              </Button>
-            </div>
-          </>
-        ) : loginMethod === 'existing' ? (
-          <>
-            <Button
-              basic
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginBottom: '1em' }}
-              onClick={() => {
-                backToLoginChooser();
-                setXpubInput('');
-                setError(null);
-              }}
-            >
-              <Icon name="arrow left" aria-hidden="true" />
-              {copy.backToChooser}
-            </Button>
-            <Header as="h4" size="small">
-              <Icon name="key" aria-hidden="true" />
-              <Header.Content>{copy.existing.title}</Header.Content>
-            </Header>
-            <p style={{ color: '#666' }}>
-              {copy.existing.intro}
-            </p>
-            <Form>
-              <Form.Field>
-                <label htmlFor="fabric-identity-xpub">{copy.existing.label}</label>
-                <Form.TextArea
-                  id="fabric-identity-xpub"
-                  rows={2}
-                  style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace', wordBreak: 'break-all' }}
-                  placeholder={copy.existing.placeholder}
-                  spellCheck={false}
-                  autoCorrect="off"
-                  autoCapitalize="none"
-                  value={xpubInput}
-                  onChange={(e) => setXpubInput(e.target.value)}
-                />
-              </Form.Field>
-            </Form>
-            <Button
-              primary
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginTop: '0.5em' }}
-              loading={busy}
-              disabled={busy || !xpubInput}
-              onClick={async () => {
-                setError(null);
-                setBusy(true);
-                try {
-                  const raw = (xpubInput || '').trim();
-                  if (!raw) {
-                    setError(copy.existing.missing);
-                    return;
-                  }
-
-                  const key = new Key({ xpub: raw });
-                  const identity = new Identity(key);
-
-                  try {
-                    let hasStorage = false;
-                    try {
-                      hasStorage = (typeof window !== 'undefined');
-                    } catch (e) {
-                      hasStorage = false;
-                    }
-                    if (hasStorage) {
-                      writeStorageJSON('fabric.identity.local', { xpub: key.xpub });
-                    }
-                  } catch (e) {}
-
-                  setLocalIdentity({
-                    id: identity.id,
-                    xpub: key.xpub,
-                    xprv: null
-                  });
-                  resetSeedState();
-                } catch (e) {
-                  console.error('[IDENTITY]', 'Activate xpub failed:', safeIdentityErr(e));
-                  setError(t.common.errors.withReason(copy.existing.invalid, e && e.message));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <Icon name="sign-in" aria-hidden="true" />
-              {copy.existing.submit}
-            </Button>
-          </>
-        ) : loginMethod === 'import' ? (
-          <>
-            <Button
-              basic
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginBottom: '1em' }}
-              onClick={() => {
-                backToLoginChooser();
-                setError(null);
-              }}
-            >
-              <Icon name="arrow left" aria-hidden="true" />
-              {copy.backToChooser}
-            </Button>
-            <Header as="h4" size="small">
-              <Icon name="download" aria-hidden="true" />
-              <Header.Content>{copy.importBackup.title}</Header.Content>
-            </Header>
-            <p style={{ color: '#666' }}>
-              {copy.importBackup.intro}
-            </p>
-            <details className="hub-developer-details" style={{ marginBottom: '0.75em' }}>
-              <summary>{t.common.developerDetails}</summary>
-              <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.importBackup.developer}</p>
-            </details>
-            <Form.Field style={{ maxWidth: '42rem', marginBottom: '0.75em' }}>
-              <label htmlFor="fabric-import-backup-pwd">{copy.importBackup.passwordLabel}</label>
-              <input
-                id="fabric-import-backup-pwd"
-                type="password"
-                autoComplete="off"
-                value={importBackupFilePassword}
-                onChange={(e) => setImportBackupFilePassword(e.target.value)}
-                style={{ width: '100%', maxWidth: 360, padding: '0.55em', boxSizing: 'border-box' }}
-              />
-            </Form.Field>
-            <label htmlFor="fabric-import-backup-file" style={{ display: 'block', fontWeight: 700, marginBottom: '0.35em' }}>
-              {copy.importBackup.fileLabel}
-            </label>
-            <input
-              id="fabric-import-backup-file"
-              type="file"
-              accept=".json,application/json,text/*"
-              onChange={(event) => {
-                const file = event && event.target && event.target.files && event.target.files[0];
-                if (!file) return;
-                setBusy(true);
-                setError(null);
-                const reader = new FileReader();
-                reader.onload = () => {
-                  (async () => {
-                    try {
-                      const text = String(reader.result || '');
-                      let data = null;
-                      try {
-                        data = JSON.parse(text);
-                      } catch (e) {}
-
-                      if (data && typeof data === 'object' && data.version === 2 && data.ciphertext) {
-                        const pwdImp = String(importBackupFilePassword || '').trim();
-                        if (!pwdImp || pwdImp.length < 8) {
-                          setError(copy.importBackup.needsPassword(8));
-                          return;
-                        }
-                        try {
-                          data = await decryptFabricIdentityBackupToPayload(data, pwdImp);
-                        } catch (decErr) {
-                          setError(t.common.errors.withReason(copy.importBackup.decryptFailed, decErr && decErr.message));
-                          return;
-                        }
-                      }
-
-                      if (
-                        data &&
-                        typeof data === 'object' &&
-                        data.type === 'fabric-identity-backup-inner' &&
-                        data.xprv &&
-                        (data.backupScope === 'fabricAccountSubtree' || data.fabricHdRole === 'accountNode')
-                      ) {
-                        let hasStorage = false;
-                        try {
-                          hasStorage = (typeof window !== 'undefined');
-                        } catch (e) {
-                          hasStorage = false;
-                        }
-                        const mat = identityFromFabricProtocolSigningXprv(String(data.xprv).trim());
-                        if (
-                          data.id != null &&
-                          String(data.id).trim() &&
-                          String(data.id).trim() !== String(mat.id)
-                        ) {
-                          setError(copy.importBackup.idMismatch);
-                          return;
-                        }
-                        const fabricAccountIndex =
-                          data.fabricAccountIndex != null
-                            ? Math.floor(Number(data.fabricAccountIndex))
-                            : 0;
-                        const storedPayload = {
-                          fabricIdentityMode: 'account',
-                          fabricHdRole: 'accountNode',
-                          fabricAccountIndex,
-                          id: mat.id,
-                          xpub: mat.xpub,
-                          passwordProtected: false
-                        };
-                        if (hasStorage) {
-                          writeStorageJSON('fabric.identity.local', storedPayload);
-                        }
-                        const nextIdentity = unlockedSessionFromDecryptedMaster(mat.xprv, storedPayload);
-                        setLocalIdentity(nextIdentity);
-                        resetSeedState();
-                        if (typeof props.onLocalIdentityChange === 'function') {
-                          props.onLocalIdentityChange(nextIdentity);
-                        }
-                        if (typeof props.onUnlockSuccess === 'function') {
-                          props.onUnlockSuccess({
-                            id: String(mat.id),
-                            xpub: String(mat.xpub),
-                            xprv: String(mat.xprv),
-                            passwordProtected: false,
-                            fabricIdentityMode: 'account',
-                            fabricHdRole: 'accountNode',
-                            fabricAccountIndex
-                          });
-                        }
-                        return;
-                      }
-
-                      let xprv = null;
-                      let xpub = null;
-
-                      if (data && typeof data === 'object') {
-                        if (data.xprv) xprv = String(data.xprv);
-                        if (data.xpub) xpub = String(data.xpub);
-                        const seedPhrase = (data.mnemonic != null && String(data.mnemonic).trim())
-                          ? String(data.mnemonic).trim()
-                          : ((data.seed != null && String(data.seed).trim()) ? String(data.seed).trim() : '');
-                        if (!xprv && seedPhrase) {
-                          try {
-                            const ext = (data.bip39Passphrase != null && String(data.bip39Passphrase).trim() !== '')
-                              ? String(data.bip39Passphrase)
-                              : ((data.passphrase != null && String(data.passphrase).trim() !== '')
-                                ? String(data.passphrase)
-                                : null);
-                            const ident = ext
-                              ? new Identity({ seed: seedPhrase, passphrase: ext })
-                              : new Identity({ seed: seedPhrase });
-                            xprv = ident.key.xprv;
-                            xpub = ident.key.xpub;
-                          } catch (mnErr) {
-                            setError(t.common.errors.withReason(copy.importBackup.mnemonicFailed, mnErr && mnErr.message));
-                            return;
-                          }
-                        }
-                      }
-                    if (!xprv || !xpub) {
-                      const mXprv = text.match(/(xprv[0-9A-Za-z]+)/);
-                      const mXpub = text.match(/(xpub[0-9A-Za-z]+)/);
-                      if (mXprv && mXprv[1]) xprv = mXprv[1];
-                      if (mXpub && mXpub[1]) xpub = mXpub[1];
-                    }
-
-                    if (!xprv && !xpub) {
-                      setError(copy.importBackup.noKey);
-                      return;
-                    }
-
-                    let key = null;
-                    let identity = null;
-                    if (xprv) {
-                      key = new Key({ xprv });
-                      identity = new Identity({ xprv });
-                    } else if (xpub) {
-                      key = new Key({ xpub });
-                      identity = new Identity(key);
-                    }
-
-                    if (!key || !identity) {
-                      setError(copy.importBackup.rebuildFailed);
-                      return;
-                    }
-
-                    try {
-                      let hasStorage = false;
-                      try {
-                        hasStorage = (typeof window !== 'undefined');
-                      } catch (e) {
-                        hasStorage = false;
-                      }
-                      if (hasStorage) {
-                        if (xprv) {
-                          writeStorageJSON('fabric.identity.local', {
-                            id: identity.id,
-                            xpub: key.xpub,
-                            passwordProtected: false
-                          });
-                        } else {
-                          writeStorageJSON('fabric.identity.local', {
-                            id: identity.id,
-                            xpub: key.xpub,
-                            passwordProtected: false
-                          });
-                        }
-                      }
-                    } catch (e) {}
-
-                    const nextIdentity = {
-                      id: identity.id,
-                      xpub: key.xpub,
-                      xprv: xprv || null,
-                      passwordProtected: false
-                    };
-
-                    setLocalIdentity(nextIdentity);
-                    resetSeedState();
-                    if (typeof props.onLocalIdentityChange === 'function') {
-                      props.onLocalIdentityChange(nextIdentity);
-                    }
-                    if (xprv && typeof props.onUnlockSuccess === 'function') {
-                      props.onUnlockSuccess({
-                        id: String(identity.id),
-                        xpub: String(key.xpub),
-                        xprv: String(xprv),
-                        passwordProtected: false
-                      });
-                    }
-                  } catch (e) {
-                    console.error('[IDENTITY]', 'Import backup failed:', safeIdentityErr(e));
-                    setError(t.common.errors.withReason(copy.importBackup.failed, e && e.message));
-                  } finally {
-                    setBusy(false);
-                  }
-                  })();
-                };
-                reader.onerror = () => {
-                  setBusy(false);
-                  setError(copy.importBackup.readFailed);
-                };
-                reader.readAsText(file);
-              }}
-            />
-          </>
-        ) : loginMethod === 'restoreMnemonic' ? (
-          <>
-            <Button
-              basic
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginBottom: '1em' }}
-              onClick={() => {
-                backToLoginChooser();
-                setError(null);
-                setDevMnemonicText('');
-                setDevBip39Passphrase('');
-                setDevMnemonicReplace(false);
-              }}
-            >
-              <Icon name="arrow left" aria-hidden="true" />
-              {copy.backToChooser}
-            </Button>
-            <Header as="h4" size="small">
-              <Icon name="history" aria-hidden="true" />
-              <Header.Content>{copy.restore.title}</Header.Content>
-            </Header>
-            <Message info style={{ maxWidth: '42rem' }}>
-              <Message.Header>{copy.restore.howTitle}</Message.Header>
-              {copy.restore.how.map((line, i) => (
-                <p key={i} style={{ margin: i === 0 ? '0.5em 0 0' : '0.65em 0 0', lineHeight: 1.5 }}>{line}</p>
-              ))}
-              <p style={{ margin: '0.65em 0 0', lineHeight: 1.5 }}><strong>{copy.restore.safety}</strong></p>
-            </Message>
-            <Form>
-              <Form.Field>
-                <label htmlFor="fabric-restore-mnemonic">{copy.restore.phraseLabel}</label>
-                <Form.TextArea
-                  id="fabric-restore-mnemonic"
-                  rows={3}
-                  style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace', wordBreak: 'break-all' }}
-                  placeholder={copy.restore.phrasePlaceholder}
-                  spellCheck={false}
-                  autoCorrect="off"
-                  autoCapitalize="none"
-                  value={devMnemonicText}
-                  onChange={(e) => setDevMnemonicText(e.target.value)}
-                />
-              </Form.Field>
-              <Form.Field>
-                <label htmlFor="fabric-restore-bip39-pass">{copy.restore.passphraseLabel}</label>
-                <Form.Input
-                  id="fabric-restore-bip39-pass"
-                  type="password"
-                  placeholder={copy.restore.passphrasePlaceholder}
-                  autoComplete="off"
-                  value={devBip39Passphrase}
-                  onChange={(e) => setDevBip39Passphrase(e.target.value)}
-                />
-              </Form.Field>
-              <Form.Checkbox
-                label={copy.restore.replace}
-                checked={devMnemonicReplace}
-                onChange={(e, d) => setDevMnemonicReplace(!!(d && d.checked))}
-                aria-label={copy.restore.replace}
-              />
-            </Form>
-            <Button
-              primary
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginTop: '0.75em' }}
-              loading={busy}
-              disabled={busy || !String(devMnemonicText || '').trim()}
-              onClick={() => {
-                setError(null);
-                setBusy(true);
-                try {
-                  const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
-                  const r = storeUnlockedIdentityFromMnemonic({
-                    seed: devMnemonicText,
-                    passphrase: devBip39Passphrase || undefined,
-                    force: devMnemonicReplace
-                  });
-                  if (!r.ok || !r.identity) {
-                    setError(r.error || copy.restore.failed);
-                    return;
-                  }
-                  const nextIdentity = {
-                    id: r.identity.id,
-                    xpub: r.identity.xpub,
-                    xprv: r.identity.xprv,
-                    passwordProtected: false
-                  };
-                  setLocalIdentity(nextIdentity);
-                  if (typeof props.onLocalIdentityChange === 'function') {
-                    props.onLocalIdentityChange(nextIdentity);
-                  }
-                  if (typeof props.onUnlockSuccess === 'function') {
-                    props.onUnlockSuccess({
-                      id: String(r.identity.id),
-                      xpub: String(r.identity.xpub),
-                      xprv: String(r.identity.xprv),
-                      passwordProtected: false
-                    });
-                  }
-                  resetSeedState();
-                } catch (e) {
-                  console.error('[IDENTITY]', 'Recovery phrase restore failed:', safeIdentityErr(e));
-                  setError(t.common.errors.withReason(copy.restore.failed, e && e.message));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <Icon name="check circle" aria-hidden="true" />
-              {copy.restore.submit}
-            </Button>
-          </>
-        ) : loginMethod === 'generate' ? (
-          <>
-            <Button
-              basic
-              size="small"
-              icon
-              labelPosition="left"
-              style={{ marginBottom: '1em' }}
-              onClick={() => {
-                backToLoginChooser();
-                setError(null);
-              }}
-            >
-              <Icon name="arrow left" aria-hidden="true" />
-              {copy.backToChooser}
-            </Button>
-            <Header as="h4" size="small">
-              <Icon name="shield" aria-hidden="true" />
-              <Header.Content>{copy.generate.title}</Header.Content>
-            </Header>
-            <p style={{ color: '#666' }}>
-              {copy.generate.intro}
-            </p>
-            <Button
-              primary
-              icon
-              labelPosition="left"
-              loading={busy}
-              disabled={busy}
-              onClick={async () => {
-                setError(null);
-                setBusy(true);
-                setIsGenerating(true);
-                setPendingSeed(null);
-                try {
-                  const generate = () => {
-                    const key = new Key();
-                    if (!key.mnemonic || !key.xprv) {
-                      throw new Error(copy.generate.failed);
-                    }
-                    return key;
-                  };
-                  const delay = new Promise((resolve) => setTimeout(resolve, 1500));
-                  const key = generate();
-                  await delay;
-                  setPendingSeed({
-                    mnemonic: key.mnemonic,
-                    xprv: key.xprv
-                  });
-                  setSeedConfirmed(false);
-                  setIdentityPassword('');
-                  setIdentityPasswordConfirm('');
-                } catch (e) {
-                  console.error('[IDENTITY]', 'Generate identity failed:', safeIdentityErr(e));
-                  setError(t.common.errors.withReason(copy.generate.failed, e && e.message));
-                } finally {
-                  setIsGenerating(false);
-                  setBusy(false);
-                }
-              }}
-            >
-              <Icon name="shield" aria-hidden="true" />
-              {copy.generate.submit}
-            </Button>
-          </>
-        ) : null}
+        {body}
         {error && (
           <Message negative style={{ marginTop: '0.75em' }}>
             <Message.Header>{copy.errorTitle}</Message.Header>

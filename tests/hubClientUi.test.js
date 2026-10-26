@@ -55,7 +55,7 @@ describe('Hub UI client vs hub chrome', function () {
     assert.ok(html.includes('Bitcoin wallet'));
     assert.ok(!html.includes('href="/documents"'), 'client settings should not advertise Documents');
     assert.ok(!html.includes('Bitcoin dashboard'), 'client settings should hide Hub Bitcoin dashboard');
-    assert.ok(!html.includes('Security &amp; delegation'), 'client settings should hide /sessions security');
+    assert.ok(!html.includes('Security &amp; delegation'), 'client settings should not show the retired delegation copy');
   });
 
   it('SettingsHome hub origin keeps operator cards', function () {
@@ -100,7 +100,7 @@ describe('Hub UI client vs hub chrome', function () {
     assert.ok(html.includes('Fabric identity'));
     assert.ok(html.includes('Bitcoin wallet'));
     assert.ok(!html.includes('Bitcoin dashboard'), 'visitor settings should hide Hub Bitcoin dashboard');
-    assert.ok(!html.includes('Security &amp; delegation'), 'visitor settings should hide /sessions security');
+    assert.ok(!html.includes('Security &amp; delegation'), 'visitor settings should not show the retired delegation copy');
     assert.ok(!html.includes('>Admin<') && !html.includes('settings/admin'), 'visitor settings should hide Admin');
   });
 

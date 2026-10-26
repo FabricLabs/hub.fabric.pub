@@ -1,7 +1,7 @@
 'use strict';
 
 const puppeteer = require('puppeteer');
-const Key = require('@fabric/core/types/key');
+const { generateMnemonic } = require('../functions/hubAccountVault');
 
 const HUB_URL = process.env.HUB_URL || 'http://localhost:8080/';
 function sleep (ms) {
@@ -96,22 +96,18 @@ async function getAuthButtonState (page) {
   });
 }
 
-async function seedIdentityAndOpen (page, xprv) {
-  await page.goto(HUB_URL, { waitUntil: 'networkidle2' });
-  await page.evaluate((key) => {
-    const localPayload = { xprv: key };
-    const unlockedPayload = { xprv: key, passwordProtected: false };
-    window.localStorage.setItem('fabric.identity.local', JSON.stringify(localPayload));
-    window.sessionStorage.setItem('fabric.identity.unlocked', JSON.stringify(unlockedPayload));
-  }, xprv);
-  await page.reload({ waitUntil: 'networkidle2' });
+async function seedIdentityAndOpen (page, mnemonic) {
+  await page.evaluateOnNewDocument((phrase) => {
+    window.FABRIC_DEV_BROWSER_SEED = phrase;
+    window.FABRIC_DEV_BROWSER_IDENTITY = 'force';
+  }, mnemonic);
   await page.goto(new URL('/activities', HUB_URL).toString(), { waitUntil: 'networkidle2' });
   await waitForChatInput(page, 60000);
 }
 
 async function main () {
-  const keyA = new Key();
-  const keyB = new Key();
+  const phraseA = generateMnemonic();
+  const phraseB = generateMnemonic();
 
   const report = {
     startedAt: new Date().toISOString(),
@@ -161,8 +157,8 @@ async function main () {
   });
 
   try {
-    await seedIdentityAndOpen(pageA, keyA.xprv);
-    await seedIdentityAndOpen(pageB, keyB.xprv);
+    await seedIdentityAndOpen(pageA, phraseA);
+    await seedIdentityAndOpen(pageB, phraseB);
 
     report.authButtonA = await getAuthButtonState(pageA);
     report.authButtonB = await getAuthButtonState(pageB);

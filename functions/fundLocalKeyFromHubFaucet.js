@@ -49,7 +49,7 @@ function markAutoFaucetDone () {
 
 /**
  * @param {object} opts
- * @param {object} opts.identity - local Fabric identity (needs xpub)
+ * @param {object} opts.identity - local Fabric identity (needs its wallet)
  * @param {string} [opts.adminToken]
  * @param {number} [opts.amountSats]
  * @param {string} [opts.network]
@@ -59,8 +59,8 @@ function markAutoFaucetDone () {
  */
 async function fundLocalKeyFromHubFaucet (opts = {}) {
   const identity = opts.identity || {};
-  if (!identity.xpub) {
-    throw new Error('Local identity with xpub is required to fund from the faucet.');
+  if (!identity.wallet) {
+    throw new Error('Local identity with a wallet is required to fund from the faucet.');
   }
   const network = String(opts.network || 'regtest').toLowerCase();
   if (network !== 'regtest') {
@@ -73,7 +73,7 @@ async function fundLocalKeyFromHubFaucet (opts = {}) {
   });
 
   const wallet = getNextReceiveWalletContext(identity);
-  const address = await fetchReceiveAddress(upstream, wallet, { network, identity });
+  const address = await fetchReceiveAddress(upstream, wallet, { network });
   if (!address) throw new Error('Could not derive a receive address for the local key.');
 
   let amountSats = Math.round(Number(opts.amountSats) || 0);
@@ -156,7 +156,7 @@ function shouldAutoFundDesktopLocalKey (opts = {}) {
   const network = String(opts.network || 'regtest').toLowerCase();
   if (network !== 'regtest') return false;
   const identity = opts.identity || {};
-  if (!identity.xpub) return false;
+  if (!identity.wallet) return false;
   const bal = opts.clientBalance;
   if (bal && Number(bal.balanceSats) > 0) return false;
   return true;

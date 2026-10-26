@@ -6,7 +6,6 @@ const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32Extended
 const { Link } = require('react-router-dom');
 const { Button, Icon, Label } = require('semantic-ui-react');
 const ChatInput = require('./ChatInput');
-const { isDelegationSignatureRequestActivity } = require('../functions/messageTypes');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
@@ -28,13 +27,12 @@ function chatDisabledReasonFor (authLike) {
 
 /**
  * @param {object} entry
- * @returns {'chat'|'bitcoin'|'documents'|'network'|'signing'|null}
+ * @returns {'chat'|'bitcoin'|'documents'|'network'|null}
  */
 function getActivityEntryCategory (entry) {
   if (!entry || typeof entry !== 'object') return null;
   if (entry.type === 'CLIENT_NOTICE') return 'bitcoin';
   if (entry.type === 'P2P_CHAT_MESSAGE') return 'chat';
-  if (isDelegationSignatureRequestActivity(entry)) return 'signing';
   if (entry.object && entry.object.type === 'BitcoinBlock') return 'bitcoin';
   if (entry.object && entry.object.type === 'Document') {
     const mime = String(entry.object.mime || '').toLowerCase();
@@ -108,11 +106,7 @@ class ActivityStreamElement extends React.Component {
     console.debug('[FABRIC:STREAM]', 'Stream mounted!');
     // Optional: parent may pass fetchResource(path) for non-bridge activity sources.
     if (typeof this.props.fetchResource === 'function') {
-      const preset = this.props.streamPreset || 'default';
-      const uf = loadHubUiFeatureFlags();
-      if (preset !== 'notifications' || uf.activities) {
-        this.props.fetchResource('/activities');
-      }
+      this.props.fetchResource('/activities');
     }
     window.addEventListener('globalStateUpdate', this._handleGlobalStateUpdate);
     window.addEventListener('fabric:chatWarning', this._handleChatWarning);
@@ -261,14 +255,9 @@ class ActivityStreamElement extends React.Component {
       const globalState = event && event.detail && event.detail.globalState;
       if (!globalState) return;
       const messages = globalState.messages || {};
-      const preset = this.props.streamPreset || 'default';
       const fabricEntries = Object.entries(messages)
         .filter(([, m]) => m && typeof m === 'object')
         .map(([messageKey, m]) => Object.assign({}, m, { messageKey }))
-        .filter((m) => {
-          if (preset === 'notifications') return isDelegationSignatureRequestActivity(m);
-          return !isDelegationSignatureRequestActivity(m);
-        })
         .sort((a, b) => {
           const ta = (a.object && a.object.created) || 0;
           const tb = (b.object && b.object.created) || 0;
@@ -311,11 +300,9 @@ class ActivityStreamElement extends React.Component {
       this._shouldScrollToBottom = this._isScrolledToBottom();
       this.setState((s) => {
         const isFirstLoad = s.entries.length === 0;
-        const prevNotices = preset === 'notifications'
-          ? []
-          : (Array.isArray(s.entries) ? s.entries : []).filter(
-            (e) => e && e.type === 'CLIENT_NOTICE'
-          );
+        const prevNotices = (Array.isArray(s.entries) ? s.entries : []).filter(
+          (e) => e && e.type === 'CLIENT_NOTICE'
+        );
         const tNotice = (e) => {
           const c = e && e.object && e.object.created;
           return typeof c === 'number' ? c : new Date(c || 0).getTime() || 0;
@@ -410,7 +397,6 @@ class ActivityStreamElement extends React.Component {
     const chatDisabledReason = canSubmitChat
       ? null
       : chatDisabledReasonFor(idHint);
-    const streamPreset = this.props.streamPreset || 'default';
     const hasComposeChannel = (
       (typeof this.props.onSubmitChat === 'function') ||
       (bridgeInstance && typeof bridgeInstance.submitChatMessage === 'function')
@@ -422,8 +408,7 @@ class ActivityStreamElement extends React.Component {
     );
     const headerTitle = typeof this.props.headerTitle === 'string' && this.props.headerTitle.trim()
       ? this.props.headerTitle.trim()
-      : (streamPreset === 'notifications' ? sc.signingTitle : sc.title);
-    const showChatChrome = streamPreset !== 'notifications';
+      : sc.title;
     return (
       <fabric-activity-stream className='activity-stream'>
         {this.props.includeHeader && <h3>{headerTitle}</h3>}
@@ -485,45 +470,6 @@ class ActivityStreamElement extends React.Component {
                         </>
                       )}
                       {this._renderPurgeButton(entry)}
-                    </div>
-                  );
-                }
-                if (isDelegationSignatureRequestActivity(entry)) {
-                  const o = entry.object || {};
-                  const content = typeof o.content === 'string' ? o.content : '';
-                  const purpose = typeof o.purpose === 'string' ? o.purpose : '';
-                  const ost = o.status || entry.status;
-                  const isPending = ost === 'pending';
-                  const created = o.created || null;
-                  const actorId = (entry.actor && (entry.actor.username || entry.actor.id)) || 'local';
-                  const isLast = index === entries.length - 1;
-                  return (
-                    <div
-                      key={`delegation-${o.messageId || created || index}`}
-                      ref={isLast ? this._lastEntryRef : null}
-                      style={{
-                        marginBottom: '0.5em',
-                        fontSize: '0.95em',
-                        opacity: isPending ? 0.85 : 1
-                      }}
-                    >
-                      <Label size="small" color="teal" style={{ marginRight: '0.35em' }}>
-                        <Icon name="key" />
-                        {sc.signing}
-                      </Label>
-                      <Label size="small" basic title={sc.delegationChannelTitle}>
-                        #delegation
-                      </Label>
-                      {' '}
-                      <strong>@{actorId}</strong>
-                      {purpose ? <> · {purpose}</> : null}
-                      {isPending ? ` ${sc.waitingDesktop}` : null}
-                      {!isPending && ost === 'approved' ? ` ${sc.approved}` : null}
-                      {!isPending && ost === 'rejected' ? ` ${sc.rejected}` : null}
-                      {!isPending && ost === 'timeout' ? ` ${sc.timedOut}` : null}
-                      <div style={{ marginTop: '0.25em', color: '#444', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                        {content || sc.noPreview}
-                      </div>
                     </div>
                   );
                 }
@@ -746,24 +692,7 @@ class ActivityStreamElement extends React.Component {
               })}
             </div>
           )}
-          {entries.length === 0 && streamPreset === 'notifications' && (
-            <div style={{ color: '#888', fontSize: '0.9em', padding: '0.35em 0', lineHeight: 1.45 }}>
-              {sc.signingEmpty}
-              {uf.activities ? (
-                <>
-                  {' '}{sc.signingEmptyAlertsBefore}{' '}
-                  <Link to="/notifications">{sc.signingEmptyAlertsLink}</Link>
-                  {' '}{sc.signingEmptyAlertsAfter}
-                </>
-              ) : (
-                <> {sc.signingEmptyActivitiesOff}</>
-              )}
-              {' '}{sc.signingEmptySecurityBefore}{' '}
-              <Link to="/settings/security">{sc.signingEmptySecurityLink}</Link>
-              {' '}{sc.signingEmptySecurityAfter}
-            </div>
-          )}
-          {entries.length === 0 && streamPreset !== 'notifications' && (
+          {entries.length === 0 && (
             <div style={{ color: '#888', fontSize: '0.9em', padding: '0.35em 0' }}>
               {entryTypeFilter === 'all'
                 ? sc.empty
@@ -772,7 +701,7 @@ class ActivityStreamElement extends React.Component {
           )}
         </div>
         <div style={{ marginTop: '0.5em' }}>
-          {showChatChrome && (
+          {(
             <div style={{ marginBottom: '0.5em', color: '#666', fontSize: '0.85em' }}>
               {sc.shoutboxNote}
               <details className="hub-developer-details">
@@ -811,7 +740,7 @@ class ActivityStreamElement extends React.Component {
               )}
             </div>
           )}
-          {showChatChrome && hasComposeChannel && !canSubmitChat && (
+          {hasComposeChannel && !canSubmitChat && (
             <p
               id="fabric-chat-compose-hint"
               style={{ marginBottom: '0.5em', fontSize: '0.85em', color: '#666', lineHeight: 1.45 }}
@@ -827,7 +756,7 @@ class ActivityStreamElement extends React.Component {
               })()}
             </p>
           )}
-          {showChatChrome && hasComposeChannel && (
+          {hasComposeChannel && (
             <ChatInput
               inputId="fabric-chat-compose-input"
               ariaDescribedBy={!canSubmitChat ? 'fabric-chat-compose-hint' : undefined}

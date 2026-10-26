@@ -24,13 +24,13 @@ describe('hubPublicVisitor', function () {
     );
   });
 
-  it('is not a visitor after Fabric Hub desktop login (watch-only xpub + linked flag)', function () {
+  it('is not a visitor after Passport sign-in (identity id only, no keys)', function () {
     assert.strictEqual(
       computePublicHubVisitor({
         localIdentity: {
           id: 'a',
-          xpub: 'xpub661MyMwAqRbcF6GygV6Q6XAg8dqhPvDuhYHGniequi6HMbYhNNH5XC13Np3qRANHVD2mmnNGtMGBfDT69s2ovpHLr7q8syoAuyWqtRGEsYQ',
-          linkedFromDesktop: true,
+          pubkey: '02' + '11'.repeat(32),
+          linkedFromPassport: true,
           xprv: null,
           passwordProtected: false
         },

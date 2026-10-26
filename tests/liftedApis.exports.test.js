@@ -11,13 +11,9 @@ describe('Hub lifted API package exports', function () {
   const exportIds = [
     './functions/fabricHubAllowlist',
     './functions/httpSharedMode',
-    './functions/fabricDesktopAuth',
-    './functions/fabricDesktopLoginVerify',
     './functions/fabricDeviceLink',
     './functions/fabricDeviceLinkClient',
     './functions/fabricDeviceLinkMessages',
-    './functions/fabricDelegation',
-    './functions/fabricDelegationLocal',
     './functions/oracleAttestation',
     './functions/fabricPubkey',
     './functions/fabricChatNormalize',
@@ -201,24 +197,6 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     assert.strictEqual(typeof material.parseRawSeedHex, 'function');
     assert.strictEqual(typeof material.keySettingsFromEnv, 'function');
     assert.strictEqual(material.classifyFabricKeyMaterial('aa'.repeat(32)).kind, 'seedHex');
-  });
-
-  it('fabricDelegation exports mount + session helpers', function () {
-    const del = require('../functions/fabricDelegation');
-    assert.strictEqual(typeof del.mountFabricDelegationHttp, 'function');
-    assert.strictEqual(typeof del.getDelegationSessionById, 'function');
-    assert.strictEqual(typeof del.postDelegationSignatureMessage, 'function');
-
-    const hub = { _delegationRegistry: new Map() };
-    hub._delegationRegistry.set('tok123', {
-      origin: 'http://127.0.0.1:8080',
-      linkedAt: Date.now(),
-      identityId: 'id1'
-    });
-    const row = del.getDelegationSessionById(hub, 'tok123');
-    assert.strictEqual(row.ok, true);
-    assert.strictEqual(row.kind, 'delegation');
-    assert.strictEqual(del.getDelegationSessionById(hub, 'missing'), null);
   });
 
   it('hubLifecycle START_PHASES align with Hub.START_PHASES', function () {

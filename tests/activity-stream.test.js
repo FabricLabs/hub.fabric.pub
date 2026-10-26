@@ -143,7 +143,7 @@ describe('ActivityStream', function () {
   });
 
   it('tells a watch-only identity to import the full key, not to unlock', function () {
-    const html = renderActivityStream({ bridgeRef: lockedBridge(), identity: { xpub: 'xpub-test' } });
+    const html = renderActivityStream({ bridgeRef: lockedBridge(), identity: { id: 'abc', linkedFromPassport: true } });
     assert.ok(html.includes('Watch-only identities cannot chat.'));
     assert.ok(!html.includes('Unlock it with your password'));
   });

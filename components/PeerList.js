@@ -529,7 +529,7 @@ class PeersPage extends React.Component {
       onSendFlushChainToTrustedPeers
     } = this.props;
     const uf = loadHubUiFeatureFlags();
-    const isLoggedIn = !!(auth && auth.id && auth.xpub);
+    const isLoggedIn = !!(auth && auth.id);
     const activeBridgeRef = bridgeRef || bridge;
     const current = activeBridgeRef && activeBridgeRef.current;
     const candidate = current && current.networkStatus;

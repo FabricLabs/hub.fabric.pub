@@ -10,7 +10,7 @@ JSON inside a **`GenericMessage`** body, keyed by **`@fabric/MessageEnvelope`: `
 | `display.prompt` | Shown before the message (e.g. “… would like you to sign the following message:”). |
 | `intent` | Machine-readable reason (`contract_sign_request`, …). |
 
-**Opaque links:** `fabric:<frame>` (no `//`): the whole `Message.toBuffer()`, base64url (canonical) or hex. Readers use `@fabric/core` `decodeFabricUri` (`functions/fabricUri`), which checks magic, size, body hash, a known type, and the BIP340 author signature when the frame is signed, and reports `signed` + `author`. A frame is the message and its proof together, so a `fabric:` string can cross a page, the extension, a native app, or a QR code and be checked on arrival. **Legacy:** `fabric://login?…`, `fabric://message?hex=…`.
+**Opaque links:** `fabric:<frame>` (no `//`): the whole `Message.toBuffer()`, base64url (canonical) or hex. Readers use `@fabric/core` `decodeFabricUri` (`functions/fabricUri`), which checks magic, size, body hash, a known type, and the BIP340 author signature when the frame is signed, and reports `signed` + `author`. A frame is the message and its proof together, so a `fabric:` string can cross a page, the extension, a native app, or a QR code and be checked on arrival. **Legacy:** `fabric://message?hex=…` (read-only). There is no `fabric://login`; sign-in is Passport v2.
 
 ## Site login over `fabric:`
 

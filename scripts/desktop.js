@@ -31,7 +31,6 @@ const {
 
 const settings = require('../settings/local');
 const { fabricMessageSummaryFromHex, decodeOpaqueFabricUri } = require('../functions/fabricProtocolUrl');
-const { assertAllowedFabricHub } = require('../functions/fabricHubAllowlist');
 const { hubPaymentsPathFromBitcoinUri } = require('../functions/bitcoinProtocolUrl');
 const {
   APPROVAL_REQUEST: FABRIC_SIGN_REQUEST,
@@ -56,7 +55,6 @@ const { RotatingLogFile } = require('../functions/desktopLogFile');
 const { createDesktopSecureStore } = require('../functions/desktopSecureStore');
 const {
   hubStatusLabel,
-  pendingDelegationRequests,
   restorableWindowBounds,
   trayStatusLines
 } = require('../functions/desktopShellStatus');
@@ -96,10 +94,8 @@ let hubCrashTimes = [];
 /** starting | running | restarting | stopping | stopped | external */
 let hubStatus = 'starting';
 /** Last loopback status bodies shown in the tray (aggregates only). */
-let hubHealth = { peering: null, bitcoin: null, lightning: null, pendingSignatures: 0 };
+let hubHealth = { peering: null, bitcoin: null, lightning: null };
 let hubStatusPollTimer = null;
-/** Delegation signature request ids already announced with a notification. */
-const announcedSignatureRequests = new Set();
 /** Notifications are kept referenced until closed so their click handlers survive GC. */
 const liveNotifications = new Set();
 let powerSaveBlockerId = null;
@@ -110,7 +106,7 @@ let isQuitting = false;
 let usesExternalHub = false;
 
 /** Queued until renderer pulls via IPC (covers subscribe race before React mount). */
-let pendingLoginPromptPayload = null;
+let pendingMessagePromptPayload = null;
 
 /** IPC is answered only for the Hub UI in the top-level frame, never for a page the window wandered to. */
 function handleTrusted (channel, fn) {
@@ -124,9 +120,9 @@ function handleTrusted (channel, fn) {
   });
 }
 
-handleTrusted('fabric:get-pending-login-prompt', () => {
-  const p = pendingLoginPromptPayload;
-  pendingLoginPromptPayload = null;
+handleTrusted('fabric:get-pending-message-prompt', () => {
+  const p = pendingMessagePromptPayload;
+  pendingMessagePromptPayload = null;
   return p;
 });
 
@@ -269,19 +265,15 @@ handleTrusted('fabric:payjoin-post', async (_event, payload) => {
   return nodePayjoinPost(url, body);
 });
 
-function deliverLoginPromptPayload (payload) {
-  pendingLoginPromptPayload = payload;
-  if (payload && payload.kind === 'login') {
-    notifyWhenAway('Sign-in request', `${payload.origin || 'A site'} wants to sign in with your Fabric identity.`);
-  } else if (payload) {
-    notifyWhenAway('Fabric message', 'A Fabric message is waiting for your review.');
-  }
+function deliverMessagePromptPayload (payload) {
+  pendingMessagePromptPayload = payload;
+  if (payload) notifyWhenAway('Fabric message', 'A Fabric message is waiting for your review.');
   const w = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   if (!w || !w.webContents) return;
   const send = () => {
     try {
       showMainWindow();
-      w.webContents.send('fabric-login-prompt', payload);
+      w.webContents.send('fabric-message-prompt', payload);
     } catch (_) {}
   };
   if (w.webContents.isLoading()) {
@@ -291,7 +283,7 @@ function deliverLoginPromptPayload (payload) {
   }
 }
 
-/** macOS may emit open-url before ready; queue until Hub can accept POST /sessions/:id/signatures. */
+/** macOS may emit open-url before ready; queue until the window exists. */
 let pendingFabricUrl = null;
 /** Queued `bitcoin:` links until the main window exists (same pattern as fabric). */
 let pendingBitcoinUrl = null;
@@ -679,7 +671,7 @@ function setHubStatus (status) {
   if (status === 'running' || status === 'external') {
     scheduleHubStatusPoll(1000);
   } else {
-    hubHealth = { peering: null, bitcoin: null, lightning: null, pendingSignatures: 0 };
+    hubHealth = { peering: null, bitcoin: null, lightning: null };
   }
   refreshTrayStatus();
 }
@@ -691,9 +683,6 @@ function refreshTrayStatus () {
     const tip = ['Fabric Hub', ...lines].join('\n');
     tray.setToolTip(process.platform === 'win32' ? tip.slice(0, 127) : tip);
   }
-  try {
-    app.setBadgeCount(hubHealth.pendingSignatures || 0);
-  } catch (_) {}
   rebuildTrayMenu(lines);
 }
 
@@ -735,20 +724,14 @@ function scheduleHubStatusPoll (delayMs) {
 
 async function pollHubStatus () {
   if (hubStatus !== 'running' && hubStatus !== 'external') return;
-  const [peering, bitcoin, lightning, sessions] = await Promise.all([
+  const [peering, bitcoin, lightning] = await Promise.all([
     loopbackJson('/services/peering'),
     loopbackJson('/services/bitcoin'),
-    loopbackJson('/services/lightning'),
-    loopbackJson('/sessions')
+    loopbackJson('/services/lightning')
   ]);
   if (hubStatus !== 'running' && hubStatus !== 'external') return;
-  const delegation = pendingDelegationRequests(sessions, announcedSignatureRequests);
-  hubHealth = { peering, bitcoin, lightning, pendingSignatures: delegation.pending };
+  hubHealth = { peering, bitcoin, lightning };
   refreshTrayStatus();
-  for (const request of delegation.fresh) {
-    const purpose = request.purpose ? ` (${request.purpose})` : '';
-    notifyWhenAway('Signature request', `${request.origin || 'A connected app'} asks Fabric Hub to sign a message${purpose}.`);
-  }
   scheduleHubStatusPoll(HUB_STATUS_POLL_MS);
 }
 
@@ -974,8 +957,12 @@ function spawnHub () {
 /** Passport asked the Hub to sign in or link: only a native dialog here can approve it. */
 async function answerFabricSignRequest (child, msg) {
   let approved = false;
+  // Close the dialog when the request expires, so a late click can't approve it.
+  const expiry = new AbortController();
+  const ms = Math.max(0, Number(msg.expiresAt || 0) - Date.now());
+  const timer = setTimeout(() => expiry.abort(), ms);
   try {
-    const options = fabricSignApprovalDialog(msg);
+    const options = Object.assign(fabricSignApprovalDialog(msg), { signal: expiry.signal });
     notifyWhenAway(options.title, options.message);
     const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
     if (parent) {
@@ -985,9 +972,11 @@ async function answerFabricSignRequest (child, msg) {
     const { response } = parent
       ? await dialog.showMessageBox(parent, options)
       : await dialog.showMessageBox(options);
-    approved = response === 0;
+    approved = response === 0 && !expiry.signal.aborted;
   } catch (e) {
     console.warn('[DESKTOP] fabric sign approval failed:', e && e.message ? e.message : e);
+  } finally {
+    clearTimeout(timer);
   }
   try {
     child.postMessage({ type: FABRIC_SIGN_RESULT, id: msg.id, approved });
@@ -1088,24 +1077,22 @@ function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
 
 /**
  * Canonical opaque link: **fabric:<frame>** (base64url or hex, serialized {@link Message}),
- * checked by core `decodeFabricUri` (hash, type, author signature when signed).
- * Legacy: fabric://login?…, fabric://message?hex=…, fabric://login?…&messageHex=…
+ * checked by core `decodeFabricUri` (hash, type, author signature when signed), and
+ * `fabric://message?hex=…`. Both are shown for review only; nothing here signs.
+ * Sign-in is Passport (`/sessions`), never a `fabric://` link.
  */
 async function handleFabricProtocolUrl (urlStr) {
   if (/^fabric:(?!\/\/)/i.test(String(urlStr || '').trim())) {
     const fm = decodeOpaqueFabricUri(urlStr);
     if (fm.ok) {
-      deliverLoginPromptPayload({
+      deliverMessagePromptPayload({
         kind: 'fabricMessage',
-        sessionId: null,
-        hubBase: hubBaseFromSettings(),
         fabricMessageHex: fm.hex,
         fabricMessageSummary: Object.assign({}, fm.summary, {
           signed: fm.signed,
           author: fm.author,
           verified: fm.verified
-        }),
-        fabricMessageOnly: true
+        })
       });
       console.log('[DESKTOP] opaque fabric: message delivered to renderer');
     } else {
@@ -1123,99 +1110,26 @@ async function handleFabricProtocolUrl (urlStr) {
   }
   if (url.protocol !== `${FABRIC_PROTOCOL}:`) return;
 
-  const hubBase = (url.searchParams.get('hub') || hubBaseFromSettings()).replace(/\/$/, '');
-  const hubGate = assertAllowedFabricHub(hubBase);
-  if (!hubGate.ok) {
-    console.warn('[DESKTOP] fabric URL hub rejected:', hubGate.error);
-    return;
-  }
-  const allowedHubBase = hubGate.hubBase;
-  const hexParam = url.searchParams.get('hex') || url.searchParams.get('messageHex');
-  let fabricMessageHex = null;
-  let fabricMessageSummary = null;
-  if (hexParam) {
-    const fm = fabricMessageSummaryFromHex(hexParam);
-    if (fm.ok) {
-      fabricMessageHex = fm.hex;
-      fabricMessageSummary = fm.summary;
-      console.log('[DESKTOP] fabric URL hex → Fabric message', fm.summary.typeName, fm.summary.byteLength, 'bytes');
-    } else {
-      console.warn('[DESKTOP] fabric URL hex parse failed:', fm.error);
-    }
-  }
-
   const host = url.hostname;
-  if (host === 'message' || host === 'msg') {
-    if (!fabricMessageHex || !fabricMessageSummary) {
-      console.warn('[DESKTOP] fabric://message requires valid hex= (serialized Fabric Message)');
-      return;
-    }
-    deliverLoginPromptPayload({
-      kind: 'fabricMessage',
-      sessionId: null,
-      hubBase: allowedHubBase,
-      fabricMessageHex,
-      fabricMessageSummary,
-      fabricMessageOnly: true
-    });
-    console.log('[DESKTOP] fabric message-only prompt delivered (no login session)');
-    return;
-  }
-
   if (host === 'link') {
     console.warn('[DESKTOP] fabric://link is handled by the renderer / device-link UI; open Hub Identity to complete.');
     return;
   }
-
-  if (host !== 'login') {
-    console.warn('[DESKTOP] Unknown fabric host (expected login or message):', host);
+  if (host !== 'message' && host !== 'msg') {
+    console.warn('[DESKTOP] Unknown fabric host (expected message):', host);
     return;
   }
-
-  const sessionId = url.searchParams.get('sessionId');
-  if (!sessionId) {
-    console.warn('[DESKTOP] fabric login missing sessionId');
+  const fm = fabricMessageSummaryFromHex(url.searchParams.get('hex') || url.searchParams.get('messageHex') || '');
+  if (!fm.ok) {
+    console.warn('[DESKTOP] fabric://message requires valid hex= (serialized Fabric Message):', fm.error);
     return;
   }
-
-  try {
-    await waitForHub();
-  } catch (e) {
-    console.error('[DESKTOP] Hub not ready for fabric login:', e && e.message ? e.message : e);
-    return;
-  }
-
-  try {
-    const hubOrigin = String(allowedHubBase || '').replace(/\/$/, '');
-    const infoRes = await fetch(`${hubOrigin}/sessions/${encodeURIComponent(sessionId)}`, {
-      headers: {
-        Accept: 'application/json',
-        // Hub requires Origin/Referer to match session.origin when the TCP client is not loopback (e.g. hub bound on LAN).
-        ...(hubOrigin ? { Origin: hubOrigin, Referer: `${hubOrigin}/` } : {})
-      }
-    });
-    const info = await infoRes.json().catch(() => ({}));
-    if (!infoRes.ok || !info || info.status !== 'pending') {
-      console.error('[DESKTOP] login session not pending or GET failed:', infoRes.status, info);
-      return;
-    }
-    const origin = typeof info.origin === 'string' ? info.origin : '';
-    const message = typeof info.message === 'string' ? info.message : '';
-    const nonce = typeof info.nonce === 'string' ? info.nonce : '';
-    deliverLoginPromptPayload({
-      kind: 'login',
-      sessionId,
-      hubBase: allowedHubBase,
-      origin,
-      message,
-      nonce,
-      fabricMessageHex,
-      fabricMessageSummary
-    });
-    console.log('[DESKTOP] fabric login prompt delivered to renderer:', sessionId);
-  } catch (e) {
-    console.error('[DESKTOP] fabric login fetch error:', e && e.message ? e.message : e);
-  }
+  deliverMessagePromptPayload({
+    kind: 'fabricMessage',
+    fabricMessageHex: fm.hex,
+    fabricMessageSummary: fm.summary
+  });
+  console.log('[DESKTOP] fabric message delivered to renderer');
 }
 
 function registerFabricProtocol () {

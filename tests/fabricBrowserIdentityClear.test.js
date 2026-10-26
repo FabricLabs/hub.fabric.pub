@@ -7,7 +7,7 @@ describe('clearFabricBrowserIdentityLocal', function () {
     delete global.window;
   });
 
-  it('removes legacy key, nested fabric:state identity.local, session unlock, and resets store singleton', function () {
+  it('removes legacy key, nested fabric:state identity.local, session unlock, and resets store singleton (keeps the dev-seed wipe marker)', function () {
     const { resetFabricBrowserStateStore } = require('../functions/fabricBrowserState');
 
     const nestedState = {
@@ -56,7 +56,7 @@ describe('clearFabricBrowserIdentityLocal', function () {
     clearFabricBrowserIdentityLocal();
 
     assert.strictEqual(window.localStorage._d['fabric.identity.local'], undefined);
-    assert.strictEqual(window.localStorage._d['fabric.identity.devSeedSuppressedFor'], undefined);
+    assert.strictEqual(window.localStorage._d['fabric.identity.devSeedSuppressedFor'], 'deadbeef', 'a wiped dev seed stays wiped');
     assert.strictEqual(window.sessionStorage._d['fabric.identity.unlocked'], undefined);
 
     const st = JSON.parse(window.localStorage._d['fabric:state']);

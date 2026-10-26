@@ -79,18 +79,19 @@ function FabricPostSetupIdentityWizard (props) {
         <IdentityManager
           hubAdminToken={hubAdminToken}
           currentIdentity={currentIdentity || null}
+          defaultNetwork={props.defaultNetwork}
           initialLoginMethod="generate"
           postSetupFlow
           suppressForgetAndLinkedChrome
           onLocalIdentityChange={(info) => {
             if (typeof onLocalIdentityChange === 'function') onLocalIdentityChange(info);
-            if (info && (info.id || info.xpub) && hasCompletedPostSetupBrowserIdentity() && typeof onComplete === 'function') {
+            if (info && info.id && hasCompletedPostSetupBrowserIdentity() && typeof onComplete === 'function') {
               onComplete();
             }
           }}
           onUnlockSuccess={(info) => {
             if (typeof onUnlockSuccess === 'function') onUnlockSuccess(info);
-            if (info && (info.id || info.xpub) && hasCompletedPostSetupBrowserIdentity() && typeof onComplete === 'function') {
+            if (info && info.id && hasCompletedPostSetupBrowserIdentity() && typeof onComplete === 'function') {
               onComplete();
             }
           }}

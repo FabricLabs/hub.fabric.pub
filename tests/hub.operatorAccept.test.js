@@ -18,11 +18,12 @@ function mintAdmin (issuer, subject) {
 
 function stubHub () {
   const master = new Key();
-  const derived = master.derive(DERIVE);
+  const identity = master.derive(DERIVE);
   const hub = Object.create(Hub.prototype);
   hub.setup = { verifyAdminToken () { return false; } };
   hub._rootKey = master;
-  hub.agent = { key: derived, identity: { id: 'agent-test' } };
+  hub._fabricKey = identity;
+  hub.agent = { key: identity, identity: { id: 'agent-test' } };
   hub.bitcoin = null;
   hub._trackedApplicationContracts = tac.emptyState();
   hub.http = { broadcast () {} };
@@ -47,64 +48,40 @@ describe('Hub Accept/Reject operator tokens', function () {
     assert.strictEqual(out.message, 'adminToken invalid');
   });
 
-  it('lets a _rootKey token through when setup.verifyAdminToken is false', async function () {
-    const hub = stubHub();
-    hub.agent.key = undefined;
-    const out = await hub._acceptTrackedApplicationContract({
-      adminToken: mintAdmin(hub._rootKey),
-      contractId: 'missing'
-    });
-    assert.strictEqual(out.status, 'error');
-    assert.strictEqual(out.message, 'unknown contract publish');
-  });
-
-  it('lets an agent.key token through Reject when setup.verifyAdminToken is false', async function () {
+  it('lets an identity-key token through Reject when setup.verifyAdminToken is false', async function () {
     const hub = stubHub();
     const out = await hub._rejectTrackedApplicationContract({
-      adminToken: mintAdmin(hub.agent.key),
+      adminToken: mintAdmin(hub._fabricKey),
       contractId: 'missing'
     });
     assert.strictEqual(out.status, 'error');
     assert.strictEqual(out.message, 'unknown contract publish');
   });
 
-  it('lets an agent.key token through Accept when setup.verifyAdminToken is false', async function () {
+  it('lets an identity-key token through Accept when setup.verifyAdminToken is false', async function () {
     const hub = stubHub();
     const out = await hub._acceptTrackedApplicationContract({
-      adminToken: mintAdmin(hub.agent.key),
+      adminToken: mintAdmin(hub._fabricKey),
       contractId: 'missing'
     });
     assert.strictEqual(out.status, 'error');
     assert.strictEqual(out.message, 'unknown contract publish');
   });
 
-  it('skips an unset agent.key and still accepts the _rootKey token', async function () {
+  it('refuses a token signed by the root key', async function () {
     const hub = stubHub();
-    hub.agent.key = undefined;
-    const ok = await hub._rejectTrackedApplicationContract({
+    const out = await hub._acceptTrackedApplicationContract({
       adminToken: mintAdmin(hub._rootKey),
       contractId: 'missing'
     });
-    assert.strictEqual(ok.message, 'unknown contract publish');
-    const bad = await hub._rejectTrackedApplicationContract({
-      adminToken: mintAdmin(new Key()),
-      contractId: 'missing'
-    });
-    assert.strictEqual(bad.message, 'adminToken invalid');
+    assert.strictEqual(out.message, 'adminToken invalid');
   });
 
-  it('skips an unset _rootKey and still accepts the agent.key token', async function () {
+  it('refuses every token while the Hub has no identity key', async function () {
     const hub = stubHub();
-    hub._rootKey = undefined;
-    const ok = await hub._rejectTrackedApplicationContract({
-      adminToken: mintAdmin(hub.agent.key),
-      contractId: 'missing'
-    });
-    assert.strictEqual(ok.message, 'unknown contract publish');
-    const bad = await hub._rejectTrackedApplicationContract({
-      adminToken: mintAdmin(new Key()),
-      contractId: 'missing'
-    });
-    assert.strictEqual(bad.message, 'adminToken invalid');
+    const token = mintAdmin(hub._fabricKey);
+    hub._fabricKey = null;
+    const out = await hub._rejectTrackedApplicationContract({ adminToken: token, contractId: 'missing' });
+    assert.strictEqual(out.message, 'adminToken invalid');
   });
 });

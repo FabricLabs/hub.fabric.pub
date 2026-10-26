@@ -1,10 +1,11 @@
 'use strict';
 
 const { readStorageJSON } = require('./fabricBrowserState');
+const { readStoredIdentity } = require('./hubAccountVault');
 
 /**
  * Whether `fabric.identity.local` holds a browser-created Fabric identity for Hub UI purposes.
- * Desktop shell handoff (`linkedFromDesktop`) supplies id/xpub for mesh/sync but is not the same as
+ * Signing in as the desktop Hub itself (`/sessions/self`, signer `hub`) is not the same as
  * completing Generate / import in the post-setup wizard — exclude it so the wizard stays until then.
  *
  * @param {object|null|undefined} [parsedOpt] - Pre-read payload, or omit to read storage.
@@ -12,9 +13,9 @@ const { readStorageJSON } = require('./fabricBrowserState');
  */
 function hasCompletedPostSetupBrowserIdentity (parsedOpt) {
   const p = parsedOpt !== undefined ? parsedOpt : readStorageJSON('fabric.identity.local', null);
-  if (!p || typeof p !== 'object') return false;
-  if (!(p.id || p.xpub)) return false;
-  if (p.linkedFromDesktop === true) return false;
+  const { kind, identity } = readStoredIdentity(p);
+  if (!identity) return false;
+  if (kind === 'passport' && identity.signer === 'hub') return false;
   return true;
 }
 
