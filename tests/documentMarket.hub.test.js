@@ -115,6 +115,22 @@ describe('Hub Document Market accumulate + republish', function () {
     await hub.stop().catch(() => {});
   });
 
+  it('keys an inbound seller by its session signer so a reconnect replaces its offers', async function () {
+    const hub = await makeHub();
+    const signer = '02' + 'dd'.repeat(32);
+    const inventory = (fileId) => ({ object: { kind: 'documents', items: [{ id: fileId, purchasePriceSats: 5, published: true }] } });
+    hub.agent._state = hub.agent._state || {};
+    hub.agent._state.peers = Object.assign({}, hub.agent._state.peers, { 'peer-a': { id: 'peer-a', publicKey: signer } });
+    hub.agent._addressToId = Object.assign({}, hub.agent._addressToId, { '127.0.0.1:50001': 'peer-a' });
+    hub._accumulatePeerDocumentInventory(inventory('a1'.repeat(32)), { name: '127.0.0.1:50001' });
+    hub.agent._addressToId['127.0.0.1:50002'] = 'peer-a';
+    const saved = hub._accumulatePeerDocumentInventory(inventory('b2'.repeat(32)), { name: '127.0.0.1:50002' });
+    assert.strictEqual(saved[0].peerPubkey, signer);
+    const offers = Object.values(hub._documentOffersMap()).filter((row) => row.peerPubkey === signer);
+    assert.deepStrictEqual(offers.map((row) => row.documentId), ['b2'.repeat(32)]);
+    await hub.stop().catch(() => {});
+  });
+
   it('republishes a held blob at cost plus markup and keeps inventory local-only', async function () {
     const hub = await makeHub();
     const fileId = 'ee'.repeat(32);
@@ -174,6 +190,32 @@ describe('Hub Document Market accumulate + republish', function () {
     }, { name: '10.0.0.4:7777' });
     const raised = await hub._maybeRepublishHeldDocumentsFromMarket();
     assert.ok(raised.some((row) => row.document && row.document.purchasePriceSats === 1100));
+    await hub.stop().catch(() => {});
+  });
+
+  it('seeds a received convergent tree through the agent Peer instead of resealing it', async function () {
+    const hub = await makeHub();
+    const rootId = '7e'.repeat(32);
+    const seeded = [];
+    hub._sealDocumentForPricedPublish = async () => { throw new Error('a seeded tree must not be resealed'); };
+    hub.agent._state = { content: { documentSealedBlobs: {}, documentRates: {} } };
+    hub.agent.seedableDocument = (id) => id === rootId;
+    hub.agent.seedDocument = (id, opts) => {
+      seeded.push({ id, opts });
+      hub.agent._state.content.documentSealedBlobs[id] = { record: {} };
+      hub.agent._state.content.documentRates[id] = opts.rateSats;
+      return { ok: true, documentId: id };
+    };
+    hub._accumulatePeerDocumentInventory({
+      actor: { id: '02' + '33'.repeat(32) },
+      object: { items: [{ id: rootId, purchasePriceSats: 1000, published: true }] }
+    }, { name: '10.7.7.7:7777' });
+    const changed = await hub._maybeRepublishHeldDocumentsFromMarket([rootId]);
+    assert.strictEqual(changed.length, 1);
+    assert.strictEqual(changed[0].seeded, true);
+    assert.strictEqual(changed[0].purchasePriceSats, 1100);
+    assert.deepStrictEqual(seeded, [{ id: rootId, opts: { rateSats: 1100 } }]);
+    assert.deepStrictEqual(await hub._maybeRepublishHeldDocumentsFromMarket([rootId]), [], 'already listed at the markup');
     await hub.stop().catch(() => {});
   });
 

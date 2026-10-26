@@ -242,7 +242,7 @@ async function waitPayjoinHttp (httpBase, timeoutMs = 30000) {
       amountSats: AMOUNT_SATS,
       label: `payjoin-l1-${runId}`,
       memo: `verify-payjoin-l1:${runId}`,
-      autoAcpBoost: false
+      receiverContribution: false
     }, bearer(adminToken));
     assert.strictEqual(created.status, 200, created.raw);
     const session = created.body && created.body.session;

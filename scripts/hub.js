@@ -138,6 +138,9 @@ try {
         settings = applySharedModeWebsocketGate(settings, { bindAll, env: process.env });
       }
     }
+    if (setup.BITCOIN_ADDNODES || setup.FABRIC_PEERS) {
+      settings = require('../functions/hubNetworkJoin').applyNetworkJoinFromSetup({ ...settings }, setup);
+    }
   }
 } catch (e) {
   // Ignore; use defaults from local.js
@@ -175,6 +178,11 @@ if (process.env.FABRIC_HUB_USER_DATA && !process.env.FABRIC_HUB_INTERFACE && !pr
       http: { ...(settings.http || {}), interface: '127.0.0.1' }
     };
   }
+}
+
+// Desktop: a developer node on the public playnet (Fabric seeds + regtest addnode).
+if (process.env.FABRIC_HUB_USER_DATA) {
+  settings = require('../functions/hubNetworkJoin').applyDesktopPlaynetDefaults({ ...settings }, setup || {});
 }
 
 // Electron / packaged desktop: writable stores + absolute bitcoind datadir under userData

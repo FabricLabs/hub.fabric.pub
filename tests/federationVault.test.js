@@ -50,7 +50,7 @@ describe('federationVault', () => {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 0), 0);
-    tx.addOutput(built.output, 100000);
+    tx.addOutput(built.output, 100000n);
     const hex = tx.toHex();
     const dest = bitcoin.payments.p2wpkh({
       pubkey: ecpair.makeRandom().publicKey,
@@ -78,7 +78,7 @@ describe('federationVault', () => {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 0), 0);
-    tx.addOutput(built.output, 100000);
+    tx.addOutput(built.output, 100000n);
     const hex = tx.toHex();
     const dest = bitcoin.payments.p2wpkh({
       pubkey: ecpair.makeRandom().publicKey,

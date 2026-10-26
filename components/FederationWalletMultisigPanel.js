@@ -5,10 +5,9 @@ const { Link } = require('react-router-dom');
 const {
   Button,
   Checkbox,
-  Form,
   Header,
   Icon,
-  Input,
+  List,
   Message,
   Segment
 } = require('semantic-ui-react');
@@ -22,9 +21,12 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { copyToClipboard } = require('../functions/uiNotifications');
 const FederationSpendingCriteriaDraft = require('./FederationSpendingCriteriaDraft');
+const t = require('../locales/en');
+
+const wm = t.federation.walletMultisig;
 
 /**
- * Federation summary + optional vault PSBT prep + memo tagging for hub wallet sends.
+ * Federation summary, shared vaults with other Hubs, and memo tagging for hub wallet sends.
  * @param {{
  *   adminToken?: string,
  *   recordFederationContext: boolean,
@@ -43,13 +45,7 @@ function FederationWalletMultisigPanel (props) {
   const [manifest, setManifest] = React.useState(null);
   const [vaultDetail, setVaultDetail] = React.useState(null);
   const [loadErr, setLoadErr] = React.useState(null);
-  const [vaultFlowOpen, setVaultFlowOpen] = React.useState(false);
-  const [fundedTxHex, setFundedTxHex] = React.useState('');
-  const [destAddress, setDestAddress] = React.useState('');
-  const [feeSats, setFeeSats] = React.useState('');
-  const [leafId, setLeafId] = React.useState('');
-  const [psbtBusy, setPsbtBusy] = React.useState(false);
-  const [psbtResult, setPsbtResult] = React.useState(null);
+  const [named, setNamed] = React.useState(null);
   const [prefs, setPrefs] = React.useState(() => loadFederationSpendingPrefs());
   const [collabHubSummary, setCollabHubSummary] = React.useState(null);
 
@@ -77,7 +73,14 @@ function FederationWalletMultisigPanel (props) {
     }
     if (!tok) {
       setCollabHubSummary(null);
+      setNamed(null);
     } else {
+      try {
+        const nf = await hubJsonRpc('ListNamedFederations', [{ adminToken: tok }]);
+        setNamed(nf && nf.status !== 'error' && Array.isArray(nf.federations) ? nf.federations : null);
+      } catch (_) {
+        setNamed(null);
+      }
       try {
         const lg = await hubJsonRpc('ListCollaborationGroups', [{ adminToken: tok }]);
         const groups = lg && Array.isArray(lg.groups) ? lg.groups : [];
@@ -102,7 +105,7 @@ function FederationWalletMultisigPanel (props) {
 
   const validators = policy && Array.isArray(policy.validators) ? policy.validators.filter(Boolean) : [];
   const thr = policy && policy.threshold != null ? Math.max(1, Number(policy.threshold) || 1) : 1;
-  const mOfN = validators.length ? `${Math.min(thr, validators.length)}-of-${validators.length}` : null;
+  const mOfN = validators.length ? wm.signers(Math.min(thr, validators.length), validators.length) : null;
   const fedFromManifest = federationSummaryFromManifest(manifest);
   const vault = (vaultDetail && vaultDetail.status === 'ok' && vaultDetail.address)
     ? vaultDetail
@@ -113,86 +116,38 @@ function FederationWalletMultisigPanel (props) {
     : ((vault && Array.isArray(vault.leaves)) ? vault.leaves : []);
   const criteriaPreview = mergePaymentMemoWithFederation('', prefs, true);
 
-  const preparePsbt = async () => {
-    setPsbtResult(null);
-    if (!adminToken) {
-      setPsbtResult({ error: 'Admin token required in this browser to build a withdrawal PSBT.' });
-      return;
-    }
-    const hex = String(fundedTxHex || '').trim();
-    const to = String(destAddress || '').trim();
-    if (!hex) {
-      setPsbtResult({ error: 'Paste the full raw transaction hex that funded the federation vault address.' });
-      return;
-    }
-    if (!to) {
-      setPsbtResult({ error: 'Destination address is required.' });
-      return;
-    }
-    setPsbtBusy(true);
-    try {
-      const params = {
-        fundedTxHex: hex,
-        destinationAddress: to,
-        adminToken
-      };
-      if (vaultAddr) params.vaultAddress = vaultAddr;
-      const fs = feeSats != null && String(feeSats).trim() !== '' ? Math.round(Number(feeSats)) : NaN;
-      if (Number.isFinite(fs) && fs > 0) params.feeSats = fs;
-      const lid = String(leafId || '').trim();
-      if (lid) params.leafId = lid;
-      const r = await hubJsonRpc('PrepareFederationVaultWithdrawalPsbt', [params]);
-      if (r && r.status === 'error') {
-        setPsbtResult({ error: r.message || 'Prepare PSBT failed' });
-        return;
-      }
-      setPsbtResult(r || {});
-    } catch (e) {
-      setPsbtResult({ error: e && e.message ? e.message : String(e) });
-    } finally {
-      setPsbtBusy(false);
-    }
-  };
-
-  const psbtText = psbtResult && (psbtResult.psbtBase64 || psbtResult.psbtHex || psbtResult.psbt);
-
   return (
     <Segment id="fabric-federation-wallet-panel" style={{ marginTop: '0.85em' }}>
       <Header as="h3" style={{ marginTop: 0 }}>
-        <Icon name="users" />
-        Shared wallet (federation multisig)
+        <Icon name="users" aria-hidden="true" />
+        {wm.title}
       </Header>
-      <p style={{ color: '#555', lineHeight: 1.5, marginBottom: '0.65em' }}>
-        Your hub can host a <strong>shared Taproot vault</strong> controlled by multiple signers (M-of-N).
-        That is separate from the <strong>hub node wallet</strong> used for quick sends below — vault spends use a PSBT
-        that co-signers approve offline, then you broadcast when complete.
-      </p>
+      <p style={{ color: '#555', lineHeight: 1.5, marginBottom: '0.65em' }}>{wm.intro}</p>
       {loadErr ? (
         <Message warning size="small">
-          Could not load federation policy: {loadErr}
+          {wm.loadError(loadErr)}
         </Message>
       ) : null}
       {mOfN ? (
         <Message positive size="small">
-          <Message.Header>Federation is configured on this hub</Message.Header>
+          <Message.Header>{wm.configuredTitle}</Message.Header>
           <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
-            Policy: <strong>{mOfN}</strong>
+            {wm.policy} <strong>{mOfN}</strong>
             {policy && policy.source ? (
-              <span style={{ color: '#555' }}>{' '}· source <code>{String(policy.source)}</code></span>
+              <span style={{ color: '#555' }}>{' · '}{t.federation.shared.policySource(String(policy.source))}</span>
             ) : null}
             {fedFromManifest.active ? (
-              <span style={{ color: '#555' }}>{' '}· manifest lists the same signer set for distributed features.</span>
+              <span style={{ color: '#555' }}>{' · '}{wm.manifestSame}</span>
             ) : null}
           </p>
         </Message>
       ) : (
         <Message info size="small">
-          <Message.Header>No federation yet</Message.Header>
+          <Message.Header>{wm.noneTitle}</Message.Header>
           <p style={{ margin: '0.35em 0 0', lineHeight: 1.45 }}>
-            Add signer public keys and a threshold on the{' '}
-            <Link to="/federations">Federations</Link> page (or{' '}
-            <Link to="/settings/federation">Settings → Distributed federation</Link>
-            ). After saving, this hub derives the vault address for deposits.
+            {wm.noneBefore}{' '}
+            <Link to="/federations">{t.federation.shared.links.federations}</Link>{' '}
+            {wm.noneAfter}
           </p>
         </Message>
       )}
@@ -209,7 +164,7 @@ function FederationWalletMultisigPanel (props) {
           }}
         >
           <span>
-            <strong>Federation vault (deposit here for multisig):</strong>{' '}
+            <strong>{wm.vault}</strong>{' '}
             <code style={{ wordBreak: 'break-all' }}>{vaultAddr}</code>
           </span>
           <Button
@@ -217,35 +172,35 @@ function FederationWalletMultisigPanel (props) {
             icon
             basic
             size="small"
-            title="Copy vault address"
-            aria-label="Copy vault address"
+            title={wm.copyVault}
+            aria-label={wm.copyVault}
             onClick={() => copyToClipboard(vaultAddr)}
           >
-            <Icon name="copy" />
+            <Icon name="copy" aria-hidden="true" />
           </Button>
           <span>{' · '}</span>
-          <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">UTXOs</a>
+          <a href="/services/distributed/vault/utxos" target="_blank" rel="noopener noreferrer">{t.federation.shared.links.vaultUtxos}</a>
         </p>
       ) : vault && vault.status === 'no_validators' ? (
         <p style={{ margin: '0.75em 0', color: '#666' }}>
-          Configure validators to show the on-chain vault address.
+          {wm.noValidators}
         </p>
       ) : null}
 
       {vaultLeaves.length ? (
         <div style={{ margin: '0.65em 0 0.85em' }}>
           <p style={{ margin: '0 0 0.4em', fontSize: '0.9em', color: '#444' }}>
-            <strong>Taproot leaves</strong> (script tree — pick one when building a PSBT):
+            {wm.leaves}
           </p>
           <ul style={{ margin: 0, paddingLeft: '1.2em', fontSize: '0.85em', lineHeight: 1.5, color: '#555' }}>
             {vaultLeaves.map((l) => (
               <li key={l.id || l.tapscriptHex}>
                 <code>{l.id || '?'}</code>
                 {' · '}
-                {l.kind || 'leaf'}
-                {l.threshold != null && l.keys ? ` · ${l.threshold}-of-${(l.keys || []).length}` : null}
-                {l.commitmentHex ? ` · hashlock ${String(l.commitmentHex).slice(0, 12)}…` : null}
-                {l.witnessShape ? ` · witness ${l.witnessShape}` : null}
+                {l.kind || wm.leafKind}
+                {l.threshold != null && l.keys ? ` · ${wm.leafThreshold(l.threshold, (l.keys || []).length)}` : null}
+                {l.commitmentHex ? ` · ${wm.leafHashlock(String(l.commitmentHex).slice(0, 12))}` : null}
+                {l.witnessShape ? ` · ${wm.leafWitness(l.witnessShape)}` : null}
               </li>
             ))}
           </ul>
@@ -253,157 +208,93 @@ function FederationWalletMultisigPanel (props) {
       ) : null}
 
       <div style={{ margin: '0.85em 0' }}>
-        <Link to="/federations">Open federation setup</Link>
-        {' · '}
-        <a href="#fabric-btc-tx-client-h3">Jump to wallet activity</a>
+        {mOfN ? (
+          <React.Fragment>
+            <Link to="/federations">{wm.openFederations}</Link>
+            {' · '}
+          </React.Fragment>
+        ) : null}
+        <a href="#fabric-btc-tx-client-h3">{wm.walletActivity}</a>
       </div>
 
       {adminToken && collabHubSummary && collabHubSummary.err ? (
         <Message warning size="small" style={{ marginTop: 0 }}>
-          Could not load Collaboration groups: {collabHubSummary.err}
+          {wm.collabError(collabHubSummary.err)}
         </Message>
       ) : null}
       {adminToken && collabHubSummary && collabHubSummary.n != null ? (
         <p style={{ margin: '0.5em 0 0', fontSize: '0.9em', color: '#555', lineHeight: 1.45 }}>
-          <Icon name="users" />
+          <Icon name="users" aria-hidden="true" />
           {' '}
-          Collaboration: <strong>{collabHubSummary.n}</strong> group{collabHubSummary.n === 1 ? '' : 's'} on this hub.
+          {wm.collabCount(collabHubSummary.n)}
           {' '}
-          <Link to="/settings/collaboration">Multisig previews · pubkey members</Link>
-          {' — '}
-          align federation signers with a group via{' '}
-          <Link to="/federations">Federations → Save signer set to Collaboration group</Link>.
+          <Link to="/settings/collaboration">{wm.collabOpen}</Link>
+          {' '}
+          {wm.collabHint}
         </p>
       ) : !adminToken && mOfN ? (
         <p style={{ margin: '0.5em 0 0', fontSize: '0.88em', color: '#666', lineHeight: 1.45 }}>
-          Save the hub <strong>admin token</strong> (Settings) to show Collaboration group counts next to this vault and to build withdrawal PSBTs.
+          {wm.noToken}
         </p>
       ) : null}
 
       <FederationSpendingCriteriaDraft compact />
 
       <Checkbox
+        id="fed-wallet-record-federation"
         checked={recordFed}
         onChange={(_, d) => onRecordChange(!!(d && d.checked))}
         style={{ marginTop: '0.85em', display: 'block' }}
-        label="Record hub wallet sends below as federation-related (append my spending criteria to the payment memo)"
+        label={wm.record}
       />
       {recordFed && criteriaPreview ? (
         <p style={{ margin: '0.35em 0 0', fontSize: '0.85em', color: '#666', lineHeight: 1.4 }}>
-          Memo will include: <code style={{ wordBreak: 'break-word' }}>{criteriaPreview.slice(0, 120)}{criteriaPreview.length > 120 ? '…' : ''}</code>
+          {wm.memoPreview} <code style={{ wordBreak: 'break-word' }}>{criteriaPreview.slice(0, 120)}{criteriaPreview.length > 120 ? '…' : ''}</code>
         </p>
       ) : recordFed && !criteriaPreview ? (
         <p style={{ margin: '0.35em 0 0', fontSize: '0.85em', color: '#888' }}>
-          Turn on the drafting checkbox above and save text to attach a memo fragment.
+          {wm.memoEmpty}
         </p>
       ) : null}
 
-      <Checkbox
-        checked={vaultFlowOpen}
-        onChange={(_, d) => setVaultFlowOpen(!!(d && d.checked))}
-        style={{ marginTop: '1em', display: 'block' }}
-        label="Prepare a federation vault withdrawal PSBT (co-signers sign outside the hub)"
-      />
-      {vaultFlowOpen ? (
-        <div style={{ marginTop: '0.75em' }}>
-          <Message size="small">
-            <p style={{ margin: 0, lineHeight: 1.45 }}>
-              Paste the <strong>full raw hex</strong> of the transaction that sent coins to the vault, the
-              <strong> destination</strong> you want to pay, and optionally a <strong>fee</strong> in sats.
-              The hub returns an <strong>unsigned PSBT</strong> for validators to sign with their keys.
-            </p>
-          </Message>
-          <Form style={{ marginTop: '0.5em' }}>
-            <Form.Field>
-              <label>Funding transaction hex</label>
-              <Input
-                placeholder="020000..."
-                value={fundedTxHex}
-                onChange={(e) => setFundedTxHex(e.target.value)}
-              />
-            </Form.Field>
-            <Form.Field>
-              <label>Destination address</label>
-              <Input
-                placeholder="bc1…"
-                value={destAddress}
-                onChange={(e) => setDestAddress(e.target.value)}
-              />
-            </Form.Field>
-            <Form.Field>
-              <label>Leaf id (optional — default active spend tier)</label>
-              <Input
-                list="fabric-vault-leaf-ids"
-                placeholder={vaultLeaves[0] ? vaultLeaves[0].id : 't0-authority'}
-                value={leafId}
-                onChange={(e) => setLeafId(e.target.value)}
-              />
-              {vaultLeaves.length ? (
-                <datalist id="fabric-vault-leaf-ids">
-                  {vaultLeaves.map((l) => (
-                    <option key={l.id} value={l.id}>{l.kind}</option>
-                  ))}
-                </datalist>
-              ) : null}
-            </Form.Field>
-            <Form.Field>
-              <label>Fee (sats, optional)</label>
-              <Input
-                type="number"
-                min={1}
-                placeholder="e.g. 500"
-                value={feeSats}
-                onChange={(e) => setFeeSats(e.target.value)}
-              />
-            </Form.Field>
-            <Button type="button" primary loading={psbtBusy} disabled={psbtBusy} onClick={() => void preparePsbt()}>
-              <Icon name="file code outline" />
-              Build withdrawal PSBT
-            </Button>
-          </Form>
-          {psbtResult ? (
-            <Message
-              style={{ marginTop: '0.75em' }}
-              negative={!!psbtResult.error}
-              positive={!psbtResult.error && !!psbtText}
-            >
-              {psbtResult.error ? (
-                <p>{psbtResult.error}</p>
-              ) : (
-                <>
-                  <Message.Header>PSBT ready</Message.Header>
-                  <p style={{ marginTop: '0.5em' }}>Share this with co-signers. Finalize and broadcast when you have enough signatures.</p>
-                  {psbtText ? (
-                    <div style={{ marginTop: '0.5em' }}>
-                      <Form.TextArea
-                        readOnly
-                        rows={4}
-                        value={String(psbtText)}
-                        style={{ fontFamily: 'monospace', fontSize: '0.8em' }}
-                      />
-                      <Button
-                        type="button"
-                        size="small"
-                        basic
-                        icon
-                        labelPosition="left"
-                        onClick={() => copyToClipboard(String(psbtText))}
-                      >
-                        <Icon name="copy" />
-                        Copy PSBT
-                      </Button>
+      <Header as="h4">{wm.namedTitle}</Header>
+      <p style={{ color: '#555', lineHeight: 1.45 }}>{wm.namedIntro}</p>
+      {named && named.length ? (
+        <List divided relaxed>
+          {named.map((f) => (
+            <List.Item key={f.id}>
+              <List.Content>
+                <List.Header>
+                  <Link to="/federations">{f.name}</Link>
+                  {' · '}
+                  {t.federation.named.status[f.status] || f.status}
+                </List.Header>
+                <List.Description>
+                  {t.federation.named.policy(f.threshold, f.validators.length)}
+                  {' · '}
+                  <code style={{ wordBreak: 'break-all' }}>{f.vaultAddress}</code>
+                  {f.withdrawals.filter((w) => w.status === 'pending').length ? (
+                    <div>
+                      {f.withdrawals.filter((w) => w.status === 'pending').map((w) => (
+                        <span key={w.requestId} style={{ marginRight: '1em' }}>
+                          {t.federation.named.withdraw.row(t.common.sats(w.amountSats), w.destinationAddress)}
+                          {' · '}
+                          {t.federation.named.withdraw.approvals(w.signers.length, f.threshold)}
+                        </span>
+                      ))}
                     </div>
-                  ) : (
-                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '0.85em' }}>
-                      {JSON.stringify(psbtResult, null, 2)}
-                    </pre>
-                  )}
-                </>
-              )}
-            </Message>
-          ) : null}
-        </div>
-      ) : null}
+                  ) : null}
+                </List.Description>
+              </List.Content>
+            </List.Item>
+          ))}
+        </List>
+      ) : (
+        <p style={{ color: '#666' }}>
+          {adminToken ? wm.namedNone : wm.noToken}{' '}
+          <Link to="/federations">{wm.openFederations}</Link>
+        </p>
+      )}
     </Segment>
   );
 }

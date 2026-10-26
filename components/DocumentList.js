@@ -24,10 +24,12 @@ const { sha256: sha256Hash } = require('@noble/hashes/sha2.js');
 // Fabric Types
 const Actor = require('@fabric/core/types/actor');
 const DistributeProposalsList = require('./DistributeProposalsList');
-const { formatSatsDisplay } = require('../functions/formatSats');
 const { isHubNetworkStatusShape, bridgeWebSocketLoadingHint } = require('../functions/hubNetworkStatus');
 const { hydrateHubNetworkStatusViaHttp } = require('../functions/hydrateHubNetworkStatusViaHttp');
-const { classifyHubBrowserIdentity } = require('../functions/hubIdentityUiHints');
+const {
+  classifyHubBrowserIdentity,
+  fabricIdentityNeedFullKeyPlain
+} = require('../functions/hubIdentityUiHints');
 const { loadServerFeatureFlags } = require('../functions/hubServerFeatureFlags');
 const HubPagination = require('./HubPagination');
 const { useHubListPagination } = require('../functions/hubListPagination');
@@ -37,6 +39,11 @@ const {
   mergeInventoryDocumentsIntoMap
 } = require('../functions/documentInventoryList');
 const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
+const t = require('../locales/en');
+
+const dl = t.documents.list;
+const lb = dl.labels;
+const rw = dl.row;
 
 function shortHexId (value) {
   const s = String(value || '');
@@ -71,10 +78,10 @@ function textToBase64 (str) {
 }
 
 function jsonRpcErrText (err) {
-  if (!err || typeof err !== 'object') return 'rejected';
+  if (!err || typeof err !== 'object') return dl.catalogErrors.refusedFallback;
   if (err.message != null) return String(err.message);
   if (err.data != null) return String(err.data);
-  return 'rejected';
+  return dl.catalogErrors.refusedFallback;
 }
 
 function DocumentsPage (props) {
@@ -98,7 +105,7 @@ function DocumentsPage (props) {
   const navigate = useNavigate();
 
   React.useEffect(() => {
-    const bump = () => setNetworkStatusTick((t) => t + 1);
+    const bump = () => setNetworkStatusTick((n) => n + 1);
     if (typeof window === 'undefined') return undefined;
     window.addEventListener('networkStatusUpdate', bump);
     return () => window.removeEventListener('networkStatusUpdate', bump);
@@ -127,10 +134,10 @@ function DocumentsPage (props) {
   const distributeEnabled = !!serverFlags.distribute;
 
   const documentsLoadingSubtext = !current
-    ? 'Connecting to the hub (WebSocket bridge)…'
+    ? dl.loadingConnecting
     : (inventoryCatalog
-      ? 'Waiting for document inventories from seed WebRTC peers…'
-      : (bridgeWebSocketLoadingHint(current) || 'Waiting for network status from the hub (published catalog).'));
+      ? dl.loadingInventories
+      : (bridgeWebSocketLoadingHint(current) || dl.loadingCatalog));
 
   React.useEffect(() => {
     const handler = (event) => {
@@ -173,7 +180,7 @@ function DocumentsPage (props) {
   React.useEffect(() => {
     if (hasNetworkSnapshot || inventoryCatalog) return undefined;
     let cancelled = false;
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (cancelled) return;
       const bridge = props.bridgeRef && props.bridgeRef.current;
       const origin = typeof window !== 'undefined' && window.location && window.location.origin
@@ -207,33 +214,33 @@ function DocumentsPage (props) {
           const listErr = listBody && listBody.error;
           const httpBad = !list || !list.ok;
           const parts = [];
-          if (listErr) parts.push(`Document list: ${jsonRpcErrText(listErr)}`);
-          if (!listErr && list && !list.ok) parts.push(`Document list: HTTP ${list.status}`);
+          if (listErr) parts.push(dl.catalogErrors.listRefused(jsonRpcErrText(listErr)));
+          if (!listErr && list && !list.ok) parts.push(dl.catalogErrors.listHttp(list.status));
           if (!nsApplied && !listApplied) {
-            parts.push('Network status: could not hydrate via HTTP (hub down or unexpected GetNetworkStatus shape)');
+            parts.push(dl.catalogErrors.status);
           }
           if (parts.length) {
             setCatalogHttpFallbackError(parts.join(' · '));
           } else if (!listErr && listBody && !listApplied && listBody.result == null) {
             setCatalogHttpFallbackError(
               httpBad
-                ? 'Hub did not return JSON-RPC results for catalog hydration. Check /services/rpc.'
-                : 'Hub returned empty responses for the document list.'
+                ? dl.catalogErrors.noResults
+                : dl.catalogErrors.emptyResults
             );
           } else if (!listErr && !listApplied && listBody && listBody.result != null) {
-            setCatalogHttpFallbackError('Document list response could not be merged (unexpected shape).');
+            setCatalogHttpFallbackError(dl.catalogErrors.unreadable);
           }
         })
         .catch((err) => {
           if (cancelled) return;
           setCatalogHttpFallbackError(
-            (err && err.message) ? err.message : 'Network error while loading catalog from hub.'
+            (err && err.message) ? err.message : t.common.errors.network
           );
         });
     }, 2500);
     return () => {
       cancelled = true;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
   }, [hasNetworkSnapshot, inventoryCatalog, props.bridgeRef]);
 
@@ -344,7 +351,7 @@ function DocumentsPage (props) {
       const buffer = encoder.encode(text);
       const sha256 = sha256Hex(buffer);
       const contentBase64 = textToBase64(text);
-      const name = (createDocName || 'Untitled').trim() || 'Untitled';
+      const name = (createDocName || dl.add.defaultName).trim() || dl.add.defaultName;
       const payload = {
         sha256,
         name,
@@ -384,9 +391,9 @@ function DocumentsPage (props) {
           style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
           role="banner"
         >
-          <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+          <Button basic size="small" as={Link} to="/">
             <Icon name="arrow left" aria-hidden="true" />
-            Home
+            {dl.home}
           </Button>
           <div
             style={{
@@ -399,7 +406,7 @@ function DocumentsPage (props) {
             }}
           >
             <Header as="h2" id="documents-page-heading" style={{ margin: 0 }}>
-              Documents
+              {dl.title}
             </Header>
             <span
               style={{
@@ -414,11 +421,11 @@ function DocumentsPage (props) {
                 border: 0
               }}
             >
-              {docs.length} documents in this hub node
+              {dl.countSr(docs.length)}
             </span>
             <Label
               size="small"
-              title="Documents in this hub node"
+              title={dl.countTitle}
               style={{ verticalAlign: 'middle' }}
               aria-hidden="true"
             >
@@ -436,59 +443,68 @@ function DocumentsPage (props) {
             style={{ marginBottom: '1em' }}
             onDismiss={() => setCatalogHttpFallbackError(null)}
           >
-            <Message.Header>Could not fully load hub catalog over HTTP</Message.Header>
+            <Message.Header>{dl.catalogErrorTitle}</Message.Header>
             <p style={{ margin: '0.35em 0 0', color: '#333' }}>{catalogHttpFallbackError}</p>
             <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#666' }}>
-              The WebSocket session may still sync in a moment — or reload the page. JSON-RPC:{' '}
-              <code style={{ fontSize: '0.85em' }}>/services/rpc</code>
+              {dl.catalogErrorHint}
             </p>
+            <details className="hub-developer-details" style={{ marginTop: '0.35em', fontSize: '0.9em' }}>
+              <summary>{t.common.developerDetails}</summary>
+              {dl.catalogErrorEndpoint} <code style={{ fontSize: '0.85em' }}>/services/rpc</code>
+            </details>
           </Message>
         )}
 
         {!hasEncryptionKey && (() => {
-          const idMode = classifyHubBrowserIdentity(props.identity || {});
+          const identity = props.identity || {};
+          const idMode = classifyHubBrowserIdentity(identity);
           const title = idMode === 'watch_only'
-            ? 'Signing key not loaded (watch-only)'
+            ? dl.identity.titleWatchOnly
             : idMode === 'password_locked'
-              ? 'Private key not loaded'
-              : 'Private key not loaded';
+              ? dl.identity.titleLocked
+              : dl.identity.titleNone;
           return (
             <Message info style={{ marginBottom: '1em' }}>
-              <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>{title}</p>
+              <Message.Header>{title}</Message.Header>
               <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                {idMode === 'watch_only' ? (
-                  <>
-                    This browser only has a public key. To create or upload <strong>encrypted</strong> documents, import a full key: top-bar identity menu or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>.{' '}
-                  </>
-                ) : idMode === 'password_locked' ? (
-                  <>
-                    Use the top-bar <strong>Locked</strong> control (encryption password) or <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>, then <strong>Unlock private key</strong>, to create or upload encrypted documents.{' '}
-                  </>
-                ) : (
-                  <>
-                    Create or restore a key: <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong> or <strong>Log in</strong> in the top bar. Then you can create or upload encrypted documents.{' '}
-                  </>
-                )}
-                <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link> explains how the same identity drives Hub L1 addresses.
-                For local dev use the same phrase as the hub (<code>FABRIC_SEED</code> if set, else <code>FABRIC_MNEMONIC</code>): <code>window.FABRIC_DEV_BROWSER_SEED</code> in <code>assets/config.local.js</code>, optional <code>window.FABRIC_DEV_BROWSER_PASSPHRASE</code> for BIP39 extension, or hub <code>FABRIC_DEV_PUSH_BROWSER_IDENTITY=1</code> (never on exposed hosts). For RPC-only automation see <code>npm run test:e2e-document-purchase</code>.
+                {dl.identity.intro} {fabricIdentityNeedFullKeyPlain(identity)}
               </p>
+              <p style={{ margin: '0.35em 0 0', color: '#444' }}>
+                <Link to="/settings/bitcoin-wallet">{dl.identity.walletLink}</Link> {dl.identity.walletSuffix}
+              </p>
+              <details className="hub-developer-details" style={{ marginTop: '0.5em', fontSize: '0.9em' }}>
+                <summary>{t.common.developerDetails}</summary>
+                <p style={{ margin: '0.35em 0 0' }}>
+                  {dl.identity.devSeedIntro} <code>window.FABRIC_DEV_BROWSER_SEED</code> {dl.identity.devSeedIn} <code>assets/config.local.js</code>.
+                  {' '}{dl.identity.devSeedPassphrase} <code>window.FABRIC_DEV_BROWSER_PASSPHRASE</code>.
+                </p>
+                <p style={{ margin: '0.35em 0 0' }}>
+                  {dl.identity.devSeedPush} <code>FABRIC_DEV_PUSH_BROWSER_IDENTITY=1</code>.
+                </p>
+                <p style={{ margin: '0.35em 0 0' }}>
+                  {dl.identity.devAutomation} <code>npm run test:e2e-document-purchase</code>.
+                </p>
+              </details>
             </Message>
           );
         })()}
 
         {hasEncryptionKey && (
           <Segment loading={busy}>
-            <Header as="h3">Add content</Header>
+            <Header as="h3">{dl.add.title}</Header>
             <p style={{ color: '#666' }}>
-              Select a file or create a document from text. <strong>Publish</strong> with a price seals content (ciphertext-at-rest);
-              buyers pay an L1 HTLC that reveals the decryption key (Peers inventory or Claim &amp; Unlock).
+              {dl.add.intro}
               {distributeEnabled ? (
                 <>
-                  {' '}<strong>Distribute</strong> (optional storage bonds) needs an on-chain invoice — open a document and follow <strong>Distribute</strong>, then pay from{' '}
-                  <Link to="/services/bitcoin">Bitcoin</Link>.
+                  {' '}{dl.add.distributeBefore}{' '}
+                  <Link to="/services/bitcoin">{dl.add.distributeLink}</Link>.
                 </>
               ) : null}
             </p>
+            <details className="hub-developer-details" style={{ marginBottom: '0.75em', fontSize: '0.9em', color: '#666' }}>
+              <summary>{t.common.developerDetails}</summary>
+              {dl.add.devPricing}
+            </details>
             <Button
               size="small"
               basic
@@ -496,24 +512,27 @@ function DocumentsPage (props) {
               labelPosition="left"
               onClick={() => setShowCreateDoc((v) => !v)}
               style={{ marginBottom: showCreateDoc ? '1em' : 0 }}
+              aria-expanded={showCreateDoc}
             >
               <Icon name={showCreateDoc ? 'minus' : 'plus'} />
-              Create Document
+              {dl.add.newText}
             </Button>
             {showCreateDoc && (
               <Form style={{ marginTop: '0.75em', maxWidth: 560 }}>
                 <Form.Field>
-                  <label>Name</label>
+                  <label htmlFor="documents-create-name">{dl.add.nameLabel}</label>
                   <Input
-                    placeholder="Document name"
+                    id="documents-create-name"
+                    placeholder={dl.add.namePlaceholder}
                     value={createDocName}
                     onChange={(e) => setCreateDocName(e.target.value)}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label>Content</label>
+                  <label htmlFor="documents-create-content">{dl.add.contentLabel}</label>
                   <Form.TextArea
-                    placeholder="Enter your text here…"
+                    id="documents-create-content"
+                    placeholder={dl.add.contentPlaceholder}
                     value={createDocContent}
                     onChange={(e) => setCreateDocContent(e.target.value)}
                     rows={6}
@@ -522,16 +541,17 @@ function DocumentsPage (props) {
                 </Form.Field>
                 <Button size="small" primary onClick={onCreateDocument} disabled={!createDocContent.trim()}>
                   <Icon name="save" />
-                  Create
+                  {dl.add.create}
                 </Button>
-                <Button size="small" basic onClick={() => { setShowCreateDoc(false); setCreateDocName(''); setCreateDocContent(''); }}>
-                  Cancel
+                <Button size="small" basic type="button" onClick={() => { setShowCreateDoc(false); setCreateDocName(''); setCreateDocContent(''); }}>
+                  {t.common.actions.cancel}
                 </Button>
               </Form>
             )}
             <div style={{ marginTop: showCreateDoc ? '1em' : 0 }}>
-              <label style={{ display: 'block', marginBottom: '0.5em', color: '#666' }}>Or add a file:</label>
-                <Input
+              <label htmlFor="documents-add-file" style={{ display: 'block', marginBottom: '0.5em', color: '#666' }}>{dl.add.fileLabel}</label>
+              <Input
+                id="documents-add-file"
                 type="file"
                 onChange={(e) => onPickFile(e && e.target && e.target.files ? e.target.files[0] : null)}
                 disabled={busy || !hasEncryptionKey}
@@ -543,7 +563,7 @@ function DocumentsPage (props) {
                 style={{ marginTop: '1em' }}
                 onDismiss={() => setError(null)}
               >
-                <Message.Header>Could not add document</Message.Header>
+                <Message.Header>{dl.add.errorTitle}</Message.Header>
                 <p style={{ margin: '0.35em 0 0' }}>{error}</p>
               </Message>
             )}
@@ -552,16 +572,13 @@ function DocumentsPage (props) {
 
         {distributeEnabled ? (
           <Segment>
-            <Header as="h3">
-              <Icon name="gift" />
-              Offers
-            </Header>
             <DistributeProposalsList bridgeRef={props.bridgeRef} embedded />
           </Segment>
         ) : null}
 
         <Segment>
-          <Header as="h3">Documents</Header>
+          <Header as="h3" id="documents-catalog-heading" style={{ marginBottom: '0.25em' }}>{dl.catalog.title}</Header>
+          <p style={{ color: '#666', marginTop: 0 }}>{dl.catalog.summary}</p>
           <Button
             type="button"
             size="small"
@@ -572,7 +589,7 @@ function DocumentsPage (props) {
             disabled={busy}
           >
             <Icon name="refresh" />
-            Refresh
+            {t.common.actions.refresh}
           </Button>
           {(documentMarketAccumulate || inventoryCatalog || meshAvailable) && (
             <Button
@@ -591,33 +608,30 @@ function DocumentsPage (props) {
                 }
               }}
               disabled={busy}
-              title="Request document inventories from connected Fabric and WebRTC peers"
+              title={dl.catalog.askPeersTitle}
             >
               <Icon name="exchange" />
-              Query peer inventories
+              {dl.catalog.askPeers}
             </Button>
           )}
           {inventoryCatalog && (
             <Message info size="small" style={{ marginTop: '1em' }} data-testid="hub-inventory-catalog">
-              <Message.Header>Peer inventories</Message.Header>
+              <Message.Header>{dl.catalog.peerFilesTitle}</Message.Header>
               <p style={{ margin: '0.35em 0 0' }}>
-                This client lists files advertised by seed and mesh peers. Publish and Hub catalog
-                tools stay on a live Hub origin.
+                {dl.catalog.peerFilesBody}
               </p>
             </Message>
           )}
           {documentMarketAccumulate && (
             <Message info size="small" style={{ marginTop: '1em' }}>
-              <Message.Header>Document Market</Message.Header>
+              <Message.Header>{dl.catalog.marketTitle}</Message.Header>
               <p style={{ margin: '0.35em 0 0' }}>
-                This hub accumulates peer inventories
-                {documentMarket.republishWithMarkup
-                  ? ` and republishes held files at +${Number(documentMarket.markupBps) / 100}%`
-                    + (Number(documentMarket.markupSats) > 0 ? ` + ${documentMarket.markupSats} sats` : '')
-                    + ' markup'
-                  : ''}
-                . Outbound inventory still lists only files this node can deliver.
-                {documentMarket.offerCount != null ? ` ${documentMarket.offerCount} remote offer${documentMarket.offerCount === 1 ? '' : 's'} stored.` : ''}
+                {dl.catalog.market({
+                  resell: !!documentMarket.republishWithMarkup,
+                  markupPercent: Number(documentMarket.markupBps) / 100,
+                  markupSats: Number(documentMarket.markupSats) || 0,
+                  offerCount: documentMarket.offerCount != null ? Number(documentMarket.offerCount) : null
+                })}
               </p>
             </Message>
           )}
@@ -629,7 +643,7 @@ function DocumentsPage (props) {
               <div>
                 <Loader active inline="centered" />
                 <Header as="h4" style={{ marginTop: '1em', textAlign: 'center' }}>
-                  Loading documents…
+                  {dl.loadingTitle}
                   <Header.Subheader>
                     {documentsLoadingSubtext}
                   </Header.Subheader>
@@ -648,10 +662,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="blue"
                       style={{ marginLeft: '0.5em' }}
-                      title="Published to hub"
+                      title={lb.publishedTitle}
                     >
                       <Icon name="bullhorn" />
-                      Published
+                      {lb.published}
                     </Label>
                   );
                 } else if (doc.isLocal) {
@@ -661,10 +675,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="grey"
                       style={{ marginLeft: '0.5em' }}
-                      title="Private (local to this browser)"
+                      title={lb.privateTitle}
                     >
                       <Icon name="lock" />
-                      Private
+                      {lb.private}
                     </Label>
                   );
                 } else if (doc.isInventory) {
@@ -674,10 +688,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="teal"
                       style={{ marginLeft: '0.5em' }}
-                      title="Advertised on a peer document inventory"
+                      title={lb.peerFileTitle}
                     >
                       <Icon name="exchange" />
-                      Inventory
+                      {lb.peerFile}
                     </Label>
                   );
                 }
@@ -689,10 +703,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="green"
                       style={{ marginLeft: '0.25em' }}
-                      title="Encrypted with your key"
+                      title={lb.encryptedTitle}
                     >
                       <Icon name="shield" />
-                      Encrypted
+                      {lb.encrypted}
                     </Label>
                   );
                 }
@@ -706,10 +720,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="orange"
                       style={{ marginLeft: '0.25em' }}
-                      title="Auto-published L1 block summary from this hub"
+                      title={lb.bitcoinBlockTitle}
                     >
                       <Icon name="cube" />
-                      L1 block
+                      {lb.bitcoinBlock}
                     </Label>
                   );
                 }
@@ -723,10 +737,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="orange"
                       style={{ marginLeft: '0.25em' }}
-                      title="Auto-published L1 transaction from an indexed block (optional; pruned nodes may drop from local inventory)"
+                      title={lb.bitcoinTxTitle}
                     >
                       <Icon name="exchange" />
-                      L1 tx
+                      {lb.bitcoinTx}
                     </Label>
                   );
                 }
@@ -740,10 +754,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="purple"
                       style={{ marginLeft: '0.25em' }}
-                      title="Pay-to-distribute storage contract (L1 bonded)"
+                      title={lb.storageTitle}
                     >
                       <Icon name="cloud" />
-                      Storage
+                      {lb.storage}
                     </Label>
                   );
                 }
@@ -753,20 +767,17 @@ function DocumentsPage (props) {
                   const conf = st.confirmations != null ? Number(st.confirmations) : null;
                   let payColor = 'grey';
                   let payText = '';
-                  let payTitle = 'Storage contract funding tx (from hub / bitcoind)';
+                  let payTitle = lb.storagePaymentTitle;
                   if (conf != null && !Number.isNaN(conf) && conf > 0) {
                     payColor = 'green';
-                    payText = `${conf} confirmation${conf === 1 ? '' : 's'}`;
-                  } else if (st.inMempool) {
+                    payText = lb.confirmations(conf);
+                  } else if (st.inMempool || conf === 0) {
                     payColor = 'yellow';
-                    payText = 'Mempool';
-                    payTitle = 'Funding tx in mempool (0 confirmations)';
-                  } else if (conf === 0) {
-                    payColor = 'yellow';
-                    payText = '0 confirmations';
+                    payText = lb.unconfirmed;
+                    payTitle = lb.unconfirmedTitle;
                   } else {
-                    payText = 'L1 n/a';
-                    payTitle = 'Could not load tx from Bitcoin RPC';
+                    payText = lb.paymentUnknown;
+                    payTitle = lb.paymentUnknownTitle;
                   }
                   labels.push(
                     <Label
@@ -789,10 +800,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="teal"
                       style={{ marginLeft: '0.25em' }}
-                      title="Listed by a connected peer; this hub does not hold the file yet"
+                      title={lb.peerOfferTitle}
                     >
                       <Icon name="share alternate" />
-                      Peer offer
+                      {lb.peerOffer}
                     </Label>
                   );
                 }
@@ -804,10 +815,10 @@ function DocumentsPage (props) {
                       size="mini"
                       basic
                       style={{ marginLeft: '0.25em' }}
-                      title="Cheapest remote inventory price"
+                      title={lb.peerPriceTitle}
                     >
                       <Icon name="exchange" />
-                      peer {formatSatsDisplay(doc.bestPeerPriceSats)} sats
+                      {lb.peerPrice(t.common.sats(doc.bestPeerPriceSats))}
                     </Label>
                   );
                 }
@@ -819,10 +830,10 @@ function DocumentsPage (props) {
                       size="mini"
                       color="orange"
                       style={{ marginLeft: '0.25em' }}
-                      title="Listed L1 price (inventory HTLC)"
+                      title={lb.priceTitle}
                     >
                       <Icon name="bitcoin" />
-                      {formatSatsDisplay(doc.purchasePriceSats)} sats
+                      {t.common.sats(doc.purchasePriceSats)}
                     </Label>
                   );
                 }
@@ -846,20 +857,21 @@ function DocumentsPage (props) {
                         {labels}
                       </List.Header>
                       <List.Description style={{ color: '#666' }}>
-                        {doc.mime || 'application/octet-stream'} — {doc.size != null ? `${doc.size} bytes` : ''}
-                        {doc.created ? ` — ${new Date(doc.created).toLocaleString()}` : ''}
+                        {doc.mime || 'application/octet-stream'}
+                        {doc.size != null ? ` · ${rw.sizeBytes(doc.size)}` : ''}
+                        {doc.created ? ` · ${new Date(doc.created).toLocaleString()}` : ''}
                         {(doc.lineage || doc.id) && (
-                          <span title="Fabric document id for the content creator (lineage)">
-                            {' — '}author <code style={{ fontSize: '0.92em' }}>{shortHexId(doc.lineage || doc.id)}</code>
+                          <span title={rw.authorTitle}>
+                            {' · '}{rw.author} <code style={{ fontSize: '0.92em' }}>{shortHexId(doc.lineage || doc.id)}</code>
                           </span>
                         )}
                         {doc.isPublished && fabricPeerId && (
-                          <span title="Fabric peer id of the hub hosting the published index">
-                            {' — '}publisher <code style={{ fontSize: '0.92em' }}>{shortHexId(fabricPeerId)}</code>
+                          <span title={rw.publisherTitle}>
+                            {' · '}{rw.publisher} <code style={{ fontSize: '0.92em' }}>{shortHexId(fabricPeerId)}</code>
                           </span>
                         )}
                         {!doc.storageContractId && doc.isPublished && (
-                          <span title="Published but no bonded storage contract yet"> — not replicated</span>
+                          <span title={rw.notReplicatedTitle}>{' · '}{rw.notReplicated}</span>
                         )}
                       </List.Description>
                     </List.Content>
@@ -869,7 +881,7 @@ function DocumentsPage (props) {
               {docs.length === 0 && (
                 <List.Item>
                   <List.Content>
-                    <List.Description style={{ color: '#666' }}>No documents yet.</List.Description>
+                    <List.Description style={{ color: '#666' }}>{dl.catalog.empty}</List.Description>
                   </List.Content>
                 </List.Item>
               )}
@@ -886,7 +898,7 @@ function DocumentsPage (props) {
                 }}
               >
                 <span style={{ color: '#666', fontSize: '0.88em' }}>
-                  Showing {docsRangeFrom}–{docsRangeTo} of {docsListTotal}
+                  {dl.catalog.showing(docsRangeFrom, docsRangeTo, docsListTotal)}
                 </span>
                 <HubPagination
                   activePage={docsListActivePage}

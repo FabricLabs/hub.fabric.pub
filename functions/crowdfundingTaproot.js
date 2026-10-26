@@ -44,9 +44,13 @@ function networkForFabricName (name = '') {
 }
 
 function toXOnly (pubkey33) {
-  if (!Buffer.isBuffer(pubkey33) || pubkey33.length !== 33) return null;
+  if (!(pubkey33 instanceof Uint8Array) || pubkey33.length !== 33) return null;
   if (pubkey33[0] !== 0x02 && pubkey33[0] !== 0x03) return null;
-  return pubkey33.subarray(1, 33);
+  return Buffer.from(pubkey33.subarray(1, 33));
+}
+
+function bytesEqual (a, b) {
+  return a instanceof Uint8Array && b instanceof Uint8Array && Buffer.compare(a, b) === 0;
 }
 
 function u64LePush (n) {
@@ -140,9 +144,9 @@ function buildCrowdfundP2tr (opts = {}) {
 
   return {
     address: pay.address,
-    output: pay.output,
-    payoutScript,
-    refundScript,
+    output: Buffer.from(pay.output),
+    payoutScript: Buffer.from(payoutScript),
+    refundScript: Buffer.from(refundScript),
     goalSats: goal,
     minContributionSats: minC,
     refundLocktimeHeight: lock,
@@ -177,7 +181,7 @@ function findP2trVoutForAddress (tx, paymentAddress, network) {
   const want = bitcoin.address.toOutputScript(addr, network);
   for (let i = 0; i < tx.outs.length; i++) {
     const sc = tx.outs[i].script;
-    if (Buffer.isBuffer(sc) && sc.equals(want)) return i;
+    if (bytesEqual(sc, want)) return i;
   }
   return -1;
 }
@@ -232,7 +236,7 @@ function prepareCrowdfundPayoutPsbt (opts = {}) {
     const out = tx.outs[vout];
     const scriptPub = out.script;
     const wantScript = bitcoin.address.toOutputScript(String(paymentAddress).trim(), network);
-    if (!Buffer.isBuffer(scriptPub) || !scriptPub.equals(wantScript)) {
+    if (!bytesEqual(scriptPub, wantScript)) {
       throw new Error('Input does not pay the crowdfund P2TR address.');
     }
     const inputSats = typeof out.value === 'bigint' ? Number(out.value) : Number(out.value);
@@ -266,7 +270,7 @@ function prepareCrowdfundPayoutPsbt (opts = {}) {
       index: r.vout,
       witnessUtxo: {
         script: r.out.script,
-        value: r.inputSats
+        value: BigInt(r.inputSats)
       },
       tapInternalKey: TAPROOT_INTERNAL_NUMS,
       tapLeafScript: [{
@@ -279,7 +283,7 @@ function prepareCrowdfundPayoutPsbt (opts = {}) {
 
   psbt.addOutput({
     address: dest,
-    value: destSats
+    value: BigInt(destSats)
   });
 
   return {
@@ -331,7 +335,7 @@ function prepareCrowdfundRefundPsbt (opts = {}) {
     sequence: 0xfffffffe,
     witnessUtxo: {
       script: out.script,
-      value: inputSats
+      value: BigInt(inputSats)
     },
     tapInternalKey: TAPROOT_INTERNAL_NUMS,
     tapLeafScript: [{
@@ -342,7 +346,7 @@ function prepareCrowdfundRefundPsbt (opts = {}) {
   });
   psbt.addOutput({
     address: String(destinationAddress || '').trim(),
-    value: destSats
+    value: BigInt(destSats)
   });
 
   return {
@@ -377,7 +381,7 @@ function finalizeCrowdfundPayoutPsbt (psbt) {
         throw new Error('Missing tapLeafScript on PSBT input.');
       }
       const lh = bip341.tapleafHash({ output: leaf.script, version: leaf.leafVersion });
-      const sigs = (input.tapScriptSig || []).filter((t) => t.leafHash.equals(lh));
+      const sigs = (input.tapScriptSig || []).filter((t) => bytesEqual(t.leafHash, lh));
       if (sigs.length < 2) throw new Error('Need two tapscript signatures for crowdfund payout leaf.');
       const ordered = sigs
         .map((tss) => {
@@ -407,7 +411,7 @@ function finalizeCrowdfundRefundPsbt (psbt) {
       throw new Error('Missing tapLeafScript on refund input.');
     }
     const lh = bip341.tapleafHash({ output: leaf.script, version: leaf.leafVersion });
-    const tss = (input.tapScriptSig || []).find((t) => t.leafHash.equals(lh));
+    const tss = (input.tapScriptSig || []).find((t) => bytesEqual(t.leafHash, lh));
     if (!tss) throw new Error('Missing tapscript signature for refund leaf.');
     const sig = tss.signature.length >= 64 ? tss.signature.subarray(0, 64) : tss.signature;
     const witness = [sig, leaf.script, leaf.controlBlock];

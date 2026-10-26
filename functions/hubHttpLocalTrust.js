@@ -10,7 +10,9 @@
  * and the `Host` header is something DNS cannot point at us on an attacker's behalf.
  */
 
+const fs = require('fs');
 const net = require('net');
+const path = require('path');
 
 /** @private */
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -126,6 +128,97 @@ function createLoopbackHostGuard (opts = {}) {
 }
 
 /**
+ * True when a browser reads this response for another site: a `fetch`, `<script>`, or `<img>`
+ * from a cross-site or same-site page (`Sec-Fetch-Site`), or any request whose `Origin` is not
+ * this Host. Top-level navigations are not reads; the other site never sees the page.
+ * @param {Object} [req]
+ * @returns {boolean}
+ */
+function isCrossOriginRead (req) {
+  const h = (req && req.headers) || {};
+  const site = String(h['sec-fetch-site'] || '').toLowerCase();
+  const mode = String(h['sec-fetch-mode'] || '').toLowerCase();
+  if ((site === 'cross-site' || site === 'same-site') && mode !== 'navigate') return true;
+  if (!h.origin) return false;
+  try {
+    return new URL(String(h.origin)).host.toLowerCase() !== String(h.host || '').toLowerCase();
+  } catch (_) {
+    return true;
+  }
+}
+
+/**
+ * Whether a `config.local.js` source sets the dev browser identity (operator mnemonic or its
+ * passphrase) on a line that is not a comment.
+ * @param {string} source
+ * @returns {boolean}
+ */
+function setsBrowserIdentity (source) {
+  return String(source || '').split('\n').some((line) =>
+    !/^\s*(\/\/|\/\*|\*)/.test(line) && /FABRIC_DEV_BROWSER_(SEED|PASSPHRASE)/.test(line));
+}
+
+/** @private */
+const LOCAL_CONFIG_STUB = '/* config.local.js sets a browser identity, so it is only served to this machine. */\n';
+
+/** @private Requests the SPA fallback may answer with the HTML shell. */
+function mayServeShell (req, pathname) {
+  if (pathname === '/' || pathname === '/index.html') return true;
+  if (path.extname(pathname)) return false;
+  const accept = String((req.headers && req.headers.accept) || '');
+  return !accept || accept.includes('text/html') || accept.includes('*/*');
+}
+
+/**
+ * Express middleware that keeps browser secrets on this machine. Mount it ahead of the static
+ * roots, which would otherwise serve `/config.local.js` (with the global CORS headers) before
+ * any Hub middleware runs.
+ *
+ * `/config.local.js` may set `window.FABRIC_DEV_BROWSER_SEED`. It is served by this middleware
+ * with no CORS headers and `Cross-Origin-Resource-Policy: same-origin`; a request that is not
+ * local ({@link isTrustedLoopbackRequest}) or that another site makes from a browser gets a stub
+ * instead whenever the file sets that identity. With `inlineIdentity`
+ * (`FABRIC_DEV_PUSH_BROWSER_IDENTITY`, mnemonic in the HTML shell) such requests are refused
+ * (403) for anything that may be the shell.
+ * @param {Object} opts
+ * @param {string} opts.configPath Absolute path of `assets/config.local.js`.
+ * @param {boolean} [opts.inlineIdentity]
+ * @param {string[]} [opts.allowedHosts]
+ * @returns {Function}
+ */
+function createBrowserSecretsGuard (opts = {}) {
+  const allowedHosts = opts.allowedHosts || [];
+  return function browserSecretsGuard (req, res, next) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const pathname = String(req.path || '');
+    const local = isTrustedLoopbackRequest(req, { allowedHosts }) && !isCrossOriginRead(req);
+    if (pathname === '/config.local.js') {
+      let source;
+      try {
+        source = fs.readFileSync(opts.configPath, 'utf8');
+      } catch (_) {
+        return next();
+      }
+      res.status(200);
+      res.setHeader('Content-Type', 'application/javascript; charset=UTF-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(local || !setsBrowserIdentity(source) ? source : LOCAL_CONFIG_STUB);
+      return;
+    }
+    if (opts.inlineIdentity && !local && mayServeShell(req, pathname)) {
+      res.status(403);
+      res.setHeader('Content-Type', 'text/plain; charset=UTF-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send('FABRIC_DEV_PUSH_BROWSER_IDENTITY is on: this Hub only serves its page to this machine.\n');
+      return;
+    }
+    next();
+  };
+}
+
+/**
  * Content-Security-Policy for the Hub SPA. Scripts are same-origin (plus WebAssembly);
  * styles allow inline (React `style` props); images and connections stay open for Fomantic
  * flag sprites, explorers, Hub seeds, and WebRTC / WebSocket peers.
@@ -155,10 +248,13 @@ function buildContentSecurityPolicy (opts = {}) {
 module.exports = {
   allowedHostsFromSettings,
   buildContentSecurityPolicy,
+  createBrowserSecretsGuard,
   createLoopbackHostGuard,
   hasProxyForwardHeaders,
   hostnameFromHostHeader,
+  isCrossOriginRead,
   isLoopbackAddress,
   isRebindSafeHost,
-  isTrustedLoopbackRequest
+  isTrustedLoopbackRequest,
+  setsBrowserIdentity
 };

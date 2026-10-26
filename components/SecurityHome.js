@@ -31,13 +31,16 @@ const {
   peerIdOf,
   revokeLinkedDevice
 } = require('../functions/fabricLinkedDevices');
+const t = require('../locales/en');
+
+const copy = t.identity.security;
 
 function timingSafeStringEqual (a, b) {
   const s = String(a);
-  const t = String(b);
-  if (s.length !== t.length) return false;
+  const u = String(b);
+  if (s.length !== u.length) return false;
   let diff = 0;
-  for (let i = 0; i < s.length; i++) diff |= s.charCodeAt(i) ^ t.charCodeAt(i);
+  for (let i = 0; i < s.length; i++) diff |= s.charCodeAt(i) ^ u.charCodeAt(i);
   return diff === 0;
 }
 
@@ -89,13 +92,13 @@ function SecurityHome () {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) {
         setMe(null);
-        setError((j && j.error) || 'Could not load delegation session');
+        setError((j && j.error) || copy.external.loadFailed);
         return;
       }
       setMe(j.session || null);
     } catch (e) {
       setMe(null);
-      setError((e && e.message) ? e.message : String(e));
+      setError(t.common.errors.withReason(copy.external.loadFailed, (e && e.message) ? e.message : String(e)));
     } finally {
       endBusy();
     }
@@ -109,13 +112,13 @@ function SecurityHome () {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) {
         setSessions([]);
-        if (r.status !== 403) setError((j && j.error) || 'Could not list sessions');
+        if (r.status !== 403) setError((j && j.error) || copy.sessions.listFailed);
         return;
       }
       setSessions(Array.isArray(j.sessions) ? j.sessions : []);
     } catch (e) {
       setSessions([]);
-      setError(`Could not list delegation sessions: ${(e && e.message) ? e.message : String(e)}`);
+      setError(t.common.errors.withReason(copy.sessions.listFailed, (e && e.message) ? e.message : String(e)));
     } finally {
       endBusy();
     }
@@ -153,19 +156,19 @@ function SecurityHome () {
     try {
       const r = await revokeLinkedDevice(device);
       if (!r.ok) {
-        setError(r.error || 'Could not revoke device');
+        setError(r.error || copy.devices.revokeFailed);
         return;
       }
       refreshLinkedDevices();
     } catch (e) {
-      setError((e && e.message) ? e.message : String(e));
+      setError(t.common.errors.withReason(copy.devices.revokeFailed, (e && e.message) ? e.message : String(e)));
     } finally {
       endBusy();
     }
   }, [beginBusy, endBusy, refreshLinkedDevices]);
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
-  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((t) => t + 1)), []);
+  React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((n) => n + 1)), []);
   void hubUiTick;
   const uf = loadHubUiFeatureFlags();
 
@@ -181,7 +184,7 @@ function SecurityHome () {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setError((j && j.error) || 'Could not end delegation');
+        setError((j && j.error) || copy.external.endFailed);
         return;
       }
       try {
@@ -192,7 +195,7 @@ function SecurityHome () {
       setMe(null);
       await refreshSessions();
     } catch (e) {
-      setError((e && e.message) ? e.message : String(e));
+      setError(t.common.errors.withReason(copy.external.endFailed, (e && e.message) ? e.message : String(e)));
     } finally {
       endBusy();
     }
@@ -210,7 +213,7 @@ function SecurityHome () {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setError((j && j.error) || 'Could not destroy session');
+        setError((j && j.error) || copy.sessions.endFailed);
         return;
       }
       await refreshSessions();
@@ -223,7 +226,7 @@ function SecurityHome () {
         setMe(null);
       }
     } catch (e) {
-      setError((e && e.message) ? e.message : String(e));
+      setError(t.common.errors.withReason(copy.sessions.endFailed, (e && e.message) ? e.message : String(e)));
     } finally {
       endBusy();
     }
@@ -236,20 +239,28 @@ function SecurityHome () {
       <section aria-labelledby="security-page-heading" aria-describedby="security-page-summary">
         <Header as="h2" id="security-page-heading">
           <Icon name="shield alternate" aria-hidden="true" />
-          <Header.Content>Security &amp; delegation</Header.Content>
+          <Header.Content>{copy.title}</Header.Content>
         </Header>
         <p id="security-page-summary" style={{ color: '#666' }}>
-          When you use <strong>Log in with Fabric Hub (desktop)</strong>, private keys stay with the Hub node; the browser uses <strong>external signing</strong>. Confirm each signature in this app (web or desktop shell) via the delegation modal.
+          {copy.summary}
         </p>
+        <Message warning size="small" data-testid="security-session-token-warning">
+          <Icon name="exclamation triangle" aria-hidden="true" />
+          {copy.tokenWarning}
+        </Message>
         <p style={{ color: '#666', marginTop: '0.65em' }}>
-          Related:{' '}
+          {copy.related}{' '}
           {uf.bitcoinPayments ? (
-            <><Link to="/payments">Bitcoin Payments</Link> (receive vs Hub-wallet send vs Payjoin),{' '}</>
+            <><Link to="/payments">{copy.payments}</Link> ({copy.paymentsNote}),{' '}</>
           ) : (
-            <>Bitcoin Payments (enable <strong>Bitcoin — Payments</strong> in Admin → Feature visibility for a nav link),{' '}</>
+            <>{copy.paymentsHidden}.{' '}</>
           )}
-          <Link to="/documents">Documents</Link> (pay-to-distribute and hosting proposals show extra tips when you have no local wire-signing key).
+          <Link to="/documents">{copy.documents}</Link> ({copy.documentsNote}).
         </p>
+        <details className="hub-developer-details">
+          <summary>{t.common.developerDetails}</summary>
+          <p style={{ color: '#666', margin: '0.35em 0 0' }}>{copy.pathNote}</p>
+        </details>
       </section>
 
       {error && (
@@ -260,15 +271,20 @@ function SecurityHome () {
 
       <Segment>
         <section aria-labelledby="security-linked-devices-h3">
-        <Header as="h3" id="security-linked-devices-h3">Linked devices</Header>
+        <Header as="h3" id="security-linked-devices-h3">{copy.devices.title}</Header>
         <p style={{ color: '#666', fontSize: '0.95em' }}>
-          Peer-equivalent identity cluster (Passport, Android, desktop, this Hub). Revoke publishes a BIP340
-          IdentityCrossSignRevoke Fabric Message. Unlock this identity first. A stolen device stays you until
-          another cluster member revokes.
+          {copy.devices.intro}
         </p>
+        {linkedDevices.length > 0 ? (
+          <p style={{ color: '#666', fontSize: '0.95em' }}>{copy.devices.signHint}</p>
+        ) : null}
+        <details className="hub-developer-details">
+          <summary>{t.common.developerDetails}</summary>
+          <p style={{ color: '#666', margin: '0.35em 0 0' }}>{copy.devices.developer}</p>
+        </details>
         {linkedDevices.length === 0 ? (
           <Message>
-            No linked devices on this browser. Create or accept a <code>fabric://link</code> from Identity.
+            {copy.devices.empty}
           </Message>
         ) : (
           <List divided relaxed>
@@ -283,12 +299,12 @@ function SecurityHome () {
                       disabled={busy}
                       onClick={() => void handleRevokeDevice(d)}
                     >
-                      Revoke
+                      {copy.devices.revoke}
                     </Button>
                   </List.Content>
-                  <List.Header>{d.label || d.kind || 'Device'}</List.Header>
+                  <List.Header>{d.label || d.kind || copy.devices.fallbackName}</List.Header>
                   <List.Description>
-                    {pid ? <code style={{ fontSize: '0.85em' }}>{pid}</code> : '—'}
+                    {pid ? <code style={{ fontSize: '0.85em' }}>{pid}</code> : t.common.none}
                     {d.hubOrigin ? ` · ${d.hubOrigin}` : ''}
                     {d.linkedAt ? ` · ${new Date(d.linkedAt).toLocaleString()}` : ''}
                   </List.Description>
@@ -302,25 +318,26 @@ function SecurityHome () {
 
       <Segment>
         <section aria-labelledby="security-external-signing-h3">
-        <Header as="h3" id="security-external-signing-h3">External signing</Header>
+        <Header as="h3" id="security-external-signing-h3">{copy.external.title}</Header>
         {external ? (
           <Message info>
             <Icon name="linkify" aria-hidden="true" />
-            External signing is <Label color="teal" size="small" aria-hidden="true">enabled</Label> for this browser. Approve or reject each request in the in-app delegation modal.
+            <Label color="teal" size="small" aria-hidden="true">{t.common.states.on}</Label>{' '}
+            {copy.external.on}
           </Message>
         ) : (
           <Message>
-            External signing is not active. Use <strong>Identity → Log in with Fabric Hub (desktop)</strong> to delegate signing to the desktop app.
+            {copy.external.off}
           </Message>
         )}
         {token && (
           <List bulleted>
-            <List.Item>Delegation token: <code style={{ wordBreak: 'break-all' }}>{token.slice(0, 16)}…</code></List.Item>
+            <List.Item>{copy.external.tokenLabel} <code style={{ wordBreak: 'break-all' }}>{token.slice(0, 16)}…</code></List.Item>
             <List.Item>
-              <Link to={`/sessions/${encodeURIComponent(token)}`}>Open session tools &amp; audit</Link>
+              <Link to={`/sessions/${encodeURIComponent(token)}`}>{copy.external.openSession}</Link>
             </List.Item>
             {me && me.linkedAt && (
-              <List.Item>Linked: {new Date(me.linkedAt).toLocaleString()}</List.Item>
+              <List.Item>{copy.external.linked(new Date(me.linkedAt).toLocaleString())}</List.Item>
             )}
           </List>
         )}
@@ -332,7 +349,7 @@ function SecurityHome () {
             onClick={() => void destroyMine()}
           >
             <Icon name="unlink" />
-            End delegation (this browser)
+            {copy.external.end}
           </Button>
         )}
         </section>
@@ -340,9 +357,9 @@ function SecurityHome () {
 
       <Segment>
         <section aria-labelledby="security-active-sessions-h3" aria-describedby="security-active-sessions-desc">
-        <Header as="h3" id="security-active-sessions-h3">Active delegation sessions (this Hub)</Header>
+        <Header as="h3" id="security-active-sessions-h3">{copy.sessions.title}</Header>
         <p id="security-active-sessions-desc" style={{ color: '#666', fontSize: '0.95em' }}>
-          Loopback clients (including this page when served from localhost) can list all open delegation tokens. Use <strong>Destroy session</strong> to revoke a token; the browser must log in again.
+          {copy.sessions.intro}
         </p>
         <Button
           size="small"
@@ -350,32 +367,31 @@ function SecurityHome () {
           type="button"
           onClick={() => void refreshSessions()}
           disabled={busy}
-          aria-label="Refresh delegation sessions list"
         >
           <Icon name="refresh" aria-hidden="true" />
-          Refresh list
+          {copy.sessions.refresh}
         </Button>
         <Table celled compact unstackable style={{ marginTop: '1em' }}>
             <Table.Header>
             <Table.Row>
-              <Table.HeaderCell>Token</Table.HeaderCell>
-              <Table.HeaderCell>Origin</Table.HeaderCell>
-              <Table.HeaderCell>Linked</Table.HeaderCell>
-              <Table.HeaderCell>Session</Table.HeaderCell>
+              <Table.HeaderCell>{copy.sessions.token}</Table.HeaderCell>
+              <Table.HeaderCell>{copy.sessions.origin}</Table.HeaderCell>
+              <Table.HeaderCell>{copy.sessions.linked}</Table.HeaderCell>
+              <Table.HeaderCell>{copy.sessions.session}</Table.HeaderCell>
               <Table.HeaderCell />
             </Table.Row>
           </Table.Header>
           <Table.Body>
             {sessions.length === 0 ? (
               <Table.Row>
-                <Table.Cell colSpan="5">No active delegation sessions.</Table.Cell>
+                <Table.Cell colSpan="5">{copy.sessions.empty}</Table.Cell>
               </Table.Row>
             ) : (
               sessions.map((s) => (
                 <Table.Row key={s.tokenId}>
                   <Table.Cell><code style={{ fontSize: '0.85em' }}>{s.token}</code></Table.Cell>
-                  <Table.Cell>{s.origin || '—'}</Table.Cell>
-                  <Table.Cell>{s.linkedAt ? new Date(s.linkedAt).toLocaleString() : '—'}</Table.Cell>
+                  <Table.Cell>{s.origin || t.common.none}</Table.Cell>
+                  <Table.Cell>{s.linkedAt ? new Date(s.linkedAt).toLocaleString() : t.common.none}</Table.Cell>
                   <Table.Cell collapsing>
                     <Button
                       as={Link}
@@ -383,7 +399,7 @@ function SecurityHome () {
                       size="mini"
                       basic
                     >
-                      Open
+                      {t.common.actions.open}
                     </Button>
                   </Table.Cell>
                   <Table.Cell collapsing>
@@ -393,7 +409,7 @@ function SecurityHome () {
                       disabled={busy}
                       onClick={() => void destroyByTokenId(s.tokenId)}
                     >
-                      Destroy session
+                      {copy.sessions.end}
                     </Button>
                   </Table.Cell>
                 </Table.Row>

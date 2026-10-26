@@ -7,6 +7,9 @@
 
 const React = require('react');
 const { Message, Icon } = require('semantic-ui-react');
+const t = require('../../locales/en');
+
+const copy = t.identity.adminTokenNotice;
 
 /**
  * @param {{ compact?: boolean }} props
@@ -21,15 +24,13 @@ function FabricHubAdminTokenNotice (props) {
       style={{ marginBottom: compact ? '0.85em' : '1em' }}
     >
       <Icon name="check circle" aria-hidden="true" />
-      <Message.Header>Hub admin token saved</Message.Header>
+      <Message.Header>{copy.title}</Message.Header>
       <Message.Content style={{ marginTop: '0.35em' }}>
         <p style={{ margin: 0, lineHeight: 1.55 }}>
-          First-time operator setup stored an <strong>admin token</strong> in this browser (local storage).
-          It authenticates hub-only actions such as regtest block generation and some settings changes — it is{' '}
-          <strong>not</strong> your Fabric signing identity.
+          {copy.body}
         </p>
         <p style={{ margin: '0.65em 0 0', lineHeight: 1.55 }}>
-          Continue below to <strong>generate or restore</strong> your Fabric keys (wallet, documents, signing).
+          {copy.next}
         </p>
       </Message.Content>
     </Message>

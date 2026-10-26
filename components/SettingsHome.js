@@ -13,11 +13,14 @@ const {
 } = require('../functions/hubUiFeatureFlags');
 const { useHubHttpAvailable } = require('./hubUiRuntime');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const t = require('../locales/en');
+
+const c = t.settings.home;
 
 function SettingsHome (props) {
   const [, setUiTick] = React.useState(0);
   React.useEffect(() => {
-    return subscribeHubUiFeatureFlags(() => setUiTick((t) => t + 1));
+    return subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1));
   }, []);
   const uf = loadHubUiFeatureFlags();
   /** Same gate as {@link TopPanel}: Peers nav is hub-admin-only. */
@@ -26,6 +29,31 @@ function SettingsHome (props) {
   const publicHubVisitor = !!(props && props.publicHubVisitor);
   /** Operator cards need live Hub HTTP and a signed-in (or enrolled) shell. */
   const showOperatorCards = hubHttpAvailable && !publicHubVisitor;
+
+  const cards = [
+    showOperatorCards && { key: 'documents', to: '/documents', icon: 'file outline' },
+    showOperatorCards && { key: 'contracts', to: '/contracts', icon: 'file code' },
+    showOperatorCards && uf.peers && hasHubAdminPeerNav && { key: 'peers', to: '/peers', icon: 'sitemap' },
+    uf.features && { key: 'features', to: '/features', icon: 'info circle' },
+    showOperatorCards && uf.activities && { key: 'notifications', to: '/notifications', icon: 'bell outline' },
+    showOperatorCards && uf.activities && { key: 'activities', to: '/activities', icon: 'comments' },
+    { key: 'identity', icon: 'user circle', identity: true },
+    { key: 'wallet', to: '/settings/bitcoin-wallet', icon: 'bitcoin' },
+    showOperatorCards && { key: 'bitcoin', to: '/services/bitcoin', icon: 'bitcoin' },
+    showOperatorCards && hasHubAdminPeerNav && { key: 'collaboration', to: '/settings/collaboration', icon: 'users' },
+    showOperatorCards && { key: 'security', to: '/settings/security', icon: 'shield' },
+    showOperatorCards && { key: 'admin', to: '/settings/admin', icon: 'settings' },
+    showOperatorCards && uf.sidechain && { key: 'statechain', to: '/sidechains', icon: 'random' },
+    showOperatorCards && uf.sidechain && { key: 'beaconFederation', to: '/settings/admin/beacon-federation', icon: 'star' },
+    showOperatorCards && uf.sidechain && { key: 'federations', to: '/federations', icon: 'users' },
+    showOperatorCards && uf.bitcoinResources && { key: 'bitcoinResources', to: '/services/bitcoin/resources', icon: 'code' }
+  ].filter(Boolean);
+
+  const openIdentityManager = () => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
+    }
+  };
 
   return (
     <Segment
@@ -37,245 +65,51 @@ function SettingsHome (props) {
       <section aria-labelledby="settings-page-heading" aria-describedby="settings-page-summary">
         <Header as="h2" id="settings-page-heading" style={{ marginBottom: '0.35em' }}>
           <Icon name="setting" aria-hidden="true" />
-          <Header.Content>Settings</Header.Content>
+          <Header.Content>{c.title}</Header.Content>
         </Header>
         <p id="settings-page-summary" style={{ color: '#666', margin: '0 0 1.5em', maxWidth: '42rem', lineHeight: 1.45 }}>
           {publicHubVisitor
-            ? (
-              <>
-                Sign in with a Fabric identity to manage this hub. Identity unlock/create and local Bitcoin derivation
-                run in the browser; operator cards stay hidden until you enroll or unlock.
-              </>
-              )
-            : hubHttpAvailable
-              ? (
-                <>
-                  Hub configuration uses the <code>/settings</code> HTTP API (JSON). Use the cards below for documents, contracts,
-                  the hub activity feed, and identity-related tools: browser ↔ desktop linking, delegation tokens, and per-session audit.
-                </>
-                )
-              : (
-                <>
-                  This origin is serving the HTML client only. Identity unlock/create and local Bitcoin derivation run in the browser.
-                  Point the cog at a Hub when you have one; operator cards stay hidden until Hub HTTP is on this origin.
-                </>
-                )}
+            ? c.summaryVisitor
+            : (hubHttpAvailable ? c.summaryHub : c.summaryClient)}
         </p>
       </section>
 
       <Card.Group itemsPerRow={1} stackable>
-        {showOperatorCards ? (
-          <Card as={Link} to="/documents" style={{ cursor: 'pointer' }}>
+        {cards.map((card) => {
+          const copy = c[card.key];
+          const content = (
             <Card.Content>
               <Card.Header>
-                <Icon name="file outline" aria-hidden="true" /> Documents
+                <Icon name={card.icon} aria-hidden="true" /> {copy.title}
               </Card.Header>
-              <Card.Description>
-                Publish, distribute, and open the document list for this browser (same as the top nav).
-              </Card.Description>
+              <Card.Description>{copy.body}</Card.Description>
             </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards ? (
-          <Card as={Link} to="/contracts" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="file code" aria-hidden="true" /> Contracts
-              </Card.Header>
-              <Card.Description>
-                Storage and execution contracts; optional L1-backed execution registry when the hub Bitcoin service is available.
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards && uf.peers && hasHubAdminPeerNav ? (
-          <Card as={Link} to="/peers" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="sitemap" aria-hidden="true" /> Peers
-              </Card.Header>
-              <Card.Description>
-                Fabric TCP peers and WebRTC mesh (same as top nav).
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {uf.features ? (
-          <Card as={Link} to="/features" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="info circle" aria-hidden="true" /> Features tour
-              </Card.Header>
-              <Card.Description>
-                Product overview and the same shortcut row as home and <strong>More</strong> → Features.
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards && uf.activities ? (
-          <Card as={Link} to="/notifications" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="bell outline" aria-hidden="true" /> Notifications
-              </Card.Header>
-              <Card.Description>
-                Wallet, Payjoin, and hub toasts (same list as the bell in the top bar).
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards && uf.activities ? (
-          <Card as={Link} to="/activities" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="comments" aria-hidden="true" /> Activity log
-              </Card.Header>
-              <Card.Description>
-                Hub message log, chat, Bitcoin blocks, and optional feed filters.
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        <Card
-          style={{ cursor: 'pointer' }}
-          tabIndex={0}
-          role="button"
-          aria-label="Open Fabric identity manager"
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter' && e.key !== ' ') return;
-            e.preventDefault();
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
-            }
-          }}
-          onClick={() => {
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('fabricOpenIdentityManager'));
-            }
-          }}
-        >
-          <Card.Content>
-            <Card.Header>
-              <Icon name="user circle" aria-hidden="true" /> Fabric identity
-            </Card.Header>
-            <Card.Description>
-              Unlock, import, or export your local Fabric keys (same modal as <strong>Manage identity</strong> in the top bar).
-              For Bitcoin receive addresses and balance, use <strong>Bitcoin wallet &amp; derivation</strong>.
-              Your public peer page is <strong>User profile</strong> (same route as clicking your name in chat).
-            </Card.Description>
-          </Card.Content>
-        </Card>
-        <Card as={Link} to="/settings/bitcoin-wallet" style={{ cursor: 'pointer' }}>
-          <Card.Content>
-            <Card.Header>
-              <Icon name="bitcoin" aria-hidden="true" /> Bitcoin wallet &amp; derivation
-            </Card.Header>
-            <Card.Description>
-              How Bitcoin addresses and client balance map to your Fabric identity: one BIP44 Bitcoin account (
-              <code style={{ whiteSpace: 'nowrap' }}>{`m/44'/0'/0'`}</code>) for receives, change, and Hub wallet id.
-            </Card.Description>
-          </Card.Content>
-        </Card>
-        {showOperatorCards ? (
-        <Card as={Link} to="/services/bitcoin" style={{ cursor: 'pointer' }}>
-          <Card.Content>
-            <Card.Header>
-              <Icon name="bitcoin" aria-hidden="true" /> Bitcoin dashboard
-            </Card.Header>
-            <Card.Description>
-              Hub L1 status, regtest tools, explorer, Payjoin, and Lightning; Payments / Invoices / Resources and other sub-pages follow Feature visibility.
-            </Card.Description>
-          </Card.Content>
-        </Card>
-        ) : null}
-        {showOperatorCards && hasHubAdminPeerNav ? (
-          <Card as={Link} to="/settings/collaboration" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="users" aria-hidden="true" /> Collaboration
-              </Card.Header>
-              <Card.Description>
-                Contacts (including from peers), multisig-oriented groups with pubkey nesting, and email invitations.
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards ? (
-        <Card as={Link} to="/settings/security" style={{ cursor: 'pointer' }}>
-          <Card.Content>
-            <Card.Header>
-              <Icon name="shield" aria-hidden="true" /> Security &amp; delegation
-            </Card.Header>
-            <Card.Description>
-              External signing sessions, delegation tokens, and links to per-token audit (
-              <code>/sessions</code> REST API on this Hub).
-            </Card.Description>
-          </Card.Content>
-        </Card>
-        ) : null}
-        {showOperatorCards ? (
-        <Card as={Link} to="/settings/admin" style={{ cursor: 'pointer' }}>
-          <Card.Content>
-            <Card.Header>
-              <Icon name="settings" aria-hidden="true" /> Admin
-            </Card.Header>
-            <Card.Description>
-              Beacon status, regtest admin token, HTTP shared mode, optional hub UI feature toggles (URL{' '}
-              <code>/settings/admin</code>; old <code>/admin</code> redirects here).
-            </Card.Description>
-          </Card.Content>
-        </Card>
-        ) : null}
-        {showOperatorCards && uf.sidechain ? (
-          <Card as={Link} to="/sidechains" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="random" aria-hidden="true" /> Statechain
-              </Card.Header>
-              <Card.Description>
-                Global state, JSON patches, and operator context (same route as <strong>More</strong> → Sidechain).
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards && uf.sidechain ? (
-          <Card as={Link} to="/settings/admin/beacon-federation" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="star" aria-hidden="true" /> Beacon Federation
-              </Card.Header>
-              <Card.Description>
-                L1-bound epochs, manifest links, and federation witness walkthrough (same as <strong>More</strong> → Beacon Federation).
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards && uf.sidechain ? (
-          <Card as={Link} to="/federations" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="users" aria-hidden="true" /> Federations
-              </Card.Header>
-              <Card.Description>
-                Multi-sig validator policy for sidechain patches and beacon epochs (when not overridden by environment). Same form under Settings → Distributed federation.
-                For L1-bound epochs and reproducible Schnorr witnesses, see <strong>Beacon Federation</strong> and the live
-                <code>/services/distributed/manifest</code> / <code>/services/distributed/epoch</code> JSON endpoints.
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
-        {showOperatorCards && uf.bitcoinResources ? (
-          <Card as={Link} to="/services/bitcoin/resources" style={{ cursor: 'pointer' }}>
-            <Card.Content>
-              <Card.Header>
-                <Icon name="code" aria-hidden="true" /> Bitcoin HTTP resources
-              </Card.Header>
-              <Card.Description>
-                L1 payment verification, browse JSON from <code>/services/bitcoin</code> and <code>/services/lightning</code>, and quick-open common GET paths.
-              </Card.Description>
-            </Card.Content>
-          </Card>
-        ) : null}
+          );
+          if (card.identity) {
+            return (
+              <Card
+                key={card.key}
+                style={{ cursor: 'pointer' }}
+                tabIndex={0}
+                role="button"
+                aria-label={copy.title}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  openIdentityManager();
+                }}
+                onClick={openIdentityManager}
+              >
+                {content}
+              </Card>
+            );
+          }
+          return (
+            <Card key={card.key} as={Link} to={card.to} style={{ cursor: 'pointer' }}>
+              {content}
+            </Card>
+          );
+        })}
       </Card.Group>
     </Segment>
   );

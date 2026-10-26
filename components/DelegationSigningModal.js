@@ -15,6 +15,9 @@ const { fabricMessageSummaryFromHex } = require('../functions/fabricProtocolUrl'
 const { DELEGATION_STORAGE_KEY } = require('../functions/fabricDelegationLocal');
 const { safeIdentityErr } = require('../functions/fabricSafeLog');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
+const t = require('../locales/en');
+
+const copy = t.identity.delegation;
 
 class DelegationSigningModal extends React.Component {
   constructor (props) {
@@ -136,13 +139,13 @@ class DelegationSigningModal extends React.Component {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
-        toast.error('Could not complete browser login.');
+        toast.error(copy.loginFailed);
         console.error('[DESKTOP:UI] sessions/.../signatures failed:', res.status, data);
       } else {
-        toast.success('Browser login signed.');
+        toast.success(copy.loginSigned);
       }
     } catch (e) {
-      toast.error(safeIdentityErr(e) || 'Login signing failed.');
+      toast.error(t.common.errors.withReason(copy.loginFailed, safeIdentityErr(e)));
     } finally {
       this.setState({ loginPrompt: null, loginBusy: false });
     }
@@ -251,11 +254,11 @@ class DelegationSigningModal extends React.Component {
       });
       const j2 = await r.json().catch(() => ({}));
       ok = r.ok && j2 && !j2.error && j2.result && j2.result.ok;
-      if (ok && status === 'approved') toast.success('Signature request approved.');
-      else if (ok) toast.warning('Signature request rejected.');
-      else toast.error((j2 && j2.error && j2.error.message) || 'Delegation resolution failed.');
+      if (ok && status === 'approved') toast.success(copy.approved);
+      else if (ok) toast.warning(copy.rejected);
+      else toast.error(t.common.errors.withReason(copy.resolveFailed, j2 && j2.error && j2.error.message));
     } catch (e) {
-      toast.error(e && e.message ? e.message : 'Delegation resolution failed.');
+      toast.error(t.common.errors.withReason(copy.resolveFailed, e && e.message));
     } finally {
       if (!ok) this._openIds.delete(mid);
       this.setState({ current: null, busy: false });
@@ -287,30 +290,37 @@ class DelegationSigningModal extends React.Component {
         >
           <Header icon>
             <Icon name="sign-in" />
-            {messageOnly ? 'Fabric message' : 'Fabric Hub — browser login'}
+            {messageOnly ? copy.messageTitle : copy.loginTitle}
           </Header>
           <Modal.Content>
             {fs ? (
               <div style={{ marginBottom: '1em' }}>
                 {fromContract ? (
-                  <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.5em' }}>From execution contract (hub run)</p>
+                  <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.5em' }}>{copy.fromContract}</p>
                 ) : null}
                 <p style={{ marginBottom: '0.65em', fontSize: '1.02em' }}>{promptLine}</p>
                 <p style={{ marginBottom: '0.35em' }}>
-                  <strong>Fabric Message</strong> (wire format)
+                  <strong>{copy.contentsHeading}</strong>
                 </p>
                 {fs.envelopeMeta && fs.envelopeMeta.signersCount > 0 ? (
                   <p style={{ fontSize: '0.88em', color: '#555' }}>
-                    Co-signers / parties to notify: <strong>{fs.envelopeMeta.signersCount}</strong> (multisig-ready)
+                    {copy.signers(fs.envelopeMeta.signersCount)}
                   </p>
                 ) : null}
                 <p style={{ fontSize: '0.92em', color: '#444' }}>
-                  Type <code>{fs.typeName}</code>
-                  {fs.byteLength ? ` · ${fs.byteLength} bytes` : ''}
+                  {copy.type} <code>{fs.typeName}</code>
+                  {fs.byteLength ? ` · ${copy.bytes(fs.byteLength)}` : ''}
                 </p>
-                {fs.authorHex ? (
+                {fs.verified && fs.signed === false ? (
+                  <p style={{ fontSize: '0.85em', color: '#a5673f' }}>{copy.unsigned}</p>
+                ) : null}
+                {fs.verified && fs.signed && fs.author ? (
                   <p style={{ fontSize: '0.85em', color: '#666', wordBreak: 'break-all' }}>
-                    Author <code>{fs.authorHex.length > 48 ? `${fs.authorHex.slice(0, 48)}…` : fs.authorHex}</code>
+                    {copy.signedBy} <code>{fs.author}</code>
+                  </p>
+                ) : fs.authorHex ? (
+                  <p style={{ fontSize: '0.85em', color: '#666', wordBreak: 'break-all' }}>
+                    {copy.author} <code>{fs.authorHex.length > 48 ? `${fs.authorHex.slice(0, 48)}…` : fs.authorHex}</code>
                   </p>
                 ) : null}
                 <pre
@@ -325,23 +335,23 @@ class DelegationSigningModal extends React.Component {
                     wordBreak: 'break-word'
                   }}
                 >
-                  {fs.bodyPreview || '(no body)'}
+                  {fs.bodyPreview || copy.noBody}
                 </pre>
               </div>
             ) : null}
             {!messageOnly ? (
               <>
                 <p style={{ marginBottom: '0.75em' }}>
-                  A browser tab is asking to link this Hub identity for external signing.
+                  {copy.loginIntro}
                 </p>
-                {loginOrigin ? <p><strong>Origin</strong>{': '}{loginOrigin}</p> : null}
+                {loginOrigin ? <p><strong>{copy.origin}</strong>{': '}{loginOrigin}</p> : null}
                 {loginNonce ? (
                   <p style={{ color: '#666', fontSize: '0.9em' }}>
-                    <strong>Nonce</strong>{': '}{loginNonce.length > 16 ? `${loginNonce.slice(0, 16)}…` : loginNonce}
+                    <strong>{copy.nonce}</strong>{': '}{loginNonce.length > 16 ? `${loginNonce.slice(0, 16)}…` : loginNonce}
                   </p>
                 ) : null}
                 <p style={{ marginTop: '0.75em', marginBottom: '0.35em' }}>
-                  <strong>Message you will sign</strong> (BIP340 Schnorr over UTF-8 bytes):
+                  <strong>{copy.messageToSign}</strong>
                 </p>
                 <pre
                   style={{
@@ -355,18 +365,28 @@ class DelegationSigningModal extends React.Component {
                     wordBreak: 'break-word'
                   }}
                 >
-                  {loginPreview || '(empty)'}
+                  {loginPreview || copy.emptyMessage}
                 </pre>
+                <details className="hub-developer-details">
+                  <summary>{t.common.developerDetails}</summary>
+                  <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.signingDeveloper}</p>
+                </details>
               </>
             ) : (
-              <p style={{ color: '#666', fontSize: '0.95em' }}>
-                Opaque link <code>{'fabric:<hex>'}</code> or legacy <code>fabric://message?hex=…</code>. No browser login session.
-              </p>
+              <>
+                <p style={{ color: '#666', fontSize: '0.95em' }}>
+                  {copy.messageOnlyNote}
+                </p>
+                <details className="hub-developer-details">
+                  <summary>{t.common.developerDetails}</summary>
+                  <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.messageOnlyDeveloper}</p>
+                </details>
+              </>
             )}
           </Modal.Content>
           <Modal.Actions>
             <Button disabled={loginBusy} onClick={() => this._completeLogin(false)}>
-              {messageOnly ? 'Close' : 'Cancel'}
+              {messageOnly ? t.common.actions.close : t.common.actions.cancel}
             </Button>
             {!messageOnly ? (
               <Button
@@ -375,7 +395,7 @@ class DelegationSigningModal extends React.Component {
                 loading={loginBusy}
                 onClick={() => void this._completeLogin(true)}
               >
-                Sign &amp; approve
+                {copy.approveLogin}
               </Button>
             ) : null}
           </Modal.Actions>
@@ -393,26 +413,26 @@ class DelegationSigningModal extends React.Component {
       >
         <Header icon>
           <Icon name="key" />
-          Delegation signature
+          {copy.signTitle}
         </Header>
         <Modal.Content>
           <p style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {current && typeof current.preview === 'string'
               ? String(current.preview).slice(0, 800)
-              : '(empty message)'}
+              : copy.emptyMessage}
           </p>
           <p style={{ color: '#666', fontSize: '0.92em', marginTop: '0.75em' }}>
-            <strong>Purpose</strong>{': '}{current && current.purpose ? String(current.purpose) : 'sign'}
+            <strong>{copy.purpose}</strong>{': '}{current && current.purpose ? String(current.purpose) : copy.purposeFallback}
             <br />
-            <strong>Origin</strong>{': '}{current && current.origin ? String(current.origin) : '—'}
+            <strong>{copy.origin}</strong>{': '}{current && current.origin ? String(current.origin) : t.common.none}
           </p>
         </Modal.Content>
         <Modal.Actions>
           <Button disabled={busy} onClick={() => void this._resolve('rejected')}>
-            Reject
+            {copy.reject}
           </Button>
           <Button primary disabled={busy} loading={busy} onClick={() => void this._resolve('approved')}>
-            Approve
+            {copy.approve}
           </Button>
         </Modal.Actions>
       </Modal>

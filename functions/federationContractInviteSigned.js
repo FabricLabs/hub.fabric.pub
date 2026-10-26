@@ -6,6 +6,7 @@
  */
 
 const Key = require('@fabric/core/types/key');
+const FEDERATION_INVITE_TAG = require('@fabric/core/functions/signingTags').FEDERATION_INVITE;
 
 const SIG_HEX = 'fabricSchnorrSigHex';
 const PK_HEX = 'fabricSignerPubkeyHex';
@@ -35,7 +36,7 @@ function signFederationContractPayload (payload, signerKey) {
   if (!payload || typeof payload !== 'object') throw new Error('payload object required');
   if (!signerKey || typeof signerKey.signSchnorr !== 'function') throw new Error('signer Key required');
   const canon = federationInviteCanonicalJson(payload);
-  const sig = signerKey.signSchnorr(canon);
+  const sig = signerKey.signSchnorr(canon, FEDERATION_INVITE_TAG);
   const pk = signerKey.public && typeof signerKey.public.encodeCompressed === 'function'
     ? signerKey.public.encodeCompressed('hex')
     : null;
@@ -63,11 +64,12 @@ function verifyFederationContractPayloadSignature (parsed) {
     return { ok: false, error: e && e.message ? e.message : 'invalid public key' };
   }
   const canon = federationInviteCanonicalJson(parsed);
-  const ok = verifier.verifySchnorr(canon, Buffer.from(sigHex.replace(/^0x/i, ''), 'hex'));
+  const ok = verifier.verifySchnorr(canon, Buffer.from(sigHex.replace(/^0x/i, ''), 'hex'), FEDERATION_INVITE_TAG);
   return ok ? { ok: true } : { ok: false, error: 'signature verification failed' };
 }
 
 module.exports = {
+  FEDERATION_INVITE_TAG,
   SIG_HEX,
   PK_HEX,
   federationInviteCanonicalJson,

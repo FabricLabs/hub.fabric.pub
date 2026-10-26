@@ -44,12 +44,11 @@ describe('Beacon reorg / prune', function () {
       federationWitnessFailClosed: true
     });
     b._federationValidators = [key.pubkey];
-    b._federationThreshold = 1;
     b._epochChain = Chain.fromBeaconMessages([
       {
         type: 'BEACON_EPOCH',
         payload: epochOk,
-        federationWitness: { signatures: { [key.pubkey]: key.signSchnorr(msg).toString('hex') } }
+        federationWitness: { signatures: { [key.pubkey]: key.signSchnorr(msg, 'Fabric/FederationWitness').toString('hex') } }
       },
       { type: 'BEACON_EPOCH', payload: epochBad, federationWitness: null }
     ]);

@@ -5,6 +5,7 @@ const Actor = require('@fabric/core/types/actor');
 const Tree = require('@fabric/core/types/tree');
 const psbtFabric = require('../functions/psbtFabric');
 const payjoinJoinmarketTaproot = require('../functions/payjoinJoinmarketTaproot');
+const payjoinReceiverContribution = require('../functions/payjoinReceiverContribution');
 const { buildFabricPayjoinProtocolProfile } = require('../functions/payjoinFabricProtocol');
 const { resolvePayjoinPublicOrigin, joinOriginPath } = require('../functions/payjoinPublicOrigin');
 const { PayjoinAsyncMailbox } = require('../functions/payjoinAsyncMailbox');
@@ -26,16 +27,21 @@ class PayjoinService extends Service {
       publicOrigin: '',
       hostname: '',
       httpPort: 0,
-      /**
-       * When true, BIP78 text/plain proposal POST attempts Hub wallet ACP co-input.
-       * Default: on for regtest, off otherwise (overridable via settings / FABRIC_PAYJOIN_AUTO_ACP).
-       */
-      autoAcpBoost: null,
-      /** Hub-local BIP77 async mailbox (experimental). */
+      // BIP78 receiver contribution: the Hub adds one wallet coin to each proposal.
+      // null = on for regtest only; env FABRIC_PAYJOIN_RECEIVER_CONTRIBUTION (legacy FABRIC_PAYJOIN_AUTO_ACP).
+      receiverContribution: null,
+      // Lowest original fee rate (sat/vB) the Hub will contribute to.
+      minOriginalFeeRateSatVb: 1,
+      // Hub-local BIP77 async mailbox (experimental).
       bip77MailboxExperimental: true,
-      /** Optional 64-hex x-only federation pubkey for joinmarket taproot reserve leaf (mainnet recommended). */
+      // Optional 64-hex x-only federation pubkey for the Taproot reserve leaf (required on mainnet).
       beaconFederationXOnlyHex: ''
     }, settings);
+    if (this.settings.receiverContribution == null && (settings.autoAcpBoost === true || settings.autoAcpBoost === false)) {
+      this.settings.receiverContribution = settings.autoAcpBoost;
+    }
+
+    this._placeholderFederationXOnlyHex = null;
 
     this.fs = null;
     this.bitcoin = null;
@@ -73,6 +79,7 @@ class PayjoinService extends Service {
     await this._loadFromFilesystem();
     this._ensureStateShape();
     this._refreshStateMerkle();
+    await this._ensurePlaceholderFederationKey();
     if (this.mailbox && typeof this.mailbox.start === 'function') {
       await this.mailbox.start();
     }
@@ -87,27 +94,31 @@ class PayjoinService extends Service {
   getCapabilities () {
     const now = Date.now();
     const sessions = this.listSessions({ includeExpired: false, limit: 10 });
-    const joinmarketTaprootTemplate = {
-      template: payjoinJoinmarketTaproot.TEMPLATE_ID,
-      contractVersion: payjoinJoinmarketTaproot.JOINMARKET_TAPROOT_CONTRACT_VERSION,
+    const federationConfigured = !!(
+      String(this.settings.beaconFederationXOnlyHex || '').trim() ||
+      String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '').trim()
+    );
+    const contributing = this._receiverContributionEnabled();
+    const taprootReceiveTemplate = {
+      label: payjoinJoinmarketTaproot.TEMPLATE_LABEL,
+      template: payjoinJoinmarketTaproot.HUB_TAPROOT_TEMPLATE_ID,
+      contractVersion: payjoinJoinmarketTaproot.HUB_TAPROOT_CONTRACT_VERSION,
+      templates: payjoinJoinmarketTaproot.TEMPLATE_IDS.slice(),
       description:
-        'NUMS-internal P2TR with two tapleaves: hub operator checksig (default Joinmarket-style / ACP path) + beacon federation reserve checksig. BIP21 pj= unchanged.',
+        'Hub-custody P2TR: Hub operator key path + one Beacon federation reserve leaf. ' +
+        `${payjoinJoinmarketTaproot.TEMPLATE_ID} (script path only) is still accepted. BIP21 pj= unchanged.`,
       requiresHubIdentityKey: true,
-      beaconFederationXOnlyConfigured: !!(
-        String(this.settings.beaconFederationXOnlyHex || '').trim() ||
-        String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '').trim()
-      )
+      beaconFederationXOnlyConfigured: federationConfigured,
+      placeholderFederationKey: !federationConfigured && !!this._placeholderFederationXOnlyHex
     };
     const fabricProtocol = buildFabricPayjoinProtocolProfile({
       endpointBasePath: this.settings.endpointBasePath,
-      joinmarketTaprootTemplate: true,
-      beaconFederationLeafConfigured: !!(
-        String(this.settings.beaconFederationXOnlyHex || '').trim() ||
-        String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || '').trim()
-      ),
-      autoAcpBoost: this._autoAcpBoostEnabled(),
+      taprootReceiveTemplate: true,
+      beaconFederationLeafConfigured: federationConfigured,
+      receiverContribution: contributing,
       publicOrigin: this._publicOrigin(),
-      bip77MailboxExperimental: !!this.settings.bip77MailboxExperimental
+      bip77MailboxExperimental: !!this.settings.bip77MailboxExperimental,
+      coinjoin: typeof this.settings.coinjoinProfile === 'function' ? this.settings.coinjoinProfile() : null
     });
     return {
       available: this.settings.enable !== false,
@@ -118,15 +129,18 @@ class PayjoinService extends Service {
       endpointBasePath: this.settings.endpointBasePath,
       publicOrigin: this._publicOrigin() || undefined,
       fabricProtocol,
-      joinmarketTaprootTemplate,
-      acpHubBoost: {
-        description: 'SIGHASH_ALL|ANYONECANPAY payer PSBT + POST .../sessions/:id/acp-hub-boost (admin) appends Hub wallet input; outputs unchanged. BIP78 text/plain POST may auto-apply when autoAcpBoost is enabled.',
-        pathTemplate: `${this.settings.endpointBasePath}/sessions/:sessionId/acp-hub-boost`,
-        autoOnBip78Proposal: this._autoAcpBoostEnabled()
+      taprootReceiveTemplate,
+      receiverContribution: {
+        description:
+          'BIP78: the Hub adds one wallet coin (closest to the payment, sender script type) at a random input position and raises the payment output by its value less the extra input fee; ' +
+          'the sender re-signs with SIGHASH_ALL. Originals paying no fee are refused. Admin POST .../sessions/:id/contribute builds one for a stored proposal.',
+        pathTemplate: `${this.settings.endpointBasePath}/sessions/:sessionId/contribute`,
+        onBip78Proposal: contributing,
+        minOriginalFeeRateSatVb: Number(this.settings.minOriginalFeeRateSatVb || 1)
       },
       defaults: {
         sessionTTLSeconds: Number(this.settings.defaultSessionTTLSeconds || 1800),
-        autoAcpBoost: this._autoAcpBoostEnabled()
+        receiverContribution: contributing
       },
       counts: Object.assign({}, this._payjoinState.counts),
       merkle: Object.assign({}, this._payjoinState.merkle),
@@ -144,15 +158,49 @@ class PayjoinService extends Service {
     });
   }
 
-  _autoAcpBoostEnabled () {
-    if (this.settings.autoAcpBoost === true || this.settings.autoAcpBoost === false) {
-      return !!this.settings.autoAcpBoost;
+  _receiverContributionEnabled () {
+    if (this.settings.receiverContribution === true || this.settings.receiverContribution === false) {
+      return !!this.settings.receiverContribution;
     }
-    const env = String(process.env.FABRIC_PAYJOIN_AUTO_ACP || '').trim().toLowerCase();
+    const env = String(process.env.FABRIC_PAYJOIN_RECEIVER_CONTRIBUTION || process.env.FABRIC_PAYJOIN_AUTO_ACP || '').trim().toLowerCase();
     if (env === '1' || env === 'true') return true;
     if (env === '0' || env === 'false') return false;
     const net = String(this.settings.network || '').toLowerCase();
     return net === 'regtest' || net === 'test';
+  }
+
+  /**
+   * Off mainnet, a Hub with no federation key uses a random placeholder
+   * x-only key generated once and saved under `payjoin/` (private key
+   * discarded). Mainnet never gets one.
+   * @returns {Promise<(string|null)>}
+   */
+  async _ensurePlaceholderFederationKey () {
+    if (this._placeholderFederationXOnlyHex) return this._placeholderFederationXOnlyHex;
+    const net = String(this.settings.network || '').toLowerCase();
+    if (!['regtest', 'test', 'signet', 'testnet'].includes(net)) return null;
+    const path = 'payjoin/federation-placeholder.json';
+    if (this.fs && typeof this.fs.readFile === 'function') {
+      try {
+        const raw = this.fs.readFile(path);
+        const saved = raw ? JSON.parse(raw) : null;
+        if (saved && saved.network === net && /^[0-9a-f]{64}$/.test(String(saved.xOnlyHex || ''))) {
+          this._placeholderFederationXOnlyHex = saved.xOnlyHex;
+          return saved.xOnlyHex;
+        }
+      } catch (_) {}
+    }
+    const xOnlyHex = payjoinJoinmarketTaproot.generatePlaceholderFederationXOnly();
+    this._placeholderFederationXOnlyHex = xOnlyHex;
+    if (this.fs && typeof this.fs.publish === 'function') {
+      await this.fs.publish(path, {
+        network: net,
+        xOnlyHex,
+        created: new Date().toISOString(),
+        note: 'Placeholder Beacon federation key for test networks; no private key exists.'
+      });
+    }
+    return xOnlyHex;
   }
 
   /**
@@ -193,13 +241,17 @@ class PayjoinService extends Service {
   }
 
   async createDepositSession (input = {}) {
-    const receiveTemplate = String(input.receiveTemplate || '').trim().toLowerCase();
+    let receiveTemplate = String(input.receiveTemplate || '').trim().toLowerCase();
+    if (receiveTemplate === 'taproot' || receiveTemplate === 'hub_taproot') receiveTemplate = payjoinJoinmarketTaproot.HUB_TAPROOT_TEMPLATE_ID;
     let address = String(input.address || '').trim();
     let receiveContract = null;
 
-    if (receiveTemplate === 'joinmarket_taproot_v1') {
+    if (receiveTemplate) {
+      if (!payjoinJoinmarketTaproot.TEMPLATE_IDS.includes(receiveTemplate)) {
+        throw new Error(`Unknown receiveTemplate "${receiveTemplate}"; use ${payjoinJoinmarketTaproot.TEMPLATE_IDS.join(' or ')}.`);
+      }
       if (!this.key || typeof this.key.pubkey !== 'string' || !this.key.pubkey) {
-        throw new Error('Hub identity key is required for joinmarket taproot receive sessions.');
+        throw new Error('Hub identity key is required for a Hub Taproot payjoin receive address.');
       }
       const opBuf = Buffer.from(String(this.key.pubkey).trim(), 'hex');
       if (opBuf.length !== 33) {
@@ -208,9 +260,10 @@ class PayjoinService extends Service {
       const federationX = payjoinJoinmarketTaproot.resolveBeaconFederationXOnly({
         explicitHex: input.federationXOnlyHex,
         configHex: this.settings.beaconFederationXOnlyHex,
+        placeholderHex: await this._ensurePlaceholderFederationKey(),
         networkName: this.settings.network
       });
-      const built = payjoinJoinmarketTaproot.buildPayjoinJoinmarketTaproot({
+      const built = payjoinJoinmarketTaproot.buildPayjoinTaprootTemplate(receiveTemplate, {
         networkName: this.settings.network,
         operatorPubkeyCompressed: opBuf,
         federationXOnly: federationX
@@ -218,11 +271,14 @@ class PayjoinService extends Service {
       address = built.address;
       receiveContract = {
         template: built.template,
+        label: built.label,
         contractVersion: built.contractVersion,
         network: built.network,
         operatorPubkeyCompressedHex: built.operatorPubkeyCompressedHex,
         federationXOnlyHex: built.federationXOnlyHex,
+        placeholderFederationKey: built.federationXOnlyHex === this._placeholderFederationXOnlyHex,
         internalPubkeyHex: built.internalPubkeyHex,
+        keyPath: built.keyPath,
         leafOrder: built.leafOrder,
         leaves: built.leaves
       };
@@ -234,7 +290,7 @@ class PayjoinService extends Service {
     const memo = String(input.memo || '').trim();
     const ttlSeconds = Math.max(30, Math.min(86400, Number(input.expiresInSeconds || this.settings.defaultSessionTTLSeconds || 1800)));
 
-    if (!address) throw new Error('Address is required for a Payjoin deposit session (or use receiveTemplate joinmarket_taproot_v1).');
+    if (!address) throw new Error(`Address is required for a Payjoin deposit session (or use receiveTemplate ${payjoinJoinmarketTaproot.HUB_TAPROOT_TEMPLATE_ID}).`);
 
     const openSessions = this.listSessions({ includeExpired: false, limit: 1000 });
     if (openSessions.length >= Number(this.settings.maxOpenSessions || 256)) {
@@ -257,9 +313,10 @@ class PayjoinService extends Service {
     const sessionId = actor.id;
     const { proposalPath, proposalURL } = this._proposalUrlsForSession(sessionId);
     const bip21Uri = this._buildBIP21Uri(address, payload.amountSats, label, proposalURL);
-    const autoAcpBoost = input.autoAcpBoost != null
-      ? !!input.autoAcpBoost
-      : this._autoAcpBoostEnabled();
+    const requested = input.receiverContribution != null ? input.receiverContribution : input.autoAcpBoost;
+    const receiverContribution = requested != null
+      ? !!requested
+      : this._receiverContributionEnabled();
 
     const createdEvent = this._createEvent('PAYJOIN_SESSION_CREATED', {
       sessionId,
@@ -282,7 +339,7 @@ class PayjoinService extends Service {
       bip21Uri,
       proposalPath,
       proposalURL,
-      autoAcpBoost,
+      receiverContribution,
       receiveTemplate: receiveTemplate || undefined,
       receiveContract: receiveContract || undefined,
       proposals: {},
@@ -341,8 +398,9 @@ class PayjoinService extends Service {
       psbt,
       txhex,
       analysis,
+      bip78Params: proposalInput.bip78Params || undefined,
       payjoinPsbt: null,
-      acpBoost: null
+      receiverContribution: null
     };
     const proposalTxid = this.extractProposalTxid(proposal);
     if (proposalTxid) proposal.proposalTxid = proposalTxid;
@@ -355,38 +413,14 @@ class PayjoinService extends Service {
       proposalId
     }));
 
-    const wantAutoAcp = proposalInput.autoAcpBoost != null
-      ? !!proposalInput.autoAcpBoost
-      : (session.autoAcpBoost !== false && this._autoAcpBoostEnabled());
+    const requested = proposalInput.receiverContribution != null ? proposalInput.receiverContribution : proposalInput.autoAcpBoost;
+    const sessionWants = session.receiverContribution != null ? session.receiverContribution : session.autoAcpBoost;
+    const wantContribution = requested != null
+      ? !!requested
+      : (sessionWants !== false && this._receiverContributionEnabled());
 
-    if (wantAutoAcp && psbt) {
-      try {
-        const boosted = await this._tryAutoAcpBoost(psbt);
-        proposal.payjoinPsbt = boosted.psbtBase64;
-        proposal.acpBoost = {
-          ok: true,
-          addedOutpoint: boosted.addedOutpoint,
-          addedValueSats: boosted.addedValueSats,
-          walletProcessPsbtComplete: boosted.complete
-        };
-        proposal.status = 'payjoin-proposed';
-        session.events.push(this._createEvent('PAYJOIN_ACP_AUTO_BOOST', {
-          sessionId: id,
-          proposalId,
-          addedOutpoint: boosted.addedOutpoint,
-          addedValueSats: boosted.addedValueSats
-        }));
-      } catch (err) {
-        proposal.acpBoost = {
-          ok: false,
-          error: err && err.message ? err.message : String(err)
-        };
-        session.events.push(this._createEvent('PAYJOIN_ACP_AUTO_BOOST_FAILED', {
-          sessionId: id,
-          proposalId,
-          error: proposal.acpBoost.error
-        }));
-      }
+    if (wantContribution && psbt) {
+      await this._applyContribution(session, proposal, proposalInput.bip78Params);
     }
 
     this._payjoinState.counts.proposals = this._countAllProposals();
@@ -395,31 +429,108 @@ class PayjoinService extends Service {
     await this._persistSession(session);
     await this._persistIndex();
 
+    const contribution = proposal.receiverContribution;
     return {
       status: 'success',
       sessionId: id,
       proposal: Object.assign({}, proposal),
-      /** BIP78 response body: payjoined PSBT when ACP succeeded, else original. */
+      // JSON path: the payjoin proposal when the Hub contributed, else the original.
       bip78Psbt: proposal.payjoinPsbt || proposal.psbt || '',
+      // BIP78 wire: when set, answer with this error instead of a PSBT (the sender broadcasts its original).
+      bip78Error: proposal.payjoinPsbt
+        ? null
+        : {
+            errorCode: (contribution && contribution.errorCode) || 'unavailable',
+            message: (contribution && contribution.error) || 'This Hub does not contribute to payjoin proposals.'
+          },
       session: this._publicSessionView(session, { includeProposals: true })
     };
   }
 
   /**
-   * Attempt Hub wallet ACP co-input (same as admin acp-hub-boost).
-   * @param {string} psbtBase64
-   * @returns {Promise<{ psbtBase64: string, addedOutpoint: string, addedValueSats: number, complete: boolean }>}
+   * Run the BIP78 receiver contribution for a stored proposal and record the outcome.
+   * @param {Object} session
+   * @param {Object} proposal
+   * @param {Object} [bip78Params] {@link payjoinReceiverContribution.parseBip78Params}
+   * @returns {Promise<Object>} `proposal.receiverContribution`
    */
-  async _tryAutoAcpBoost (psbtBase64) {
-    if (!this.bitcoin || typeof this.bitcoin._makeRPCRequest !== 'function') {
-      throw new Error('Bitcoin service unavailable for ACP boost.');
+  async _applyContribution (session, proposal, bip78Params) {
+    try {
+      if (!this.bitcoin || typeof this.bitcoin._makeRPCRequest !== 'function') {
+        const err = new Error('Bitcoin service unavailable for receiver contribution.');
+        err.code = 'unavailable';
+        throw err;
+      }
+      const out = await payjoinReceiverContribution.contributeReceiverInput({
+        psbtBase64: proposal.psbt,
+        bitcoin: this.bitcoin,
+        receiverAddress: session.address,
+        networkName: this.bitcoin.network || this.settings.network || 'regtest',
+        params: bip78Params || payjoinReceiverContribution.parseBip78Params({}),
+        minFeeRateSatVb: Number(this.settings.minOriginalFeeRateSatVb || 1)
+      });
+      proposal.payjoinPsbt = out.psbtBase64;
+      proposal.receiverContribution = Object.assign({ ok: true }, out, { psbtBase64: undefined });
+      proposal.status = 'payjoin-proposed';
+      session.events.push(this._createEvent('PAYJOIN_RECEIVER_CONTRIBUTION', {
+        sessionId: session.id,
+        proposalId: proposal.id,
+        contributedOutpoint: out.contributedOutpoint,
+        contributedValueSats: out.contributedValueSats,
+        receiverOutputAfterSats: out.receiverOutputAfterSats,
+        additionalFeeSats: out.additionalFeeSats
+      }));
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      let errorCode = 'unavailable';
+      if (err && err.code === 'original-psbt-rejected') errorCode = 'original-psbt-rejected';
+      else if (/no confirmed coin|does not cover/i.test(message)) errorCode = 'not-enough-money';
+      proposal.receiverContribution = { ok: false, errorCode, error: message };
+      if (errorCode === 'original-psbt-rejected') proposal.status = 'rejected';
+      session.events.push(this._createEvent('PAYJOIN_RECEIVER_CONTRIBUTION_FAILED', {
+        sessionId: session.id,
+        proposalId: proposal.id,
+        errorCode,
+        error: message
+      }));
     }
-    const payjoinAcpBoost = require('../functions/payjoinAcpBoost');
-    return payjoinAcpBoost.addHubWalletInputAndSign({
-      psbtBase64,
-      bitcoin: this.bitcoin,
-      networkName: this.bitcoin.network || this.settings.network || 'regtest'
-    });
+    return proposal.receiverContribution;
+  }
+
+  /**
+   * Operator retry: contribute to a stored proposal (or a supplied original).
+   * @param {string} sessionId
+   * @param {Object} [opts]
+   * @param {string} [opts.psbt] original PSBT (default: the session's latest proposal)
+   * @param {Object} [opts.bip78Params]
+   * @returns {Promise<{ proposalId: string, psbtBase64: string, receiverContribution: Object }>}
+   */
+  async contributeToProposal (sessionId, opts = {}) {
+    const id = String(sessionId || '').trim();
+    const session = this._payjoinState.sessions[id];
+    if (!session) throw new Error('Payjoin session not found.');
+    let proposal;
+    const psbt = String(opts.psbt || '').trim();
+    if (psbt) {
+      proposal = Object.values(session.proposals || {}).find((p) => p && p.psbt === psbt);
+      if (!proposal) {
+        const submitted = await this.submitProposal(id, { psbt, receiverContribution: false, bip78Params: opts.bip78Params });
+        proposal = session.proposals[submitted.proposal.id];
+      }
+    } else {
+      proposal = Object.values(session.proposals || {})
+        .filter((p) => p && p.psbt)
+        .sort((a, b) => new Date(a.created || 0).getTime() - new Date(b.created || 0).getTime())
+        .pop();
+    }
+    if (!proposal) throw new Error('No PSBT on session; submit a proposal first or pass psbt.');
+    const result = await this._applyContribution(session, proposal, opts.bip78Params || proposal.bip78Params);
+    this._refreshSessionMerkle(session);
+    this._refreshStateMerkle();
+    await this._persistSession(session);
+    await this._persistIndex();
+    if (!result.ok) throw new Error(result.error);
+    return { proposalId: proposal.id, psbtBase64: proposal.payjoinPsbt, receiverContribution: result };
   }
 
   _buildBIP21Uri (address, amountSats, label, proposalURL) {
@@ -512,7 +623,7 @@ class PayjoinService extends Service {
       bip21Uri: session.bip21Uri,
       proposalPath: session.proposalPath || undefined,
       proposalURL: session.proposalURL,
-      autoAcpBoost: session.autoAcpBoost,
+      receiverContribution: session.receiverContribution != null ? session.receiverContribution : session.autoAcpBoost,
       receiveTemplate: session.receiveTemplate,
       receiveContract: session.receiveContract,
       proposalCount: Object.keys(session.proposals || {}).length,

@@ -372,7 +372,7 @@ async function openAddPeerModal (page) {
 async function openDocumentCreateForm (page) {
   const clicked = await page.evaluate(() => {
     const buttons = Array.from(document.querySelectorAll('button'));
-    const btn = buttons.find((b) => String(b.textContent || '').includes('Create Document'));
+    const btn = buttons.find((b) => String(b.textContent || '').includes('New text document'));
     if (!btn) return false;
     btn.click();
     return true;
@@ -472,7 +472,7 @@ async function runShot (ctx, shot) {
         await waitForBodyText(page, 'Documents', 10000);
         if (!(await openDocumentCreateForm(page))) {
           result.status = 'skipped';
-          result.reason = 'Create Document control not found';
+          result.reason = 'New text document control not found';
           return result;
         }
         break;

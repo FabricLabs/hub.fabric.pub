@@ -8,7 +8,7 @@
  */
 
 const constants = require('@fabric/core/constants');
-const { splitBlobs } = require('@fabric/core/functions/documentBlobManifest');
+const Document = require('@fabric/core/types/document');
 
 const { MAX_MESSAGE_SIZE } = constants;
 const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SEALED_BLOB_PARTS;
@@ -17,7 +17,7 @@ const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SE
 const FILE_SHARE_FRAME_RESERVE = 2048;
 /** Raw bytes per blob: base64 fills the rest of the body (23,040 B → 30,720 base64 chars). */
 const FILE_SHARE_BLOB_BYTES = Math.floor((MAX_MESSAGE_SIZE - FILE_SHARE_FRAME_RESERVE) * 3 / 4);
-/** Theoretical maximum shared file: MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (94,371,840 B = 90 MiB). */
+/** Theoretical maximum shared file: MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (188,743,680 B = 180 MiB). */
 const FILE_SHARE_MAX_BYTES = MAX_DOCUMENT_BLOBS * FILE_SHARE_BLOB_BYTES;
 const FILE_NAME_MAX_CHARS = 255;
 const MIME_MAX_CHARS = 127;
@@ -58,7 +58,7 @@ function buildFileShareFrames (buffer, meta = {}) {
   const documentId = String(meta.documentId || '').trim();
   if (!documentId) throw new TypeError('documentId required');
 
-  const split = splitBlobs(buf, FILE_SHARE_BLOB_BYTES, documentId);
+  const split = Document.split(buf, FILE_SHARE_BLOB_BYTES, documentId);
   const relay = meta.relay && meta.relay.deliveryFabricId
     ? { deliveryFabricId: String(meta.relay.deliveryFabricId).trim(), fileRelayTtl: meta.relay.fileRelayTtl }
     : {};

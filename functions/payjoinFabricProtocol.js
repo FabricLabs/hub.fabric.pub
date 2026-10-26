@@ -3,7 +3,8 @@
 /**
  * Fabric Hub Payjoin / payments protocol metadata for `GET …/payjoin` capabilities.
  * - **BIP 78 (classic HTTP Payjoin)** — absolute BIP21 `pj=`, POST PSBT as `text/plain`,
- *   optional Hub ACP co-input, response `text/plain` payjoined PSBT (JSON path retained for UI/RPC).
+ *   the Hub contributes one wallet input (receiver contribution) and answers with the
+ *   `text/plain` payjoin proposal, or a BIP78 JSON error (JSON path retained for UI/RPC).
  * - **BIP 77 (async)** — Hub-local experimental opaque mailbox (enqueue / poll / markDelivered),
  *   modeled on CONTRACT_MESSAGE queue semantics. Not a public Payjoin Directory + HPKE + OHTTP yet.
  *
@@ -12,13 +13,11 @@
  * privacy discussion (e.g. efficiency and deployment hurdles for stronger guarantees) applies at the
  * ecosystem layer—not specific to this receiver implementation.
  *
- * **joinmarket-clientserver**: coordinates P2P coinjoins via its own control protocol (IRC + follow-on);
- * it does **not** POST BIP78 bodies to arbitrary merchant `pj=` URLs. Interop with this Hub is primarily
- * at the **Bitcoin transaction** layer when another tool assembles a multi-party tx or when wallets use
- * standard BIP21+pj= against this HTTP receiver.
+ * Payjoin is a two-party payment. Multi-party mixing is the Fabric-native coinjoin market
+ * (`/services/coinjoin`, `@fabric/core` `docs/COINJOIN_MARKET.md`), not JoinMarket's IRC protocol.
  */
 
-const FABRIC_PAYJOIN_PROFILE_VERSION = 2;
+const FABRIC_PAYJOIN_PROFILE_VERSION = 3;
 
 const RECEIVER_MODES = Object.freeze({
   BIP78_HTTP_PSBT: 'bip78_http_psbt',
@@ -28,9 +27,10 @@ const RECEIVER_MODES = Object.freeze({
 /**
  * @param {object} [opts]
  * @param {string} [opts.endpointBasePath]
- * @param {boolean} [opts.joinmarketTaprootTemplate]
+ * @param {boolean} [opts.taprootReceiveTemplate]
  * @param {boolean} [opts.beaconFederationLeafConfigured]
- * @param {boolean} [opts.autoAcpBoost]
+ * @param {boolean} [opts.receiverContribution]
+ * @param {Object} [opts.coinjoin] `{ path, maker, fidelityBonds }` when the coinjoin market is on
  * @param {string} [opts.publicOrigin]
  * @param {boolean} [opts.bip77MailboxExperimental]
  * @returns {object}
@@ -83,11 +83,12 @@ function buildFabricPayjoinProtocolProfile (opts = {}) {
         bodyEncoding: 'psbt_base64_or_raw',
         absolutePjRequired: true,
         publicOrigin: opts.publicOrigin ? String(opts.publicOrigin) : undefined,
-        autoAcpBoost: !!opts.autoAcpBoost,
-        joinmarketClientserverNote:
-          'joinmarket.py / clientserver use a distinct coinjoin coordination stack; makers do not by default ' +
-            'expose a BIP78 HTTPS endpoint. Use this Hub receiver with BIP21+pj= wallets (payjoin-cli, compatible mobile wallets) ' +
-            'or integrate at the raw transaction / PSBT layer.'
+        receiverContribution: !!(opts.receiverContribution != null ? opts.receiverContribution : opts.autoAcpBoost),
+        bip78Params: ['v', 'additionalfeeoutputindex', 'maxadditionalfeecontribution', 'minfeerate', 'disableoutputsubstitution'],
+        senderResign: 'SIGHASH_ALL',
+        coinjoinNote:
+          'Payjoin is two-party. Multi-party mixing is the Fabric coinjoin market (CONTRACT_MESSAGE offers, ' +
+            'one atomic transaction, PoDLE, fidelity bonds), not a BIP78 endpoint.'
       },
       asyncMailbox: bip77Experimental
         ? {
@@ -112,8 +113,8 @@ function buildFabricPayjoinProtocolProfile (opts = {}) {
           summary: 'Short-lived Payjoin sessions and sane minimum amounts reduce gratuitous probing surface.'
         },
         {
-          id: 'acp_coinputs',
-          summary: 'SIGHASH_ALL|ANYONECANPAY lets the receiver add inputs without invalidating payer output commitments (Hub ACP boost).'
+          id: 'receiver_contribution',
+          summary: 'BIP78 receiver input closest to the payment, of the sender\'s script type, at a random position; the payment output grows by it, the sender re-signs, and originals paying no fee are refused.'
         },
         {
           id: 'wallet_fingerprint_uniformity',
@@ -128,8 +129,15 @@ function buildFabricPayjoinProtocolProfile (opts = {}) {
       ]
     },
     extensions: {
-      joinmarketTaprootReceiveTemplate: !!opts.joinmarketTaprootTemplate,
-      beaconFederationReserveLeaf: !!opts.beaconFederationLeafConfigured
+      hubTaprootReceiveTemplate: !!(opts.taprootReceiveTemplate != null ? opts.taprootReceiveTemplate : opts.joinmarketTaprootTemplate),
+      beaconFederationReserveLeaf: !!opts.beaconFederationLeafConfigured,
+      coinjoinMarket: opts.coinjoin
+        ? {
+            path: String(opts.coinjoin.path || '/services/coinjoin'),
+            maker: !!opts.coinjoin.maker,
+            fidelityBonds: !!opts.coinjoin.fidelityBonds
+          }
+        : undefined
     }
   };
 }

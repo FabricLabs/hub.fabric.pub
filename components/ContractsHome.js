@@ -19,7 +19,6 @@ const {
   Menu
 } = require('semantic-ui-react');
 const { fetchLightningChannels, loadUpstreamSettings, fetchCrowdfundingCampaigns } = require('../functions/bitcoinClient');
-const { formatSatsDisplay } = require('../functions/formatSats');
 const { hubJsonRpc } = require('../functions/sidechainHubClient');
 const { describeHubRpcFailure } = require('../functions/hubRpcHints');
 const DistributedFederationPanel = require('./DistributedFederationPanel');
@@ -31,6 +30,12 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const HubPagination = require('./HubPagination');
 const { useHubListPagination } = require('../functions/hubListPagination');
+const strings = require('../locales/en');
+
+const common = strings.common;
+const net = strings.network;
+const ch = net.contractsHome;
+const chx = ch.execution;
 
 const FILTER_ALL = 'all';
 const FILTER_NEW = 'new';
@@ -188,14 +193,14 @@ function ContractsHome () {
 
       if (contractsSettled.status !== 'fulfilled') {
         const reason = contractsSettled.reason;
-        setError(reason && reason.message ? reason.message : 'Failed to load contracts.');
+        setError(reason && reason.message ? reason.message : ch.error.fallback);
         setContracts([]);
       } else {
         const contractsRes = contractsSettled.value;
         try {
           const body = await contractsRes.json();
           if (!contractsRes.ok || !body || body.status === 'error') {
-            setError((body && body.message) || 'Failed to load contracts.');
+            setError((body && body.message) || ch.error.fallback);
             setContracts([]);
           } else {
             const list = Array.isArray(body.contracts) ? body.contracts : (body.result || []);
@@ -203,12 +208,12 @@ function ContractsHome () {
             if (background) setError(null);
           }
         } catch (parseErr) {
-          setError(parseErr && parseErr.message ? parseErr.message : 'Invalid contracts response.');
+          setError(ch.error.unreadable);
           setContracts([]);
         }
       }
     } catch (e) {
-      setError(e && e.message ? e.message : 'Failed to load contracts.');
+      setError(e && e.message ? e.message : ch.error.fallback);
     } finally {
       if (!background) setLoading(false);
     }
@@ -348,7 +353,7 @@ function ContractsHome () {
   const requestExecutionRegistryInvoice = React.useCallback(async () => {
     setExecFeedback(null);
     if (execBitcoinLoading) {
-      setExecFeedback({ negative: true, content: 'Still checking Bitcoin service; try again in a moment.' });
+      setExecFeedback({ negative: true, content: chx.feedback.stillChecking });
       return;
     }
     let program;
@@ -357,13 +362,13 @@ function ContractsHome () {
     } catch (e) {
       setExecFeedback({
         negative: true,
-        content: 'Program must be valid JSON. Fix the text or use Reset program template.'
+        content: chx.feedback.badJson
       });
       return;
     }
     const amountSats = Number(execAmountSats);
     if (!Number.isFinite(amountSats) || amountSats <= 0) {
-      setExecFeedback({ negative: true, content: 'Enter a positive registry fee in sats.' });
+      setExecFeedback({ negative: true, content: chx.feedback.badFee });
       return;
     }
     const nameOpt = execName.trim() || undefined;
@@ -373,13 +378,13 @@ function ContractsHome () {
       if (!out.ok) {
         setExecFeedback({
           negative: true,
-          content: describeHubRpcFailure(out.error, 'Check hub reachability and Bitcoin status.')
+          content: describeHubRpcFailure(out.error, chx.feedback.invoiceHint)
         });
         return;
       }
       const r = out.result;
       if (r && r.status === 'error') {
-        setExecFeedback({ negative: true, content: r.message || 'Hub rejected the registry invoice request.' });
+        setExecFeedback({ negative: true, content: r.message || chx.feedback.invoiceRejected });
         return;
       }
       if (r && r.type === 'CreateExecutionRegistryInvoiceResult' && r.programDigest && r.address) {
@@ -394,7 +399,7 @@ function ContractsHome () {
         setExecFeedback(null);
         return;
       }
-      setExecFeedback({ negative: true, content: 'Unexpected response from hub for registry invoice.' });
+      setExecFeedback({ negative: true, content: chx.feedback.invoiceUnexpected });
     } catch (e) {
       setExecFeedback({ negative: true, content: e && e.message ? e.message : String(e) });
     } finally {
@@ -410,14 +415,14 @@ function ContractsHome () {
     } catch (e) {
       setExecFeedback({
         negative: true,
-        content: 'Program must be valid JSON. Fix the text or use Reset program template.'
+        content: chx.feedback.badJson
       });
       return;
     }
     if (execBitcoinLoading) {
       setExecFeedback({
         negative: true,
-        content: 'Still checking Bitcoin service; wait a moment before publishing.'
+        content: chx.feedback.stillCheckingPublish
       });
       return;
     }
@@ -426,7 +431,7 @@ function ContractsHome () {
       if (!execRegistryInvoice || !execRegistryInvoice.programDigest) {
         setExecFeedback({
           negative: true,
-          content: 'Request a registry invoice first (step 1), pay it on-chain, then enter the txid.'
+          content: chx.feedback.needInvoice
         });
         return;
       }
@@ -434,7 +439,7 @@ function ContractsHome () {
       if (!tid) {
         setExecFeedback({
           negative: true,
-          content: 'Enter the Bitcoin transaction id that pays the registry invoice.'
+          content: chx.feedback.needTxid
         });
         return;
       }
@@ -455,21 +460,21 @@ function ContractsHome () {
       if (!out.ok) {
         setExecFeedback({
           negative: true,
-          content: describeHubRpcFailure(out.error, 'Check that this origin can reach the hub and try again.')
+          content: describeHubRpcFailure(out.error, chx.feedback.publishHint)
         });
         return;
       }
       const r = out.result;
       if (r && r.status === 'error') {
-        const msg = r.message || 'Hub rejected publish.';
+        const msg = r.message || chx.feedback.publishRejected;
         const needsPayHelp = /bitcoin is enabled|l1 payment verification failed|registry invoice|pay the invoice/i.test(msg);
         const payHint = loadHubUiFeatureFlags().bitcoinPayments ? (
           <span>
-            Pay from <Link to="/payments">Payments</Link> (regtest + admin token) or another wallet, then paste the funding txid and publish again.
+            {chx.feedback.payBefore} <Link to="/payments">{chx.paymentsLink}</Link> {chx.feedback.payAfter}
           </span>
         ) : (
           <span>
-            Pay from another wallet, or enable <strong>Bitcoin — Payments</strong> in Admin → Feature visibility and use Payments (regtest + admin token), then paste the funding txid and publish again.
+            {chx.feedback.payOff}
           </span>
         );
         setExecFeedback({
@@ -482,7 +487,7 @@ function ContractsHome () {
           ) : (
             <span>
               {msg}{' '}
-              If you requested a registry invoice and edited the program JSON afterward, request a new invoice so the digest matches.
+              {chx.feedback.digestHint}
             </span>
           )
         });
@@ -503,12 +508,12 @@ function ContractsHome () {
           positive: true,
           content: (
             <span>
-              Execution contract published to the hub registry.
+              {chx.feedback.published}
               {cid ? (
                 <>
                   {' '}
-                  <Link to={`/contracts/${encodeURIComponent(cid)}`}>Open detail</Link>
-                  {' '}to run on the hub.
+                  <Link to={`/contracts/${encodeURIComponent(cid)}`}>{chx.feedback.openIt}</Link>
+                  {' '}{chx.feedback.toRun}
                 </>
               ) : null}
             </span>
@@ -520,7 +525,7 @@ function ContractsHome () {
           }));
         }
       } else {
-        setExecFeedback({ negative: true, content: 'Unexpected response from hub.' });
+        setExecFeedback({ negative: true, content: chx.feedback.unexpected });
       }
     } catch (e) {
       setExecFeedback({ negative: true, content: e && e.message ? e.message : String(e) });
@@ -549,12 +554,12 @@ function ContractsHome () {
             style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.35em' }}
             role="banner"
           >
-            <Button basic size="small" as={Link} to="/" aria-label="Back to home">
+            <Button basic size="small" as={Link} to="/">
               <Icon name="arrow left" aria-hidden="true" />
-              Home
+              {ch.home}
             </Button>
             <Header as="h2" id="contracts-page-heading" style={{ margin: 0 }}>
-              <Header.Content>Contracts</Header.Content>
+              <Header.Content>{ch.title}</Header.Content>
             </Header>
             <Button
               basic
@@ -563,50 +568,47 @@ function ContractsHome () {
               loading={loading}
               disabled={loading}
               onClick={() => void loadContracts()}
-              aria-label="Refresh contracts"
-              title="Refresh lists"
+              title={ch.refreshTitle}
             >
               <Icon name="refresh" />
-              Refresh
+              {common.actions.refresh}
             </Button>
           </div>
           <p style={{ margin: '0 0 0.75em', maxWidth: '48rem', lineHeight: 1.55, color: '#555' }}>
-            Hub contracts span <strong>application namespaces</strong> (Beacon-tracked <code>CONTRACT_PUBLISH</code>),
-            {' '}<strong>storage</strong> bonds, <strong>execution</strong> registry programs, Taproot{' '}
-            <strong>crowdfunds</strong>, and optional Lightning channels. Bitcoin enforces the L1 legs when the hub Bitcoin service is up.
+            {ch.intro}
           </p>
-          <Menu secondary size="small" style={{ marginBottom: '0.75em', flexWrap: 'wrap' }} aria-label="Contracts sections">
+          <Menu secondary size="small" style={{ marginBottom: '0.75em', flexWrap: 'wrap' }} aria-label={ch.sectionsLabel}>
             <Menu.Item
               link
               onClick={() => scrollToSection('contracts-application-h4')}
-              content="Application"
+              content={ch.sections.application}
             />
             <Menu.Item
               link
               onClick={() => scrollToSection('contracts-storage-h4')}
-              content="Storage"
+              content={ch.sections.storage}
             />
             <Menu.Item
               link
               onClick={() => scrollToSection('contracts-execution-h4')}
-              content="Execution"
+              content={ch.sections.execution}
             />
             <Menu.Item
               link
               onClick={() => scrollToSection('contracts-crowdfund-h4')}
-              content="Crowdfunds"
+              content={ch.sections.crowdfunds}
             />
             {uf.bitcoinLightning ? (
               <Menu.Item
                 link
                 onClick={() => scrollToSection('contracts-lightning-h4')}
-                content="Lightning"
+                content={ch.sections.lightning}
               />
             ) : null}
             <Menu.Item
               as={Link}
               to="/settings/admin/beacon-federation"
-              content="Beacon Federation"
+              content={ch.sections.beacon}
             />
           </Menu>
           <div
@@ -616,24 +618,24 @@ function ContractsHome () {
           >
             <Label size="small" basic>
               <Icon name="file code outline" />
-              Application (see below)
+              {ch.summary.application}
             </Label>
             <Label size="small" color="purple" basic={loading}>
               <Icon name="cloud" />
-              Storage {loading ? '…' : storageContracts.length}
+              {loading ? `${ch.sections.storage}: ${ch.summary.pending}` : ch.summary.storage(storageContracts.length)}
             </Label>
             <Label size="small" color="teal" basic={loading}>
               <Icon name="microchip" />
-              Execution {loading ? '…' : executionContracts.length}
+              {loading ? `${ch.sections.execution}: ${ch.summary.pending}` : ch.summary.execution(executionContracts.length)}
             </Label>
             <Label size="small" color="red" basic={loading}>
               <Icon name="heart" />
-              Crowdfunds {loading ? '…' : crowdfundCampaigns.length}
+              {loading ? `${ch.sections.crowdfunds}: ${ch.summary.pending}` : ch.summary.crowdfunds(crowdfundCampaigns.length)}
             </Label>
             {uf.bitcoinLightning ? (
               <Label size="small" color="yellow" basic={loading}>
                 <Icon name="bolt" />
-                Channels {loading ? '…' : lightningChannels.length}
+                {loading ? `${ch.sections.lightning}: ${ch.summary.pending}` : ch.summary.channels(lightningChannels.length)}
               </Label>
             ) : null}
           </div>
@@ -644,22 +646,21 @@ function ContractsHome () {
             <Message info size="small" style={{ marginBottom: '1em' }} role="status">
               <Message.Header>
                 <Loader active inline size="tiny" style={{ marginRight: '0.5em' }} />
-                Loading contract catalogs…
+                {ch.loading.heading}
               </Message.Header>
               <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                Fetching storage / execution contracts, crowdfunds
-                {uf.bitcoinLightning ? ', and Lightning channels' : ''}. Section chrome stays visible below.
+                {ch.loading.body(!!uf.bitcoinLightning)}
               </p>
             </Message>
           )}
           {error && (
-            <Message negative>
-              <Message.Header>Could not load contracts</Message.Header>
+            <Message negative role="alert">
+              <Message.Header>{ch.error.heading}</Message.Header>
               <p style={{ margin: '0.35em 0 0' }}>{error}</p>
               <div style={{ marginTop: '0.85em' }}>
                 <Button size="small" type="button" onClick={() => void loadContracts()}>
                   <Icon name="refresh" />
-                  Retry
+                  {common.actions.retry}
                 </Button>
               </div>
             </Message>
@@ -668,16 +669,18 @@ function ContractsHome () {
           <section aria-labelledby="contracts-application-h4" style={{ marginBottom: '1.25em' }}>
             <Header as="h4" id="contracts-application-h4" dividing>
               <Icon name="sitemap" aria-hidden="true" />
-              Application contracts (ARC)
+              {ch.application.heading}
             </Header>
             <Message info size="small" style={{ marginBottom: '0.75em' }}>
-              <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Beacon-tracked namespaces</p>
+              <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>{ch.application.infoHeading}</p>
               <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                Inbound <code>CONTRACT_PUBLISH</code> offers become pending application contracts. Accepting one
-                includes it in the Beacon <code>contracts.stateDigest</code> for the next epoch and can provision a
-                contract-namespace sidechain. Manage co-signing and the Taproot federation vault on{' '}
-                <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>.
+                {ch.application.bodyBefore}{' '}
+                <Link to="/settings/admin/beacon-federation">{ch.application.beaconLink}</Link>.
               </p>
+              <details className="hub-developer-details" style={{ marginTop: '0.35em' }}>
+                <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
+                <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#555' }}>{ch.application.developer}</p>
+              </details>
             </Message>
             <TrackedApplicationContractsPanel embedded />
           </section>
@@ -685,18 +688,17 @@ function ContractsHome () {
               <section aria-labelledby="contracts-crowdfund-h4" aria-describedby="contracts-crowdfund-intro">
               <Header as="h4" id="contracts-crowdfund-h4" dividing>
                 <Icon name="heart outline" color="red" aria-hidden="true" />
-                Crowdfunds
+                {ch.crowdfunds.heading}
               </Header>
               <div id="contracts-crowdfund-intro">
                 <Message info size="small" style={{ marginBottom: '1em' }}>
-                  <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>Hub-local vault campaigns</p>
+                  <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>{ch.crowdfunds.infoHeading}</p>
                   <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                    Crowdfunds use Taproot scripts on this node&apos;s Bitcoin connection; they are listed here for visibility alongside storage and execution contracts.
-                    Manage campaigns, ACP PSBT, Payjoin, payout, and refund from{' '}
+                    {ch.crowdfunds.bodyBefore}{' '}
                     {uf.bitcoinCrowdfund ? (
-                      <Link to="/services/bitcoin/crowdfunds">Crowdfunds</Link>
+                      <Link to="/services/bitcoin/crowdfunds">{ch.crowdfunds.link}</Link>
                     ) : (
-                      <span>Crowdfunds (enable <strong>Bitcoin — Crowdfund</strong> in Admin → Feature visibility)</span>
+                      <span>{ch.crowdfunds.linkOff}</span>
                     )}.
                   </p>
                 </Message>
@@ -705,7 +707,7 @@ function ContractsHome () {
                 {crowdfundCampaigns.map((row) => {
                   if (!row) return null;
                   const cid = String(row.campaignId || '').trim();
-                  const title = row.title || cid || 'Campaign';
+                  const title = row.title || cid || ch.crowdfunds.fallbackTitle;
                   return (
                     <List.Item key={cid || title}>
                       <List.Content>
@@ -717,20 +719,20 @@ function ContractsHome () {
                           )}
                           <Label size="mini" color="red" style={{ marginLeft: '0.15em' }}>
                             <Icon name="heart" />
-                            Crowdfunds
+                            {ch.crowdfunds.tag}
                           </Label>
                           {cid ? (
-                            <code style={{ fontSize: '0.8em', color: '#666' }} title="Campaign id">{cid}</code>
+                            <code style={{ fontSize: '0.8em', color: '#666' }} title={ch.crowdfunds.idTitle}>{cid}</code>
                           ) : null}
                         </List.Header>
                         <List.Description style={{ color: '#666' }}>
                           {row.address ? (
-                            <span style={{ wordBreak: 'break-all' }}>Vault <code>{row.address}</code></span>
+                            <span style={{ wordBreak: 'break-all' }}>{ch.crowdfunds.vault} <code>{row.address}</code></span>
                           ) : (
-                            'Vault address pending'
+                            ch.crowdfunds.vaultPending
                           )}
                           {row.goalSats != null ? (
-                            <span style={{ marginLeft: '0.5em' }}>· goal {formatSatsDisplay(row.goalSats)} sats</span>
+                            <span style={{ marginLeft: '0.5em' }}>{ch.crowdfunds.goal(row.goalSats)}</span>
                           ) : null}
                         </List.Description>
                       </List.Content>
@@ -741,11 +743,11 @@ function ContractsHome () {
                   <List.Item>
                     <List.Content>
                       <List.Description style={{ color: '#666' }}>
-                        No Taproot crowdfund campaigns on this hub yet.
+                        {ch.crowdfunds.empty}
                         {uf.bitcoinCrowdfund ? (
-                          <> Open <Link to="/services/bitcoin/crowdfunds">Crowdfunds</Link> to create one.</>
+                          <> {ch.crowdfunds.emptyOpen} <Link to="/services/bitcoin/crowdfunds">{ch.crowdfunds.link}</Link> {ch.crowdfunds.emptyOpenAfter}</>
                         ) : (
-                          <> Enable <strong>Bitcoin — Crowdfund</strong> in Admin → Feature visibility to add campaigns.</>
+                          <> {ch.crowdfunds.emptyOff}</>
                         )}
                       </List.Description>
                     </List.Content>
@@ -757,50 +759,59 @@ function ContractsHome () {
               <section aria-labelledby="contracts-storage-h4" aria-describedby="contracts-storage-intro">
               <Header as="h4" id="contracts-storage-h4">
                 <Icon name="cloud" aria-hidden="true" />
-                Storage Contracts
+                {ch.storage.heading}
               </Header>
               <div id="contracts-storage-intro">
               <Message info size="small" style={{ marginBottom: '1em' }}>
-                <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>L1 bond vs execution anchor</p>
+                <p style={{ margin: 0, fontWeight: 600, color: '#333' }}>{ch.storage.infoHeading}</p>
                 <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                  Storage contracts are created after a verified payment to the distribute invoice (<code>CreateDistributeInvoice</code> → pay → <code>CreateStorageContract</code>).
-                  Execution contracts use an L1 registry fee when Bitcoin is enabled (see below); after publish you can run on the hub and on regtest anchor the run commitment (OP_RETURN) with an admin token from the contract detail page.
+                  {ch.storage.body}
                 </p>
+                <p style={{ margin: '0.35em 0 0', color: '#666', fontSize: '0.88em' }}>
+                  {ch.storage.flowLabel} {ch.storage.flowSteps}
+                </p>
+                <details className="hub-developer-details" style={{ marginTop: '0.35em' }}>
+                  <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
+                  <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#555' }}>
+                    {ch.storage.flowRpc} <code>CreateDistributeInvoice</code> → {ch.storage.flowPay} → <code>CreateStorageContract</code>
+                  </p>
+                  <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#555' }}>{ch.storage.developer}</p>
+                </details>
               </Message>
               </div>
               <div style={{ marginBottom: '1em', display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-                <span style={{ color: '#666', fontSize: '0.9em' }}>Filter:</span>
-                <ButtonGroup size="small">
+                <span id="contracts-storage-filter-label" style={{ color: '#666', fontSize: '0.9em' }}>{ch.storage.filterLabel}</span>
+                <ButtonGroup size="small" role="group" aria-labelledby="contracts-storage-filter-label">
                   <Button
                     type="button"
                     active={filter === FILTER_ALL}
                     onClick={() => setFilter(FILTER_ALL)}
                   >
-                    All
+                    {ch.storage.filters.all}
                   </Button>
                   <Button
                     type="button"
                     active={filter === FILTER_NEW}
                     onClick={() => setFilter(FILTER_NEW)}
-                    title="First copy bonded"
+                    title={ch.storage.filters.newTitle}
                   >
-                    New
+                    {ch.storage.filters.new}
                   </Button>
                   <Button
                     type="button"
                     active={filter === FILTER_PARTIAL}
                     onClick={() => setFilter(FILTER_PARTIAL)}
-                    title="Some copies bonded, not all"
+                    title={ch.storage.filters.partialTitle}
                   >
-                    Partial
+                    {ch.storage.filters.partial}
                   </Button>
                   <Button
                     type="button"
                     active={filter === FILTER_COMPLETE}
                     onClick={() => setFilter(FILTER_COMPLETE)}
-                    title="All desired copies bonded"
+                    title={ch.storage.filters.completeTitle}
                   >
-                    Complete
+                    {ch.storage.filters.complete}
                   </Button>
                 </ButtonGroup>
               </div>
@@ -812,7 +823,9 @@ function ContractsHome () {
                 const acceptedCount = docContracts.length;
                 const desired = Math.max(1, Number(c.desiredCopies || 1));
                 const status = acceptedCount >= desired ? 'complete' : acceptedCount === 1 ? 'new' : 'partial';
-                const statusLabel = status === 'complete' ? 'Complete' : status === 'new' ? 'New' : 'Partial';
+                const statusLabel = status === 'complete'
+                  ? ch.storage.filters.complete
+                  : status === 'new' ? ch.storage.filters.new : ch.storage.filters.partial;
                 const statusColor = status === 'complete' ? 'green' : status === 'new' ? 'blue' : 'orange';
                 return (
                   <List.Item key={c.id}>
@@ -823,29 +836,29 @@ function ContractsHome () {
                         </Link>
                         <Label size="mini" color="purple" style={{ marginLeft: '0.5em' }}>
                           <Icon name="cloud" />
-                          Storage
+                          {ch.storage.tag}
                         </Label>
                         <Label size="mini" color={statusColor} style={{ marginLeft: '0.25em' }}>
                           {statusLabel}
                         </Label>
                         {desired > 1 && (
                           <Label size="mini" basic style={{ marginLeft: '0.25em' }}>
-                            {acceptedCount}/{desired} copies
+                            {ch.storage.copies(acceptedCount, desired)}
                           </Label>
                         )}
                       </List.Header>
                       <List.Description style={{ color: '#666' }}>
-                        {c.document ? `Document: ${c.document}` : 'Document storage contract'}
-                        {created ? ` — ${created}` : ''}
+                        {c.document ? ch.storage.document(c.document) : ch.storage.documentFallback}
+                        {created ? ` · ${created}` : ''}
                         {c.txid && (
                           <span style={{ marginLeft: '0.5em' }}>
                             {uf.bitcoinExplorer ? (
                               <Button size="mini" as={Link} to={`/services/bitcoin/transactions/${encodeURIComponent(c.txid)}`} basic>
                                 <Icon name="bitcoin" />
-                                Tx
+                                {ch.storage.transaction}
                               </Button>
                             ) : (
-                              <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{c.txid}</code>
+                              <code style={{ fontSize: '0.85em' }} title={net.explorerOff}>{c.txid}</code>
                             )}
                           </span>
                         )}
@@ -859,8 +872,8 @@ function ContractsHome () {
                   <List.Content>
                     <List.Description style={{ color: '#666' }}>
                       {storageContracts.length === 0 && executionContracts.length === 0 && crowdfundCampaigns.length === 0
-                        ? 'No contracts yet.'
-                        : `No storage contracts match "${filter}".`}
+                        ? ch.storage.emptyAll
+                        : (ch.storage.empty[filter] || ch.storage.empty.all)}
                     </List.Description>
                   </List.Content>
                 </List.Item>
@@ -878,7 +891,7 @@ function ContractsHome () {
                 }}
               >
                 <span style={{ color: '#666', fontSize: '0.88em' }}>
-                  Showing {storageRangeFrom}–{storageRangeTo} of {storageListTotal}
+                  {net.range(storageRangeFrom, storageRangeTo, storageListTotal)}
                 </span>
                 <HubPagination
                   activePage={storageListActivePage}
@@ -894,55 +907,58 @@ function ContractsHome () {
               <section aria-labelledby="contracts-execution-h4" aria-describedby="contracts-execution-desc">
               <Header as="h4" dividing id="contracts-execution-h4" style={{ marginTop: '1.5em' }}>
                 <Icon name="microchip" aria-hidden="true" />
-                Execution contracts
+                {chx.heading}
               </Header>
-              <p id="contracts-execution-desc" style={{ color: '#666', marginBottom: '0.75em' }}>
-                <strong>Registry:</strong> execution contracts are listed hub-wide. When this hub&apos;s Bitcoin service is available, publishing requires a real L1 payment: request a <code>CreateExecutionRegistryInvoice</code> address, pay at least the quoted sats, then submit the funding <code>txid</code> with <code>CreateExecutionContract</code> (same <code>POST /services/rpc</code> surface as <strong>Run on hub</strong> on the detail page).
-                Without Bitcoin (local dev), the hub still accepts free registration so you can iterate on programs.
+              <p id="contracts-execution-desc" style={{ color: '#666', marginBottom: '0.35em' }}>
+                {chx.description}
               </p>
+              <details className="hub-developer-details" style={{ marginBottom: '0.75em' }}>
+                <summary style={{ cursor: 'pointer', color: '#666' }}>{common.developerDetails}</summary>
+                <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#666' }}>{chx.descriptionDeveloper}</p>
+              </details>
               <Message info size="small" style={{ marginBottom: '1em' }}>
-                <Message.Header>L1, deterministic runs, and network state</Message.Header>
+                <Message.Header>{chx.checksHeading}</Message.Header>
                 <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                  <strong>Registry</strong> ties a <code>programDigest</code> to an on-chain payment when Bitcoin is enabled.
-                  <strong> Runs</strong> produce a <code>runCommitmentHex</code> anyone can re-check (browser vs hub); regtest can <strong>OP_RETURN</strong>-anchor that digest.
-                  The hub <strong>Beacon</strong> records epochs against Bitcoin block hash/height; <strong>sidechain</strong> state can advance via patches and follow L1 reorgs.
-                  Reproducible epoch witnesses, <strong>Beacon Federation</strong> docs, and live manifest / epoch JSON links are in the federation panel below (avoid duplicating the same shortcuts here).
+                  {chx.checksBody}
                 </p>
+                <details className="hub-developer-details" style={{ marginTop: '0.35em' }}>
+                  <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
+                  <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', color: '#555' }}>{chx.checksDeveloper}</p>
+                </details>
               </Message>
               {uf.sidechain ? <DistributedFederationPanel /> : null}
               {execBitcoinLoading && (
-                <Message info size="small" style={{ marginBottom: '1em' }}>
-                  <Message.Header>Checking Bitcoin</Message.Header>
+                <Message info size="small" style={{ marginBottom: '1em' }} role="status">
+                  <Message.Header>{chx.checkingHeading}</Message.Header>
                   <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                    Waiting for <code>/services/bitcoin</code> so we know whether registry publish requires an L1 invoice and txid.
+                    {chx.checkingBody}
                   </p>
                 </Message>
               )}
               {!execBitcoinLoading && execBitcoinOn && (
                 <Message info size="small" style={{ marginBottom: '1em' }}>
-                  <Message.Header>L1-backed registry active</Message.Header>
+                  <Message.Header>{chx.paidHeading}</Message.Header>
                   <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                    Use <strong>Request registry invoice</strong>, pay on-chain (e.g. from{' '}
+                    {chx.paidBefore}{' '}
                     {uf.bitcoinPayments ? (
-                      <Link to="/payments">Payments</Link>
+                      <Link to="/payments">{chx.paymentsLink}</Link>
                     ) : (
-                      <span>Payments (enable Bitcoin — Payments in Admin → Feature visibility)</span>
+                      <span>{chx.paymentsOff}</span>
                     )}
-                    {' '}with admin token on regtest), then paste the txid and <strong>Publish to registry</strong>.
+                    {' '}{chx.paidAfter}
                   </p>
                   {!hasAdmin ? (
                     <p style={{ margin: '0.5em 0 0', color: '#444' }}>
-                      This browser is currently in non-admin mode, so Hub-wallet funding steps are blocked.
-                      Keep using invoice + txid flow with an operator wallet, or load the setup token first.
+                      {chx.noAdmin}
                     </p>
                   ) : null}
                 </Message>
               )}
               {!execBitcoinLoading && !execBitcoinOn && (
                 <Message warning size="small" style={{ marginBottom: '1em' }}>
-                  <Message.Header>No Bitcoin service</Message.Header>
+                  <Message.Header>{chx.noBitcoinHeading}</Message.Header>
                   <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                    Publishing skips L1 verification until the hub exposes a working <code>/services/bitcoin</code> connection.
+                    {chx.noBitcoinBody}
                   </p>
                 </Message>
               )}
@@ -968,37 +984,37 @@ function ContractsHome () {
                     <Step completed={registryStep > 0} active={registryStep === 0}>
                       <Icon name="file code outline" />
                       <Step.Content>
-                        <Step.Title>Program</Step.Title>
-                        <Step.Description>Edit JSON, then request invoice</Step.Description>
+                        <Step.Title>{chx.steps.program}</Step.Title>
+                        <Step.Description>{chx.steps.programDescription}</Step.Description>
                       </Step.Content>
                     </Step>
                     <Step completed={registryStep > 1} active={registryStep === 1}>
                       <Icon name="bitcoin" />
                       <Step.Content>
-                        <Step.Title>Pay L1</Step.Title>
-                        <Step.Description>Fund the registry address</Step.Description>
+                        <Step.Title>{chx.steps.pay}</Step.Title>
+                        <Step.Description>{chx.steps.payDescription}</Step.Description>
                       </Step.Content>
                     </Step>
                     <Step completed={false} active={registryStep === 2}>
                       <Icon name="check" />
                       <Step.Content>
-                        <Step.Title>Publish</Step.Title>
-                        <Step.Description>Submit txid to the hub</Step.Description>
+                        <Step.Title>{chx.steps.publish}</Step.Title>
+                        <Step.Description>{chx.steps.publishDescription}</Step.Description>
                       </Step.Content>
                     </Step>
                   </Step.Group>
                 )}
                 <Form.Field>
-                  <label htmlFor="fabric-exec-name">Name (optional)</label>
+                  <label htmlFor="fabric-exec-name">{chx.fields.name}</label>
                   <Form.Input
                     id="fabric-exec-name"
                     value={normalizeOptionalInputText(execName)}
                     onChange={(e, d) => setExecName(normalizeOptionalInputText(d && d.value))}
-                    placeholder="e.g. Ping demo"
+                    placeholder={chx.fields.namePlaceholder}
                   />
                 </Form.Field>
                 <Form.Field>
-                  <label htmlFor="fabric-exec-program-json">Program (JSON)</label>
+                  <label htmlFor="fabric-exec-program-json">{chx.fields.program}</label>
                   <TextArea
                     id="fabric-exec-program-json"
                     value={execJson}
@@ -1009,7 +1025,7 @@ function ContractsHome () {
                 </Form.Field>
                 {execBitcoinOn && (
                   <Form.Field>
-                    <label htmlFor="fabric-exec-registry-fee-sats">Registry fee (sats)</label>
+                    <label htmlFor="fabric-exec-registry-fee-sats">{chx.fields.fee}</label>
                     <Form.Input
                       id="fabric-exec-registry-fee-sats"
                       type="number"
@@ -1018,20 +1034,19 @@ function ContractsHome () {
                       value={execAmountSats}
                       onChange={(e, d) => setExecAmountSats(d.value)}
                       placeholder={String(DEFAULT_REGISTRY_FEE_SATS)}
-                      aria-label="Execution registry invoice amount in satoshis"
                     />
                   </Form.Field>
                 )}
                 {execBitcoinOn && execRegistryInvoice && (
                   <Message size="small" style={{ marginBottom: '1em' }}>
-                    <Message.Header>Pending registry invoice</Message.Header>
+                    <Message.Header>{chx.invoice.heading}</Message.Header>
                     <p style={{ margin: '0.35em 0 0', color: '#444' }}>
-                      Pay at least the quoted sats to the hub address below, then paste the funding transaction id.
+                      {chx.invoice.body}
                     </p>
                     <p style={{ margin: '0.5em 0 0', wordBreak: 'break-all' }}>
-                      <strong>Pay ≥</strong> {formatSatsDisplay(execRegistryInvoice.amountSats)} sats to{' '}
+                      <strong>{chx.invoice.payAtLeast(execRegistryInvoice.amountSats)}</strong>{' '}
                       <code>{execRegistryInvoice.address}</code>
-                      {' '}(network: {String(execRegistryInvoice.network || '—').trim() || '—'}).
+                      {' '}{chx.invoice.network(String(execRegistryInvoice.network || '').trim() || common.none)}
                     </p>
                     <div style={{ marginTop: '0.5em', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5em' }}>
                       <Button
@@ -1039,32 +1054,32 @@ function ContractsHome () {
                         size="small"
                         basic
                         icon
+                        labelPosition="left"
                         onClick={copyRegistryInvoiceAddress}
-                        title="Copy payment address"
-                        aria-label="Copy registry invoice payment address"
                       >
                         <Icon name="copy outline" />
+                        {chx.invoice.copy}
                       </Button>
                       {registryAddressCopied && (
-                        <span style={{ fontSize: '0.85em', color: '#276749' }}>Copied</span>
+                        <span style={{ fontSize: '0.85em', color: '#276749' }} role="status">{common.actions.copied}</span>
                       )}
                     </div>
                     <p style={{ margin: '0.75em 0 0', fontSize: '0.85em', color: '#555' }}>
-                      Program digest: <code style={{ wordBreak: 'break-all' }}>{execRegistryInvoice.programDigest}</code>
+                      {chx.invoice.digest} <code style={{ wordBreak: 'break-all' }}>{execRegistryInvoice.programDigest}</code>
                     </p>
                     <p style={{ margin: '0.5em 0 0', fontSize: '0.8em', color: '#777' }}>
-                      If you edit the program JSON after this invoice, request a new invoice so the digest still matches.
+                      {chx.invoice.digestNote}
                     </p>
                   </Message>
                 )}
                 {execBitcoinOn && (
                   <Form.Field>
-                    <label htmlFor="fabric-exec-registry-txid">Funding txid (after you pay the invoice)</label>
+                    <label htmlFor="fabric-exec-registry-txid">{chx.fields.txid}</label>
                     <Form.Input
                       id="fabric-exec-registry-txid"
                       value={normalizeOptionalInputText(execTxid)}
                       onChange={(e, d) => setExecTxid(normalizeOptionalInputText(d && d.value))}
-                      placeholder="64-character transaction id"
+                      placeholder={chx.fields.txidPlaceholder}
                     />
                   </Form.Field>
                 )}
@@ -1075,11 +1090,11 @@ function ContractsHome () {
                       color="blue"
                       loading={execInvoiceBusy}
                       disabled={execInvoiceBusy || execBusy || execBitcoinLoading}
-                      title={execBitcoinLoading ? 'Wait until Bitcoin status is known' : undefined}
+                      title={execBitcoinLoading ? chx.waitTitle : undefined}
                       onClick={() => void requestExecutionRegistryInvoice()}
                     >
                       <Icon name="bitcoin" />
-                      Request registry invoice
+                      {chx.requestInvoice}
                     </Button>
                   )}
                   <Button
@@ -1087,10 +1102,10 @@ function ContractsHome () {
                     type="submit"
                     loading={execBusy}
                     disabled={execBusy || execInvoiceBusy || execBitcoinLoading}
-                    title={execBitcoinLoading ? 'Wait until Bitcoin status is known' : undefined}
+                    title={execBitcoinLoading ? chx.waitTitle : undefined}
                   >
                     <Icon name="plus" />
-                    {execBitcoinOn ? 'Publish to registry' : 'Publish to registry (no L1)'}
+                    {chx.publish}
                   </Button>
                   <Button
                     type="button"
@@ -1105,7 +1120,7 @@ function ContractsHome () {
                     }}
                   >
                     <Icon name="undo" />
-                    Reset program template
+                    {chx.reset}
                   </Button>
                 </div>
               </Form>
@@ -1115,8 +1130,8 @@ function ContractsHome () {
                   const created = c.created ? new Date(c.created).toLocaleString() : '';
                   const stepCount = c.program && Array.isArray(c.program.steps) ? c.program.steps.length : null;
                   const stepSummary = stepCount != null
-                    ? `${stepCount} step${stepCount === 1 ? '' : 's'}`
-                    : 'Program';
+                    ? chx.list.steps(stepCount)
+                    : chx.list.programFallback;
                   return (
                     <List.Item key={c.id}>
                       <List.Content>
@@ -1126,22 +1141,22 @@ function ContractsHome () {
                           </Link>
                           <Label size="mini" color="teal" style={{ marginLeft: '0.15em' }}>
                             <Icon name="code" />
-                            Execution
+                            {chx.list.tag}
                           </Label>
                           <Button
                             size="mini"
                             basic
                             as={Link}
                             to={`/contracts/${encodeURIComponent(c.id)}`}
-                            title="Open detail — run locally or on hub"
+                            title={chx.list.openTitle}
                           >
                             <Icon name="angle double right" />
-                            Open
+                            {chx.list.open}
                           </Button>
                         </List.Header>
                         <List.Description style={{ color: '#666' }}>
                           {stepSummary}
-                          {created ? ` — ${created}` : ''}
+                          {created ? ` · ${created}` : ''}
                           {c.txid && (
                             <span style={{ marginLeft: '0.5em' }}>
                               {uf.bitcoinExplorer ? (
@@ -1150,13 +1165,13 @@ function ContractsHome () {
                                   as={Link}
                                   to={`/services/bitcoin/transactions/${encodeURIComponent(c.txid)}`}
                                   basic
-                                  title="Open registry funding transaction on this hub"
+                                  title={chx.list.transactionTitle}
                                 >
                                   <Icon name="bitcoin" />
-                                  Tx
+                                  {ch.storage.transaction}
                                 </Button>
                               ) : (
-                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the tx viewer">{c.txid}</code>
+                                <code style={{ fontSize: '0.85em' }} title={net.explorerOff}>{c.txid}</code>
                               )}
                             </span>
                           )}
@@ -1169,8 +1184,7 @@ function ContractsHome () {
                   <List.Item>
                     <List.Content>
                       <List.Description style={{ color: '#666' }}>
-                        No execution contracts on this hub yet. Publish from the form above
-                        {execBitcoinOn ? ' (registry invoice + funding txid when Bitcoin is on)' : ''}.
+                        {chx.list.empty}
                       </List.Description>
                     </List.Content>
                   </List.Item>
@@ -1188,7 +1202,7 @@ function ContractsHome () {
                   }}
                 >
                   <span style={{ color: '#666', fontSize: '0.88em' }}>
-                    Showing {executionRangeFrom}–{executionRangeTo} of {executionListTotal}
+                    {net.range(executionRangeFrom, executionRangeTo, executionListTotal)}
                   </span>
                   <HubPagination
                     activePage={executionListActivePage}
@@ -1216,28 +1230,28 @@ function ContractsHome () {
               >
                 <Header as="h4" id="contracts-lightning-h4" style={{ margin: 0 }} dividing={false}>
                   <Icon name="bolt" color="yellow" aria-hidden="true" />
-                  <Header.Content>Lightning Channels</Header.Content>
+                  <Header.Content>{ch.lightning.heading}</Header.Content>
                 </Header>
-                <Button as={Link} to="/services/bitcoin" basic size="small" title="Open Bitcoin / Lightning dashboard">
-                  Manage
+                <Button as={Link} to="/services/bitcoin" basic size="small" title={ch.lightning.manageTitle}>
+                  {ch.lightning.manage}
                 </Button>
               </div>
               {lightningChannels.length === 0 ? (
-                <p style={{ color: '#666' }}>No Lightning channels. Open a channel from the Bitcoin page.</p>
+                <p style={{ color: '#666' }}>{ch.lightning.empty}</p>
               ) : (
                 <Table celled compact size='small'>
                   <Table.Header>
                     <Table.Row>
-                      <Table.HeaderCell>Peer</Table.HeaderCell>
-                      <Table.HeaderCell>State</Table.HeaderCell>
-                      <Table.HeaderCell>Capacity</Table.HeaderCell>
-                      <Table.HeaderCell>Our balance</Table.HeaderCell>
-                      <Table.HeaderCell>Short channel ID</Table.HeaderCell>
+                      <Table.HeaderCell>{ch.lightning.columns.peer}</Table.HeaderCell>
+                      <Table.HeaderCell>{ch.lightning.columns.state}</Table.HeaderCell>
+                      <Table.HeaderCell>{ch.lightning.columns.capacity}</Table.HeaderCell>
+                      <Table.HeaderCell>{ch.lightning.columns.balance}</Table.HeaderCell>
+                      <Table.HeaderCell>{ch.lightning.columns.shortId}</Table.HeaderCell>
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {lightningChannels.map((ch, idx) => {
-                      const chId = ch.channel_id || ch.funding_txid || idx;
+                    {lightningChannels.map((channel, idx) => {
+                      const chId = channel.channel_id || channel.funding_txid || idx;
                       const toUrl = `/services/bitcoin/channels/${encodeURIComponent(chId)}`;
                       return (
                         <Table.Row
@@ -1246,17 +1260,17 @@ function ContractsHome () {
                           onClick={() => { if (uf.bitcoinLightning) navigate(toUrl); }}
                         >
                           <Table.Cell>
-                            <code style={{ fontSize: '0.85em' }}>{trimHash(ch.peer_id || ch.funding_txid || '')}</code>
+                            <code style={{ fontSize: '0.85em' }}>{trimHash(channel.peer_id || channel.funding_txid || '')}</code>
                           </Table.Cell>
-                          <Table.Cell>{ch.state || '—'}</Table.Cell>
+                          <Table.Cell>{channel.state || common.none}</Table.Cell>
                           <Table.Cell>
-                            {ch.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.amount_msat) / 1000))} sats` : (ch.channel_sat != null ? `${formatSatsDisplay(ch.channel_sat)} sats` : '—')}
-                          </Table.Cell>
-                          <Table.Cell>
-                            {ch.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(ch.our_amount_msat) / 1000))} sats` : '—'}
+                            {channel.amount_msat != null ? common.sats(Math.floor(Number(channel.amount_msat) / 1000)) : (channel.channel_sat != null ? common.sats(channel.channel_sat) : common.none)}
                           </Table.Cell>
                           <Table.Cell>
-                            <code style={{ fontSize: '0.8em' }}>{ch.short_channel_id || '—'}</code>
+                            {channel.our_amount_msat != null ? common.sats(Math.floor(Number(channel.our_amount_msat) / 1000)) : common.none}
+                          </Table.Cell>
+                          <Table.Cell>
+                            <code style={{ fontSize: '0.8em' }}>{channel.short_channel_id || common.none}</code>
                           </Table.Cell>
                         </Table.Row>
                       );

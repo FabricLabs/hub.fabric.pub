@@ -15,7 +15,13 @@ const {
   Message,
   Segment
 } = require('semantic-ui-react');
-const { formatSatsDisplay } = require('../functions/formatSats');
+const t = require('../locales/en');
+
+const ho = t.documents.hostingOffers;
+
+function senderLabel (proposal) {
+  return ho.from(proposal.senderAddress ? `${String(proposal.senderAddress).slice(0, 12)}…` : ho.unknownSender);
+}
 
 function DistributeProposalsList (props) {
   const bridgeRef = props.bridgeRef;
@@ -84,7 +90,7 @@ function DistributeProposalsList (props) {
         return p.documentId === docId ||
           (p.document && (p.document.sha256 === docId || p.document.id === docId));
       });
-      if (pid) setBondFail({ proposalId: pid, message: detail.message || 'Contract creation failed.' });
+      if (pid) setBondFail({ proposalId: pid, message: detail.message || ho.bondFailed });
     };
     window.addEventListener('storageContractBondFailed', handler);
     return () => window.removeEventListener('storageContractBondFailed', handler);
@@ -100,7 +106,7 @@ function DistributeProposalsList (props) {
           delete pendingAcceptRef.current[d.documentId];
         }
       } catch (_) {}
-      setAcceptFail({ proposalId: String(d.proposalId), message: String(d.message || 'Accept failed') });
+      setAcceptFail({ proposalId: String(d.proposalId), message: String(d.message || ho.acceptFailed) });
     };
     window.addEventListener('acceptDistributeProposalFailed', handler);
     return () => window.removeEventListener('acceptDistributeProposalFailed', handler);
@@ -225,27 +231,26 @@ function DistributeProposalsList (props) {
         >
           <Header as="h3" id="distribute-hosting-heading" style={{ margin: 0 }}>
             <Icon name="handshake" aria-hidden="true" />
-            Hosting proposals
+            {ho.title}
           </Header>
           <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '0.35em' }} aria-hidden="true">
             {pendingProposals.length > 0 && (
-              <Label size="small" color="orange">{pendingProposals.length} pending</Label>
+              <Label size="small" color="orange">{ho.pendingCount(pendingProposals.length)}</Label>
             )}
             {bondedProposals.length > 0 && (
-              <Label size="small" color="green">{bondedProposals.length} bonded</Label>
+              <Label size="small" color="green">{ho.paidCount(bondedProposals.length)}</Label>
             )}
           </span>
         </div>
         <p id="distribute-hosting-summary" style={{ color: '#666', marginBottom: '1em' }}>
-          Peers want to pay you to host their files. Accept to create a payment invoice and begin receiving payments.
+          {ho.summary}
         </p>
         {bridge && !wireLocal && (
           <Message warning size="small" style={{ marginBottom: '1em' }} id="distribute-hosting-external-signing">
-            <Message.Header>External signing mode</Message.Header>
+            <Message.Header>{ho.externalTitle}</Message.Header>
             <p style={{ margin: '0.35em 0 0', color: '#333' }}>
-              This browser has no local Fabric private key, so storage-contract requests go to the Hub without a client Schnorr signature on the wire envelope.
-              Approve any delegation prompts in the desktop app or shell. When you are done on a shared machine, end the session under{' '}
-              <Link to="/settings/security">Security &amp; delegation</Link>.
+              {ho.externalBody}{' '}
+              <Link to="/settings/security">{ho.securityLink}</Link>.
             </p>
           </Message>
         )}
@@ -262,11 +267,11 @@ function DistributeProposalsList (props) {
                 <List.Header>
                   {proposal.documentName || proposal.documentId}
                   <Label size="mini" color="orange" style={{ marginLeft: '0.5em' }}>
-                    {formatSatsDisplay(proposal.amountSats)} sats
+                    {t.common.sats(proposal.amountSats)}
                   </Label>
                 </List.Header>
                 <List.Description>
-                  From {proposal.senderAddress ? `${String(proposal.senderAddress).slice(0, 12)}…` : 'unknown'}
+                  {senderLabel(proposal)}
                 </List.Description>
                 {!hasInvoice ? (
                   <div style={{ marginTop: '0.5em' }}>
@@ -288,19 +293,19 @@ function DistributeProposalsList (props) {
                       onClick={() => handleAccept(proposal)}
                     >
                       <Icon name="check" />
-                      Accept
+                      {ho.accept}
                     </Button>
                     <Button
                       size="small"
                       basic
                       onClick={() => handleReject(proposal)}
                     >
-                      Reject
+                      {ho.decline}
                     </Button>
                   </div>
                 ) : (
                   <Message size="small" style={{ marginTop: '0.5em' }}>
-                    <Message.Header>Invoice sent to proposer</Message.Header>
+                    <Message.Header>{ho.invoiceSentTitle}</Message.Header>
                     {bondFail && bondFail.proposalId === proposal.id && (
                       <Message
                         negative
@@ -311,12 +316,16 @@ function DistributeProposalsList (props) {
                       />
                     )}
                     <p>
-                      Address: <code>{invoice.address}</code><br />
-                      Amount: {formatSatsDisplay(invoice.amountSats)} sats
+                      {ho.address} <code>{invoice.address}</code><br />
+                      {ho.amount} {t.common.sats(invoice.amountSats)}
                     </p>
-                    <p>When the proposer pays, enter the transaction ID below:</p>
+                    <p>{ho.txidHint}</p>
+                    <label htmlFor={`hosting-offer-txid-${proposal.id}`} style={{ display: 'block', fontWeight: 600, marginBottom: '0.35em' }}>
+                      {ho.txidLabel}
+                    </label>
                     <Input
-                      placeholder="Transaction ID (txid)"
+                      id={`hosting-offer-txid-${proposal.id}`}
+                      placeholder={ho.txidPlaceholder}
                       value={txid}
                       onChange={(e) => setTxidByProposal((prev) => ({ ...prev, [proposal.id]: e.target.value }))}
                       style={{ marginBottom: '0.5em', fontFamily: 'monospace', width: '100%' }}
@@ -327,7 +336,7 @@ function DistributeProposalsList (props) {
                       onClick={() => handleConfirmPayment(proposal, txid)}
                       disabled={!txid.trim()}
                     >
-                      Confirm payment & create contract
+                      {ho.confirm}
                     </Button>
                   </Message>
                 )}
@@ -346,12 +355,12 @@ function DistributeProposalsList (props) {
           >
             <Header as="h4" id="distribute-bonded-heading" style={{ marginTop: 0 }}>
               <Icon name="check circle" color="green" aria-hidden="true" />
-              Bonded (payment confirmed)
+              {ho.paidTitle}
             </Header>
             <p id="distribute-bonded-summary" style={{ color: '#666', marginBottom: '0.75em', fontSize: '0.9em' }}>
-              These offers have been paid. Storage contracts are active.
+              {ho.paidSummary}
             </p>
-          <List divided relaxed aria-label="Bonded hosting proposals">
+          <List divided relaxed aria-label={ho.paidListLabel}>
             {bondedProposals.map((proposal) => {
               const contractId = contractByProposal[proposal.id];
               return (
@@ -361,12 +370,12 @@ function DistributeProposalsList (props) {
                       {proposal.documentName || proposal.documentId}
                       <Label size="mini" color="green" style={{ marginLeft: '0.5em' }}>
                         <Icon name="check" />
-                        Bonded
+                        {ho.paid}
                       </Label>
                     </List.Header>
                     <List.Description>
-                      From {proposal.senderAddress ? `${String(proposal.senderAddress).slice(0, 12)}…` : 'unknown'}
-                      {proposal.amountSats ? ` — ${formatSatsDisplay(proposal.amountSats)} sats` : ''}
+                      {senderLabel(proposal)}
+                      {proposal.amountSats ? ` · ${t.common.sats(proposal.amountSats)}` : ''}
                     </List.Description>
                     {contractId && (
                       <div style={{ marginTop: '0.5em' }}>
@@ -377,7 +386,7 @@ function DistributeProposalsList (props) {
                           primary
                         >
                           <Icon name="file alternate" />
-                          View contract
+                          {ho.viewContract}
                         </Button>
                       </div>
                     )}
@@ -391,7 +400,7 @@ function DistributeProposalsList (props) {
       )}
 
       {!hasProposals && (
-        <p style={{ color: '#888', fontStyle: 'italic', marginTop: '0.5em' }}>No offers yet.</p>
+        <p style={{ color: '#888', fontStyle: 'italic', marginTop: '0.5em' }}>{ho.empty}</p>
       )}
     </Segment>
   );

@@ -38,8 +38,8 @@ describe('PeerList bandwidth columns', function () {
         })
       )
     );
-    assert.ok(html.includes('In / Out'), 'expected In / Out column');
-    assert.ok(html.includes('10m / budget'), 'expected 10m budget column');
+    assert.ok(html.includes('Received / sent'), 'expected Received / sent column');
+    assert.ok(html.includes('Last 10 min / limit'), 'expected 10-minute limit column');
     assert.ok(html.includes('19.5 KiB') || html.includes('20000'), 'expected inbound bytes');
     assert.ok(html.includes('sortable') || html.includes('sorted'), 'expected sortable table chrome');
     assert.ok(html.includes('32 KiB') || html.includes('32768') || html.includes('L1'), 'expected L1 budget copy');

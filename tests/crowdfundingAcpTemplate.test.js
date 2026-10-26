@@ -21,7 +21,7 @@ describe('crowdfundingAcpTemplate', () => {
     });
     assert.ok(out.psbtBase64 && out.psbtBase64.length > 20);
     const recheck = new bitcoin.Psbt({ network: bitcoin.networks.regtest });
-    recheck.addOutput({ address: pay.address, value: 10000 });
+    recheck.addOutput({ address: pay.address, value: 10000n });
     assert.strictEqual(out.psbtBase64, recheck.toBase64());
     assert.strictEqual(recheck.data.inputs.length, 0);
     assert.strictEqual(recheck.data.outputs.length, 1);

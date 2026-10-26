@@ -40,4 +40,11 @@ describe('hubDevProxyOnError', function () {
     assert.strictEqual(res.statusCode, 502);
     assert.strictEqual(payload.error, 'hub-unreachable');
   });
+
+  it('closes the socket of a failed WebSocket upgrade', function () {
+    let destroyed = false;
+    const socket = { destroy () { destroyed = true; } };
+    hubDevProxyOnError(new Error('connect ECONNREFUSED'), {}, socket);
+    assert.strictEqual(destroyed, true);
+  });
 });

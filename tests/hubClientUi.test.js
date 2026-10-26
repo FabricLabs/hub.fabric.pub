@@ -68,8 +68,8 @@ describe('Hub UI client vs hub chrome', function () {
   it('Home client origin does not wait on a hub snapshot', function () {
     const html = renderWithRuntime(React.createElement(Home), HUB_UI_RUNTIME_CLIENT);
     assert.ok(html.includes('data-testid="hub-client-home"'));
-    assert.ok(!html.includes('Waiting for hub snapshot'));
-    assert.ok(!html.includes('Opening WebSocket'));
+    assert.ok(!html.includes('Waiting for network status'));
+    assert.ok(!html.includes('Connecting to the Hub'));
     assert.ok(html.includes('data-testid="hub-client-downloads"'));
   });
 

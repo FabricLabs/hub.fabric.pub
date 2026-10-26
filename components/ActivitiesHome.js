@@ -8,97 +8,21 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const t = require('../locales/en');
 
+const FILTER_LABELS = t.home.activities.filters;
 const ACTIVITY_FILTERS = [
-  { value: 'all', label: 'All', icon: 'list layout' },
-  { value: 'chat', label: 'Chat', icon: 'comments' },
-  { value: 'bitcoin', label: 'Bitcoin', icon: 'bitcoin' },
-  { value: 'documents', label: 'Documents', icon: 'file outline' },
-  { value: 'network', label: 'Network', icon: 'sitemap' }
+  { value: 'all', label: FILTER_LABELS.all, icon: 'list layout' },
+  { value: 'chat', label: FILTER_LABELS.chat, icon: 'comments' },
+  { value: 'bitcoin', label: FILTER_LABELS.bitcoin, icon: 'bitcoin' },
+  { value: 'documents', label: FILTER_LABELS.documents, icon: 'file outline' },
+  { value: 'network', label: FILTER_LABELS.network, icon: 'sitemap' }
 ];
 
 const VALID_FILTER = new Set(ACTIVITY_FILTERS.map((f) => f.value));
 
-function ActivitiesUiNotifications ({ uf: ufProp }) {
-  const uf = ufProp || loadHubUiFeatureFlags();
-  const [list, setList] = React.useState(() => readUiNotifications());
-  React.useEffect(() => {
-    const sync = () => setList(readUiNotifications());
-    if (typeof window !== 'undefined') {
-      window.addEventListener(UPDATED_EVENT, sync);
-      const onStorage = (ev) => {
-        if (ev && ev.key === STORAGE_KEY) sync();
-      };
-      window.addEventListener('storage', onStorage);
-      return () => {
-        window.removeEventListener(UPDATED_EVENT, sync);
-        window.removeEventListener('storage', onStorage);
-      };
-    }
-    return undefined;
-  }, []);
-
-  if (list.length === 0) return null;
-
-  return (
-    <Segment id="in-app-notifications" secondary style={{ marginBottom: '1em' }}>
-      <Header as="h4" style={{ marginTop: 0 }}>
-        <Icon name="bell outline" />
-        In-app notifications
-      </Header>
-      <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75em' }}>
-        Wallet, Payjoin, and hub toasts. Open a link, copy details, or dismiss.
-      </p>
-      {list.map((n) => {
-        const openTo = notificationOpenHref(n.href, uf);
-        return (
-        <Segment key={n.id} size="small" style={{ marginBottom: '0.5em' }}>
-          <div style={{ fontWeight: 600 }}>{n.title}</div>
-          {n.subtitle && (
-            <div style={{ fontSize: '0.85em', color: '#888', wordBreak: 'break-word', marginTop: '0.25em' }}>
-              {n.subtitle}
-            </div>
-          )}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center', marginTop: '0.5em' }}>
-            {openTo && (
-              <Button as={Link} to={openTo} size="mini" primary>
-                Open
-              </Button>
-            )}
-            {n.copyText && (
-              <Button
-                size="mini"
-                basic
-                icon
-                title="Copy to clipboard"
-                onClick={() => copyToClipboard(n.copyText)}
-              >
-                <Icon name="copy outline" />
-              </Button>
-            )}
-            <Button
-              size="mini"
-              basic
-              icon
-              title="Dismiss"
-              onClick={() => removeUiNotification(n.id)}
-            >
-              <Icon name="close" />
-            </Button>
-          </div>
-        </Segment>
-        );
-      })}
-      <Button size="small" basic icon labelPosition="left" onClick={() => clearUiNotifications()}>
-        <Icon name="trash" />
-        Clear all
-      </Button>
-    </Segment>
-  );
-}
-
 /**
- * Canonical hub activity feed (`/activities`).
+ * Canonical Hub activity feed (`/activities`).
  */
 function ActivitiesHome (props) {
   const ref = props.bridgeRef || props.bridge;
@@ -110,6 +34,8 @@ function ActivitiesHome (props) {
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setFlagTick((n) => n + 1)), []);
   void flagTick;
   const uf = loadHubUiFeatureFlags();
+  const c = t.home.activities;
+  const nav = t.shell.nav;
   const rawType = (searchParams.get('type') || 'all').trim().toLowerCase();
   let entryTypeFilter = VALID_FILTER.has(rawType) ? rawType : 'all';
 
@@ -126,9 +52,9 @@ function ActivitiesHome (props) {
     <fabric-hub-activities class="fade-in">
       <Segment>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
-          <Button basic as={Link} to="/" size="small" icon labelPosition="left" aria-label="Back to home">
+          <Button basic as={Link} to="/" size="small" icon labelPosition="left">
             <Icon name="arrow left" aria-hidden="true" />
-            Home
+            {t.home.backHome}
           </Button>
           <Button
             as={Link}
@@ -137,11 +63,10 @@ function ActivitiesHome (props) {
             size="small"
             icon
             labelPosition="left"
-            title="Wallet, Payjoin, and hub toasts (same as the bell)"
-            aria-label="Notifications — in-app toasts"
+            title={c.notificationsTitle}
           >
             <Icon name="bell outline" aria-hidden="true" />
-            Notifications
+            {nav.notifications}
           </Button>
           <Button
             basic
@@ -150,10 +75,10 @@ function ActivitiesHome (props) {
             size="small"
             icon
             labelPosition="left"
-            aria-label="Security, delegation tokens, and session audit"
+            title={c.securityTitle}
           >
             <Icon name="shield alternate" aria-hidden="true" />
-            Security &amp; delegation
+            {nav.security}
           </Button>
           <Button
             as={Link}
@@ -162,48 +87,46 @@ function ActivitiesHome (props) {
             size="small"
             icon
             labelPosition="left"
-            title="Bitcoin hub page"
-            aria-label="Bitcoin dashboard"
+            title={c.bitcoinTitle}
           >
             <Icon name="bitcoin" aria-hidden="true" />
-            Bitcoin
+            {nav.bitcoin}
           </Button>
           {uf.bitcoinPayments ? (
-            <Button as={Link} to="/payments" basic size="small" title="Payjoin and payments">
-              Payments
+            <Button as={Link} to="/payments" basic size="small" title={c.paymentsTitle}>
+              {nav.payments}
             </Button>
           ) : null}
           {uf.bitcoinInvoices ? (
-            <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic size="small" title="Invoices walkthrough">
-              Invoices
+            <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic size="small" title={c.invoicesTitle}>
+              {nav.invoices}
             </Button>
           ) : null}
           {uf.bitcoinResources ? (
-            <Button as={Link} to="/services/bitcoin/resources" basic size="small" title="HTTP resources and L1 payment verification">
-              Resources
+            <Button as={Link} to="/services/bitcoin/resources" basic size="small" title={c.resourcesTitle}>
+              {nav.bitcoinResources}
             </Button>
           ) : null}
           {uf.bitcoinCrowdfund ? (
-            <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" icon title="Taproot campaign vault">
+            <Button as={Link} to="/services/bitcoin/crowdfunds" basic size="small" icon title={c.crowdfundsTitle}>
               <Icon name="heart" />
-              Crowdfunds
+              {nav.crowdfunds}
             </Button>
           ) : null}
         </div>
         <section aria-labelledby="activities-page-heading" aria-describedby="activities-page-summary">
           <Header as="h2" id="activities-page-heading" style={{ marginTop: '0.75em' }}>
-            Activities
+            {c.title}
           </Header>
           <p id="activities-page-summary" style={{ color: '#666' }}>
-            Hub message log, chat, Bitcoin blocks, and network events. Wallet, Payjoin, and other short toasts live on{' '}
-            <Link to="/notifications">Notifications</Link> (same list as the bell in the top bar).
+            {c.summary}
           </p>
           <div
             role="toolbar"
-            aria-label="Activity type filter"
+            aria-label={c.filterLabel}
             style={{ marginBottom: '0.75em', display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}
           >
-            <span style={{ fontSize: '0.9em', color: '#666', marginRight: '0.25em' }}>Show:</span>
+            <span style={{ fontSize: '0.9em', color: '#666', marginRight: '0.25em' }}>{c.show}</span>
             {ACTIVITY_FILTERS.map((f) => {
               const active = entryTypeFilter === f.value;
               return (
@@ -218,7 +141,6 @@ function ActivitiesHome (props) {
                   labelPosition="left"
                   onClick={() => setEntryTypeFilter(f.value)}
                   aria-pressed={active}
-                  aria-label={f.value === 'all' ? 'Show all activity types' : `Filter activity feed: ${f.label} only`}
                 >
                   <Icon name={f.icon} />
                   {f.label}

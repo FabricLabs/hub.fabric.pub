@@ -10,27 +10,17 @@
  * operator accepts the namespace.
  *
  * On record/accept, definitions are normalized into an ARC view
- * (`arc` / optional `spend`) via `@fabric/core` `normalizeArcGenesis` +
- * `resolveSpend` when available (RC deploy path for hub.fabric.pub).
+ * (`arc` / optional `spend`) via `@fabric/core` `Contract.normalizeGenesis` +
+ * `Contract.resolveSpend` (RC deploy path for hub.fabric.pub).
  *
  * Persistence: Fabric Filesystem document `application-contracts/STATE`.
  */
 
 const crypto = require('crypto');
+const Contract = require('@fabric/core/types/contract');
 
 const STORE_PATH = 'application-contracts/STATE';
 const SCHEMA_VERSION = 1;
-
-let _contractSpend = null;
-function contractSpend () {
-  if (_contractSpend !== null) return _contractSpend;
-  try {
-    _contractSpend = require('@fabric/core/functions/contractSpend');
-  } catch (_) {
-    _contractSpend = false;
-  }
-  return _contractSpend;
-}
 
 let _Tree = null;
 function TreeType () {
@@ -120,11 +110,7 @@ function definitionDigestOf (definition) {
  * @returns {{ arc: object|null, spendAddress: string|null, bitcoinAnchor: object|null }}
  */
 function enrichArcFields (definition, opts = {}) {
-  const cs = contractSpend();
-  if (!cs || typeof cs.normalizeArcGenesis !== 'function') {
-    return { arc: null, spendAddress: null, bitcoinAnchor: null };
-  }
-  const arc = cs.normalizeArcGenesis(definition || {});
+  const arc = Contract.normalizeGenesis(definition || {});
   let bitcoinAnchor = arc.bitcoinAnchor;
   if (opts.bitcoinBlockHash) {
     bitcoinAnchor = {
@@ -156,7 +142,7 @@ function enrichArcFields (definition, opts = {}) {
       if (applyMode) {
         overrides.spendPolicy = { internalKeyMode: mode };
       }
-      const spend = cs.resolveSpend({
+      const spend = Contract.resolveSpend({
         genesis: arc,
         tip,
         contractId: opts.contractId,

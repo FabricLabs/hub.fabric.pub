@@ -95,4 +95,37 @@ describe('Hub sidechain strict gates', function () {
       else process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS = prev;
     }
   });
+
+  it('_authorizeSidechainPatchProposal accepts only witnesses signed under the sidechain-state tag', function () {
+    const Key = require('@fabric/core/types/key');
+    const sidechainState = require('@fabric/core/functions/sidechainState');
+    const key = new Key();
+    const hub = makeMinimalHub();
+    const proposal = { basisClock: 0, basisDigest: 'aa'.repeat(32), patches: [{ op: 'add', path: '/x', value: 1 }] };
+    const msgBuf = Buffer.from(sidechainState.signingStringForSidechainStatePatch(proposal), 'utf8');
+    const witness = sidechainState.buildFederationWitnessForSidechainPatch({
+      proposal,
+      signKey: key,
+      validators: [key.pubkey],
+      threshold: 1
+    });
+    const ok = hub._authorizeSidechainPatchProposal({
+      validators: [key.pubkey],
+      threshold: 1,
+      federationWitness: witness,
+      msgBuf
+    });
+    assert.strictEqual(ok.ok, true, JSON.stringify(ok));
+    const other = {
+      version: 1,
+      signatures: { [key.pubkey]: key.signSchnorr(msgBuf, 'Fabric/FederationWitness').toString('hex') }
+    };
+    const refused = hub._authorizeSidechainPatchProposal({
+      validators: [key.pubkey],
+      threshold: 1,
+      federationWitness: other,
+      msgBuf
+    });
+    assert.strictEqual(refused.status, 'error');
+  });
 });

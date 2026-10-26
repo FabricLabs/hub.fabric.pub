@@ -28,7 +28,7 @@ function renderTopPanel (props = {}) {
 describe('TopPanel identity label behavior', function () {
   this.timeout(15000);
 
-  it('shows Login when no identity is present', function () {
+  it('shows Log in when no identity is present', function () {
     const html = renderTopPanel({
       auth: null,
       localIdentity: null,
@@ -36,7 +36,7 @@ describe('TopPanel identity label behavior', function () {
       hasLockedIdentity: false
     });
 
-    assert.ok(html.includes('Login'), 'expected Login label when no identity exists');
+    assert.ok(html.includes('Log in'), 'expected Log in label when no identity exists');
   });
 
   it('shows local identity label immediately after first login', function () {
@@ -50,7 +50,7 @@ describe('TopPanel identity label behavior', function () {
       hasLockedIdentity: false
     });
 
-    assert.ok(!html.includes('>Login<'), 'should not render Login after local unlock');
+    assert.ok(!html.includes('>Log in<'), 'should not render Log in after local unlock');
     assert.ok(html.includes('xpub6CUG'), 'should render local identity-derived label');
   });
 
@@ -101,7 +101,7 @@ describe('TopPanel identity label behavior', function () {
     assert.ok(!html.includes('1,000 sats'), 'balance text hidden until unlock');
   });
 
-  it('lists User profile and Manage identity separately when unlocked', function () {
+  it('lists Your profile and Manage identity separately when unlocked', function () {
     const html = renderTopPanel({
       auth: null,
       localIdentity: {
@@ -112,7 +112,7 @@ describe('TopPanel identity label behavior', function () {
       hasLocalIdentity: true,
       hasLockedIdentity: false
     });
-    assert.ok(html.includes('User profile'), 'User profile menu item');
+    assert.ok(html.includes('Your profile'), 'Your profile menu item');
     assert.ok(html.includes('Manage identity'), 'Manage identity opens keys modal');
   });
 });

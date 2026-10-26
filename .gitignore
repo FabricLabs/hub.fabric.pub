@@ -130,6 +130,7 @@ stores/screenshot-runs/
 
 # Local playnet regtest mesh (launcher-generated state)
 stores/playnet-mesh-runtime/
+stores/local-network/
 
 # MacOS garbage
 .DS_Store
@@ -178,3 +179,6 @@ stores/hub-test-lightning-nc/
 
 # Local Fomantic checkout — compiled CSS/JS already lives in assets/
 libraries/fomantic/
+
+# Twemoji SVGs imported by build:semantic (CC-BY 4.0; see NOTICE there)
+/assets/themes/fabric/assets/twemoji/

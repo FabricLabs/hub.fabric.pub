@@ -7,8 +7,8 @@ const deviceLinkHttp = require('@fabric/http/functions/fabricDeviceLinkHttp');
 
 module.exports = {
   DEVICE_LINK_PREFIX: deviceLinkHttp.DEVICE_LINK_PREFIX,
-  DEVICE_LINK_V1_PREFIX: deviceLinkHttp.DEVICE_LINK_V1_PREFIX,
-  DEVICE_LINK_V2_PREFIX: deviceLinkHttp.DEVICE_LINK_V2_PREFIX,
+  DEVICE_LINK_OFFER_TAG: deviceLinkHttp.DEVICE_LINK_OFFER_TAG,
+  DEVICE_LINK_TAG: deviceLinkHttp.DEVICE_LINK_TAG,
   SESSION_TTL_MS: deviceLinkHttp.SESSION_TTL_MS,
   MAX_SESSIONS_PER_ORIGIN: deviceLinkHttp.MAX_SESSIONS_PER_ORIGIN,
   isSessionIdHex: deviceLinkHttp.isSessionIdHex,

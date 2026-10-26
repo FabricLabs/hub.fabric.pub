@@ -12,6 +12,7 @@
 const { serveSpaShellIfHtmlNavigation } = require('./httpSpaShell');
 const { isTrustedLoopbackRequest } = require('./hubHttpLocalTrust');
 
+const DELEGATION_TAG = require('@fabric/core/functions/signingTags').DELEGATION;
 const SIGNATURE_MESSAGE_TTL_MS = 10 * 60 * 1000;
 const MAX_SIGNATURE_MESSAGES = 512;
 
@@ -273,7 +274,7 @@ async function resolveDelegationSignatureMessage (hub, p) {
     throw new Error('Hub identity has no private key');
   }
   const msgBuf = Buffer.from(row.message, 'utf8');
-  const signature = hub._rootKey.signSchnorr(msgBuf);
+  const signature = hub._rootKey.signSchnorr(msgBuf, DELEGATION_TAG);
   const pubkeyHex = typeof hub._rootKey.pubkey === 'string'
     ? hub._rootKey.pubkey
     : Buffer.from(hub._rootKey.pubkey || []).toString('hex');
@@ -297,6 +298,7 @@ async function resolveDelegationSignatureMessage (hub, p) {
     status: 'approved',
     signature: row.signature,
     pubkeyHex,
+    tag: DELEGATION_TAG,
     message: row.message
   };
 }
@@ -424,6 +426,7 @@ function mountFabricDelegationHttp (hub, opts = {}) {
 }
 
 module.exports = {
+  DELEGATION_TAG,
   SIGNATURE_MESSAGE_TTL_MS,
   getDelegationSessionById,
   mountFabricDelegationHttp,

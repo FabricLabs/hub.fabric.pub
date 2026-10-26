@@ -89,12 +89,12 @@ describe('contract Statechains + Beacon Federation signing (ADR-001)', function 
     assert.strictEqual(beaconFederationSigning.roundMeetsThreshold(round), false);
 
     const msg = beaconFederationSigning.messageBufferForPayload(epoch);
-    const s1 = k1.signSchnorr(msg).toString('hex');
+    const s1 = k1.signSchnorr(msg, 'Fabric/FederationWitness').toString('hex');
     const a1 = beaconFederationSigning.addSignature(round, k1.pubkey, s1);
     assert.strictEqual(a1.ok, true);
     assert.strictEqual(a1.sealed, false);
 
-    const s2 = k2.signSchnorr(msg).toString('hex');
+    const s2 = k2.signSchnorr(msg, 'Fabric/FederationWitness').toString('hex');
     const a2 = beaconFederationSigning.addSignature(round, k2.pubkey, s2);
     assert.strictEqual(a2.ok, true);
     assert.strictEqual(a2.sealed, true);

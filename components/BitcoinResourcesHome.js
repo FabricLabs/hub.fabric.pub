@@ -17,6 +17,9 @@ const {
   verifyL1Payment
 } = require('../functions/bitcoinClient');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
+const t = require('../locales/en');
+
+const L = t.payments.resources;
 
 /**
  * Same-origin only: browse JSON is for the local Hub, not arbitrary URLs.
@@ -24,17 +27,17 @@ const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
 function normalizeBrowseJsonPath (raw) {
   let path = String(raw || '').trim() || '/services/bitcoin';
   if (path.startsWith('//')) {
-    throw new Error('Use a path starting with / (protocol-relative URLs are not allowed).');
+    throw new Error(L.errors.protocolRelative);
   }
   if (/^https?:\/\//i.test(path)) {
     let u;
     try {
       u = new URL(path);
     } catch (_) {
-      throw new Error('Invalid URL.');
+      throw new Error(L.errors.invalidUrl);
     }
     if (typeof window !== 'undefined' && window.location && u.origin !== window.location.origin) {
-      throw new Error('Cross-origin fetch is disabled. Use a path on this hub (e.g. /services/bitcoin).');
+      throw new Error(L.errors.crossOrigin);
     }
     return u.pathname + u.search + u.hash;
   }
@@ -167,54 +170,73 @@ class BitcoinResourcesHome extends React.Component {
   render () {
     const w = this.state.wallet || {};
     const walletId = w.walletId || '';
+    const E = L.endpoints;
     const rows = [
-      { method: 'GET', path: '/services/bitcoin', note: 'Status, health, beacon' },
-      { method: 'GET', path: '/services/bitcoin/blocks', note: 'Recent blocks' },
-      { method: 'GET', path: '/services/bitcoin/transactions', note: 'Recent transactions' },
-      { method: 'GET', path: '/services/bitcoin/wallets', note: 'Wallet summaries' },
-      { method: 'GET', path: '/services/bitcoin/xpub?xpub=', note: 'Watch-only balance (scantxoutset); optional &addresses= for mempool; no wallet id in URL' },
-      { method: 'GET', path: '/services/bitcoin/xpub/utxos?xpub=', note: 'Watch-only UTXOs' },
-      { method: 'GET', path: '/services/bitcoin/xpub/transactions?xpub=&limit=&addresses=', note: 'Watch-only tx list' },
-      { method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}` : '/services/bitcoin/wallets/:walletId', note: 'Legacy: client balance when ?xpub= and :walletId ≠ Hub wallet; prefer /xpub' },
-      { method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}/utxos` : '/services/bitcoin/wallets/:walletId/utxos', note: 'Legacy UTXOs; prefer /xpub/utxos' },
-      { method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}/transactions` : '/services/bitcoin/wallets/:walletId/transactions', note: 'Legacy txs; prefer /xpub/transactions' },
-      { method: 'GET', path: '/services/bitcoin/addresses', note: 'Receive address helper' },
-      { method: 'GET', path: '/payments', note: 'Canonical outbound payments list (legacy GET /services/bitcoin/payments)' },
-      { method: 'POST', path: '/payments', note: 'Canonical Hub-wallet spend POST (legacy POST /services/bitcoin/payments)' },
-      { method: 'GET', path: '/services/payjoin', note: 'Payjoin capabilities (+ fabricProtocol); mirror: /payments/payjoin' },
-      { method: 'GET', path: '/services/payjoin/sessions', note: 'List sessions' },
-      { method: 'POST', path: '/services/payjoin/sessions', note: 'Create deposit session (body: walletId, amountSats, address?, receiveTemplate?, federationXOnlyHex?)' },
-      { method: 'POST', path: '/services/payjoin/sessions/:sessionId/proposals', note: 'Submit Payjoin proposal (body: psbt / txhex)' },
-      { method: 'POST', path: '/services/payjoin/sessions/:sessionId/acp-hub-boost', note: 'Admin Bearer: append+sign Hub wallet input on ANYONECANPAY|ALL payer PSBT (outputs unchanged)' },
-      { method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns', note: 'List Taproot crowdfunds (goal/min committed in tapscript; 2-of-2 payout)' },
-      { method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns', note: 'Create campaign (admin Bearer): beneficiaryPubkeyHex, goalSats, minContributionSats, refundAfterBlocks?, title?' },
-      { method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns/:id/acp-donation-psbt?amountSats=', note: 'Outputs-only PSBT (one output to vault); donors add inputs with SIGHASH_ALL|ANYONECANPAY' },
-      { method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns/:id', note: 'Campaign + scantxoutset balance, goalMet, vaultUtxos[{txid,vout,amountSats}]' },
-      { method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-psbt?destination=&feeSats=', note: 'Unsigned payout PSBT when raised ≥ goal; each UTXO ≥ minContributionSats' },
-      { method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-sign-arbiter', note: 'Admin: body psbtBase64 — Hub arbiter co-signs' },
-      { method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-broadcast', note: 'body psbtBase64 — finalize 2-of-2 payout + sendrawtransaction' },
-      { method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/refund-prepare', note: 'Admin: after CLTV height — body destinationAddress, fundedTxid, vout?, feeSats?; returns signed arbiter refund hex' },
-      { method: 'POST', path: '/sessions', note: 'Desktop login: create session (body: origin); off loopback, request must match that origin — Origin / Referer / Sec-Fetch-Site+Host' },
-      { method: 'GET', path: '/sessions/:sessionId', note: 'Poll desktop login (pending/signed once then 404). After redeem, GET /sessions/:delegationToken needs Authorization: Bearer matching the token. Electron should send Origin=hub from fabric:// `hub` when not loopback; localhost vs 127.0.0.1 same port counts as same origin' },
-      { method: 'GET', path: '/sessions/:sessionId/delegation/audit', note: 'Delegation audit (Bearer must equal session id): pending queue, DELEGATION_* Fabric log slice, Hub verify pubkey' },
-      { method: 'DELETE', path: '/sessions/:sessionId', note: 'Revoke delegation (loopback or Bearer matching id); 404 if token unknown' },
-      { method: 'POST', path: '/sessions/:sessionId/signatures', note: 'Desktop completes login: loopback TCP or Origin/Referer/Host matching session (LAN hub); localhost ≡ 127.0.0.1 same port' },
-      { method: 'GET', path: '/sessions', note: 'List delegation sessions + pendingDelegationMessages (Fabric message ids; loopback)' },
-      { method: 'POST', path: '/services/rpc', note: 'JSON-RPC: PostDelegationSignatureMessage, GetDelegationSignatureMessage, ResolveDelegationSignatureMessage (delegation token / session id); list sessions GET /sessions is loopback-only; Fabric log DELEGATION_SIGNATURE_*' },
-      { method: 'GET', path: '/services/lightning', note: 'Lightning status' },
-      { method: 'GET', path: '/services/lightning/channels', note: 'Channels + listfunds outputs' },
-      { method: 'DELETE', path: '/services/lightning/channels/:channelId', note: 'Close channel (CLN close RPC)' },
-      { method: 'POST', path: '/services/lightning/channels', note: 'Open channel (body: peerId/remote, amountSats, …)' },
-      { method: 'POST', path: '/services/lightning/invoices', note: 'Create invoice' },
-      { method: 'POST', path: '/services/lightning/payments', note: 'Pay invoice' },
-      { method: 'POST', path: '/services/lightning/decodes', note: 'Decode BOLT11' },
-      { method: 'GET', path: '/services/bitcoin/transactions/:txid?address=&amountSats=', note: 'L1 payment proof (same resource as raw tx; query selects proof JSON)' },
-      { method: 'GET', path: '/services/distributed/manifest', note: 'Distributed execution manifest; federation validator pubkeys and threshold' },
-      { method: 'GET', path: '/services/distributed/epoch', note: 'Beacon epoch summary JSON (L1 height/hash; optional sidechain digest; witness metadata)' },
-      { method: 'GET', path: '/services/distributed/vault', note: 'Federation Taproot vault address, tapscript hex, maturity policy' },
-      { method: 'GET', path: '/services/distributed/vault/utxos', note: 'Vault UTXOs (scantxoutset) + per-UTXO maturity hint' },
-      { method: 'GET', path: '/services/distributed/federation-registry', note: 'Fabric filesystem catalog: seeded federations + fabfed OP_RETURN discoveries (regtest scan default)' }
+      { id: 'status', method: 'GET', path: '/services/bitcoin' },
+      { id: 'blocks', method: 'GET', path: '/services/bitcoin/blocks' },
+      { id: 'transactions', method: 'GET', path: '/services/bitcoin/transactions' },
+      { id: 'wallets', method: 'GET', path: '/services/bitcoin/wallets' },
+      { id: 'xpub', method: 'GET', path: '/services/bitcoin/xpub?xpub=' },
+      { id: 'xpubUtxos', method: 'GET', path: '/services/bitcoin/xpub/utxos?xpub=' },
+      { id: 'xpubTransactions', method: 'GET', path: '/services/bitcoin/xpub/transactions?xpub=&limit=&addresses=' },
+      { id: 'wallet', method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}` : '/services/bitcoin/wallets/:walletId' },
+      { id: 'walletUtxos', method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}/utxos` : '/services/bitcoin/wallets/:walletId/utxos' },
+      { id: 'walletTransactions', method: 'GET', path: walletId ? `/services/bitcoin/wallets/${walletId}/transactions` : '/services/bitcoin/wallets/:walletId/transactions' },
+      { id: 'addresses', method: 'GET', path: '/services/bitcoin/addresses' },
+      { id: 'paymentsList', method: 'GET', path: '/payments' },
+      { id: 'paymentsCreate', method: 'POST', path: '/payments' },
+      { id: 'payjoin', method: 'GET', path: '/services/payjoin' },
+      { id: 'payjoinSessions', method: 'GET', path: '/services/payjoin/sessions' },
+      { id: 'payjoinCreate', method: 'POST', path: '/services/payjoin/sessions' },
+      { id: 'payjoinProposal', method: 'POST', path: '/services/payjoin/sessions/:sessionId/proposals' },
+      { id: 'payjoinContribute', method: 'POST', path: '/services/payjoin/sessions/:sessionId/contribute' },
+      { id: 'coinjoin', method: 'GET', path: '/services/coinjoin' },
+      { id: 'coinjoinOffers', method: 'GET', path: '/services/coinjoin/offers?amountSats=' },
+      { id: 'coinjoinTerms', method: 'POST', path: '/services/coinjoin/offers' },
+      { id: 'coinjoinRounds', method: 'GET', path: '/services/coinjoin/rounds' },
+      { id: 'coinjoinStart', method: 'POST', path: '/services/coinjoin/rounds' },
+      { id: 'bonds', method: 'GET', path: '/services/coinjoin/bonds' },
+      { id: 'bondCreate', method: 'POST', path: '/services/coinjoin/bonds' },
+      { id: 'bondRenew', method: 'POST', path: '/services/coinjoin/bonds/:bondId/certificate' },
+      { id: 'bondRedeem', method: 'POST', path: '/services/coinjoin/bonds/:bondId/redeem' },
+      { id: 'campaigns', method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns' },
+      { id: 'campaignCreate', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns' },
+      { id: 'campaignDonationPsbt', method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns/:id/acp-donation-psbt?amountSats=' },
+      { id: 'campaign', method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns/:id' },
+      { id: 'campaignPayoutPsbt', method: 'GET', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-psbt?destination=&feeSats=' },
+      { id: 'campaignArbiterSign', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-sign-arbiter' },
+      { id: 'campaignBroadcast', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/payout-broadcast' },
+      { id: 'campaignRefund', method: 'POST', path: '/services/bitcoin/crowdfunding/campaigns/:id/refund-prepare' },
+      { id: 'sessionCreate', method: 'POST', path: '/sessions' },
+      { id: 'session', method: 'GET', path: '/sessions/:sessionId' },
+      { id: 'sessionAudit', method: 'GET', path: '/sessions/:sessionId/delegation/audit' },
+      { id: 'sessionRevoke', method: 'DELETE', path: '/sessions/:sessionId' },
+      { id: 'sessionSign', method: 'POST', path: '/sessions/:sessionId/signatures' },
+      { id: 'sessions', method: 'GET', path: '/sessions' },
+      { id: 'rpc', method: 'POST', path: '/services/rpc' },
+      { id: 'lightning', method: 'GET', path: '/services/lightning' },
+      { id: 'lightningChannels', method: 'GET', path: '/services/lightning/channels' },
+      { id: 'lightningClose', method: 'DELETE', path: '/services/lightning/channels/:channelId' },
+      { id: 'lightningOpen', method: 'POST', path: '/services/lightning/channels' },
+      { id: 'lightningInvoice', method: 'POST', path: '/services/lightning/invoices' },
+      { id: 'lightningPay', method: 'POST', path: '/services/lightning/payments' },
+      { id: 'lightningDecode', method: 'POST', path: '/services/lightning/decodes' },
+      { id: 'paymentProof', method: 'GET', path: '/services/bitcoin/transactions/:txid?address=&amountSats=' },
+      { id: 'manifest', method: 'GET', path: '/services/distributed/manifest' },
+      { id: 'epoch', method: 'GET', path: '/services/distributed/epoch' },
+      { id: 'vault', method: 'GET', path: '/services/distributed/vault' },
+      { id: 'vaultUtxos', method: 'GET', path: '/services/distributed/vault/utxos' },
+      { id: 'registry', method: 'GET', path: '/services/distributed/federation-registry' }
     ];
+    const verifyResult = this.state.verifyResult;
+    const verifyDetails = verifyResult && !verifyResult.error ? (
+      <details className="hub-developer-details" style={{ marginTop: '0.5em' }}>
+        <summary>{t.common.developerDetails}</summary>
+        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
+          {JSON.stringify(verifyResult, null, 2)}
+        </pre>
+      </details>
+    ) : null;
 
     return (
       <div className='fade-in'>
@@ -225,32 +247,27 @@ class BitcoinResourcesHome extends React.Component {
             role="banner"
           >
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-              <Button as={Link} to="/services/bitcoin" basic aria-label="Back to Bitcoin dashboard" title="Bitcoin home (status, wallet, explorer, and tools)">
+              <Button as={Link} to="/services/bitcoin" basic title={L.backTitle}>
                 <Icon name="arrow left" aria-hidden="true" />
-                Bitcoin
+                {L.back}
               </Button>
               <Button as={Link} to="/payments" basic>
                 <Icon name="credit card outline" aria-hidden="true" />
-                Payments UI
+                {L.payments}
               </Button>
               <Button as={Link} to="/services/bitcoin/crowdfunds" basic>
                 <Icon name="heart outline" aria-hidden="true" />
-                Crowdfunds
+                {L.crowdfunds}
               </Button>
             </div>
             <Header as="h2" id="btc-resources-page-heading" style={{ margin: 0 }}>
               <Icon name="bitcoin" color="orange" aria-hidden="true" />
-              <Header.Content>Bitcoin HTTP resources</Header.Content>
+              <Header.Content>{L.title}</Header.Content>
             </Header>
             <p id="btc-resources-page-summary" style={{ margin: 0, color: '#666', maxWidth: '48rem', lineHeight: 1.45 }}>
-              REST on <code>/services/bitcoin</code> and <code>/services/lightning</code>: GET collections, POST to
-              create or act, DELETE where removal is the semantics (e.g. close channel). Hub{' '}
-              <code>POST /services/bitcoin</code> remains JSON-RPC for Fabric clients.
-              {' '}
-              <strong>Beacon / federation:</strong> public epoch and policy JSON lives under{' '}
-              <code>/services/distributed/</code>
-              {' '}(quick-open below). How to compare L1 tips and reproduce Schnorr witnesses is summarized on{' '}
-              <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>.
+              {L.summary}{' '}
+              {L.beaconBefore}{' '}
+              <Link to="/settings/admin/beacon-federation">{L.beaconLink}</Link>.
             </p>
           </div>
           <BitcoinWalletBranchBar identity={(this.props && this.props.identity) || {}} />
@@ -259,73 +276,74 @@ class BitcoinResourcesHome extends React.Component {
 
         <Segment>
           <section aria-labelledby="btc-resources-l1-h3" aria-describedby="btc-resources-l1-desc">
-          <Header as="h3" id="btc-resources-l1-h3">L1 payment verification</Header>
+          <Header as="h3" id="btc-resources-l1-h3">{L.verifyTitle}</Header>
           <p id="btc-resources-l1-desc" style={{ color: '#666' }}>
-            Uses{' '}
-            <code>GET /services/bitcoin/transactions/&lt;txid&gt;?address=&amp;amountSats=</code>
-            .
+            {L.verifyIntro}
           </p>
+          <details className="hub-developer-details" style={{ marginBottom: '0.75em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <code>GET /services/bitcoin/transactions/&lt;txid&gt;?address=&amp;amountSats=</code>
+          </details>
           <Form onSubmit={(e) => { e.preventDefault(); this.handleVerify(); }}>
             <Form.Group widths='equal'>
               <Form.Input
-                label='Transaction id'
-                placeholder='64-char hex txid'
+                id='btc-resources-verify-txid'
+                label={L.txid}
+                placeholder={L.txidPlaceholder}
                 value={this.state.verifyTxid}
                 onChange={(e, { value }) => this.setState({ verifyTxid: value })}
               />
               <Form.Input
-                label='Destination address'
-                placeholder='Invoice / expected receive address'
+                id='btc-resources-verify-address'
+                label={L.address}
+                placeholder={L.addressPlaceholder}
                 value={this.state.verifyAddress}
                 onChange={(e, { value }) => this.setState({ verifyAddress: value })}
               />
               <Form.Input
-                label='Minimum amount (sats)'
+                id='btc-resources-verify-amount'
+                label={L.minAmount}
                 type='number'
                 min={1}
                 value={this.state.verifyAmountSats}
                 onChange={(e, { value }) => this.setState({ verifyAmountSats: value })}
-                input={{
-                  'aria-label': 'Minimum amount in satoshis for L1 payment verification'
-                }}
               />
             </Form.Group>
             <Button primary type='submit' loading={this.state.verifyLoading}>
               <Icon name='check circle outline' />
-              Verify
+              {L.verify}
             </Button>
           </Form>
-          {this.state.verifyResult && !this.state.verifyResult.error && this.state.verifyResult.verified === true && (
+          {verifyResult && !verifyResult.error && verifyResult.verified === true && (
             <Message positive style={{ marginTop: '1em' }}>
-              <Message.Header>Payment verified</Message.Header>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                {JSON.stringify(this.state.verifyResult, null, 2)}
-              </pre>
-            </Message>
-          )}
-          {this.state.verifyResult && !this.state.verifyResult.error && this.state.verifyResult.verified === false && (
-            <Message warning style={{ marginTop: '1em' }}>
-              <Message.Header>Not verified</Message.Header>
-              <p style={{ marginBottom: '0.65em' }}>
-                This transaction does not pay at least the requested amount to the given address, or the node could not load the tx (wrong network, txindex off, or tx not seen yet).
+              <Message.Header>{L.verified}</Message.Header>
+              <p style={{ margin: '0.35em 0 0' }}>
+                {L.proofSummary(verifyResult.matchedSats, verifyResult.confirmations, verifyResult.inMempool)}
               </p>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
-                {JSON.stringify(this.state.verifyResult, null, 2)}
-              </pre>
+              {verifyDetails}
             </Message>
           )}
-          {this.state.verifyResult && !this.state.verifyResult.error && this.state.verifyResult.verified !== true && this.state.verifyResult.verified !== false && (
+          {verifyResult && !verifyResult.error && verifyResult.verified === false && (
+            <Message warning style={{ marginTop: '1em' }}>
+              <Message.Header>{L.notVerified}</Message.Header>
+              <p style={{ margin: '0.35em 0 0' }}>
+                {L.notVerifiedHint}
+              </p>
+              {verifyDetails}
+            </Message>
+          )}
+          {verifyResult && !verifyResult.error && verifyResult.verified !== true && verifyResult.verified !== false && (
             <Message info style={{ marginTop: '1em' }}>
-              <Message.Header>Result</Message.Header>
+              <Message.Header>{L.result}</Message.Header>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                {JSON.stringify(this.state.verifyResult, null, 2)}
+                {JSON.stringify(verifyResult, null, 2)}
               </pre>
             </Message>
           )}
-          {this.state.verifyResult && this.state.verifyResult.error && (
+          {verifyResult && verifyResult.error && (
             <Message negative style={{ marginTop: '1em' }}>
-              <Message.Header>Verification request failed</Message.Header>
-              <p style={{ margin: '0.35em 0 0' }}>{this.state.verifyResult.error}</p>
+              <Message.Header>{L.verifyFailed}</Message.Header>
+              <p style={{ margin: '0.35em 0 0' }}>{verifyResult.error}</p>
               <Button
                 type="button"
                 size="small"
@@ -335,7 +353,7 @@ class BitcoinResourcesHome extends React.Component {
                 onClick={() => void this.handleVerify()}
               >
                 <Icon name="refresh" />
-                Retry
+                {t.common.actions.retry}
               </Button>
             </Message>
           )}
@@ -344,25 +362,26 @@ class BitcoinResourcesHome extends React.Component {
 
         <Segment>
           <section aria-labelledby="btc-resources-fetch-h3" aria-describedby="btc-resources-fetch-desc">
-          <Header as="h3" id="btc-resources-fetch-h3">Browse JSON</Header>
+          <Header as="h3" id="btc-resources-fetch-h3">{L.browseTitle}</Header>
           <p id="btc-resources-fetch-desc" style={{ color: '#666' }}>
-            GET a path on <strong>this hub</strong> (default <code>/services/bitcoin</code>). Cross-origin and protocol-relative URLs are rejected.
+            {L.browseIntro}
           </p>
           <Form onSubmit={(e) => { e.preventDefault(); this.handleFetchJson(); }}>
             <Form.Input
-              label='Path'
+              id='btc-resources-fetch-path'
+              label={L.path}
               value={this.state.fetchPath}
               onChange={(e, { value }) => this.setState({ fetchPath: value })}
               placeholder='/services/bitcoin'
             />
             <Button type='submit' loading={this.state.fetchLoading}>
               <Icon name='download' />
-              Fetch
+              {L.fetch}
             </Button>
           </Form>
           {this.state.fetchError && (
             <Message negative style={{ marginTop: '1em' }}>
-              <Message.Header>Request failed</Message.Header>
+              <Message.Header>{L.fetchFailed}</Message.Header>
               <p style={{ margin: '0.35em 0 0' }}>{this.state.fetchError}</p>
               <Button
                 type="button"
@@ -373,7 +392,7 @@ class BitcoinResourcesHome extends React.Component {
                 onClick={() => void this.handleFetchJson()}
               >
                 <Icon name="refresh" />
-                Retry
+                {t.common.actions.retry}
               </Button>
             </Message>
           )}
@@ -391,39 +410,44 @@ class BitcoinResourcesHome extends React.Component {
 
         <Segment>
           <section aria-labelledby="btc-resources-quickopen-h3">
-          <Header as="h3" id="btc-resources-quickopen-h3">Quick open (new tab)</Header>
-          <Table compact celled aria-label="Bitcoin and related HTTP endpoints">
+          <Header as="h3" id="btc-resources-quickopen-h3">{L.endpointsTitle}</Header>
+          <Table compact celled aria-labelledby="btc-resources-quickopen-h3">
             <Table.Header>
               <Table.Row>
-                <Table.HeaderCell>Method</Table.HeaderCell>
-                <Table.HeaderCell>Path</Table.HeaderCell>
-                <Table.HeaderCell>Note</Table.HeaderCell>
-                <Table.HeaderCell collapsing>Open</Table.HeaderCell>
+                <Table.HeaderCell>{L.colMethod}</Table.HeaderCell>
+                <Table.HeaderCell>{L.colPath}</Table.HeaderCell>
+                <Table.HeaderCell>{L.colDescription}</Table.HeaderCell>
+                <Table.HeaderCell collapsing>{L.colOpen}</Table.HeaderCell>
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {rows.map((r) => (
-                <Table.Row key={`${r.method}:${r.path}`}>
-                  <Table.Cell>{r.method}</Table.Cell>
-                  <Table.Cell>
-                    <code style={{ fontSize: '0.85em' }}>{r.path}</code>
-                  </Table.Cell>
-                  <Table.Cell>{r.note}</Table.Cell>
-                  <Table.Cell>
-                    <Button
-                      size='mini'
-                      basic
-                      type='button'
-                      disabled={r.path.includes(':') || r.method !== 'GET'}
-                      title={r.method !== 'GET' ? 'Quick open is GET-only; use curl or an API client for POST/DELETE.' : undefined}
-                      onClick={() => this.openPath(r.path.split('?')[0])}
-                      aria-label={`Open ${r.method} ${r.path.split('?')[0]} as JSON in new tab`}
-                    >
-                      JSON
-                    </Button>
-                  </Table.Cell>
-                </Table.Row>
-              ))}
+              {rows.map((r) => {
+                const pathId = `btc-resources-path-${r.method.toLowerCase()}-${r.id}`;
+                const needsId = r.path.includes(':');
+                const getOnly = r.method !== 'GET';
+                return (
+                  <Table.Row key={`${r.method}:${r.id}`}>
+                    <Table.Cell>{r.method}</Table.Cell>
+                    <Table.Cell>
+                      <code id={pathId} style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{r.path}</code>
+                    </Table.Cell>
+                    <Table.Cell>{E[r.id]}</Table.Cell>
+                    <Table.Cell>
+                      <Button
+                        size='mini'
+                        basic
+                        type='button'
+                        disabled={needsId || getOnly}
+                        title={getOnly ? L.getOnly : (needsId ? L.needsId : undefined)}
+                        onClick={() => this.openPath(r.path.split('?')[0])}
+                        aria-describedby={pathId}
+                      >
+                        {L.open}
+                      </Button>
+                    </Table.Cell>
+                  </Table.Row>
+                );
+              })}
             </Table.Body>
           </Table>
           </section>

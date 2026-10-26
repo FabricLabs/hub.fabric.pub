@@ -3,6 +3,9 @@
 const React = require('react');
 const { Button, Header, Icon, List, Message, Segment } = require('semantic-ui-react');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
+const t = require('../locales/en');
+
+const c = t.settings.trackedContracts;
 
 async function rpc (method, params = {}) {
   const res = await fetch('/services/rpc', {
@@ -37,7 +40,7 @@ function TrackedApplicationContractsPanel (props = {}) {
         setError(null);
       })
       .catch((e) => {
-        setError(e && e.message ? e.message : String(e));
+        setError(t.common.errors.withReason(c.loadFailed, e && e.message ? e.message : String(e)));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -58,13 +61,13 @@ function TrackedApplicationContractsPanel (props = {}) {
   const act = async (method, contractId) => {
     const adminToken = readHubAdminTokenFromBrowser();
     if (!adminToken) {
-      setError('Admin token required (paste under Admin) to accept or reject.');
+      setError(t.common.errors.adminTokenRequired);
       return;
     }
     setBusyId(contractId);
     try {
       const r = await rpc(method, { contractId, adminToken });
-      if (r && r.status === 'error') throw new Error(r.message || 'request failed');
+      if (r && r.status === 'error') throw new Error(r.message || c.actionFailed);
       setSummary(r.summary || null);
       await refresh();
     } catch (e) {
@@ -82,27 +85,29 @@ function TrackedApplicationContractsPanel (props = {}) {
     <>
       <Header as={embedded ? 'h4' : 'h3'}>
         <Icon name="file code outline" aria-hidden="true" />
-        <Header.Content>{embedded ? 'Pending & accepted publishes' : 'Tracked application contracts'}</Header.Content>
+        <Header.Content>{embedded ? c.titleEmbedded : c.title}</Header.Content>
       </Header>
       {!embedded ? (
-      <p style={{ color: '#555', lineHeight: 1.5, marginBottom: '0.75em' }}>
-        Inbound <code>CONTRACT_PUBLISH</code> frames (application namespaces) land here as pending offers.
-        Accepting one adds it to the local Beacon-tracked set; the next epoch seals{' '}
-        <code>payload.contracts.stateDigest</code> (the state root of accepted published contracts).
-      </p>
+        <>
+          <p style={{ color: '#555', lineHeight: 1.5, marginBottom: '0.5em' }}>{c.intro}</p>
+          <details className="hub-developer-details" style={{ marginBottom: '0.75em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <p style={{ color: '#555', margin: '0.35em 0 0' }}>{c.developer}</p>
+          </details>
+        </>
       ) : null}
-      {loading && <Message info size="small">Loading…</Message>}
+      {loading && <Message info size="small">{c.loading}</Message>}
       {error && <Message negative size="small" onDismiss={() => setError(null)}>{error}</Message>}
       {stateRoot && (
         <Message size="small" style={{ wordBreak: 'break-all' }}>
-          <Message.Header>Contracts state root</Message.Header>
+          <Message.Header>{c.stateRoot}</Message.Header>
           <code>{stateRoot}</code>
         </Message>
       )}
 
-      <Header as="h4">Pending publishes ({pending.length})</Header>
+      <Header as="h4">{c.pending(pending.length)}</Header>
       {pending.length === 0 ? (
-        <p style={{ color: '#777' }}>No pending CONTRACT_PUBLISH offers.</p>
+        <p style={{ color: '#777' }}>{c.pendingEmpty}</p>
       ) : (
         <List divided relaxed>
           {pending.map((row) => (
@@ -114,7 +119,7 @@ function TrackedApplicationContractsPanel (props = {}) {
                   disabled={busyId === row.contractId}
                   onClick={() => act('AcceptTrackedApplicationContract', row.contractId)}
                 >
-                  Accept
+                  {c.accept}
                 </Button>
                 <Button
                   size="mini"
@@ -123,14 +128,14 @@ function TrackedApplicationContractsPanel (props = {}) {
                   onClick={() => act('RejectTrackedApplicationContract', row.contractId)}
                   style={{ marginLeft: '0.35em' }}
                 >
-                  Reject
+                  {c.reject}
                 </Button>
               </List.Content>
               <List.Content>
-                <List.Header>{row.name || 'Unnamed contract'}</List.Header>
+                <List.Header>{row.name || c.unnamed}</List.Header>
                 <List.Description style={{ wordBreak: 'break-all' }}>
                   <code>{row.contractId}</code>
-                  {row.version != null ? ` · v${row.version}` : ''}
+                  {row.version != null ? ` · ${c.version(row.version)}` : ''}
                   {row.receivedAt ? ` · ${row.receivedAt}` : ''}
                 </List.Description>
               </List.Content>
@@ -139,9 +144,9 @@ function TrackedApplicationContractsPanel (props = {}) {
         </List>
       )}
 
-      <Header as="h4" style={{ marginTop: '1em' }}>Accepted ({accepted.length})</Header>
+      <Header as="h4" style={{ marginTop: '1em' }}>{c.accepted(accepted.length)}</Header>
       {accepted.length === 0 ? (
-        <p style={{ color: '#777' }}>None accepted yet — Beacon contracts root is empty.</p>
+        <p style={{ color: '#777' }}>{c.acceptedEmpty}</p>
       ) : (
         <List divided relaxed>
           {accepted.map((row) => (
@@ -154,17 +159,17 @@ function TrackedApplicationContractsPanel (props = {}) {
                   disabled={busyId === row.contractId}
                   onClick={() => act('RejectTrackedApplicationContract', row.contractId)}
                 >
-                  Untrack
+                  {c.untrack}
                 </Button>
               </List.Content>
               <List.Content>
-                <List.Header>{row.name || 'Unnamed contract'}</List.Header>
+                <List.Header>{row.name || c.unnamed}</List.Header>
                 <List.Description style={{ wordBreak: 'break-all' }}>
                   <code>{row.contractId}</code>
                   {row.stateDigest ? (
                     <>
                       <br />
-                      stateDigest: <code>{row.stateDigest}</code>
+                      {c.stateDigest}: <code>{row.stateDigest}</code>
                     </>
                   ) : null}
                 </List.Description>
@@ -174,7 +179,7 @@ function TrackedApplicationContractsPanel (props = {}) {
         </List>
       )}
       <Button size="small" basic onClick={refresh} style={{ marginTop: '0.5em' }}>
-        Refresh
+        {t.common.actions.refresh}
       </Button>
     </>
   );

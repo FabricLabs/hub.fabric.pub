@@ -132,8 +132,8 @@ the Hub side.
   `sessionId must be 48 hex chars` once the Wave 3 pin landed. Updated to v2
   (48-hex `sessionId` first argument, v2 prefix assertions) and added coverage for
   the rejection path plus legacy v1 parsing, which http deliberately retains.
-- `functions/fabricDeviceLink.js` re-exports `DEVICE_LINK_V1_PREFIX`,
-  `DEVICE_LINK_V2_PREFIX`, and `isSessionIdHex` (added upstream in http this pass).
+- `functions/fabricDeviceLink.js` re-exports `DEVICE_LINK_OFFER_TAG`,
+  `DEVICE_LINK_TAG`, and `isSessionIdHex` (device link v3 is the only version).
 - **`shims/noble-nist.js` was dead and broken.** It reached into
   `../node_modules/@noble/curves/p256.js` — both a hardcoded `node_modules`
   traversal that breaks under npm hoisting when `@fabric/hub` is a dependency, and

@@ -4,6 +4,7 @@ const assert = require('assert');
 const crypto = require('crypto');
 const Key = require('@fabric/core/types/key');
 const Identity = require('@fabric/core/types/identity');
+const { signSiteLoginResponse } = require('@fabric/core/functions/fabricSiteLogin');
 const {
   verifyFabricDesktopLoginSignedPayload,
   parseDesktopLoginMessage,
@@ -36,45 +37,51 @@ describe('fabricDesktopLoginVerify', function () {
     );
   });
 
-  it('verifies Schnorr + binding for a synthetic hub payload', function () {
-    const master = new Key();
-    const ident = new Identity(master);
-    const fabric = ident.fabricKey;
+  it('verifies a signed SiteLoginResponse bound to the session message', function () {
+    const ident = new Identity(new Key());
     const sessionId = crypto.randomBytes(24).toString('hex');
     const nonce = crypto.randomBytes(32).toString('hex');
     const origin = 'http://127.0.0.1:8080';
-    const message = buildLoginMessage(sessionId, origin, nonce);
-    const sig = fabric.signSchnorr(Buffer.from(message, 'utf8'));
-    const payload = {
-      ok: true,
-      status: 'signed',
-      signature: sig.toString('hex'),
-      pubkeyHex: fabric.pubkey,
-      message,
-      identity: { id: ident.id, xpub: fabric.xpub }
-    };
+    const fabric = signSiteLoginResponse({ origin, nonce, signer: 'passport', xpub: ident.fabricKey.xpub }, ident.fabricKey).uri;
+    const payload = { ok: true, status: 'signed', fabric, message: buildLoginMessage(sessionId, origin, nonce) };
     const v = verifyFabricDesktopLoginSignedPayload(payload, { sessionId, origin });
     assert.strictEqual(v.ok, true);
   });
 
-  it('rejects tampered message bytes', function () {
-    const master = new Key();
-    const ident = new Identity(master);
-    const fabric = ident.fabricKey;
+  it('rejects a response signed for another nonce', function () {
+    const ident = new Identity(new Key());
+    const sessionId = crypto.randomBytes(24).toString('hex');
+    const origin = 'http://127.0.0.1:8080';
+    const fabric = signSiteLoginResponse({
+      origin,
+      nonce: crypto.randomBytes(32).toString('hex'),
+      signer: 'passport',
+      xpub: ident.fabricKey.xpub
+    }, ident.fabricKey).uri;
+    const payload = {
+      ok: true,
+      status: 'signed',
+      fabric,
+      message: buildLoginMessage(sessionId, origin, crypto.randomBytes(32).toString('hex'))
+    };
+    assert.strictEqual(verifyFabricDesktopLoginSignedPayload(payload, { sessionId, origin }).ok, false);
+  });
+
+  it('rejects a raw Schnorr payload without a SiteLoginResponse', function () {
+    const ident = new Identity(new Key());
+    const fabricKey = ident.fabricKey;
     const sessionId = crypto.randomBytes(24).toString('hex');
     const nonce = crypto.randomBytes(32).toString('hex');
     const origin = 'http://127.0.0.1:8080';
     const message = buildLoginMessage(sessionId, origin, nonce);
-    const sig = fabric.signSchnorr(Buffer.from(message, 'utf8'));
     const payload = {
       ok: true,
       status: 'signed',
-      signature: sig.toString('hex'),
-      pubkeyHex: fabric.pubkey,
-      message: message + 'x',
-      identity: { id: ident.id, xpub: fabric.xpub }
+      signature: fabricKey.signSchnorr(Buffer.from(message, 'utf8'), 'Fabric/Sign').toString('hex'),
+      pubkeyHex: fabricKey.pubkey,
+      message,
+      identity: { id: ident.id, xpub: fabricKey.xpub }
     };
-    const v = verifyFabricDesktopLoginSignedPayload(payload, { sessionId, origin });
-    assert.strictEqual(v.ok, false);
+    assert.strictEqual(verifyFabricDesktopLoginSignedPayload(payload, { sessionId, origin }).ok, false);
   });
 });

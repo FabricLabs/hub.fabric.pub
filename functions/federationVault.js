@@ -14,14 +14,14 @@
  * Rebuilds do not migrate coins. Set `FABRIC_FEDERATION_INTERNAL_KEY_MODE=musig2`
  * only after sweeping to the new address.
  *
- * @see @fabric/core/functions/contractTaproot
- * @see @fabric/core/functions/contractSpend
+ * @see @fabric/core/types/policy
+ * @see @fabric/core/types/contract
  */
 
-const tap = require('@fabric/core/functions/contractTaproot');
+const Policy = require('@fabric/core/types/policy');
 
 /** Default CSV degradation window / deposit maturity (blocks). */
-const DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS = tap.DEFAULT_CSV_BLOCKS;
+const DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS = Policy.DEFAULT_CSV_BLOCKS;
 
 /**
  * Hub federation Taproot internal key. Unset / unknown → `nums` (historical vault).
@@ -48,7 +48,7 @@ function resolveFederationInternalKeyMode (settings = {}, env = process.env) {
 }
 
 function buildFederationVaultFromPolicy (opts) {
-  const built = tap.buildFederationVaultFromPolicy(opts);
+  const built = Policy.buildFederationVaultFromPolicy(opts);
   if (built.depositMaturityBlocks == null) {
     built.depositMaturityBlocks = DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS;
   }
@@ -56,30 +56,27 @@ function buildFederationVaultFromPolicy (opts) {
 }
 
 module.exports = {
-  TAPROOT_INTERNAL_NUMS: tap.TAPROOT_INTERNAL_NUMS,
+  TAPROOT_INTERNAL_NUMS: Policy.TAPROOT_INTERNAL_NUMS,
   DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS,
   normalizeFederationInternalKeyMode,
   resolveFederationInternalKeyMode,
-  networkForFabricName: tap.networkForFabricName,
+  networkForFabricName: Policy.networkForFabricName,
   buildFederationVaultFromPolicy,
-  prepareVaultWithdrawalPsbt: tap.prepareVaultWithdrawalPsbt,
-  buildVaultControlBlock: tap.buildVaultControlBlock,
-  buildContractTaproot: tap.buildContractTaproot,
-  composeTaprootTree: tap.composeTaprootTree,
-  compileLeaves: tap.compileLeaves,
-  scriptTreeFromLeaves: tap.scriptTreeFromLeaves,
-  buildHashlockLeaf: tap.buildHashlockLeaf,
-  buildSpendLeaf: tap.buildSpendLeaf,
-  buildScriptLeaf: tap.buildScriptLeaf,
-  prepareHashlockWithdrawalPsbt: tap.prepareHashlockWithdrawalPsbt,
-  finalizeHashlockPsbt: tap.finalizeHashlockPsbt,
-  prepareLeafPsbt: tap.prepareLeafPsbt,
-  toAddress: tap.toAddress,
-  synthesizeDefaultLadder: tap.synthesizeDefaultLadder,
-  normalizeContractSpendPolicy: tap.normalizeContractSpendPolicy,
-  selectActiveTiers: tap.selectActiveTiers,
-  selectMigrateTarget: tap.selectMigrateTarget,
-  prepareTierWithdrawalPsbt: tap.prepareTierWithdrawalPsbt,
-  prepareDecayMigrationPsbt: tap.prepareDecayMigrationPsbt,
-  policyAfterDecay: tap.policyAfterDecay
+  prepareVaultWithdrawalPsbt: Policy.prepareVaultWithdrawalPsbt,
+  buildVaultControlBlock: Policy.buildVaultControlBlock,
+  composeTaprootTree: Policy.composeTaprootTree,
+  compileLeaves: Policy.compileLeaves,
+  scriptTreeFromLeaves: Policy.scriptTreeFromLeaves,
+  buildHashlockLeaf: Policy.buildHashlockLeaf,
+  buildSpendLeaf: Policy.buildSpendLeaf,
+  buildScriptLeaf: Policy.buildScriptLeaf,
+  prepareHashlockWithdrawalPsbt: Policy.prepareHashlockWithdrawalPsbt,
+  finalizeHashlockPsbt: Policy.finalizeHashlockPsbt,
+  prepareLeafPsbt: Policy.prepareLeafPsbt,
+  toAddress: Policy.toAddress,
+  synthesizeDefaultLadder: Policy.synthesizeDefaultLadder,
+  selectActiveTiers: Policy.selectActiveTiers,
+  selectMigrateTarget: Policy.selectMigrateTarget,
+  prepareTierWithdrawalPsbt: Policy.prepareTierWithdrawalPsbt,
+  prepareDecayMigrationPsbt: Policy.prepareDecayMigrationPsbt
 };

@@ -29,7 +29,6 @@ const {
 } = require('semantic-ui-react');
 
 const ChatInput = require('./ChatInput');
-const { formatSatsDisplay } = require('../functions/formatSats');
 const { loadUpstreamSettings, sendBridgePayment } = require('../functions/bitcoinClient');
 const { peerNeighborhoodToDot } = require('../functions/peerTopologyDot');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
@@ -46,6 +45,15 @@ const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
+const {
+  classifyHubBrowserIdentity,
+  fabricIdentityPeerDisabledReasonPlain
+} = require('../functions/hubIdentityUiHints');
+const strings = require('../locales/en');
+
+const common = strings.common;
+const net = strings.network;
+const pv = net.peerView;
 
 /** Hub admin token for operator-only controls; only passed from `/settings/admin/peers/:id`. */
 function getAdminPeerToolsTokenFromProps (props) {
@@ -63,10 +71,10 @@ async function hubJsonRpc (method, params) {
   try {
     body = await res.json();
   } catch (_) {
-    throw new Error('Hub returned non-JSON');
+    throw new Error(pv.rpc.unreadable);
   }
   if (!res.ok || body.error) {
-    throw new Error((body.error && body.error.message) || `HTTP ${res.status}`);
+    throw new Error((body.error && body.error.message) || pv.rpc.http(res.status));
   }
   return body.result;
 }
@@ -381,7 +389,7 @@ function PeerDetail (props) {
     || (routeLooksLikeXpub && id
       ? (id.length > 40 ? `${id.slice(0, 16)}…${id.slice(-14)}` : id)
       : id)
-    || 'Peer';
+    || pv.fallbackTitle;
 
   const resolvedAddress = (peer && peer.address) || id || '';
   let host = '';
@@ -399,6 +407,9 @@ function PeerDetail (props) {
     }
   }
 
+  const hostLine = host ? `${host}${port ? `:${port}` : ''}` : '';
+  const showHostLine = !!(peer && hostLine && hostLine !== title);
+
   const chatDest = (peer && peer.address) || id;
   const tcpKeyForFabricResync = (peer && peer.address) || (id && String(id).includes(':') ? id : '');
   const canRequestFabricResync = !!(
@@ -408,6 +419,18 @@ function PeerDetail (props) {
   );
   const hasUnlockedIdentity = !!(current && typeof current.hasUnlockedIdentity === 'function' && current.hasUnlockedIdentity());
   const canSendPeerChat = !!chatDest && hasUnlockedIdentity;
+  const identityClass = classifyHubBrowserIdentity(props.auth);
+  const chatIdentityHeading = identityClass === 'watch_only'
+    ? pv.chat.watchOnlyHeading
+    : (identityClass === 'none' ? pv.chat.noIdentityHeading : pv.chat.lockedHeading);
+  const chatIdentityReason = identityClass === 'unlocked'
+    ? `${common.identity.peerLocked} ${common.identity.howToUnlock}`
+    : fabricIdentityPeerDisabledReasonPlain(props.auth);
+  const chatPlaceholder = hasUnlockedIdentity
+    ? pv.chat.placeholder
+    : (identityClass === 'watch_only'
+      ? pv.chat.placeholderWatchOnly
+      : (identityClass === 'none' ? pv.chat.placeholderNoIdentity : pv.chat.placeholderLocked));
 
   const handleSendPeerChat = (event) => {
     event.preventDefault();
@@ -493,13 +516,13 @@ function PeerDetail (props) {
         adminToken: token
       }]);
       if (r && r.status === 'error') {
-        setInviteError(r.message || 'Invite failed');
+        setInviteError(r.message || pv.invite.failed);
         return;
       }
       if (r && r.status === 'success' && r.inviteId) {
-        setInviteOk(`Invite sent (${r.inviteId.slice(0, 16)}…)`);
+        setInviteOk(pv.invite.sent(r.inviteId.slice(0, 16)));
       } else {
-        setInviteOk('Invite sent');
+        setInviteOk(pv.invite.sentPlain);
       }
       setInviteNoteModalOpen(false);
     } catch (e) {
@@ -522,16 +545,16 @@ function PeerDetail (props) {
     const token = readHubAdminTokenFromBrowser();
     const fp = fabricPeerIdForCollaborationContact;
     if (!token) {
-      setContactAddErr('Save the hub admin token to add contacts (Settings).');
+      setContactAddErr(pv.contact.noToken);
       return;
     }
     if (!fp) {
-      setContactAddErr('No Fabric peer id on this row yet.');
+      setContactAddErr(pv.contact.noPeerId);
       return;
     }
     const bi = props.bridgeRef && props.bridgeRef.current;
     if (!bi || typeof bi.callHubJsonRpc !== 'function') {
-      setContactAddErr('Bridge is not ready.');
+      setContactAddErr(pv.contact.notReady);
       return;
     }
     setContactAddBusy(true);
@@ -550,10 +573,10 @@ function PeerDetail (props) {
       }
       const res = out && out.result;
       if (res && res.status === 'error') {
-        setContactAddErr(res.message || 'Add contact failed');
+        setContactAddErr(res.message || pv.contact.failed);
         return;
       }
-      setContactAddOk('Added to Collaboration contacts.');
+      setContactAddOk(pv.contact.added);
     } catch (e) {
       setContactAddErr(e && e.message ? e.message : String(e));
     } finally {
@@ -580,26 +603,54 @@ function PeerDetail (props) {
               size="small"
               as={Link}
               to="/peers"
-              aria-label="Back to peers list"
             >
               <Icon name="arrow left" aria-hidden="true" />
-              Peers
+              {pv.back}
             </Button>
             <div style={{ minWidth: 0 }}>
-              <Header as="h3" style={{ margin: 0, fontWeight: 600, lineHeight: 1.25 }}>
+              <Header as="h2" id="peer-detail-heading" style={{ margin: 0, fontWeight: 600, lineHeight: 1.25, fontSize: '1.28rem', wordBreak: 'break-all' }}>
                 {title}
               </Header>
-              {resolvedAddress && (host || port) ? (
+              {showHostLine ? (
                 <div style={{ fontSize: '0.82rem', color: '#767676', marginTop: '0.15rem' }}>
-                  {host}{port ? `:${port}` : ''}
+                  {hostLine}
                 </div>
               ) : null}
+              <div
+                role="status"
+                aria-live="polite"
+                id="peer-detail-status"
+                style={{ fontSize: '0.85rem', color: '#555', marginTop: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}
+              >
+                <span>{pv.status.label}:</span>
+                {xpubOnlyNoPeer ? (
+                  <Label size="small" color="blue" title={pv.status.publicKeyTitle}>
+                    <Icon name="key" aria-hidden="true" /> {pv.status.publicKey}
+                  </Label>
+                ) : !hasPeerRow && webrtcRegistration ? (
+                  <Label size="small" color="blue" title={pv.status.browserTitle}>
+                    <Icon name="wifi" aria-hidden="true" /> {pv.status.browser}
+                  </Label>
+                ) : !hasPeerRow ? (
+                  <Label size="small" color="grey" title={pv.status.resolvingTitle}>
+                    <Icon name="clock outline" aria-hidden="true" /> {pv.status.resolving}
+                  </Label>
+                ) : (
+                  <Label size="small" color={isConnected ? 'green' : 'grey'} title={status}>
+                    {isConnected ? (
+                      <><Icon name="check circle" aria-hidden="true" /> {pv.status.connected}</>
+                    ) : (
+                      <><Icon name="minus circle" aria-hidden="true" /> {pv.status.disconnected}</>
+                    )}
+                  </Label>
+                )}
+              </div>
               {webrtcRegistration ? (
                 <div style={{ fontSize: '0.78rem', color: '#555', marginTop: '0.25rem', maxWidth: '38rem' }}>
-                  <Label size="mini" basic color="blue">WebRTC</Label>
+                  <Label size="mini" basic color="blue">{pv.browserTag}</Label>
                   {webrtcXpub ? (
                     <span style={{ marginLeft: '0.35rem' }} title={webrtcXpub}>
-                      xpub {shortenPublicId(webrtcXpub, 14, 12)}
+                      {pv.publicKeyPrefix} <code>{shortenPublicId(webrtcXpub, 14, 12)}</code>
                     </span>
                   ) : null}
                   {webrtcMeta && webrtcMeta.fabricPeerId ? (
@@ -610,33 +661,13 @@ function PeerDetail (props) {
                 </div>
               ) : null}
             </div>
-            {xpubOnlyNoPeer ? (
-              <Label size="small" color="blue" title="BIP32 extended public key (not a TCP peer socket)">
-                <Icon name="key" /> Identity ref
-              </Label>
-            ) : !hasPeerRow && webrtcRegistration ? (
-              <Label size="small" color="blue" title="Registered for WebRTC signaling; TCP peer row not loaded yet">
-                <Icon name="wifi" /> WebRTC
-              </Label>
-            ) : !hasPeerRow ? (
-              <Label size="small" color="grey" title="Waiting for ListPeers / GetPeer data from the hub">
-                <Icon name="clock outline" /> Resolving…
-              </Label>
-            ) : (
-              <Label size="small" color={isConnected ? 'green' : 'grey'} title={status}>
-                {isConnected ? (
-                  <><Icon name="check circle" /> On</>
-                ) : (
-                  <><Icon name="minus circle" /> Off</>
-                )}
-              </Label>
-            )}
           </div>
           {!xpubOnlyNoPeer && (
             <Button.Group size="small" basic style={{ flexShrink: 0 }}>
               <Button
                 icon
-                title="Refresh peer info"
+                title={pv.actions.refresh}
+                aria-label={pv.actions.refresh}
                 onClick={() => {
                   if (typeof props.onRefreshPeers === 'function') props.onRefreshPeers();
                   if (typeof props.onGetPeer === 'function' && id) props.onGetPeer(id);
@@ -648,7 +679,8 @@ function PeerDetail (props) {
                 <Button
                   icon
                   onClick={() => props.onAddPeer({ address: peer.address })}
-                  title={`Reconnect to ${peer.address}`}
+                  title={pv.actions.reconnect(peer.address)}
+                  aria-label={pv.actions.reconnect(peer.address)}
                 >
                   <Icon name="plug" />
                 </Button>
@@ -658,7 +690,8 @@ function PeerDetail (props) {
                   icon
                   color="red"
                   onClick={() => props.onDisconnectPeer(id)}
-                  title={`Disconnect ${id}`}
+                  title={pv.actions.disconnect}
+                  aria-label={pv.actions.disconnect}
                 >
                   <Icon name="remove" />
                 </Button>
@@ -666,14 +699,15 @@ function PeerDetail (props) {
               {hasPeerRow && canRequestFabricResync && typeof props.onFabricPeerResync === 'function' && (
                 <Button
                   icon
-                  title="Fabric chain resync (inventory + BitcoinBlock replay)"
+                  title={pv.actions.resync}
+                  aria-label={pv.actions.resync}
                   onClick={() => props.onFabricPeerResync(tcpKeyForFabricResync)}
                 >
                   <Icon name="sync" />
                 </Button>
               )}
               {hasPeerRow && id && typeof props.onSetPeerNickname === 'function' && (
-                <Button icon onClick={openNicknameModal} title="Set nickname">
+                <Button icon onClick={openNicknameModal} title={pv.actions.nickname} aria-label={pv.actions.nickname}>
                   <Icon name="tag" />
                 </Button>
               )}
@@ -682,8 +716,8 @@ function PeerDetail (props) {
                   icon
                   loading={contactAddBusy}
                   disabled={contactAddBusy}
-                  title="Add to contacts"
-                  aria-label="Add to contacts"
+                  title={pv.actions.addContact}
+                  aria-label={pv.actions.addContact}
                   onClick={() => void addPeerToCollaborationContacts()}
                 >
                   <Icon name="address book" />
@@ -704,20 +738,23 @@ function PeerDetail (props) {
               onClick={() => setPeerOpsAccordionOpen(!peerOpsAccordionOpen)}
             >
               <Icon name="dropdown" />
-              Inventory, HTLC, federation (advanced)
+              {pv.advanced.title}
             </Accordion.Title>
             <Accordion.Content active={peerOpsAccordionOpen}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'flex-end' }}>
                 {bridgeRef && bridgeRef.current && typeof bridgeRef.current.sendPeerInventoryRequest === 'function' ? (
                   <>
-                    <Input
-                      size="small"
-                      placeholder="Relay: seller Fabric id (optional)"
-                      title="When this connection is a relay, set the seller’s Fabric id so the hub forwards document-offer requests (FABRIC_DOCUMENT_OFFER)"
-                      value={inventoryRelayTarget}
-                      onChange={(e, { value }) => setInventoryRelayTarget(value)}
-                      style={{ minWidth: '12em', maxWidth: '18rem', flex: '1 1 12em' }}
-                    />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', minWidth: '12em', maxWidth: '18rem', flex: '1 1 12em' }}>
+                      <label htmlFor="peer-inventory-relay" style={{ fontSize: '0.85em', fontWeight: 600 }}>{pv.advanced.relayLabel}</label>
+                      <Input
+                        id="peer-inventory-relay"
+                        size="small"
+                        placeholder={pv.advanced.relayPlaceholder}
+                        title={pv.advanced.relayTitle}
+                        value={inventoryRelayTarget}
+                        onChange={(e, { value }) => setInventoryRelayTarget(value)}
+                      />
+                    </div>
                     <Button
                       size="small"
                       basic
@@ -726,10 +763,10 @@ function PeerDetail (props) {
                         const opts = t ? { inventoryTarget: t } : {};
                         sendInventoryRequest('documents', opts);
                       }}
-                      title="Request document inventory from this peer"
+                      title={pv.advanced.requestDocumentsTitle}
                     >
                       <Icon name="list alternate outline" />
-                      Docs
+                      {pv.advanced.requestDocuments}
                     </Button>
                     {typeof bridgeRef.current.getHtlcRefundPublicKeyHex === 'function' && bridgeRef.current.getHtlcRefundPublicKeyHex() ? (
                       <Button
@@ -742,35 +779,37 @@ function PeerDetail (props) {
                           if (t) opts.inventoryTarget = t;
                           sendInventoryRequest('documents', opts);
                         }}
-                        title="Inventory with P2TR HTLC on priced items (your identity pubkey = refund path)"
+                        title={pv.advanced.requestWithHtlcTitle}
                       >
                         <Icon name="bitcoin" />
-                        Docs+HTLC
+                        {pv.advanced.requestWithHtlc}
                       </Button>
                     ) : null}
                   </>
                 ) : null}
                 {adminTokenPresent ? (
                   <>
-                    <Input
-                      size="small"
-                      placeholder="Execution contract id (optional)"
-                      value={federationContractId}
-                      onChange={(e, { value }) => setFederationContractId(value)}
-                      style={{ minWidth: '10em', maxWidth: '16rem', flex: '1 1 10em' }}
-                      title="Optional execution contract id included in the invite (see Contracts)"
-                    />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', minWidth: '10em', maxWidth: '16rem', flex: '1 1 10em' }}>
+                      <label htmlFor="peer-invite-contract" style={{ fontSize: '0.85em', fontWeight: 600 }}>{pv.advanced.contractLabel}</label>
+                      <Input
+                        id="peer-invite-contract"
+                        size="small"
+                        value={federationContractId}
+                        onChange={(e, { value }) => setFederationContractId(value)}
+                        title={pv.advanced.contractTitle}
+                      />
+                    </div>
                     <Button
                       size="small"
                       basic
                       primary
                       loading={inviteBusy}
                       disabled={inviteBusy}
-                      title="Admin: send federation / execution-contract invite"
+                      title={pv.advanced.inviteTitle}
                       onClick={launchInviteNoteModal}
                     >
                       <Icon name="users" />
-                      Invite
+                      {pv.advanced.invite}
                     </Button>
                   </>
                 ) : null}
@@ -797,7 +836,7 @@ function PeerDetail (props) {
         {contactAddOk ? (
           <Message success size="small" onDismiss={() => setContactAddOk(null)} style={{ marginTop: '0.5em' }}>
             {contactAddOk}{' '}
-            <Link to="/settings/collaboration">Open Collaboration</Link>
+            <Link to="/settings/collaboration">{pv.contact.open}</Link>
           </Message>
         ) : null}
 
@@ -805,21 +844,21 @@ function PeerDetail (props) {
 
         <Menu pointing secondary compact style={{ margin: '0 0 0.65rem', flexWrap: 'wrap' }}>
           <Menu.Item active={peerWorkspaceTab === 0} onClick={() => setPeerWorkspaceTab(0)}>
-            Overview
+            {pv.tabs.overview}
           </Menu.Item>
           <Menu.Item
             active={peerWorkspaceTab === 1}
             onClick={() => peer && setPeerWorkspaceTab(1)}
             disabled={!peer}
           >
-            Chat{peer && peerChats.length > 0 ? ` (${peerChats.length})` : ''}
+            {pv.tabs.chat(peer ? peerChats.length : 0)}
           </Menu.Item>
           <Menu.Item
             active={peerWorkspaceTab === 2}
             onClick={() => peer && setPeerWorkspaceTab(2)}
             disabled={!peer}
           >
-            Inventory{peer && inventoryDocs.length > 0 ? ` (${inventoryDocs.length})` : ''}
+            {pv.tabs.documents(peer ? inventoryDocs.length : 0)}
           </Menu.Item>
         </Menu>
 
@@ -854,7 +893,7 @@ function PeerDetail (props) {
                       };
                       return (
                         <Table.Row>
-                          <Table.Cell collapsing>Peering</Table.Cell>
+                          <Table.Cell collapsing>{pv.details.connection}</Table.Cell>
                           <Table.Cell>
                             <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{connStr}</code>
                             {' '}
@@ -862,34 +901,32 @@ function PeerDetail (props) {
                               size="mini"
                               basic
                               icon
+                              labelPosition="left"
                               type="button"
                               onClick={copyPeering}
-                              title="Copy pubkey@host:port peering string for native Fabric dial"
-                              aria-label="Copy peering string"
+                              title={pv.details.copyTitle}
                               style={{ marginLeft: '0.35em', verticalAlign: 'middle' }}
                             >
                               <Icon name="copy" />
-                              {peeringCopied ? 'Copied' : 'Copy'}
+                              {peeringCopied ? common.actions.copied : pv.details.copy}
                             </Button>
                             <div style={{ color: '#767676', fontSize: '0.82em', marginTop: '0.35em' }}>
-                              {signaling
-                                ? 'WebRTC signaling host (this site) — browsers will peer here; native nodes use Fabric TCP when advertised.'
-                                : 'Native Fabric dial pin (pubkey@host:port).'}
+                              {signaling ? pv.details.signalingNote : pv.details.directNote}
                             </div>
                           </Table.Cell>
                         </Table.Row>
                       );
                     })()}
                     <Table.Row>
-                      <Table.Cell collapsing>Bech32</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.peerId}</Table.Cell>
                       <Table.Cell>
-                        <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{fabricPeerBech32Id(peer) || '—'}</code>
+                        <code style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{fabricPeerBech32Id(peer) || common.none}</code>
                       </Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Address</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.address}</Table.Cell>
                       <Table.Cell>
-                        <code style={{ fontSize: '0.86em' }}>{resolvedAddress || '—'}</code>
+                        <code style={{ fontSize: '0.86em' }}>{resolvedAddress || common.none}</code>
                         {(host || port) ? (
                           <span style={{ color: '#767676', fontSize: '0.82em', marginLeft: '0.5em' }}>
                             ({host}{port ? `:${port}` : ''})
@@ -898,23 +935,23 @@ function PeerDetail (props) {
                       </Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Fabric id</Table.Cell>
-                      <Table.Cell style={{ wordBreak: 'break-all', fontSize: '0.86em' }}>{(peer && peer.id) || '—'}</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.publicKey}</Table.Cell>
+                      <Table.Cell style={{ wordBreak: 'break-all', fontSize: '0.86em' }}><code>{(peer && peer.id) || common.none}</code></Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Nickname</Table.Cell>
-                      <Table.Cell>{(peer && peer.nickname) || '—'}</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.nickname}</Table.Cell>
+                      <Table.Cell>{(peer && peer.nickname) || common.none}</Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Alias</Table.Cell>
-                      <Table.Cell>{(peer && peer.alias) || '—'}</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.alias}</Table.Cell>
+                      <Table.Cell>{(peer && peer.alias) || common.none}</Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Score</Table.Cell>
-                      <Table.Cell>{peer && peer.score != null ? String(peer.score) : '—'}</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.trust}</Table.Cell>
+                      <Table.Cell>{peer && peer.score != null ? String(peer.score) : common.none}</Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Bandwidth</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.data}</Table.Cell>
                       <Table.Cell>
                         {(() => {
                           const inn = peer && peer.bytesIn;
@@ -925,18 +962,18 @@ function PeerDetail (props) {
                           const budget = peer && Number(peer.budgetBytes);
                           const fmt = (n) => {
                             const v = Number(n);
-                            if (!Number.isFinite(v) || v < 0) return '—';
+                            if (!Number.isFinite(v) || v < 0) return common.none;
                             if (v < 1024) return `${Math.round(v)} B`;
                             if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
                             return `${(v / 1048576).toFixed(2)} MiB`;
                           };
-                          if (inn == null && out == null && !used) return '—';
+                          if (inn == null && out == null && !used) return common.none;
                           const budgetLabel = Number.isFinite(budget) && budget > 0 ? fmt(budget) : '32 KiB';
                           return (
                             <span>
-                              {fmt(inn)} in / {fmt(out)} out
+                              {pv.details.dataTotals(fmt(inn), fmt(out))}
                               <span style={{ color: peer && peer.overBudget ? '#9f3a38' : '#767676', marginLeft: '0.65em' }}>
-                                10m {fmt(used)} / {budgetLabel} L1 share
+                                {pv.details.dataWindow(fmt(used), budgetLabel)}
                               </span>
                             </span>
                           );
@@ -944,20 +981,20 @@ function PeerDetail (props) {
                       </Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>First seen</Table.Cell>
-                      <Table.Cell>{formatMaybeDate(peer && peer.firstSeen) || '—'}</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.firstSeen}</Table.Cell>
+                      <Table.Cell>{formatMaybeDate(peer && peer.firstSeen) || common.none}</Table.Cell>
                     </Table.Row>
                     <Table.Row>
-                      <Table.Cell collapsing>Last seen</Table.Cell>
-                      <Table.Cell>{formatMaybeDate(peer && (peer.lastSeen || peer.lastMessage)) || '—'}</Table.Cell>
+                      <Table.Cell collapsing>{pv.details.lastSeen}</Table.Cell>
+                      <Table.Cell>{formatMaybeDate(peer && (peer.lastSeen || peer.lastMessage)) || common.none}</Table.Cell>
                     </Table.Row>
                     {peer && peer.connection ? (
                       <Table.Row>
-                        <Table.Cell collapsing>Socket</Table.Cell>
+                        <Table.Cell collapsing>{pv.details.socket}</Table.Cell>
                         <Table.Cell style={{ fontSize: '0.86em' }}>
-                          {peer.connection.remoteAddress ? `${peer.connection.remoteAddress}:${peer.connection.remotePort || ''}` : 'connected'}
-                          {peer.connection.lastMessage ? ` · last msg ${formatMaybeDate(peer.connection.lastMessage)}` : ''}
-                          {peer.connection.failureCount != null ? ` · failures ${peer.connection.failureCount}` : ''}
+                          {peer.connection.remoteAddress ? `${peer.connection.remoteAddress}:${peer.connection.remotePort || ''}` : pv.details.socketConnected}
+                          {peer.connection.lastMessage ? ` · ${pv.details.lastMessage(formatMaybeDate(peer.connection.lastMessage))}` : ''}
+                          {peer.connection.failureCount != null ? ` · ${pv.details.failures(peer.connection.failureCount)}` : ''}
                         </Table.Cell>
                       </Table.Row>
                     ) : null}
@@ -965,9 +1002,9 @@ function PeerDetail (props) {
                 </Table>
                 {neighborDot ? (
                   <Segment secondary style={{ marginTop: '0.35rem' }}>
-                    <Header as="h4" style={{ marginBottom: '0.35rem' }}>Gossip neighborhood</Header>
+                    <Header as="h4" style={{ marginBottom: '0.35rem' }}>{pv.neighbors.heading}</Header>
                     <p style={{ color: '#666', marginBottom: '0.5rem', fontSize: '0.9em', lineHeight: 1.45 }}>
-                      Fabric ids from <code>P2P_PEER_GOSSIP</code>. Use <strong>Inventory</strong> tab → Docs (or the advanced panel) for document-offer requests (<code>FABRIC_DOCUMENT_OFFER</code>).
+                      {pv.neighbors.description}
                     </p>
                     <GraphDocumentPreview dotSource={neighborDot} skipIdentityGate />
                     <List relaxed size="small" style={{ marginTop: '0.5rem' }}>
@@ -977,7 +1014,7 @@ function PeerDetail (props) {
                         return (
                           <List.Item key={n}>
                             <List.Content>
-                              <Link to={`/peers/${encodeURIComponent(n)}`} title="Open peer detail">
+                              <Link to={`/peers/${encodeURIComponent(n)}`} title={pv.neighbors.openTitle}>
                                 <code style={{ fontSize: '0.85em' }}>{n.length > 36 ? `${n.slice(0, 14)}…${n.slice(-10)}` : n}</code>
                               </Link>
                               <Button
@@ -985,18 +1022,18 @@ function PeerDetail (props) {
                                 basic
                                 style={{ marginLeft: '0.35em' }}
                                 type="button"
-                                title="Set as inventory relay target"
+                                title={pv.neighbors.useAsRelayTitle}
                                 onClick={() => setInventoryRelayTarget(n)}
                               >
-                                Relay →
+                                {pv.neighbors.useAsRelay}
                               </Button>
                             </List.Content>
                           </List.Item>
                         );
                       })}
                     </List>
-                    <details style={{ marginTop: '0.5rem' }}>
-                      <summary style={{ cursor: 'pointer', color: '#555', fontSize: '0.88em' }}>DOT source</summary>
+                    <details className="hub-developer-details" style={{ marginTop: '0.5rem' }}>
+                      <summary style={{ cursor: 'pointer', color: '#555', fontSize: '0.88em' }}>{net.dotSource}</summary>
                       <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.72rem', background: '#f5f5f5', padding: '0.45rem', borderRadius: 4 }}>{neighborDot}</pre>
                     </details>
                   </Segment>
@@ -1004,26 +1041,23 @@ function PeerDetail (props) {
               </>
             ) : routeLooksLikeXpub ? (
               <Message info style={{ margin: 0 }}>
-                <Message.Header>Extended public key (BIP32)</Message.Header>
+                <Message.Header>{pv.publicKeyRoute.heading}</Message.Header>
                 <p style={{ margin: '0.35em 0 0' }}>
-                  This URL uses an <code>xpub</code>/<code>tpub</code>-style identifier — often the display form of an
-                  activity sender — not a Fabric TCP peer. Peer chat and inventory use a connected node
-                  (<code>host:port</code> or Fabric id from <Link to="/peers">Peers</Link>).
+                  {pv.publicKeyRoute.bodyBefore} <Link to="/peers">{pv.publicKeyRoute.peersLink}</Link> {pv.publicKeyRoute.bodyAfter}
                 </p>
               </Message>
             ) : (
               <Segment placeholder basic style={{ padding: '1rem' }}>
-                <Header as="h4">Waiting for peer record…</Header>
+                <Header as="h4">{pv.waiting.heading}</Header>
                 <p style={{ color: '#666', margin: '0.35em 0 0.65em', fontSize: '0.92em' }}>
-                  No matching entry in the hub snapshot yet. Use <strong>Refresh</strong>, or open{' '}
-                  <Link to="/peers">Peers</Link> and add <code>host:port</code>. After <code>GetPeer</code> returns, details appear here.
+                  {pv.waiting.bodyBefore} <Link to="/peers">{pv.waiting.peersLink}</Link> {pv.waiting.bodyAfter}
                 </p>
                 <Loader active inline="centered" size="small" />
                 {peerResolveSlow ? (
                   <Message warning style={{ marginTop: '0.85em', textAlign: 'left' }} size="small">
-                    <Message.Header>Slow to resolve</Message.Header>
+                    <Message.Header>{pv.waiting.slowHeading}</Message.Header>
                     <p style={{ margin: '0.25em 0 0', fontSize: '0.9em' }}>
-                      Check that the Bridge is connected. Add the peer from the list page, then reopen this link.
+                      {pv.waiting.slowBody}
                     </p>
                   </Message>
                 ) : null}
@@ -1034,19 +1068,18 @@ function PeerDetail (props) {
 
         {peerWorkspaceTab === 1 && peer && (
           <Segment style={{ marginTop: 0 }}>
-            <Header as="h4" style={{ marginTop: 0 }}>Chat</Header>
+            <Header as="h4" style={{ marginTop: 0 }}>{pv.chat.heading}</Header>
             {!hasUnlockedIdentity && (
               <Message warning size="small" style={{ marginBottom: '0.75em' }}>
-                <Message.Header>Identity locked</Message.Header>
+                <Message.Header>{chatIdentityHeading}</Message.Header>
                 <p style={{ margin: 0, lineHeight: 1.45 }}>
-                  Unlock your identity (local signing material) to send Fabric peer chat — top-bar <strong>Locked</strong> / identity menu, or{' '}
-                  <Link to="/settings">Settings</Link> → <strong>Fabric identity</strong>. Received messages still appear here.
+                  {chatIdentityReason} {pv.chat.received}
                 </p>
               </Message>
             )}
             {hasUnlockedIdentity && !isConnected && (
               <Message info size="small" style={{ marginBottom: '0.75em' }}>
-                Peer is offline — messages are <strong>queued</strong> and sent when the connection is up (same hub <code>SendPeerMessage</code> path).
+                {pv.chat.offline}
               </Message>
             )}
             {peerChats.length > 0 ? (
@@ -1054,7 +1087,7 @@ function PeerDetail (props) {
                 {peerChats.map((chat, index) => {
                   const created = (chat.object && chat.object.created) || Date.now();
                   const bridgeInstance = props.bridgeRef?.current || props.bridge?.current;
-                  const rawActor = (chat.actor && (chat.actor.username || chat.actor.id)) || 'unknown';
+                  const rawActor = (chat.actor && (chat.actor.username || chat.actor.id)) || pv.chat.unknownSender;
                   const actor = (bridgeInstance && typeof bridgeInstance.getPeerDisplayName === 'function' && chat.actor?.id)
                     ? bridgeInstance.getPeerDisplayName(chat.actor.id)
                     : rawActor;
@@ -1071,13 +1104,13 @@ function PeerDetail (props) {
                         <List.Header>
                           <span style={style}>
                             @{actor}
-                            {isPending && ' (sending…)'}
+                            {isPending && ` (${pv.chat.sending})`}
                             {isQueued && (
                               <Icon
                                 name="exclamation circle"
                                 color="grey"
                                 style={{ marginLeft: '0.35em' }}
-                                title="This message will be sent when the peer is online."
+                                title={pv.chat.queuedTitle}
                               />
                             )}
                           </span>
@@ -1091,7 +1124,7 @@ function PeerDetail (props) {
                 })}
               </List>
             ) : (
-              <p style={{ color: '#666' }}>No chat messages yet for this peer.</p>
+              <p style={{ color: '#666' }}>{pv.chat.empty}</p>
             )}
             {chatDest && typeof props.onSendPeerMessage === 'function' && (
               <ChatInput
@@ -1103,8 +1136,8 @@ function PeerDetail (props) {
                     setOutgoingText('');
                   }
                 }}
-                placeholder={hasUnlockedIdentity ? 'Type a message…' : 'Unlock identity to send…'}
-                title={`Send to ${chatDest} via hub (P2P_CHAT_MESSAGE / SendPeerMessage)`}
+                placeholder={chatPlaceholder}
+                title={pv.chat.sendTitle(chatDest)}
                 disabled={!canSendPeerChat}
               />
             )}
@@ -1113,31 +1146,32 @@ function PeerDetail (props) {
 
         {peerWorkspaceTab === 2 && peer && (
           <Segment style={{ marginTop: 0 }}>
-            <Header as="h4" style={{ marginTop: 0 }}>Publisher inventory</Header>
+            <Header as="h4" style={{ marginTop: 0 }}>{pv.documents.heading}</Header>
             <p style={{ color: '#666', marginBottom: '0.65em', fontSize: '0.92em', lineHeight: 1.45 }}>
-              Documents offered by this <strong>publisher</strong>
-              {id ? <> (Fabric peer <code style={{ fontSize: '0.9em' }}>{id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-8)}` : id}</code>)</> : ''}.
-              <strong> Author</strong> is the creator&apos;s document id when known (lineage). With the peer <strong>connected</strong>, use the advanced panel <strong>Docs</strong> button to send a document-offer request; responses are merged under this peer&apos;s Fabric id and TCP address keys.
+              {pv.documents.introBefore}
+              {id ? <> (<code style={{ fontSize: '0.9em' }}>{id.length > 24 ? `${id.slice(0, 12)}…${id.slice(-8)}` : id}</code>)</> : ''}.
+              {' '}{pv.documents.introAfter}
             </p>
             {inventoryRequestMeta && (
               <p style={{ fontSize: '0.85em', color: inventoryRequestMeta.status === 'error' ? '#9f3a38' : inventoryRequestMeta.status === 'accepted' ? '#276749' : '#666', marginBottom: '0.65em' }}>
-                Last inventory request: {formatMaybeDate(inventoryRequestMeta.at)}
+                {pv.documents.lastRequest(formatMaybeDate(inventoryRequestMeta.at))}
                 {inventoryRequestMeta.kind ? ` (${inventoryRequestMeta.kind})` : ''}
-                {inventoryRequestMeta.requestVia === 'http' ? ' · HTTP fallback' : ''}
-                {inventoryRequestMeta.requestVia === 'ws' ? ' · websocket' : ''}
+                {inventoryRequestMeta.requestVia === 'http' ? ` · ${pv.documents.viaHttp}` : ''}
+                {inventoryRequestMeta.requestVia === 'ws' ? ` · ${pv.documents.viaWebSocket}` : ''}
+                {'. '}
                 {inventoryRequestMeta.hubMessage
-                  ? ` — ${inventoryRequestMeta.hubMessage}`
+                  ? inventoryRequestMeta.hubMessage
                   : inventoryRequestMeta.status === 'accepted'
-                    ? ` — hub accepted and sent the peer request.`
-                    : ` — ${inventoryDocs.length > 0
-                    ? `${inventoryDocs.length} item(s) in client state.`
-                    : 'no items yet (wait for response or check relay target).'}`}
+                    ? pv.documents.accepted
+                    : (inventoryDocs.length > 0
+                      ? pv.documents.received(inventoryDocs.length)
+                      : pv.documents.none)}
               </p>
             )}
             <div style={{ marginBottom: '0.75em' }}>
               <Checkbox
                 toggle
-                label="Debug: show raw inventory JSON"
+                label={pv.documents.rawToggle}
                 checked={inventoryDebugOpen}
                 onChange={(_e, data) => setInventoryDebugOpen(!!(data && data.checked))}
               />
@@ -1158,26 +1192,26 @@ function PeerDetail (props) {
               >
                 <Message.Header>
                   {htlcConfirmFeedback.status === 'success'
-                    ? 'HTLC verified — document transfer'
-                    : 'HTLC confirmation'}
+                    ? pv.htlc.verifiedHeading
+                    : pv.htlc.heading}
                 </Message.Header>
                 {(htlcConfirmFeedback.message || htlcConfirmFeedback.funded) && (
-                  <p>{htlcConfirmFeedback.message || (htlcConfirmFeedback.funded ? 'Funding accepted; fix connection or retry if needed.' : '')}</p>
+                  <p>{htlcConfirmFeedback.message || (htlcConfirmFeedback.funded ? pv.htlc.funded : '')}</p>
                 )}
                 {htlcConfirmFeedback.documentId && (
-                  <p style={{ fontSize: '0.9em' }}>Document <code>{htlcConfirmFeedback.documentId}</code></p>
+                  <p style={{ fontSize: '0.9em' }}>{pv.htlc.document} <code>{htlcConfirmFeedback.documentId}</code></p>
                 )}
                 {htlcConfirmFeedback.txid && (
                   <p style={{ fontSize: '0.9em' }}>
-                    Txid{' '}
+                    {pv.htlc.transaction}{' '}
                     {uf.bitcoinExplorer ? (
                       <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcConfirmFeedback.txid).trim())}`}>
                         <code>{htlcConfirmFeedback.txid}</code>
                       </Link>
                     ) : (
-                      <code title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">{htlcConfirmFeedback.txid}</code>
+                      <code title={net.explorerOff}>{htlcConfirmFeedback.txid}</code>
                     )}
-                    <span style={{ color: '#666' }}> — mempool until confirmed on-chain</span>
+                    <span style={{ color: '#666' }}> ({pv.htlc.unconfirmed})</span>
                   </p>
                 )}
               </Message>
@@ -1188,16 +1222,16 @@ function PeerDetail (props) {
                   <List.Item key={(doc && doc.id) || index}>
                     <List.Content>
                       <List.Header>
-                        {(doc && doc.name) || (doc && doc.id) || 'Document'}
+                        {(doc && doc.name) || (doc && doc.id) || pv.documents.fallbackName}
                       </List.Header>
                       <List.Description style={{ color: '#666' }}>
-                        {doc && doc.id && (<span>ID: <code>{doc.id}</code></span>)}
+                        {doc && doc.id && (<span>{pv.documents.id} <code>{doc.id}</code></span>)}
                         {doc && (doc.lineage || doc.id) && (
-                          <> — author <code style={{ fontSize: '0.9em' }}>{String(doc.lineage || doc.id).length > 20 ? `${String(doc.lineage || doc.id).slice(0, 10)}…${String(doc.lineage || doc.id).slice(-6)}` : String(doc.lineage || doc.id)}</code></>
+                          <> · {pv.documents.author} <code style={{ fontSize: '0.9em' }}>{String(doc.lineage || doc.id).length > 20 ? `${String(doc.lineage || doc.id).slice(0, 10)}…${String(doc.lineage || doc.id).slice(-6)}` : String(doc.lineage || doc.id)}</code></>
                         )}
-                        {doc && doc.size != null && <> — {doc.size} bytes</>}
-                        {doc && doc.published && <> — published</>}
-                        {doc && doc.purchasePriceSats != null && <> — <strong>{formatSatsDisplay(doc.purchasePriceSats)} sats</strong></>}
+                        {doc && doc.size != null && <> · {pv.documents.size(doc.size)}</>}
+                        {doc && doc.published && <> · {pv.documents.published}</>}
+                        {doc && doc.purchasePriceSats != null && <> · <strong>{common.sats(doc.purchasePriceSats)}</strong></>}
                       </List.Description>
                       {doc && doc.htlc && doc.htlc.settlementId && (
                         <div
@@ -1205,9 +1239,9 @@ function PeerDetail (props) {
                           data-settlement-id={doc.htlc.settlementId}
                           style={{ marginTop: '0.75em', fontSize: '0.85em', textAlign: 'left' }}
                         >
-                          <Label color="orange" size="small">P2TR HTLC</Label>
+                          <Label color="orange" size="small">{pv.htlc.tag}</Label>
                           <div style={{ marginTop: '0.35em' }}>
-                            <strong>{formatSatsDisplay(doc.htlc.amountSats || 0)} sats</strong>
+                            <strong>{common.sats(doc.htlc.amountSats || 0)}</strong>
                             {doc.htlc.amountBtc && (
                               <> (<code>{doc.htlc.amountBtc}</code> BTC)</>
                             )}
@@ -1218,7 +1252,7 @@ function PeerDetail (props) {
                               {htlcFundingQrBySettlement[doc.htlc.settlementId] && (
                                 <img
                                   src={htlcFundingQrBySettlement[doc.htlc.settlementId]}
-                                  alt="BIP21 funding QR"
+                                  alt={pv.htlc.qrAlt}
                                   style={{ borderRadius: 4, border: '1px solid #ddd' }}
                                 />
                               )}
@@ -1228,14 +1262,14 @@ function PeerDetail (props) {
                                   basic
                                   onClick={() => copyHtlcFunding(doc.htlc.bitcoinUri, `${doc.htlc.settlementId}:uri`)}
                                 >
-                                  <Icon name="copy" /> {htlcFundingCopied === `${doc.htlc.settlementId}:uri` ? 'Copied' : 'Copy BIP21 URI'}
+                                  <Icon name="copy" /> {htlcFundingCopied === `${doc.htlc.settlementId}:uri` ? common.actions.copied : pv.htlc.copyLink}
                                 </Button>
                                 <Button
                                   size="mini"
                                   basic
                                   onClick={() => copyHtlcFunding(doc.htlc.paymentAddress, `${doc.htlc.settlementId}:addr`)}
                                 >
-                                  <Icon name="copy" /> {htlcFundingCopied === `${doc.htlc.settlementId}:addr` ? 'Copied' : 'Copy address'}
+                                  <Icon name="copy" /> {htlcFundingCopied === `${doc.htlc.settlementId}:addr` ? common.actions.copied : pv.htlc.copyAddress}
                                 </Button>
                                 {adminTokenPresent && doc.htlc.bitcoinUri && (
                                   <>
@@ -1244,9 +1278,9 @@ function PeerDetail (props) {
                                       size="mini"
                                       primary
                                       href={String(doc.htlc.bitcoinUri).trim()}
-                                      title="Open BIP21 URI in your default wallet"
+                                      title={pv.htlc.payNowTitle}
                                     >
-                                      <Icon name="bitcoin" /> Pay Now
+                                      <Icon name="bitcoin" /> {pv.htlc.payNow}
                                     </Button>
                                     <Button
                                       size="mini"
@@ -1273,13 +1307,13 @@ function PeerDetail (props) {
                                             setHtlcTxids((prev) => ({ ...prev, [h.settlementId]: txid }));
                                             setHtlcConfirmFeedback({
                                               status: 'success',
-                                              message: `Hub wallet sent transaction. Txid filled below — use Confirm when ready.`,
+                                              message: pv.htlc.hubSent,
                                               txid
                                             });
                                           } else {
                                             setHtlcConfirmFeedback({
                                               status: 'error',
-                                              message: (res && res.message) ? res.message : 'No txid returned from Hub wallet.'
+                                              message: (res && res.message) ? res.message : pv.htlc.noTxid
                                             });
                                           }
                                         } catch (err) {
@@ -1291,9 +1325,9 @@ function PeerDetail (props) {
                                           setBridgePaySettlementId(null);
                                         }
                                       }}
-                                      title="Spend from this Hub bitcoind wallet (requires admin token)"
+                                      title={pv.htlc.payFromHubTitle}
                                     >
-                                      <Icon name="server" /> Pay from Bridge
+                                      <Icon name="server" /> {pv.htlc.payFromHub}
                                     </Button>
                                   </>
                                 )}
@@ -1301,12 +1335,17 @@ function PeerDetail (props) {
                             </div>
                           )}
                           <div style={{ marginTop: '0.35em', color: '#666' }}>
-                            Hash <code>{String(doc.htlc.paymentHashHex || '').slice(0, 16)}…</code>
-                            {' · '}refund CLTV height <code>{doc.htlc.refundLockHeight}</code>
+                            {pv.htlc.hashLine(String(doc.htlc.paymentHashHex || '').slice(0, 16), doc.htlc.refundLockHeight)}
                           </div>
-                          <div style={{ marginTop: '0.5em', display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <label
+                            htmlFor={`peer-htlc-txid-${doc.htlc.settlementId}`}
+                            style={{ display: 'block', marginTop: '0.5em', fontWeight: 600 }}
+                          >
+                            {pv.htlc.txidLabel}
+                          </label>
+                          <div style={{ marginTop: '0.25em', display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
                             <Input
-                              placeholder="Funding txid"
+                              id={`peer-htlc-txid-${doc.htlc.settlementId}`}
                               size="small"
                               style={{ flex: '1 1 10em', minWidth: '12em' }}
                               value={htlcTxids[doc.htlc.settlementId] || ''}
@@ -1323,7 +1362,7 @@ function PeerDetail (props) {
                                 }
                               }}
                             >
-                              Confirm HTLC &amp; receive
+                              {pv.htlc.confirm}
                             </Button>
                             {/^[a-fA-F0-9]{64}$/.test(String(htlcTxids[doc.htlc.settlementId] || '').trim()) && (
                               uf.bitcoinExplorer ? (
@@ -1331,10 +1370,10 @@ function PeerDetail (props) {
                                   style={{ fontSize: '0.85em', alignSelf: 'center' }}
                                   to={`/services/bitcoin/transactions/${encodeURIComponent(String(htlcTxids[doc.htlc.settlementId]).trim())}`}
                                 >
-                                  View funding tx
+                                  {pv.htlc.viewTx}
                                 </Link>
                               ) : (
-                                <code style={{ fontSize: '0.85em' }} title="Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility for the tx viewer">
+                                <code style={{ fontSize: '0.85em' }} title={net.explorerOff}>
                                   {String(htlcTxids[doc.htlc.settlementId]).trim()}
                                 </code>
                               )
@@ -1347,7 +1386,7 @@ function PeerDetail (props) {
                 ))}
               </List>
             ) : (
-              <p style={{ color: '#666' }}>No remote document inventory yet. Use <strong>Docs</strong> (when connected) to send a document-offer request.</p>
+              <p style={{ color: '#666' }}>{pv.documents.empty}</p>
             )}
           </Segment>
         )}
@@ -1358,7 +1397,7 @@ function PeerDetail (props) {
           closeOnDimmerClick
           closeOnEscape
         >
-          <Modal.Header>Set peer nickname</Modal.Header>
+          <Modal.Header>{pv.nicknameModal.title}</Modal.Header>
           <Modal.Content>
             <Form
               onSubmit={(e) => {
@@ -1367,22 +1406,21 @@ function PeerDetail (props) {
               }}
             >
               <Form.Field>
-                <label htmlFor="peer-nickname-input">Nickname (node-local)</label>
+                <label htmlFor="peer-nickname-input">{pv.nicknameModal.label}</label>
                 <Input
                   id="peer-nickname-input"
                   value={nickDraft}
                   onChange={(e) => setNickDraft(e.target.value)}
-                  placeholder={`Nickname for ${id}`}
                   maxLength={128}
                 />
               </Form.Field>
             </Form>
           </Modal.Content>
           <Modal.Actions>
-            <Button type="button" onClick={() => setNickModalOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={() => setNickModalOpen(false)}>{common.actions.cancel}</Button>
             <Button type="button" primary onClick={submitNickname}>
               <Icon name="tag" />
-              Save nickname
+              {pv.nicknameModal.save}
             </Button>
           </Modal.Actions>
         </Modal>
@@ -1393,7 +1431,7 @@ function PeerDetail (props) {
           closeOnDimmerClick
           closeOnEscape
         >
-          <Modal.Header>Invite peer to contract</Modal.Header>
+          <Modal.Header>{pv.invite.modalTitle}</Modal.Header>
           <Modal.Content>
             <Form
               onSubmit={async (e) => {
@@ -1402,12 +1440,11 @@ function PeerDetail (props) {
               }}
             >
               <Form.Field>
-                <label htmlFor="peer-invite-note-input">Optional message for invitee</label>
+                <label htmlFor="peer-invite-note-input">{pv.invite.noteLabel}</label>
                 <Form.TextArea
                   id="peer-invite-note-input"
                   value={inviteNoteDraft}
                   onChange={(e) => setInviteNoteDraft(e.target.value)}
-                  placeholder="Optional note..."
                   rows={4}
                   maxLength={500}
                 />
@@ -1415,10 +1452,10 @@ function PeerDetail (props) {
             </Form>
           </Modal.Content>
           <Modal.Actions>
-            <Button type="button" onClick={() => setInviteNoteModalOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={() => setInviteNoteModalOpen(false)}>{common.actions.cancel}</Button>
             <Button type="button" primary loading={inviteBusy} disabled={inviteBusy} onClick={submitInviteToContract}>
               <Icon name="users" />
-              Send invite
+              {pv.invite.send}
             </Button>
           </Modal.Actions>
         </Modal>

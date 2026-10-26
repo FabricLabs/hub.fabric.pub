@@ -24,11 +24,14 @@ const {
   hrefForRootRelative,
   relativePathFromLocation
 } = require('../functions/hubDownloadsTree');
+const t = require('../locales/en');
+
+const fb = t.documents.fileBrowser;
 
 function FileBrowser (props) {
   const rootPath = (props && props.rootPath) ? String(props.rootPath) : '/downloads';
   const indexUrl = (props && props.indexUrl) ? String(props.indexUrl) : '/downloads/index.json';
-  const title = (props && props.title) ? String(props.title) : 'Downloads';
+  const title = (props && props.title) ? String(props.title) : fb.defaultTitle;
   const description = (props && props.description) ? String(props.description) : '';
   const indexFromProps = props && props.index ? props.index : null;
   const location = useLocation();
@@ -45,12 +48,12 @@ function FileBrowser (props) {
     setError(null);
     const run = typeof fetch === 'function'
       ? fetch(indexUrl, { headers: { Accept: 'application/json' } })
-      : Promise.reject(new Error('fetch unavailable'));
+      : Promise.reject(new Error(fb.errorFallback));
     run
       .then((res) => {
         if (!res || !res.ok) {
           const code = res && res.status ? res.status : 0;
-          throw new Error(`Could not load ${indexUrl} (${code || 'network'})`);
+          throw new Error(fb.loadFailed(code));
         }
         return res.json();
       })
@@ -61,7 +64,7 @@ function FileBrowser (props) {
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(err && err.message ? err.message : 'Could not load downloads index');
+        setError(err && err.message ? err.message : fb.errorFallback);
         setStatus('error');
       });
     return () => {
@@ -121,14 +124,14 @@ function FileBrowser (props) {
 
       {status === 'loading' ? (
         <Segment>
-          <Loader active inline="centered" content="Loading listing…" />
+          <Loader active inline="centered" content={fb.loading} />
         </Segment>
       ) : null}
 
       {status === 'error' ? (
         <Message negative>
-          <Message.Header>Downloads listing unavailable</Message.Header>
-          <p>{error || 'Could not load the downloads index.'}</p>
+          <Message.Header>{fb.errorTitle}</Message.Header>
+          <p>{error || fb.errorFallback}</p>
         </Message>
       ) : null}
 
@@ -144,7 +147,7 @@ function FileBrowser (props) {
           </p>
           {parentHref ? (
             <p>
-              <Link to={parentHref}>Back to folder</Link>
+              <Link to={parentHref}>{fb.backToFolder}</Link>
             </p>
           ) : null}
         </Segment>
@@ -154,19 +157,22 @@ function FileBrowser (props) {
         <Segment>
           {entries.length === 0 ? (
             <Message info>
-              <Message.Header>No files here yet</Message.Header>
-              <p>
-                Desktop installers land in <code>assets/downloads</code> after{' '}
-                <code>npm run build:installers</code> (or <code>npm run build:desktop</code>).
-                Refresh this page once that build finishes.
-              </p>
+              <Message.Header>{fb.emptyTitle}</Message.Header>
+              <p>{fb.emptyBody}</p>
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                <p>
+                  {fb.devBuild} <code>npm run build:installers</code> {fb.devBuildOr} <code>npm run build:desktop</code>.
+                  {' '}{fb.devBuildOutput} <code>assets/downloads</code>.
+                </p>
+              </details>
             </Message>
           ) : (
             <Table compact unstackable data-testid="hub-file-browser-table">
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Name</Table.HeaderCell>
-                  <Table.HeaderCell collapsing>Size</Table.HeaderCell>
+                  <Table.HeaderCell>{fb.name}</Table.HeaderCell>
+                  <Table.HeaderCell collapsing>{fb.size}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -174,8 +180,8 @@ function FileBrowser (props) {
                   <Table.Row>
                     <Table.Cell colSpan={2}>
                       <Link to={parentHref || rootPath}>
-                        <Icon name="level up" />
-                        ..
+                        <Icon name="level up" aria-hidden="true" />
+                        {fb.parentFolder}
                       </Link>
                     </Table.Cell>
                   </Table.Row>
@@ -189,7 +195,7 @@ function FileBrowser (props) {
                           <Icon name="folder" />
                           <Link to={href}>{entry.name}</Link>
                         </Table.Cell>
-                        <Table.Cell>—</Table.Cell>
+                        <Table.Cell>{t.common.none}</Table.Cell>
                       </Table.Row>
                     );
                   }

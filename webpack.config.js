@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const webpack = require('webpack');
 
+const browserCrypto = require.resolve('@fabric/http/functions/browserCrypto');
+
 /** When @fabric/* is npm-linked, transitive deps live under the clone; webpack must see them too. */
 function linkedFabricResolvePaths () {
   const hubs = path.join(__dirname, 'node_modules');
@@ -141,27 +143,30 @@ module.exports = (env, argv) => {
       '@noble/hashes/hmac': path.resolve(__dirname, 'node_modules/@noble/hashes/hmac.js'),
       '@noble/hashes/ripemd160': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
       '@noble/hashes/sha1': path.resolve(__dirname, 'node_modules/@noble/hashes/legacy.js'),
-      'node:crypto': require.resolve('crypto-browserify'),
+      'node:crypto': browserCrypto,
       'react-dom/server': path.resolve(__dirname, 'node_modules/react-dom/server.browser.js'),
       // react-router@7 package exports prefer `.mjs` when `import` is in conditionNames;
       // webpack then hits `__webpack_modules__[id].call is not a function` on ESM interop.
       // Pin CJS builds (`$` = exact package root only, so `react-router/dom` still resolves).
       'react-router-dom$': path.resolve(__dirname, 'node_modules/react-router-dom/dist/index.js'),
       'react-router$': path.resolve(__dirname, 'node_modules/react-router/dist/production/index.js'),
-      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/production/dom-export.js')
+      'react-router/dom$': path.resolve(__dirname, 'node_modules/react-router/dist/production/dom-export.js'),
+      // @fabric/core types/message → types/federation → types/service reaches the TCP Peer
+      // (service.js lazy-requires ./peer for FabricShell). The browser never builds one;
+      // the NOISE WASM loader and `net` only run inside it.
+      'noise-protocol-stream/noise-stream': false
     },
     fallback: {
       // @fabric/core/functions/fabricNativeAccel lazy-requires fs only on Node; stub in browser bundle
       "fs": false,
-      "crypto": require.resolve("crypto-browserify"),
-      "node:crypto": require.resolve("crypto-browserify"),
+      "net": false,
+      "crypto": browserCrypto,
+      "node:crypto": browserCrypto,
       "path": require.resolve("path-browserify"),
       "buffer": require.resolve("buffer"),
       // Use stream-browserify for Node.js stream polyfill in the browser
       "stream": require.resolve("stream-browserify"),
-      "process": require.resolve("process/browser"),
-      // asn1.js (via parse-asn1 / crypto-browserify) expects Node's vm in some paths
-      "vm": require.resolve("vm-browserify")
+      "process": require.resolve("process/browser")
     }
   },
   devServer: {
@@ -173,9 +178,9 @@ module.exports = (env, argv) => {
     // Proxy backend services when running via webpack-dev-server
     // so WebSocket / JSON-RPC and other HTTP APIs hit the real hub.
     proxy: [
-      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true, onError: hubDevProxyOnError },
-      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true, onError: hubDevProxyOnError },
-      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true, onError: hubDevProxyOnError }
+      { context: ['/services'], target: hubProxyOrigin, changeOrigin: true, ws: true, on: { error: hubDevProxyOnError } },
+      { context: ['/api'], target: hubProxyOrigin, changeOrigin: true, ws: true, on: { error: hubDevProxyOnError } },
+      { context: ['/settings'], target: hubProxyOrigin, changeOrigin: true, on: { error: hubDevProxyOnError } }
     ],
     // Watch source directories for changes to rebuild
     watchFiles: [

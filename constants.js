@@ -51,7 +51,7 @@ function publicFeatureFlags () {
 /** Satoshis per 1 BTC (BIP-176 / fixed-point sats in this Hub). */
 const SATS_PER_BTC = 100_000_000;
 
-/** ~21M BTC cap (Joinmarket / UI sanity clamps). */
+/** ~21M BTC cap (coinjoin pool sizes / UI sanity clamps). */
 const BITCOIN_MAX_SUPPLY_BTC = 21_000_000;
 
 /**
@@ -77,7 +77,7 @@ const UI_NUMBER_LOG_EXP_THRESHOLD = 10 ** 12;
 /** Prefer compact grouping with limited fraction digits at or above this value. */
 const UI_NUMBER_COMPACT_FRACTION_THRESHOLD = 10 ** 6;
 
-/** Browser localStorage key for Joinmarket pool size tiers (BTC). */
+/** Browser localStorage key for coinjoin pool sizes (BTC); the old name keeps saved values. */
 const JOINMARKET_POOL_SIZES_STORAGE_KEY = 'fabric.joinmarket.poolSizesBtc';
 
 module.exports = {

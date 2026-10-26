@@ -4,9 +4,10 @@ const React = require('react');
 const { Link, useParams } = require('react-router-dom');
 const { Button, Header, Icon, Label, List, Loader, Message, Segment } = require('semantic-ui-react');
 const { fetchLightningChannels, loadUpstreamSettings } = require('../functions/bitcoinClient');
-const { formatSatsDisplay } = require('../functions/formatSats');
+const t = require('../locales/en');
 
-const CHANNEL_NOT_FOUND = 'Channel not found.';
+const c = t.bitcoin.channel;
+const CHANNEL_NOT_FOUND = 'channel-not-found';
 
 function trimHash (value = '', left = 8, right = 8) {
   const text = String(value || '');
@@ -51,7 +52,7 @@ function ChannelView () {
       })
       .catch((err) => {
         setChannel(null);
-        setError(err && err.message ? err.message : 'Failed to load channel.');
+        setError(err && err.message ? err.message : c.loadFailedFallback);
       })
       .finally(() => setLoading(false));
   }, [channelId]);
@@ -77,11 +78,11 @@ function ChannelView () {
     })
       .then((r) => r.json())
       .then((data) => {
-        if (data && data.status === 'error') throw new Error(data.message || data.error || 'Close failed');
+        if (data && data.status === 'error') throw new Error(data.message || data.error || c.closeRefused);
         loadChannel();
       })
       .catch((err) => {
-        setCloseError(err && err.message ? err.message : 'Failed to close channel.');
+        setCloseError(err && err.message ? err.message : c.closeFailed);
       })
       .finally(() => setCloseLoading(false));
   };
@@ -101,20 +102,20 @@ function ChannelView () {
           style={{ display: 'flex', alignItems: 'center', gap: '0.75em', flexWrap: 'wrap', marginBottom: '0.25em' }}
           role="banner"
         >
-          <Button as={Link} to="/services/bitcoin" basic size="small" aria-label="Back to Bitcoin dashboard (Lightning section)" title="Bitcoin home — Lightning and other tools">
+          <Button as={Link} to="/services/bitcoin" basic size="small" title={t.bitcoin.shared.backToBitcoinTitle}>
             <Icon name="arrow left" aria-hidden="true" />
-            Bitcoin / LN
+            {t.bitcoin.shared.backToBitcoin}
           </Button>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap', flex: '1 1 auto' }}>
             <Header as="h2" style={{ margin: 0 }}>
               <Icon name="bolt" color="yellow" aria-hidden="true" />
-              <Header.Content>Lightning Channel</Header.Content>
+              <Header.Content>{c.title}</Header.Content>
             </Header>
             {channel && channel.state && (
               <Label
                 color={channel.state === 'CHANNELD_NORMAL' ? 'green' : 'orange'}
                 size="small"
-                title="Channel state"
+                title={c.stateTitle}
                 aria-hidden="true"
               >
                 {channel.state}
@@ -126,35 +127,33 @@ function ChannelView () {
 
       {!channelId && (
         <Message warning>
-          <Message.Header>Missing channel ID</Message.Header>
-          <p>Provide a channel ID in the URL.</p>
+          <Message.Header>{c.missingTitle}</Message.Header>
+          <p>{c.missingBody}</p>
         </Message>
       )}
 
       {!!channelId && loading && (
         <Segment>
           <Loader active inline="centered" />
-          <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>Loading channel…</p>
+          <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>{c.loading}</p>
         </Segment>
       )}
 
       {!!channelId && error && !loading && error === CHANNEL_NOT_FOUND && (
         <Message warning>
-          <Message.Header>Channel not found</Message.Header>
-          <p>
-            No channel with this id appears in the Hub&apos;s Lightning list. It may have closed, or use funding txid if you opened from a transaction link.
-          </p>
+          <Message.Header>{c.notFoundTitle}</Message.Header>
+          <p>{c.notFoundBody}</p>
           <p style={{ marginTop: '0.5em', fontSize: '0.9em', color: '#555' }}>
             <code style={{ wordBreak: 'break-all' }}>{channelId}</code>
           </p>
           <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
             <Button type="button" size="small" onClick={() => void loadChannel()}>
               <Icon name="refresh" />
-              Retry
+              {t.common.actions.retry}
             </Button>
             <Button as={Link} to="/services/bitcoin" size="small" basic>
               <Icon name="bitcoin" />
-              Bitcoin / LN
+              {t.bitcoin.shared.backToBitcoin}
             </Button>
           </div>
         </Message>
@@ -162,16 +161,16 @@ function ChannelView () {
 
       {!!channelId && error && !loading && error !== CHANNEL_NOT_FOUND && (
         <Message negative>
-          <Message.Header>Failed to load channels</Message.Header>
+          <Message.Header>{c.loadFailed}</Message.Header>
           <p>{error}</p>
           <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
             <Button type="button" size="small" onClick={() => void loadChannel()}>
               <Icon name="refresh" />
-              Retry
+              {t.common.actions.retry}
             </Button>
             <Button as={Link} to="/services/bitcoin" size="small" basic>
               <Icon name="bitcoin" />
-              Bitcoin / LN
+              {t.bitcoin.shared.backToBitcoin}
             </Button>
           </div>
         </Message>
@@ -183,47 +182,47 @@ function ChannelView () {
             <List divided>
               <List.Item>
                 <List.Content>
-                  <List.Header>Channel ID</List.Header>
-                  <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{channel.channel_id || '—'}</code>
+                  <List.Header>{c.channelId}</List.Header>
+                  <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{channel.channel_id || t.common.none}</code>
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Content>
-                  <List.Header>Peer</List.Header>
-                  <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{channel.peer_id ? trimHash(channel.peer_id, 12, 12) : '—'}</code>
+                  <List.Header>{c.peer}</List.Header>
+                  <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{channel.peer_id ? trimHash(channel.peer_id, 12, 12) : t.common.none}</code>
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Content>
-                  <List.Header>Short channel ID</List.Header>
-                  <code>{channel.short_channel_id || '—'}</code>
+                  <List.Header>{c.shortChannelId}</List.Header>
+                  <code>{channel.short_channel_id || t.common.none}</code>
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Content>
-                  <List.Header>State</List.Header>
-                  {channel.state || '—'}
+                  <List.Header>{c.state}</List.Header>
+                  {channel.state || t.common.none}
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Content>
-                  <List.Header>Capacity</List.Header>
-                  {capacitySats != null ? `${formatSatsDisplay(capacitySats)} sats` : '—'}
+                  <List.Header>{c.capacity}</List.Header>
+                  {capacitySats != null ? t.common.sats(capacitySats) : t.common.none}
                 </List.Content>
               </List.Item>
               <List.Item>
                 <List.Content>
-                  <List.Header>Our balance</List.Header>
-                  {ourSats != null ? `${formatSatsDisplay(ourSats)} sats` : '—'}
+                  <List.Header>{c.ourBalance}</List.Header>
+                  {ourSats != null ? t.common.sats(ourSats) : t.common.none}
                 </List.Content>
               </List.Item>
               {channel.funding_txid && (
                 <List.Item>
                   <List.Content>
-                    <List.Header>Funding transaction</List.Header>
+                    <List.Header>{c.funding}</List.Header>
                     <Button size="mini" as={Link} to={`/services/bitcoin/transactions/${encodeURIComponent(channel.funding_txid)}`} basic>
                       <Icon name="bitcoin" />
-                      View transaction
+                      {t.bitcoin.shared.viewTransaction}
                     </Button>
                   </List.Content>
                 </List.Item>
@@ -231,15 +230,15 @@ function ChannelView () {
             </List>
             <Button size="small" basic onClick={loadChannel} style={{ marginTop: '0.5em' }}>
               <Icon name="refresh" />
-              Refresh
+              {t.common.actions.refresh}
             </Button>
           </Segment>
 
           {canClose && (
             <Segment>
-              <Header as="h4">Close channel</Header>
+              <Header as="h4">{c.closeTitle}</Header>
               <p style={{ color: '#666', marginBottom: '0.5em' }}>
-                Closing cooperatively returns funds to your wallet after the closing transaction confirms.
+                {c.closeIntro}
               </p>
               {closeError && (
                 <Message negative size="small" style={{ marginBottom: '0.5em' }}>
@@ -254,7 +253,7 @@ function ChannelView () {
                 onClick={handleClose}
               >
                 <Icon name="close" />
-                Close channel
+                {c.close}
               </Button>
             </Segment>
           )}

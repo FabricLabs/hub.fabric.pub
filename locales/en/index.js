@@ -1,8 +1,16 @@
 'use strict';
 
 module.exports = {
-  BRAND_NAME: 'hub.fabric.pub',
-  BRAND_TAGLINE: 'self-hosted bitcoin infrastructure',
-  PITCH_CTA_TEXT: 'Get Started',
-  PITCH_CTA_LINK: '/settings'
+  ...require('./brand'),
+  common: require('./common'),
+  shell: require('./shell'),
+  notices: require('./notices'),
+  identity: require('./identity'),
+  home: require('./home'),
+  documents: require('./documents'),
+  network: require('./network'),
+  bitcoin: require('./bitcoin'),
+  payments: require('./payments'),
+  settings: require('./settings'),
+  federation: require('./federation')
 };

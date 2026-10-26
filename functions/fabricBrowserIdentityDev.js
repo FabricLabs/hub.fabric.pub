@@ -69,7 +69,7 @@ function clearDevSeedSuppression () {
  * @param {string} opts.seed - Mnemonic phrase (same field as @fabric/core Identity `seed`).
  * @param {string} [opts.passphrase] - Optional BIP39 extension passphrase (not the UI "encryption password").
  * @param {boolean} [opts.force] - When true, replace existing fabric.identity.local.
- * @param {boolean} [opts.ignoreSuppression] - When true (used by Identity manager "Restore from dev seed"), bypass the wipe marker.
+ * @param {boolean} [opts.ignoreSuppression] - When true, bypass the wipe marker left by Remove identity.
  * @returns {{ ok: boolean, error?: string, suppressed?: boolean, identity?: { id: string, xpub: string, xprv: string } }}
  */
 function storeUnlockedIdentityFromMnemonic (opts = {}) {
@@ -85,7 +85,7 @@ function storeUnlockedIdentityFromMnemonic (opts = {}) {
     return {
       ok: false,
       suppressed: true,
-      error: 'Dev-seed bootstrap was suppressed by Forget local identity. Use "Restore from dev seed" in the Identity panel to re-enable.'
+      error: 'Dev-seed bootstrap is off because the identity was removed in this browser (Remove identity). Restore from the recovery phrase in the identity menu, or pass ignoreSuppression: true.'
     };
   }
 

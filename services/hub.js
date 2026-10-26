@@ -61,6 +61,7 @@ const {
 const {
   allowedHostsFromSettings,
   buildContentSecurityPolicy,
+  createBrowserSecretsGuard,
   createLoopbackHostGuard,
   isTrustedLoopbackRequest
 } = require('../functions/hubHttpLocalTrust');
@@ -100,12 +101,6 @@ const Filesystem = require('@fabric/core/types/filesystem');
 const Key = require('@fabric/core/types/key'); // fabric keys
 const Logger = require('@fabric/core/types/logger');
 const Message = require('@fabric/core/types/message');
-let fabricMessageParent = null;
-try {
-  fabricMessageParent = require('@fabric/core/functions/fabricMessageParent');
-} catch (err) {
-  if (!err || err.code !== 'MODULE_NOT_FOUND') throw err;
-}
 /** Ping/pong keep genesis parent. Durable Hub log frames (including GENESIS_MESSAGE) chain AMP `parent`. */
 const HUB_PARENT_CHAIN_SKIP = new Set([
   'Ping',
@@ -128,6 +123,8 @@ const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
 const MarketService = require('../services/market');
+const CoinjoinService = require('../services/coinjoin');
+const FederationsService = require('../services/federations');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
 const {
@@ -174,7 +171,8 @@ const WEBRTC_RELAY_MAX_HOPS = Number(process.env.FABRIC_WEBRTC_RELAY_MAX_HOPS ||
 /** Per WebRTC peer id: max RelayFromWebRTC fan-outs per second (DoS guard). */
 const WEBRTC_RELAY_MAX_PER_SEC = Number(process.env.FABRIC_WEBRTC_RELAY_MAX_PER_SEC || 48);
 const WORK_QUEUE_STRATEGIES = new Set(['highest_value_first', 'fifo', 'oldest_high_value_first']);
-const inventoryHtlc = require('../functions/inventoryHtlc');
+const Htlc = require('@fabric/core/types/htlc');
+const { TAPROOT_INTERNAL_NUMS, networkForFabricName } = require('@fabric/core/types/policy');
 const txContractLabels = require('../functions/txContractLabels');
 const psbtFabric = require('../functions/psbtFabric');
 const contractProposalExchange = require('../functions/contractProposalExchange');
@@ -199,7 +197,6 @@ const publishedDocumentEnvelope = require('../functions/publishedDocumentEnvelop
 const documentPaymentHash = require('../functions/documentPaymentHash');
 const sidechainState = require('../functions/sidechainState');
 const trackedApplicationContracts = require('../functions/trackedApplicationContracts');
-const contractPublishAuthority = require('@fabric/core/functions/contractPublishAuthority');
 const contractStatechains = require('../functions/contractStatechains');
 const contractMessageQueue = require('../functions/contractMessageQueue');
 const beaconNetworkGuard = require('@fabric/core/functions/beaconNetworkGuard');
@@ -222,9 +219,7 @@ const federationRegistry = require('../functions/federationRegistry');
 const { normalizeFederationSignatureScheme } = require('../functions/federationSignatureScheme');
 const crowdfundingTaproot = require('../functions/crowdfundingTaproot');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
-const contractSpend = require('@fabric/core/functions/contractSpend');
-const federationReserveLedger = require('@fabric/core/functions/federationReserveLedger');
-const federationValidatorVerify = require('@fabric/core/functions/federationValidatorVerify');
+const Federation = require('@fabric/core/types/federation');
 
 // Hub Services
 const Fabric = require('../services/fabric');
@@ -235,6 +230,14 @@ const {
   isExplicitFalse
 } = require('../functions/hubBitcoinSetup');
 const { seedHubStoresAfterSetup } = require('../functions/hubSetupStores');
+const payjoinReceiverContribution = require('../functions/payjoinReceiverContribution');
+const hubNetworkJoin = require('../functions/hubNetworkJoin');
+
+/** `receiverContribution` (or legacy `autoAcpBoost`) from a request body; undefined = service default. */
+function payjoinContributionFlag (body = {}) {
+  const value = body.receiverContribution != null ? body.receiverContribution : body.autoAcpBoost;
+  return value != null ? !!value : undefined;
+}
 const { mountFabricDesktopAuthHttp } = require('../functions/fabricDesktopAuth');
 const { mountFabricDeviceLinkHttp } = require('../functions/fabricDeviceLink');
 const {
@@ -361,8 +364,8 @@ class Hub extends Service {
         maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256),
         beaconFederationXOnlyHex: String(process.env.FABRIC_PAYJOIN_BEACON_FEDERATION_XONLY_HEX || ''),
         publicOrigin: process.env.FABRIC_HUB_PUBLIC_ORIGIN || process.env.FABRIC_PUBLIC_ORIGIN || '',
-        autoAcpBoost: process.env.FABRIC_PAYJOIN_AUTO_ACP != null
-          ? (process.env.FABRIC_PAYJOIN_AUTO_ACP === '1' || process.env.FABRIC_PAYJOIN_AUTO_ACP === 'true')
+        receiverContribution: (process.env.FABRIC_PAYJOIN_RECEIVER_CONTRIBUTION || process.env.FABRIC_PAYJOIN_AUTO_ACP) != null
+          ? ['1', 'true'].includes(String(process.env.FABRIC_PAYJOIN_RECEIVER_CONTRIBUTION || process.env.FABRIC_PAYJOIN_AUTO_ACP))
           : null,
         bip77MailboxExperimental: process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== '0' &&
           process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== 'false'
@@ -694,6 +697,30 @@ class Hub extends Service {
       ...this.settings.market
     });
 
+    this.coinjoin = new CoinjoinService({
+      ...this.settings.coinjoin,
+      network: (this.settings.bitcoin && this.settings.bitcoin.network) || 'mainnet'
+    });
+
+    const federationCapSats = Number(process.env.FABRIC_FEDERATION_MAX_SATS);
+    // `settings.federations` is the registry seed list; named federations use `namedFederations`.
+    const namedFederationSettings = (this.settings.namedFederations && typeof this.settings.namedFederations === 'object')
+      ? this.settings.namedFederations
+      : {};
+    this.federations = new FederationsService({
+      ...namedFederationSettings,
+      network: (this.settings.bitcoin && this.settings.bitcoin.network) || 'mainnet',
+      allowMainnet: process.env.FABRIC_FEDERATION_MAINNET === '1' || namedFederationSettings.allowMainnet === true,
+      ...(Number.isSafeInteger(federationCapSats) && federationCapSats > 0
+        ? { maxDepositSats: federationCapSats, maxWithdrawalSats: federationCapSats }
+        : {})
+    });
+    if (this.payjoin) this.payjoin.settings.coinjoinProfile = () => {
+      const coinjoin = this._getCoinjoinService();
+      if (!coinjoin || !coinjoin.available) return null;
+      return { path: '/services/coinjoin', maker: coinjoin.makerStatus().enabled, fidelityBonds: true };
+    };
+
     this.distributedHttp = new FabricDistributedExecutionHTTP({
       basePath: '/services/distributed',
       getManifest: () => this._getDistributedManifestJson(),
@@ -764,7 +791,7 @@ class Hub extends Service {
     this._workQueueById = new Set();
     this._workQueueBusy = false;
     this._workQueueTimer = null;
-    /** @type {ReturnType<typeof setInterval>|null} */
+    /** @type {?NodeJS.Timeout} */
     this._heapTelemetryTimer = null;
     /** UTF-8 byte length of last `commit()` STATE body (telemetry; avoids re-stringify). */
     this._lastStateWriteBytes = null;
@@ -925,6 +952,12 @@ class Hub extends Service {
         ? { payments: this.settings.http.payments }
         : {})
     });
+    // Registered before `http.start()` adds its stack, so it runs ahead of the static roots.
+    this.http.express.use(createBrowserSecretsGuard({
+      configPath: path.join(hubAssetsDir(), 'config.local.js'),
+      inlineIdentity: devInlineIdentity,
+      allowedHosts: this._loopbackAllowedHosts
+    }));
     this._wireHttpOptionsContract();
 
     // State
@@ -1061,6 +1094,30 @@ class Hub extends Service {
     }
 
     throw new Error('peer connect method unavailable');
+  }
+
+  /**
+   * Dial each configured `settings.peers` entry that is neither connected nor
+   * being dialed. Core dials configured peers once at start and never again, so a
+   * failed first dial (or a dropped session) would otherwise last until restart.
+   * @returns {string[]} addresses dialed
+   */
+  _redialConfiguredPeers () {
+    if (!this.agent || typeof this.agent._connect !== 'function') return [];
+    const connections = this.agent.connections || {};
+    const dialing = this.agent._outboundDialTargets;
+    const dialed = [];
+    for (const entry of Array.isArray(this.settings.peers) ? this.settings.peers : []) {
+      const raw = String(entry || '').replace(/^[^@]+@/, '').trim().toLowerCase();
+      if (!raw) continue;
+      const address = raw.includes(':') ? raw : `${raw}:7777`;
+      if (connections[address] || (dialing && dialing.has(address))) continue;
+      try {
+        this._connectPeer(address);
+        dialed.push(address);
+      } catch (_) {}
+    }
+    return dialed;
   }
 
   /**
@@ -1552,12 +1609,21 @@ class Hub extends Service {
       const row = (actorId && known && known[actorId]) || (originAddr && known && known[originAddr]);
       if (row && (row.alias || row.nickname)) peerAlias = String(row.alias || row.nickname);
     } catch (_) {}
+    // Inbound sessions arrive from an ephemeral port: key the offers by the session's signer so a
+    // reconnecting seller replaces its old offers instead of listing them twice.
+    let peerPubkey = actorId;
+    if (!peerPubkey && originAddr && this.agent) {
+      const fabricId = this.agent._addressToId && this.agent._addressToId[originAddr];
+      const registered = fabricId && this.agent._state && this.agent._state.peers && this.agent._state.peers[fabricId];
+      peerPubkey = (registered && registered.publicKey) || '';
+    }
     const items = documentInventoryMarket.itemsFromInventoryMessage(message);
+    const body = (message && (message.object || message)) || {};
     const saved = documentInventoryMarket.replacePeerOffers(this._documentOffersMap(), {
-      peerPubkey: actorId,
+      peerPubkey,
       peerAddress: originAddr,
       peerAlias
-    }, items);
+    }, items, { inventoryId: body.inventoryId });
     this.commit();
     return saved;
   }
@@ -1589,8 +1655,9 @@ class Hub extends Service {
     }
     const changed = [];
     for (const id of ids) {
-      if (!this._hasLocalDocumentBlob(id)) continue;
-      const publishedMeta = coll[id];
+      const seedable = this._seedableDocument(id);
+      if (!seedable && !this._hasLocalDocumentBlob(id)) continue;
+      const publishedMeta = seedable ? this._seededDocumentMeta(id) : coll[id];
       const remotes = documentInventoryMarket.offersForDocument(map, id).filter((o) => o.local !== true);
       const decision = documentInventoryMarket.republishDecision({
         hasLocalFile: true,
@@ -1600,6 +1667,15 @@ class Hub extends Service {
         policy
       });
       if (decision.action !== 'publish' && decision.action !== 'raise') continue;
+      if (seedable) {
+        const seeded = this.agent.seedDocument(id, { rateSats: decision.purchasePriceSats });
+        if (seeded && seeded.ok) {
+          changed.push({ status: 'success', documentId: seeded.documentId, purchasePriceSats: decision.purchasePriceSats, costBasisSats: decision.costBasisSats, marketAction: decision.action, seeded: true });
+        } else if (this.settings && this.settings.debug) {
+          console.warn('[HUB] document market seed failed:', id, seeded && seeded.error);
+        }
+        continue;
+      }
       try {
         const result = await this._publishHeldDocumentAtPrice(id, decision.purchasePriceSats, {
           costBasisSats: decision.costBasisSats,
@@ -1613,6 +1689,30 @@ class Hub extends Service {
       }
     }
     return changed;
+  }
+
+  /**
+   * A convergent tree the agent Peer received and still holds chunk by chunk:
+   * republished as the same tree (`Peer#seedDocument`), never resealed, so
+   * buyers see one root and one set of chunks across every seller.
+   * @param {string} id
+   * @returns {boolean}
+   */
+  _seedableDocument (id) {
+    const agent = this.agent;
+    return !!(agent && typeof agent.seedableDocument === 'function' && typeof agent.seedDocument === 'function' && agent.seedableDocument(id));
+  }
+
+  /**
+   * Listing state of a seeded tree, from the agent Peer's sealed catalog.
+   * @param {string} id
+   * @returns {{ published: boolean, purchasePriceSats: (number|null) }}
+   */
+  _seededDocumentMeta (id) {
+    const content = (this.agent && this.agent._state && this.agent._state.content) || {};
+    const published = !!(content.documentSealedBlobs && content.documentSealedBlobs[id]);
+    const rate = content.documentRates && content.documentRates[id];
+    return { published, purchasePriceSats: published && rate != null ? Number(rate) : null };
   }
 
   /**
@@ -1733,6 +1833,8 @@ class Hub extends Service {
     if (!policy.accumulatePeerInventories) {
       return { requested: 0, peers: [], policy: this._documentMarketSnapshot() };
     }
+    const open = (this.agent && this.agent.connections) || {};
+    if (documentInventoryMarket.dropClosedSessionOffers(this._documentOffersMap(), (addr) => !!open[addr])) this.commit();
     const viaPeer = documentInventoryMarket.requestConnectedInventories(this.agent);
     if (viaPeer.requested > 0) {
       return { ...viaPeer, policy: this._documentMarketSnapshot() };
@@ -1972,16 +2074,14 @@ class Hub extends Service {
     let chainMessage = null;
     if (this.fs && typeof this.fs.addToChain === 'function') {
       chainMessage = Message.fromVector(['FABRIC_MESSAGE', JSON.stringify(entry)]);
-      if (fabricMessageParent && typeof fabricMessageParent.setMessageParent === 'function') {
-        const skip = HUB_PARENT_CHAIN_SKIP.has(String(type));
-        const parent = skip
-          ? fabricMessageParent.ZERO_PARENT
-          : (this._outboundMessageTip || fabricMessageParent.ZERO_PARENT);
-        fabricMessageParent.setMessageParent(chainMessage, parent);
-        entry.parent = fabricMessageParent.parentHexOf(chainMessage);
-      }
+      const skip = HUB_PARENT_CHAIN_SKIP.has(String(type));
+      const parent = skip
+        ? Message.ZERO_PARENT
+        : (this._outboundMessageTip || Message.ZERO_PARENT);
+      Message.setMessageParent(chainMessage, parent);
+      entry.parent = Message.parentHexOf(chainMessage);
       if (this._rootKey && this._rootKey.private) chainMessage.signWithKey(this._rootKey);
-      if (fabricMessageParent && !HUB_PARENT_CHAIN_SKIP.has(String(type)) && chainMessage.id) {
+      if (!skip && chainMessage.id) {
         this._outboundMessageTip = chainMessage.id;
         entry.frameId = chainMessage.id;
       }
@@ -2416,6 +2516,99 @@ class Hub extends Service {
       if (playnet) out.push(playnet);
     }
     return [...new Set(out)];
+  }
+
+  /**
+   * Bitcoin addnode targets and Fabric peers saved for joining a private network.
+   * @returns {{ addnodes: string[], peers: string[] }}
+   */
+  _networkJoinSettings () {
+    const read = (name) => {
+      try {
+        return hubNetworkJoin.parseHostPortList(this.setup ? this.setup.getSetting(name) : null);
+      } catch (_) {
+        return [];
+      }
+    };
+    return {
+      addnodes: read(hubNetworkJoin.SETTING_ADDNODES),
+      peers: read(hubNetworkJoin.SETTING_PEERS)
+    };
+  }
+
+  /**
+   * Apply network-join targets now: bitcoind `addnode … add` and Fabric dials.
+   * Failures are reported per target and never thrown.
+   * @param {{ addnodes?: string[], peers?: string[] }} join
+   * @returns {Promise<{ addnodes: Object[], peers: Object[] }>}
+   */
+  async _applyNetworkJoinLive (join = {}) {
+    const result = { addnodes: [], peers: [] };
+    const addnodes = Array.isArray(join.addnodes) ? join.addnodes : [];
+    const peers = Array.isArray(join.peers) ? join.peers : [];
+    if (addnodes.length) {
+      this.settings.bitcoin = Object.assign({}, this.settings.bitcoin, {
+        p2pAddNodes: [...new Set([...(this.settings.bitcoin && this.settings.bitcoin.p2pAddNodes) || [], ...addnodes])],
+        skipPlaynetPeer: true
+      });
+    }
+    if (peers.length) this.settings.peers = peers.slice();
+    const bitcoin = this._getBitcoinService();
+    for (const node of addnodes) {
+      if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') {
+        result.addnodes.push({ node, ok: false, error: 'Bitcoin service unavailable (applied at next start)' });
+        continue;
+      }
+      try {
+        await bitcoin._makeRPCRequest('addnode', [node, 'add']);
+        result.addnodes.push({ node, ok: true });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        // RPC_CLIENT_NODE_ALREADY_ADDED: already in the list is fine.
+        result.addnodes.push(/already added/i.test(message)
+          ? { node, ok: true, note: 'already added' }
+          : { node, ok: false, error: message });
+      }
+    }
+    for (const peer of peers) {
+      try {
+        result.peers.push({ peer: this._connectPeer(peer), ok: true });
+      } catch (err) {
+        result.peers.push({ peer, ok: false, error: err && err.message ? err.message : String(err) });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Admin: save and apply a `FabricLocalNetworkProfile` (from `npm run deploy`).
+   * @param {Object} body `{ adminToken, profile }`
+   * @returns {Promise<Object>}
+   */
+  async _rpcImportNetworkProfile (body = {}) {
+    if (!this._verifyOperatorAdminToken(body.adminToken || body.token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const network = this.settings.bitcoin && this.settings.bitcoin.network;
+    let parsed;
+    try {
+      parsed = hubNetworkJoin.profileToSettings(body.profile, { network });
+    } catch (err) {
+      return { status: 'error', message: err && err.message ? err.message : String(err) };
+    }
+    await this.setup.setSetting(hubNetworkJoin.SETTING_ADDNODES, parsed.settings[hubNetworkJoin.SETTING_ADDNODES]);
+    await this.setup.setSetting(hubNetworkJoin.SETTING_PEERS, parsed.settings[hubNetworkJoin.SETTING_PEERS]);
+    const applied = await this._applyNetworkJoinLive({
+      addnodes: parsed.settings[hubNetworkJoin.SETTING_ADDNODES],
+      peers: parsed.settings[hubNetworkJoin.SETTING_PEERS]
+    });
+    return {
+      type: 'ImportNetworkProfileResult',
+      status: 'success',
+      network: parsed.network,
+      instances: parsed.instances,
+      applied
+    };
   }
 
   _getBitcoinService () {
@@ -2878,6 +3071,17 @@ class Hub extends Service {
     return p;
   }
 
+  /**
+   * The operator's saved single federation policy, for import as a named federation.
+   * @returns {{ validators: string[], threshold: number, name: string }|null}
+   */
+  _getDistributedFederationPolicyForImport () {
+    const p = this._distributedFederationPersisted();
+    if (!p || !Array.isArray(p.validators) || !p.validators.length) return null;
+    const threshold = p.threshold != null ? Number(p.threshold) : 1;
+    return { validators: p.validators.slice(), threshold, name: 'Federation policy' };
+  }
+
   _distributedFederationPolicySource () {
     const env = process.env.FABRIC_DISTRIBUTED_FEDERATION_VALIDATORS;
     if (env && String(env).trim()) return 'env';
@@ -3233,7 +3437,7 @@ class Hub extends Service {
     };
 
     const hasFederation = this._distributedFederationValidatorsFromEnv().length > 0;
-    const federationBase = () => federationReserveLedger.defaultFederationSidechainPolicy();
+    const federationBase = () => Federation.defaultSidechainPolicy();
 
     const fromSettings = this.settings && this.settings.distributed &&
       this.settings.distributed.sidechainPolicy;
@@ -3273,12 +3477,12 @@ class Hub extends Service {
     const fromDef = entry && entry.definition && entry.definition.sidechainPolicy;
     if (fromDef && typeof fromDef === 'object') {
       return sidechainState.parseStatechainPathPolicy(fromDef)
-        || federationReserveLedger.defaultFederationSidechainPolicy();
+        || Federation.defaultSidechainPolicy();
     }
     const root = this._getSidechainPathPolicy();
     if (root) return root;
     if (this._distributedFederationValidatorsFromEnv().length === 0) return null;
-    return federationReserveLedger.defaultFederationSidechainPolicy();
+    return Federation.defaultSidechainPolicy();
   }
 
   _getSidechainStateJson () {
@@ -3373,7 +3577,7 @@ class Hub extends Service {
       const validatorsConfigured = this._distributedFederationValidatorsFromEnv().length > 0;
       const contracts = this._getContractsSnapshotForBeacon();
       const sidechain = this._getSidechainSnapshotForBeacon();
-      const dig = federationValidatorVerify.verifyLocalEpochDigests(
+      const dig = Federation.verifyLocalEpochDigests(
         epoch,
         sidechain,
         contracts,
@@ -3395,7 +3599,7 @@ class Hub extends Service {
     if (!this._sidechainState) {
       this._sidechainState = sidechainState.loadState(this.fs);
     }
-    return federationValidatorVerify.evaluateValidatorSignGate({
+    return Federation.evaluateValidatorSignGate({
       epoch: epoch || null,
       localSidechain: this._getSidechainSnapshotForBeacon(),
       localContracts: this._getContractsSnapshotForBeacon(),
@@ -3876,7 +4080,7 @@ class Hub extends Service {
       const acceptedExisting = state.accepted && state.accepted[contractId] ? state.accepted[contractId] : null;
       const publishEntry = pending || acceptedExisting;
       if (publishEntry && publishEntry.definition && publishEntry.signer) {
-        const authorized = contractPublishAuthority.contractPublishSignerAuthorized(
+        const authorized = Contract.publishSignerAuthorized(
           publishEntry.definition,
           publishEntry.signer
         );
@@ -4062,7 +4266,9 @@ class Hub extends Service {
         msgBuf,
         federationWitness,
         validators,
-        threshold
+        threshold,
+        undefined,
+        require('@fabric/core/functions/signingTags').SIDECHAIN_STATE
       );
       if (!ok) {
         return { status: 'error', message: 'federationWitness invalid or insufficient' };
@@ -4158,7 +4364,7 @@ class Hub extends Service {
     });
     if (auth.status === 'error') return auth;
 
-    const ledgerCheck = federationReserveLedger.validateLedgerPatch(patches);
+    const ledgerCheck = Federation.validateLedgerPatch(patches);
     if (!ledgerCheck.ok) {
       return { status: 'error', message: ledgerCheck.error || 'federationReserve patch rejected' };
     }
@@ -4246,7 +4452,7 @@ class Hub extends Service {
     if (!Array.isArray(patches) || !patches.length) {
       return { status: 'error', message: 'patches required' };
     }
-    const ledgerCheckTrusted = federationReserveLedger.validateLedgerPatch(patches);
+    const ledgerCheckTrusted = Federation.validateLedgerPatch(patches);
     if (!ledgerCheckTrusted.ok) {
       return { status: 'error', message: ledgerCheckTrusted.error || 'federationReserve patch rejected' };
     }
@@ -4299,7 +4505,9 @@ class Hub extends Service {
 
   /**
    * Ingest a SIDECHAIN_STATE_PATCH from the Fabric Peer mesh.
-   * @param {{ proposal?: object, federationWitness?: object|null }} ev
+   * @param {Object} [ev]
+   * @param {Object} [ev.proposal]
+   * @param {?Object} [ev.federationWitness]
    * @returns {Promise<object|null>}
    */
   async _ingestSidechainPatchFromPeer (ev = {}) {
@@ -4349,7 +4557,7 @@ class Hub extends Service {
     });
     if (auth.status === 'error') return auth;
 
-    const ledgerCheck = federationReserveLedger.validateLedgerPatch(patches);
+    const ledgerCheck = Federation.validateLedgerPatch(patches);
     if (!ledgerCheck.ok) {
       return { status: 'error', message: ledgerCheck.error || 'federationReserve patch rejected' };
     }
@@ -5023,7 +5231,7 @@ class Hub extends Service {
       return { status: 'error', message: 'local tip stateDigest and bitcoinBlockHash required' };
     }
 
-    const tipCheck = contractSpend.validateWithdrawalRequest(request, tip);
+    const tipCheck = Contract.validateWithdrawalRequest(request, tip);
     if (!tipCheck.ok) {
       return { status: 'error', message: tipCheck.error || 'withdrawal request invalid vs tip' };
     }
@@ -5032,7 +5240,7 @@ class Hub extends Service {
       const witnesses = Array.isArray(body.withdrawalWitnesses)
         ? body.withdrawalWitnesses
         : (Array.isArray(body.witnesses) ? body.witnesses : []);
-      const meet = contractSpend.meetWithdrawalWitnessThreshold(
+      const meet = Contract.meetWithdrawalWitnessThreshold(
         request,
         witnesses,
         validators,
@@ -5075,7 +5283,7 @@ class Hub extends Service {
       return { status: 'error', message: 'fundedTxHex is required (full raw tx hex paying the vault)' };
     }
     try {
-      const r = contractSpend.prepareWithdrawalFromRequest({
+      const r = Contract.prepareWithdrawalFromRequest({
         request: Object.assign({}, request, { vaultAddress }),
         tip,
         fundedTxHex,
@@ -5184,7 +5392,7 @@ class Hub extends Service {
    * Preview-only for new burns — caller seals via SubmitSidechainStatePatch.
    * @param {object} request
    * @param {object} body
-   * @returns {{ status: 'success', reserve: object, patches?: object[] }|{ status: 'error', message: string }}
+   * @returns {Object} `{ status: 'success', reserve, patches? }` or `{ status: 'error', message }`
    * @private
    */
   _federationPegOutBurnGate (request, body = {}) {
@@ -5197,14 +5405,14 @@ class Hub extends Service {
     const content = (this._sidechainState && this._sidechainState.content) || {};
     const skipBurn = body.skipReserveBurn === true || body.dryRun === true;
     if (skipBurn) {
-      const reserve = federationReserveLedger.readReserve(content);
-      const cons = federationReserveLedger.assertConservation(reserve);
+      const reserve = Federation.readReserve(content);
+      const cons = Federation.assertConservation(reserve);
       if (!cons.ok) return { status: 'error', message: cons.error };
       return { status: 'success', reserve };
     }
 
     // Prefer already-burned ledger row matching requestId.
-    const reserve = federationReserveLedger.readReserve(content);
+    const reserve = Federation.readReserve(content);
     const existing = reserve.withdrawals.find(
       (w) => String(w.requestId || '').toLowerCase() === String(request.requestId).toLowerCase()
     );
@@ -5212,7 +5420,7 @@ class Hub extends Service {
       if (Number(existing.amountSats) !== Number(request.amountSats)) {
         return { status: 'error', message: 'burned amount does not match withdrawal request' };
       }
-      const cons = federationReserveLedger.assertConservation(reserve);
+      const cons = Federation.assertConservation(reserve);
       if (!cons.ok) return { status: 'error', message: cons.error };
       return { status: 'success', reserve };
     }
@@ -5221,7 +5429,7 @@ class Hub extends Service {
       return { status: 'error', message: 'peg-out burn required before PrepareFederationVaultWithdrawalPsbt' };
     }
 
-    const burned = federationReserveLedger.applyPegOutBurn(content, {
+    const burned = Federation.applyPegOutBurn(content, {
       requestId: request.requestId,
       amountSats: request.amountSats,
       destinationAddress: request.destinationAddress
@@ -5239,7 +5447,7 @@ class Hub extends Service {
     return {
       status: 'success',
       reserve: burned.reserve,
-      patches: federationReserveLedger.patchesForReserve(burned.reserve)
+      patches: Federation.patchesForReserve(burned.reserve)
     };
   }
 
@@ -5268,7 +5476,7 @@ class Hub extends Service {
       };
     }
     const maturity = federationVault.DEFAULT_L1_DEPOSIT_MATURITY_BLOCKS;
-    const credited = federationReserveLedger.applyPegInCredit(
+    const credited = Federation.applyPegInCredit(
       this._sidechainState.content || {},
       {
         txid: body.txid,
@@ -5284,7 +5492,7 @@ class Hub extends Service {
       }
     );
     if (!credited.ok) return { status: 'error', message: credited.error };
-    const patches = federationReserveLedger.patchesForReserve(credited.reserve);
+    const patches = Federation.patchesForReserve(credited.reserve);
     return {
       status: 'success',
       type: 'CreateFederationPegInCreditResult',
@@ -5337,7 +5545,7 @@ class Hub extends Service {
 
     let request;
     try {
-      request = contractSpend.buildWithdrawalRequest({
+      request = Contract.buildWithdrawalRequest({
         tip: Object.assign({ contractId: body.contractId || tip.stateDigest }, tip),
         contractId: body.contractId || tip.stateDigest,
         destinationAddress: body.destinationAddress || body.toAddress,
@@ -5354,7 +5562,7 @@ class Hub extends Service {
     if (!this._sidechainState) {
       this._sidechainState = sidechainState.loadState(this.fs);
     }
-    const preview = federationReserveLedger.applyPegOutBurn(
+    const preview = Federation.applyPegOutBurn(
       this._sidechainState.content || {},
       {
         requestId: request.requestId,
@@ -5369,7 +5577,7 @@ class Hub extends Service {
       status: 'success',
       type: 'ProposeFederationPegOutResult',
       withdrawalRequest: request,
-      burnPatches: federationReserveLedger.patchesForReserve(preview.reserve),
+      burnPatches: Federation.patchesForReserve(preview.reserve),
       reservePreview: preview.reserve,
       vaultAddress: built.address,
       tip,
@@ -6041,12 +6249,12 @@ class Hub extends Service {
       }
       let built;
       try {
-        built = inventoryHtlc.buildInventoryHtlcP2tr({
-          networkName: netName,
-          sellerPubkeyCompressed: sellerPub,
-          buyerRefundPubkeyCompressed: buyerBuf,
-          paymentHash32: paymentHash,
-          refundLocktimeHeight: refundHeight
+        built = new Htlc({
+          network: netName,
+          claimPubkey: sellerPub,
+          refundPubkey: buyerBuf,
+          paymentHash,
+          refundLocktime: refundHeight
         });
       } catch (err) {
         console.error('[HUB] inventory HTLC build failed:', err);
@@ -6054,8 +6262,7 @@ class Hub extends Service {
       }
 
       const settlementId = crypto.randomBytes(16).toString('hex');
-      const fundingHints = inventoryHtlc.buildHtlcFundingHints({
-        paymentAddress: built.address,
+      const fundingHints = built.fundingHints({
         amountSats: Math.round(amt),
         label: `Fabric doc ${meta.id.slice(0, 12)}…`
       });
@@ -6076,7 +6283,7 @@ class Hub extends Service {
         fundedTxid: null,
         claimScriptHex: built.claimScript.toString('hex'),
         refundScriptHex: built.refundScript.toString('hex'),
-        numsInternalPubkeyHex: inventoryHtlc.TAPROOT_INTERNAL_NUMS.toString('hex'),
+        numsInternalPubkeyHex: TAPROOT_INTERNAL_NUMS.toString('hex'),
         sellerPublicKeyHex: sellerPub.toString('hex')
       });
 
@@ -6273,7 +6480,7 @@ class Hub extends Service {
       const ECPairFactory = typeof ecpairMod === 'function' ? ecpairMod : (ecpairMod.default || ecpairMod.ECPairFactory);
       const ecc = require('@fabric/core/types/ecc');
       const kp = ECPairFactory(ecc).fromPrivateKey(priv);
-      if (kp.publicKey.toString('hex') !== sellerHex.toString('hex')) {
+      if (Buffer.compare(kp.publicKey, sellerHex) !== 0) {
         return deny('Hub key does not match settlement sellerPublicKeyHex; refusing to sign.');
       }
     } catch (e) {
@@ -6292,7 +6499,7 @@ class Hub extends Service {
     const preimage = Buffer.from(s.preimageHex, 'hex');
     let bundle;
     try {
-      bundle = inventoryHtlc.prepareInventoryHtlcSellerClaimPsbt({
+      bundle = Htlc.prepareClaimPsbt({
         networkName: bitcoin.network || 'regtest',
         fundedTxHex: rawHex,
         paymentAddress: s.paymentAddress,
@@ -6307,7 +6514,7 @@ class Hub extends Service {
     }
     let txHex;
     try {
-      ({ txHex } = inventoryHtlc.signAndExtractInventoryHtlcSellerClaim(bundle, priv));
+      ({ txHex } = Htlc.signClaim(bundle, priv));
     } catch (e) {
       return deny(e && e.message ? e.message : 'Failed to sign claim transaction.');
     }
@@ -6434,8 +6641,8 @@ class Hub extends Service {
         const rawHex = await bitcoin._makeRPCRequest('getrawtransaction', [txid, false]);
         const bitcoinjs = require('bitcoinjs-lib');
         const tx = bitcoinjs.Transaction.fromHex(rawHex);
-        const net = inventoryHtlc.networkForFabricName(bitcoin.network || 'mainnet');
-        fundingVout = inventoryHtlc.findP2trVoutForAddress(tx, address, net);
+        const net = networkForFabricName(bitcoin.network || 'mainnet');
+        fundingVout = Htlc.findVout(tx, address, net);
       } catch (_) { /* optional */ }
       return {
         type: 'VerifyDocumentOfferFundingResult',
@@ -6502,7 +6709,7 @@ class Hub extends Service {
       };
     }
     try {
-      const bundle = inventoryHtlc.prepareInventoryHtlcSellerClaimPsbt({
+      const bundle = Htlc.prepareClaimPsbt({
         networkName: bitcoin.network || 'mainnet',
         fundedTxHex: rawHex,
         paymentAddress,
@@ -6583,7 +6790,7 @@ class Hub extends Service {
       };
     }
     try {
-      const bundle = inventoryHtlc.prepareInventoryHtlcBuyerRefundPsbt({
+      const bundle = Htlc.prepareRefundPsbt({
         networkName: bitcoin.network || 'mainnet',
         fundedTxHex: rawHex,
         paymentAddress,
@@ -8003,9 +8210,35 @@ class Hub extends Service {
       const body = req.body || {};
       const value = body.value !== undefined ? body.value : body;
       if (value === undefined || value === null) return res.status(400).json({ error: 'Setting value is required' });
+      const settingName = String(name).trim();
+      if (settingName === hubNetworkJoin.SETTING_ADDNODES || settingName === hubNetworkJoin.SETTING_PEERS) {
+        let list;
+        try {
+          list = hubNetworkJoin.parseHostPortList(value);
+        } catch (err) {
+          return res.status(400).json({ error: 'Invalid value', message: err.message });
+        }
+        const previous = this._networkJoinSettings();
+        await this.setup.setSetting(settingName, list);
+        const applied = await this._applyNetworkJoinLive(settingName === hubNetworkJoin.SETTING_ADDNODES
+          ? { addnodes: list }
+          : { peers: list });
+        if (settingName === hubNetworkJoin.SETTING_ADDNODES) {
+          const bitcoin = this._getBitcoinService();
+          const removed = previous.addnodes.filter((n) => !list.includes(n));
+          if (this.settings.bitcoin && Array.isArray(this.settings.bitcoin.p2pAddNodes)) {
+            this.settings.bitcoin.p2pAddNodes = this.settings.bitcoin.p2pAddNodes.filter((n) => !removed.includes(n));
+          }
+          for (const node of removed) {
+            try {
+              if (bitcoin) await bitcoin._makeRPCRequest('addnode', [node, 'remove']);
+            } catch (_) { /* not in bitcoind's list */ }
+          }
+        }
+        return res.status(200).json({ success: true, setting: name, value: list, applied });
+      }
       await this.setup.setSetting(name, value);
 
-      const settingName = String(name).trim();
       if (settingName === 'HTTP_SHARED_MODE') {
         const envIf = process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE;
         if (envIf && String(envIf).trim()) {
@@ -8616,7 +8849,7 @@ class Hub extends Service {
       for (let i = 0; i < psbt.inputCount; i++) {
         const inp = psbt.data.inputs[i];
         const wu = inp && inp.witnessUtxo;
-        if (!wu || !Buffer.isBuffer(wu.script) || !wu.script.equals(wantOut)) {
+        if (!wu || !(wu.script instanceof Uint8Array) || Buffer.compare(wu.script, wantOut) !== 0) {
           return res.status(400).json({ status: 'error', message: `Input ${i} is not a UTXO for this campaign address.` });
         }
       }
@@ -9533,14 +9766,29 @@ class Hub extends Service {
         return res.status(400).json({ status: 'error', message: 'amountSats must be a positive integer.' });
       }
 
-      const txid = await bitcoin._processSpendMessage({
-        destination: to,
-        amount: amountBTC,
-        comment: memo
-      });
+      // Regtest / signet have no fee estimates: send with an explicit fee_rate there,
+      // and whenever the caller names one.
+      const network = String(bitcoin.network || '').toLowerCase();
+      const hasFeeRate = body.feeRateSatVb != null && String(body.feeRateSatVb).trim() !== '';
+      let feeRateSatVb = null;
+      if (hasFeeRate || network !== 'mainnet') {
+        feeRateSatVb = hasFeeRate ? Number(body.feeRateSatVb) : 2;
+        if (!(feeRateSatVb > 0) || feeRateSatVb > 1000) {
+          return res.status(400).json({ status: 'error', message: 'feeRateSatVb must be above 0 and at most 1000.' });
+        }
+      }
+
+      let txid;
+      try {
+        txid = feeRateSatVb != null
+          ? await this._hubWalletSend({ address: to, amountSats: Math.round(amountSats), feeRateSatVb, label: 'bridge_payment', meta: { memo: memo || undefined } })
+          : await bitcoin._processSpendMessage({ destination: to, amount: amountBTC, comment: memo });
+      } catch (err) {
+        return res.status(400).json({ status: 'error', message: err && err.message ? err.message : String(err) });
+      }
 
       try {
-        if (txid) this._mergePersistedTxLabel(String(txid), 'bridge_payment', { destination: to, memo: memo || undefined });
+        if (txid && feeRateSatVb == null) this._mergePersistedTxLabel(String(txid), 'bridge_payment', { destination: to, memo: memo || undefined });
       } catch (_) {}
 
       const walletId = String((req.params && req.params.walletId) || body.walletId || bitcoin.walletName);
@@ -9551,7 +9799,8 @@ class Hub extends Service {
           txid,
           destination: to,
           amountSats: Math.round(amountSats),
-          amountBTC
+          amountBTC,
+          feeRateSatVb
         }
       });
     });
@@ -9745,6 +9994,260 @@ class Hub extends Service {
     if (!this.market) return null;
     if (this.settings && this.settings.market && this.settings.market.enable === false) return null;
     return this.market;
+  }
+
+  _getCoinjoinService () {
+    if (!this.coinjoin || (this.settings.coinjoin && this.settings.coinjoin.enable === false)) return null;
+    return this.coinjoin;
+  }
+
+  /**
+   * Put a coinjoin `CONTRACT_MESSAGE` on the Fabric mesh. Sealed round
+   * messages go out under a throwaway key so the wire signature does not
+   * name this Hub (the round key inside authenticates them).
+   * @param {Object} body `Coinjoin.toContractMessage` output
+   * @param {Object} [opts] `{ anonymous }`
+   * @returns {Message|null}
+   */
+  _publishCoinjoinMessage (body, opts = {}) {
+    const key = opts.anonymous ? new Key({ private: crypto.randomBytes(32).toString('hex') }) : this._rootKey;
+    return this._publishContractMessage(body, key, 'COINJOIN');
+  }
+
+  /**
+   * Sign a `CONTRACT_MESSAGE` and flood it to every connected Fabric peer.
+   * @param {Object} body JSON body (needs `contract`)
+   * @param {Object} key signing `Key`
+   * @param {string} [tag] log tag
+   * @returns {Message|null} the signed frame, or null when it was not sent
+   * @private
+   */
+  _publishContractMessage (body, key, tag = 'CONTRACT') {
+    if (!this.agent || typeof this.agent.relayFrom !== 'function') return null;
+    if (!key || !key.private) return null;
+    try {
+      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+      msg.signWithKey(key);
+      // Peer#relayFrom writes synchronously and returns nothing.
+      this.agent.relayFrom('_hub', msg);
+      return msg;
+    } catch (err) {
+      console.warn(`[HUB:${tag}] publish failed:`, err && err.message ? err.message : err);
+      return null;
+    }
+  }
+
+  /** @private */
+  async _federationCall (params, fn) {
+    const req = (params && typeof params === 'object') ? params : {};
+    if (!this._verifyOperatorAdminToken(req.adminToken || req.token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    if (!this.federations) return { status: 'error', message: 'Federations are disabled on this Hub node.' };
+    try {
+      return Object.assign({ status: 'success' }, await fn(this.federations, req));
+    } catch (err) {
+      return { status: 'error', message: err && err.message ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Fetch and verify another Hub's root key from its peering attestation.
+   * @param {string} url Hub origin (http/https)
+   * @returns {Promise<{ pubkey: string, url: string, alias: (string|null), fabricPeerId: (string|null) }>}
+   * @private
+   */
+  async _resolveHubIdentity (url) {
+    let origin;
+    try {
+      const u = new URL(String(url || '').trim());
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('protocol');
+      origin = u.origin;
+    } catch (_) {
+      throw new Error('url must be an http(s) Hub origin');
+    }
+    const res = await fetch(`${origin}/services/peering/attestation`, {
+      headers: { Accept: 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!res.ok) throw new Error(`${origin} answered ${res.status}`);
+    const reader = res.body.getReader();
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > 65536) {
+        try { await reader.cancel(); } catch (_) {}
+        throw new Error('attestation is too large');
+      }
+      chunks.push(Buffer.from(value));
+    }
+    let body;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch (_) {
+      throw new Error(`${origin} did not return an attestation (is it a Hub?)`);
+    }
+    const checked = PeeringService.verifyHubAttestation(body);
+    if (!checked.ok) throw new Error(`${origin}: ${checked.error}`);
+    const claim = checked.claim || {};
+    const alias = claim.hub && claim.hub.alias ? String(claim.hub.alias).slice(0, 80) : null;
+    return { pubkey: checked.pubkey, url: origin, alias, fabricPeerId: claim.fabricPeerId || null };
+  }
+
+  /**
+   * Hub wallet balance and a receive address (reused until it receives funds).
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _hubWalletSummary () {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || typeof bitcoin._makeWalletRequest !== 'function') throw new Error('Bitcoin service unavailable');
+    await bitcoin._loadWallet(bitcoin.walletName);
+    const wallet = (method, params = []) => bitcoin._makeWalletRequest(method, params, bitcoin.walletName);
+    const label = 'hub-receive';
+    let address = null;
+    try {
+      const byLabel = await wallet('getaddressesbylabel', [label]);
+      for (const candidate of Object.keys(byLabel || {})) {
+        const received = await wallet('getreceivedbyaddress', [candidate, 0]);
+        if (Number(received) === 0) {
+          address = candidate;
+          break;
+        }
+      }
+    } catch (_) { /* no address under the label yet */ }
+    if (!address) address = await wallet('getnewaddress', [label, 'bech32']);
+    const balances = await wallet('getbalances');
+    const mine = (balances && balances.mine) || {};
+    const toSats = (btc) => Math.round(Number(btc || 0) * 1e8);
+    return {
+      network: bitcoin.network,
+      walletName: bitcoin.walletName,
+      address,
+      trustedSats: toSats(mine.trusted),
+      pendingSats: toSats(mine.untrusted_pending),
+      immatureSats: toSats(mine.immature)
+    };
+  }
+
+  /**
+   * Send from the Hub wallet with an explicit fee rate (regtest and signet have no fee estimates).
+   * @param {Object} opts
+   * @param {string} opts.address
+   * @param {number} opts.amountSats
+   * @param {number} opts.feeRateSatVb
+   * @param {string} [opts.label] Fabric tx label
+   * @returns {Promise<string>} txid
+   * @private
+   */
+  async _hubWalletSend (opts = {}) {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || typeof bitcoin._makeWalletRequest !== 'function') throw new Error('Bitcoin service unavailable');
+    const amountSats = Number(opts.amountSats);
+    if (!Number.isSafeInteger(amountSats) || amountSats <= 0) throw new Error('amountSats must be a positive integer');
+    const feeRate = Number(opts.feeRateSatVb);
+    if (!(feeRate > 0)) throw new Error('feeRateSatVb must be positive');
+    await bitcoin._loadWallet(bitcoin.walletName);
+    // sendtoaddress address amount comment comment_to subtractfee replaceable conf_target estimate_mode avoid_reuse fee_rate
+    const txid = await bitcoin._makeWalletRequest('sendtoaddress', [
+      String(opts.address),
+      Number((amountSats / 100000000).toFixed(8)),
+      opts.label || '',
+      '',
+      false,
+      true,
+      null,
+      'unset',
+      false,
+      feeRate
+    ], bitcoin.walletName);
+    if (txid && typeof txid === 'object' && txid.error) throw new Error(txid.error.message || String(txid.error));
+    try {
+      if (txid && opts.label) this._mergePersistedTxLabel(String(txid), opts.label, { destination: String(opts.address), ...(opts.meta || {}) });
+    } catch (_) {}
+    return txid;
+  }
+
+  /** @private */
+  async _coinjoinCall (params, fn, opts = {}) {
+    const req = (params && typeof params === 'object') ? params : {};
+    if (opts.admin && !this._verifyOperatorAdminToken(req.adminToken || req.token)) {
+      return { status: 'error', message: 'adminToken required' };
+    }
+    const coinjoin = this._getCoinjoinService();
+    if (!coinjoin) return { status: 'error', message: 'Coinjoin service is disabled on this Hub node.' };
+    try {
+      return Object.assign({ status: 'success' }, await fn(coinjoin, req));
+    } catch (err) {
+      return { status: 'error', message: err && err.message ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Coinjoin HTTP handler: admin check (when asked), JSON-or-shell, errors as 4xx.
+   * @private
+   */
+  _coinjoinRoute (fn, opts = {}) {
+    return (req, res) => {
+      const run = async () => {
+        if (opts.admin && !this._verifyOperatorAdminToken(SetupService.extractBearerToken(req))) {
+          return res.status(401).json({ status: 'error', message: 'Admin token required.' });
+        }
+        const coinjoin = this._getCoinjoinService();
+        if (!coinjoin) return res.status(503).json({ available: false, service: 'coinjoin', message: 'Coinjoin service is disabled on this Hub node.' });
+        try {
+          const out = await fn(coinjoin, req);
+          if (out == null) return res.status(404).json({ status: 'error', message: 'Not found.' });
+          return res.json(out);
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          return res.status(/^no fidelity bond/.test(message) ? 404 : 400).json({ status: 'error', message });
+        }
+      };
+      if (String(req.method || 'GET').toUpperCase() === 'GET') return this.http.jsonOrShell(req, res, run);
+      return run();
+    };
+  }
+
+  /**
+   * Public named-federation route, rate limited per client address.
+   * @param {Function} fn `(federations, req) => result`
+   * @param {Object} [opts] `{ limit }` requests per minute per address
+   * @returns {Function}
+   * @private
+   */
+  _federationRoute (fn, opts = {}) {
+    const limit = Number(opts.limit) || 30;
+    const hits = new Map();
+    return (req, res) => {
+      const run = async () => {
+        const federations = this.federations && !(this.settings.namedFederations && this.settings.namedFederations.enable === false)
+          ? this.federations
+          : null;
+        if (!federations) return res.status(503).json({ available: false, service: 'federations', message: 'Federations are disabled on this Hub node.' });
+        const now = Date.now();
+        const who = String(req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
+        const seen = hits.get(who);
+        if (!seen || now - seen.since > 60000) {
+          hits.set(who, { since: now, count: 1 });
+          if (hits.size > 10000) hits.delete(hits.keys().next().value);
+        } else if (++seen.count > limit) {
+          return res.status(429).json({ status: 'error', message: 'Too many requests; try again in a minute.' });
+        }
+        try {
+          return res.json(await fn(federations, req));
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          return res.status(/^unknown federation/.test(message) ? 404 : 400).json({ status: 'error', message });
+        }
+      };
+      if (String(req.method || 'GET').toUpperCase() === 'GET') return this.http.jsonOrShell(req, res, run);
+      return run();
+    };
   }
 
   _handleMarketServiceRequest (req, res) {
@@ -9975,7 +10478,7 @@ class Hub extends Service {
         address,
         receiveTemplate,
         federationXOnlyHex: federationXOnlyHex || undefined,
-        autoAcpBoost: body.autoAcpBoost != null ? !!body.autoAcpBoost : undefined
+        receiverContribution: payjoinContributionFlag(body)
       });
 
       this._state.content.services.payjoin = this._state.content.services.payjoin || {};
@@ -10060,20 +10563,26 @@ class Hub extends Service {
         txhex = String(body.txhex || '').trim();
       }
 
+      let bip78Params;
+      try {
+        bip78Params = payjoinReceiverContribution.parseBip78Params(Object.assign({}, req.query || {}, (!bip78Wire && req.body && req.body.bip78Params) || {}));
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (bip78Wire) return res.status(400).json({ errorCode: 'version-unsupported', message: msg, supported: [1] });
+        return res.status(400).json({ status: 'error', message: msg });
+      }
+
       let result;
       try {
         result = await payjoin.submitProposal(sessionId, {
           psbt,
           txhex,
-          autoAcpBoost: bip78Wire ? undefined : (req.body && req.body.autoAcpBoost)
+          bip78Params,
+          receiverContribution: bip78Wire ? undefined : payjoinContributionFlag(req.body || {})
         });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
-        if (bip78Wire) {
-          res.status(400);
-          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-          return res.send(msg);
-        }
+        if (bip78Wire) return res.status(400).json({ errorCode: 'original-psbt-rejected', message: msg });
         return res.status(400).json({ status: 'error', message: msg });
       }
 
@@ -10089,7 +10598,11 @@ class Hub extends Service {
       } catch (_) {}
 
       if (bip78Wire) {
-        const out = String((result && result.bip78Psbt) || (result && result.proposal && result.proposal.psbt) || '').trim();
+        if (result && result.bip78Error) {
+          // BIP78 error: the sender should broadcast its original transaction.
+          return res.status(400).json(result.bip78Error);
+        }
+        const out = String((result && result.bip78Psbt) || '').trim();
         res.status(200);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.send(out);
@@ -10111,64 +10624,42 @@ class Hub extends Service {
   }
 
   /**
-   * POST /services/payjoin/sessions/:sessionId/acp-hub-boost (mirrors: /payments/payjoin/…, /services/bitcoin/payjoin/…)
-   * Payer PSBT must use SIGHASH_ALL|ANYONECANPAY on their input(s) so Hub can append + sign a wallet UTXO
-   * without changing outputs (extra sats increase miner fee). Admin token required.
+   * POST /services/payjoin/sessions/:sessionId/contribute (legacy alias: …/acp-hub-boost; mirrors: /payments/payjoin/…, /services/bitcoin/payjoin/…)
+   * Admin: run the BIP78 receiver contribution for the session's latest proposal (or `psbt` in the body).
+   * Body may carry BIP78 parameters as `bip78Params` ({ additionalfeeoutputindex, maxadditionalfeecontribution, minfeerate }).
    */
-  _handlePayjoinAcpHubBoostRequest (req, res) {
+  _handlePayjoinContributeRequest (req, res) {
     const token = SetupService.extractBearerToken(req);
     if (!this.setup.verifyAdminToken(token)) {
       return res.status(401).json({
         status: 'error',
-        message: 'Admin token required. The Hub wallet co-signs an additional input (regtest / ops).'
+        message: 'Admin token required. The Hub wallet contributes and signs an input.'
       });
     }
     return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
-      const sessionId = req && req.params ? req.params.sessionId : null;
+      const sessionId = req && req.params ? String(req.params.sessionId || '').trim() : '';
       if (!sessionId) return res.status(400).json({ status: 'error', message: 'sessionId is required.' });
-      const bitcoin = this._getBitcoinService();
-      if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
       const body = (req && req.body && typeof req.body === 'object') ? req.body : {};
-      const psbtOverride = String(body.psbt || body.psbtBase64 || '').trim();
-      const id = String(sessionId).trim();
-      const session = payjoin._payjoinState && payjoin._payjoinState.sessions
-        ? payjoin._payjoinState.sessions[id]
-        : null;
-      if (!session) return res.status(404).json({ status: 'error', message: 'Payjoin session not found.' });
-      const proposals = Object.values(session.proposals || {})
-        .filter((p) => p && p.psbt)
-        .sort((a, b) => new Date(a.created || 0).getTime() - new Date(b.created || 0).getTime());
-      const last = proposals.length ? proposals[proposals.length - 1] : null;
-      const sourcePsbt = psbtOverride || (last && last.psbt) || '';
-      if (!sourcePsbt) {
-        return res.status(400).json({ status: 'error', message: 'No PSBT on session; submit a proposal first or pass psbt in the body.' });
-      }
-      const payjoinAcpBoost = require('../functions/payjoinAcpBoost');
       let out;
       try {
-        out = await payjoinAcpBoost.addHubWalletInputAndSign({
-          psbtBase64: sourcePsbt,
-          bitcoin,
-          networkName: bitcoin.network || 'regtest'
+        out = await payjoin.contributeToProposal(sessionId, {
+          psbt: String(body.psbt || body.psbtBase64 || '').trim() || undefined,
+          bip78Params: body.bip78Params ? payjoinReceiverContribution.parseBip78Params(body.bip78Params) : undefined
         });
       } catch (e) {
-        return res.status(400).json({
-          status: 'error',
-          message: e && e.message ? e.message : String(e)
-        });
+        const message = e && e.message ? e.message : String(e);
+        return res.status(/not found/i.test(message) ? 404 : 400).json({ status: 'error', message });
       }
       return res.json({
         status: 'success',
-        type: 'PayjoinAcpHubBoost',
-        sessionId: id,
-        proposalId: last ? last.id : null,
+        type: 'PayjoinReceiverContribution',
+        sessionId,
+        proposalId: out.proposalId,
         psbtBase64: out.psbtBase64,
-        addedOutpoint: out.addedOutpoint,
-        addedValueSats: out.addedValueSats,
-        walletProcessPsbtComplete: out.complete,
-        note: 'Outputs were not modified; payer ANYONECANPAY signatures remain valid. Finalize + broadcast when all inputs are signed.'
+        contribution: out.receiverContribution,
+        note: 'The sender re-signs its inputs with SIGHASH_ALL, then finalizes and broadcasts.'
       });
     });
   }
@@ -11675,6 +12166,42 @@ class Hub extends Service {
         await this.payjoin.start();
       }
 
+      if (this.coinjoin && !(this.settings.coinjoin && this.settings.coinjoin.enable === false)) {
+        this.coinjoin.attach({
+          fs: this.fs,
+          bitcoin: this._getBitcoinService(),
+          key: this._rootKey,
+          publish: (body, opts) => this._publishCoinjoinMessage(body, opts)
+        });
+        this.coinjoin.on('warning', (msg) => console.warn('[HUB]', msg));
+        await this.coinjoin.start();
+      }
+
+      if (this.federations && !(this.settings.namedFederations && this.settings.namedFederations.enable === false)) {
+        this.federations.attach({
+          fs: this.fs,
+          key: this._rootKey,
+          publish: (body) => this._publishContractMessage(body, this._rootKey, 'FEDERATION'),
+          relay: (message) => this.agent.relayFrom('_hub', message),
+          rpc: (method, params) => {
+            const bitcoin = this._getBitcoinService();
+            if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') throw new Error('Bitcoin is not available');
+            return bitcoin._makeRPCRequest(method, params);
+          },
+          walletSend: (opts) => this._hubWalletSend(opts)
+        });
+        this.federations.on('warning', (msg) => console.warn('[HUB]', msg));
+        this.federations.on('invite', (view) => console.log(`[HUB:FEDERATION] invited to ${view.name} (${view.id.slice(0, 12)}…, ${view.threshold}-of-${view.validators.length})`));
+        this.federations.on('withdrawal', (ev) => console.log(`[HUB:FEDERATION] withdrawal ${ev.requestId.slice(0, 12)}… waits for approval in ${ev.federationId.slice(0, 12)}…`));
+        await this.federations.start();
+        try {
+          const policy = this._getDistributedFederationPolicyForImport();
+          if (policy) await this.federations.importPolicy(policy);
+        } catch (err) {
+          console.warn('[HUB:FEDERATION] policy import skipped:', err && err.message ? err.message : err);
+        }
+      }
+
       if (this.email) {
         await this.email.start();
       }
@@ -11993,7 +12520,8 @@ class Hub extends Service {
         ['POST', '/services/payjoin/sessions', this._handlePayjoinDepositRequest.bind(this)],
         ['GET', '/services/payjoin/sessions/:sessionId', this._handlePayjoinSessionViewRequest.bind(this)],
         ['POST', '/services/payjoin/sessions/:sessionId/proposals', this._handlePayjoinProposalSubmitRequest.bind(this)],
-        ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinAcpHubBoostRequest.bind(this)],
+        ['POST', '/services/payjoin/sessions/:sessionId/contribute', this._handlePayjoinContributeRequest.bind(this)],
+        ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinContributeRequest.bind(this)],
         ['GET', '/services/payjoin/mailboxes', this._handlePayjoinMailboxesListRequest.bind(this)],
         ['POST', '/services/payjoin/mailboxes', this._handlePayjoinMailboxCreateRequest.bind(this)],
         ['GET', '/services/payjoin/mailboxes/:mailboxId', this._handlePayjoinMailboxPollRequest.bind(this)],
@@ -12025,6 +12553,53 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/challenges/commitments', this._handleChallengeCommitRequest.bind(this));
       this.http._addRoute('POST', '/services/challenges/responses', this._handleChallengeRespondRequest.bind(this));
       this.http._addRoute('GET', '/services/challenges/:hash', this._handleChallengeIssuedRequest.bind(this));
+      /* L1:L1 coinjoin market (services/coinjoin.js): offers are public; rounds, maker terms, and bonds are admin */
+      const coinjoinBody = (req) => ((req && req.body && typeof req.body === 'object') ? req.body : {});
+      const coinjoinRoutes = [
+        ['GET', '/services/coinjoin', this._coinjoinRoute((cj) => cj.status())],
+        ['GET', '/services/coinjoin/offers', this._coinjoinRoute((cj, req) => Object.assign({ type: 'CoinjoinOffers' }, cj.listOffers(req.query || {})))],
+        ['POST', '/services/coinjoin/offers', this._coinjoinRoute(async (cj, req) => ({ type: 'CoinjoinMaker', maker: await cj.createOffer(coinjoinBody(req)) }), { admin: true })],
+        ['GET', '/services/coinjoin/rounds', this._coinjoinRoute((cj) => ({ type: 'CoinjoinRounds', rounds: cj.listRounds() }), { admin: true })],
+        ['POST', '/services/coinjoin/rounds', this._coinjoinRoute(async (cj, req) => ({ type: 'CoinjoinRound', round: await cj.startCoinjoin(coinjoinBody(req)) }), { admin: true })],
+        ['GET', '/services/coinjoin/rounds/:roundId', this._coinjoinRoute((cj, req) => {
+          const round = cj.roundView(req.params && req.params.roundId);
+          return round ? { type: 'CoinjoinRound', round } : null;
+        }, { admin: true })],
+        ['GET', '/services/coinjoin/bonds', this._coinjoinRoute(async (cj) => Object.assign({ type: 'FidelityBonds' }, await cj.listFidelityBonds()), { admin: true })],
+        ['POST', '/services/coinjoin/bonds', this._coinjoinRoute(async (cj, req) => ({ type: 'FidelityBond', bond: await cj.createFidelityBond(coinjoinBody(req)) }), { admin: true })],
+        ['POST', '/services/coinjoin/bonds/:bondId/certificate', this._coinjoinRoute(async (cj, req) => ({
+          type: 'FidelityBond',
+          bond: await cj.renewBondCertificate(Object.assign({}, coinjoinBody(req), { id: req.params && req.params.bondId }))
+        }), { admin: true })],
+        ['POST', '/services/coinjoin/bonds/:bondId/redeem', this._coinjoinRoute(async (cj, req) => ({
+          type: 'FidelityBond',
+          bond: await cj.redeemFidelityBond(Object.assign({}, coinjoinBody(req), { id: req.params && req.params.bondId }))
+        }), { admin: true })]
+      ];
+      for (const [method, route, handler] of coinjoinRoutes) {
+        this.http._addRoute(method, route, handler);
+      }
+      /* Named federation mailbox (services/federations.js): members without a Fabric peer read and post signed frames */
+      const federationBody = (req) => ((req && req.body && typeof req.body === 'object') ? req.body : {});
+      this.http._addRoute('GET', '/services/federations', this._federationRoute((f) => ({
+        type: 'FederationsStatus',
+        available: true,
+        network: f.settings.network,
+        pubkey: f.pubkey
+      }), { limit: 120 }));
+      this.http._addRoute('GET', '/services/federations/messages', this._federationRoute((f, req) => {
+        const q = req.query || {};
+        return Object.assign({ type: 'FederationMessages' }, f.framesFor(q.pubkey, { since: q.since, limit: q.limit }));
+      }, { limit: 120 }));
+      this.http._addRoute('POST', '/services/federations/messages', this._federationRoute(async (f, req) => (
+        Object.assign({ type: 'FederationMessageAccepted' }, await f.submitFrame(federationBody(req).fabric))
+      ), { limit: 30 }));
+      this.http._addRoute('GET', '/services/federations/:federationId/vault', this._federationRoute(async (f, req) => (
+        Object.assign({ type: 'FederationVault' }, await f.vault(req.params && req.params.federationId))
+      ), { limit: 30 }));
+      this.http._addRoute('POST', '/services/federations/:federationId/transactions', this._federationRoute(async (f, req) => (
+        Object.assign({ type: 'FederationTransaction' }, await f.broadcastTransaction(req.params && req.params.federationId, federationBody(req).txHex))
+      ), { limit: 10 }));
       /* Document Market: ranked chunk index + local provider telemetry (services/market.js) */
       this.http._addRoute('GET', '/services/market', this._handleMarketServiceRequest.bind(this));
       this.http._addRoute('GET', '/services/market/providers', this._handleMarketProvidersRequest.bind(this));
@@ -12072,6 +12647,7 @@ class Hub extends Service {
       mountFabricDesktopAuthHttp(this);
       mountFabricDeviceLinkHttp(this);
       require('../functions/identityClusterHttp').mountIdentityClusterHttp(this);
+      require('../functions/fabricLocalSignerHub').mountFabricLocalSignerHub(this);
 
       // Configure routes
       this._addAllRoutes();
@@ -12234,7 +12810,7 @@ class Hub extends Service {
           address,
           receiveTemplate,
           federationXOnlyHex: federationXOnlyHex || undefined,
-          autoAcpBoost: body.autoAcpBoost != null ? !!body.autoAcpBoost : undefined
+          receiverContribution: payjoinContributionFlag(body)
         });
       });
 
@@ -14083,6 +14659,49 @@ class Hub extends Service {
         return this._rejectTrackedApplicationContract(req);
       });
 
+      // L1:L1 coinjoin market (services/coinjoin.js). Offers are public; the rest spends or
+      // reveals the Hub wallet and needs { adminToken }.
+      this.http._registerMethod('ListCoinjoinOffers', (...params) => this._coinjoinCall(params[0], (cj, req) => ({
+        type: 'CoinjoinOffers',
+        ...cj.listOffers(req)
+      })));
+      // Params: { adminToken, enable?, poolSizesBtc?, feeSats?, feePpm?, txFeeContributionSats?, offerTtlMs? }
+      this.http._registerMethod('CreateCoinjoinOffer', (...params) => this._coinjoinCall(params[0], async (cj, req) => ({
+        type: 'CoinjoinMaker',
+        maker: await cj.createOffer(req)
+      }), { admin: true }));
+      // Params: { adminToken, amountSats, makers?, feeRateSatVb?, maxFeeSats?, requireBond? }
+      this.http._registerMethod('StartCoinjoin', (...params) => this._coinjoinCall(params[0], async (cj, req) => ({
+        type: 'CoinjoinRound',
+        round: await cj.startCoinjoin(req)
+      }), { admin: true }));
+      // Params: { adminToken, roundId? } — without roundId, every round
+      this.http._registerMethod('GetCoinjoinRound', (...params) => this._coinjoinCall(params[0], (cj, req) => {
+        if (!req.roundId) return { type: 'CoinjoinRounds', rounds: cj.listRounds() };
+        const round = cj.roundView(req.roundId);
+        if (!round) throw new Error(`no coinjoin round ${req.roundId}`);
+        return { type: 'CoinjoinRound', round };
+      }, { admin: true }));
+      // Params: { adminToken, amountSats, locktime, certBlocks? }
+      this.http._registerMethod('CreateFidelityBond', (...params) => this._coinjoinCall(params[0], async (cj, req) => ({
+        type: 'FidelityBond',
+        bond: await cj.createFidelityBond(req)
+      }), { admin: true }));
+      this.http._registerMethod('ListFidelityBonds', (...params) => this._coinjoinCall(params[0], async (cj) => ({
+        type: 'FidelityBonds',
+        ...(await cj.listFidelityBonds())
+      }), { admin: true }));
+      // Params: { adminToken, id, certBlocks? }
+      this.http._registerMethod('RenewBondCertificate', (...params) => this._coinjoinCall(params[0], async (cj, req) => ({
+        type: 'FidelityBond',
+        bond: await cj.renewBondCertificate(req)
+      }), { admin: true }));
+      // Params: { adminToken, id, destinationAddress?, feeSats? }
+      this.http._registerMethod('RedeemFidelityBond', (...params) => this._coinjoinCall(params[0], async (cj, req) => ({
+        type: 'FidelityBond',
+        bond: await cj.redeemFidelityBond(req)
+      }), { admin: true }));
+
       // ADR-001: contract Statechain for an accepted CONTRACT_PUBLISH id.
       this.http._registerMethod('GetContractSidechainState', (...params) => {
         const req = (params[0] && typeof params[0] === 'object') ? params[0] : {};
@@ -14146,6 +14765,101 @@ class Hub extends Service {
           type: 'FederationRegistry',
           path: federationRegistry.REGISTRY_PATH,
           ...reg
+        };
+      });
+
+      // Named federations (services/federations.js). Everything but GetHubIdentity needs the admin token.
+      this.http._registerMethod('GetHubIdentity', async () => ({
+        type: 'HubIdentity',
+        status: 'success',
+        pubkey: this.federations ? this.federations.pubkey : null,
+        network: (this.settings.bitcoin && this.settings.bitcoin.network) || null
+      }));
+      this.http._registerMethod('ResolveHubIdentity', async (...params) => this._federationCall(params[0], async (_f, req) => {
+        return Object.assign({ type: 'HubIdentity' }, await this._resolveHubIdentity(req.url));
+      }));
+      this.http._registerMethod('ListNamedFederations', async (...params) => this._federationCall(params[0], async (f) => ({
+        type: 'NamedFederations',
+        self: f.pubkey,
+        network: f.settings.network,
+        federations: f.list(),
+        pending: f.pending()
+      })));
+      this.http._registerMethod('GetNamedFederation', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'NamedFederation',
+        federation: await f.get(req.federationId)
+      })));
+      this.http._registerMethod('CreateNamedFederation', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'NamedFederation',
+        federation: await f.create({ name: req.name, members: req.members, threshold: req.threshold, csvBlocks: req.csvBlocks })
+      })));
+      this.http._registerMethod('AcceptFederationInvite', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'NamedFederation',
+        federation: await f.respond(req.federationId, true)
+      })));
+      this.http._registerMethod('DeclineFederationInvite', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'NamedFederation',
+        federation: await f.respond(req.federationId, false)
+      })));
+      this.http._registerMethod('ResendFederationInvite', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'FederationResend',
+        sent: f.resend(req.federationId)
+      })));
+      this.http._registerMethod('DepositToFederation', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'FederationDeposit',
+        deposit: await f.deposit(req.federationId, { amountSats: req.amountSats, feeRateSatVb: req.feeRateSatVb })
+      })));
+      this.http._registerMethod('CreateFederationWithdrawal', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'FederationWithdrawal',
+        withdrawal: await f.createWithdrawal(req.federationId, {
+          destinationAddress: req.destinationAddress,
+          amountSats: req.amountSats,
+          feeSats: req.feeSats,
+          feeRateSatVb: req.feeRateSatVb,
+          utxo: req.utxo
+        })
+      })));
+      this.http._registerMethod('ApproveFederationWithdrawal', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'FederationWithdrawal',
+        withdrawal: await f.approveWithdrawal(req.federationId, req.requestId)
+      })));
+      this.http._registerMethod('BroadcastFederationWithdrawal', async (...params) => this._federationCall(params[0], async (f, req) => ({
+        type: 'FederationWithdrawal',
+        withdrawal: await f.broadcastWithdrawal(req.federationId, req.requestId)
+      })));
+      this.http._registerMethod('GetHubWallet', async (...params) => this._federationCall(params[0], async () => ({
+        type: 'HubWallet',
+        wallet: await this._hubWalletSummary()
+      })));
+
+      // Params: { adminToken, profile } — network-profile.json from `npm run deploy`
+      this.http._registerMethod('ImportNetworkProfile', async (...params) => {
+        const body = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        return this._rpcImportNetworkProfile(body);
+      });
+
+      // Params: { adminToken }
+      this.http._registerMethod('GetNetworkJoin', async (...params) => {
+        const body = (params[0] && typeof params[0] === 'object') ? params[0] : {};
+        if (!this._verifyOperatorAdminToken(body.adminToken || body.token)) {
+          return { status: 'error', message: 'adminToken required' };
+        }
+        const join = this._networkJoinSettings();
+        let bitcoinPeers = null;
+        try {
+          const bitcoin = this._getBitcoinService();
+          const info = bitcoin ? await bitcoin._makeRPCRequest('getaddednodeinfo', []) : null;
+          bitcoinPeers = Array.isArray(info)
+            ? info.map((n) => ({ node: n.addednode, connected: !!n.connected }))
+            : null;
+        } catch (_) {}
+        return {
+          type: 'NetworkJoin',
+          status: 'success',
+          network: (this.settings.bitcoin && this.settings.bitcoin.network) || null,
+          addnodes: join.addnodes,
+          peers: join.peers,
+          bitcoinPeers
         };
       });
 
@@ -14349,14 +15063,9 @@ class Hub extends Service {
           termsSummary: termsSummary || undefined,
           groupName: groupName || undefined
         });
-        const actorId = this.agent.identity.id;
         try {
+          // Only the target peer gets the invite (no local chat echo to every browser).
           this._sendVectorToPeer(address, ['P2P_CHAT_MESSAGE', String(content)]);
-          try {
-            this.agent.emit('chat', { text: String(content), type: 'P2P_CHAT_MESSAGE' }, { signer: actorId });
-          } catch (echoErr) {
-            console.warn('[HUB] Failed to locally echo peer chat message:', echoErr);
-          }
           try {
             await this._appendFabricMessage('FederationContractInvite', {
               inviteId,
@@ -14752,6 +15461,13 @@ class Hub extends Service {
 
       // Periodic Fabric peering offer (when below max peers, even if connections don't change)
       this._fabricPeeringOfferIntervalId = setInterval(maybeBroadcastFabricPeeringOffer, FABRIC_PEERING_OFFER_INTERVAL_MS);
+
+      // Keep configured peers (e.g. the playnet seed) connected; `peerRedialMs: 0` turns it off.
+      const peerRedialMs = this.settings.peerRedialMs == null ? 60000 : Number(this.settings.peerRedialMs);
+      if (Number.isFinite(peerRedialMs) && peerRedialMs > 0) {
+        this._configuredPeerRedialTimer = setInterval(() => this._redialConfiguredPeers(), peerRedialMs);
+        if (typeof this._configuredPeerRedialTimer.unref === 'function') this._configuredPeerRedialTimer.unref();
+      }
 
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
       // When the target is this hub's own identity, also broadcast P2P_PEER_ALIAS (UTF-8 nickname).
@@ -15231,6 +15947,18 @@ class Hub extends Service {
           if (typeof t === 'string' && t.startsWith('Channel')) {
             const market = this._getMarketService();
             if (market) market.ingestChannelMessage(body, { sellerId: ev && ev.signer ? String(ev.signer) : undefined });
+          }
+          if (this.coinjoin && this.coinjoin.ownsContractMessage(body)) {
+            this.coinjoin.handleContractMessage(body).catch(() => {});
+          }
+          if (this.federations && this.federations.ownsContractMessage(body) && ev && ev.signer) {
+            const frame = ev.wireMessage || (ev.messageHex ? `fabric:${ev.messageHex}` : null);
+            if (frame) {
+              try {
+                this.federations.recordFrame(frame);
+              } catch (_) { /* not kept: unknown federation or not from a member */ }
+            }
+            this.federations.handleContractMessage(body, String(ev.signer));
           }
         } catch (_) { /* ignore unverified cluster gossip */ }
         if (this.settings && this.settings.debug) {
@@ -15759,6 +16487,10 @@ class Hub extends Service {
           this._fabricPeeringOfferIntervalId = null;
         } catch (e) {}
       }
+      if (this._configuredPeerRedialTimer) {
+        clearInterval(this._configuredPeerRedialTimer);
+        this._configuredPeerRedialTimer = null;
+      }
       if (this._workQueueTimer) {
         try {
           clearInterval(this._workQueueTimer);
@@ -15830,6 +16562,22 @@ class Hub extends Service {
           await this.payjoin.stop();
         } catch (err) {
           console.warn('[HUB] Failed to stop Payjoin service cleanly:', err && err.message ? err.message : err);
+        }
+      }
+
+      if (this.coinjoin && typeof this.coinjoin.stop === 'function') {
+        try {
+          await this.coinjoin.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Coinjoin service cleanly:', err && err.message ? err.message : err);
+        }
+      }
+
+      if (this.federations && typeof this.federations.stop === 'function') {
+        try {
+          await this.federations.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Federations service cleanly:', err && err.message ? err.message : err);
         }
       }
 

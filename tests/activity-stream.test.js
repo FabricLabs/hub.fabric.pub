@@ -38,14 +38,14 @@ describe('ActivityStream', function () {
     assert.ok(html.includes('activity-stream') || html.includes('fabric-activity-stream'));
   });
 
-  it('shows Activity Stream header when includeHeader is true', function () {
+  it('shows Activity stream header when includeHeader is true', function () {
     const html = renderActivityStream({ includeHeader: true });
-    assert.ok(html.includes('Activity Stream'));
+    assert.ok(html.includes('<h3>Activity stream</h3>'));
   });
 
   it('hides header when includeHeader is false', function () {
     const html = renderActivityStream({ includeHeader: false });
-    assert.ok(!html.includes('<h3>Activity Stream</h3>'));
+    assert.ok(!html.includes('<h3>Activity stream</h3>'));
   });
 
   it('renders scroll container with max-height', function () {
@@ -77,7 +77,7 @@ describe('ActivityStream', function () {
       });
     }
     const html = renderActivityStream({ api: { resource: { activities } } });
-    assert.ok(html.includes('Scroll up') || html.includes('older messages'), 'should show load-more hint');
+    assert.ok(html.includes('Scroll up for 5 older messages'), 'should show load-more hint');
   });
 
   it('renders chat messages with actor and content', function () {
@@ -122,5 +122,34 @@ describe('ActivityStream', function () {
     assert.ok(html.includes('only-chat'));
     assert.ok(html.includes('peer-chat') || html.includes('@'));
     assert.ok(!html.includes('hide-me.pdf'));
+  });
+
+  it('gives the chat field a label that matches its accessible name', function () {
+    const html = renderActivityStream();
+    assert.ok(html.includes('<label for="fabric-chat-compose-input"'), 'visually hidden label points at the input');
+    assert.ok(/<input[^>]*id="fabric-chat-compose-input"[^>]*aria-label="Message"/.test(html) ||
+      /<input[^>]*aria-label="Message"[^>]*id="fabric-chat-compose-input"/.test(html), 'input carries a matching aria-label');
+  });
+
+  function lockedBridge () {
+    const ref = createMockBridgeRef();
+    ref.current.hasUnlockedIdentity = () => false;
+    return ref;
+  }
+
+  it('tells a password-locked identity to unlock', function () {
+    const html = renderActivityStream({ bridgeRef: lockedBridge(), identity: { id: 'abc', passwordProtected: true } });
+    assert.ok(html.includes('Your identity is locked. Unlock it with your password to chat.'));
+  });
+
+  it('tells a watch-only identity to import the full key, not to unlock', function () {
+    const html = renderActivityStream({ bridgeRef: lockedBridge(), identity: { xpub: 'xpub-test' } });
+    assert.ok(html.includes('Watch-only identities cannot chat.'));
+    assert.ok(!html.includes('Unlock it with your password'));
+  });
+
+  it('tells a visitor with no identity to log in', function () {
+    const html = renderActivityStream({ bridgeRef: lockedBridge() });
+    assert.ok(html.includes('Log in with a Fabric identity to chat.'));
   });
 });

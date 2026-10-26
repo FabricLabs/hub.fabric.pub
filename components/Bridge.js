@@ -17,6 +17,7 @@ const {
 // Fabric Types
 const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
+const SIGNING_TAGS = require('@fabric/core/functions/signingTags');
 const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, P2P_CHAT_MESSAGE, P2P_PEER_ALIAS, P2P_FILE_SEND, MAGIC_BYTES } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
 const { pushUiNotification } = require('../functions/uiNotifications');
@@ -27,6 +28,9 @@ const {
   isDocumentInventoryResponseType
 } = require('../functions/fabricDocumentOfferEnvelope');
 const { formatSatsDisplay } = require('../functions/formatSats');
+const t = require('../locales/en');
+
+const notices = t.notices;
 const { toast } = require('../functions/toast');
 const { DELEGATION_SIGNATURE_REQUEST, isDelegationSignatureRequestActivity, DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
@@ -65,18 +69,6 @@ const {
   FabricTransportSession
 } = require('../functions/fabricTransportSession');
 const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChatNormalize');
-
-let fabricMessageParent = null;
-try {
-  fabricMessageParent = require('@fabric/http/functions/fabricMessageParent');
-} catch (err) {
-  if (!err || err.code !== 'MODULE_NOT_FOUND') throw err;
-  try {
-    fabricMessageParent = require('@fabric/core/functions/fabricMessageParent');
-  } catch (err2) {
-    if (!err2 || err2.code !== 'MODULE_NOT_FOUND') throw err2;
-  }
-}
 
 /** Ping/pong keep genesis parent on browser-originated durable frames. */
 const BRIDGE_PARENT_CHAIN_SKIP = new Set([
@@ -1147,7 +1139,7 @@ class Bridge extends React.Component {
               documentId: targetId,
               settlementId: reveal.settlementId,
               ok: false,
-              error: 'No pending HTLC ciphertext for this document yet.'
+              error: notices.htlc.noCiphertext
             }
           }));
         }
@@ -1209,18 +1201,18 @@ class Bridge extends React.Component {
       const detail = Object.assign({}, payload, { fromPeerId });
       window.dispatchEvent(new CustomEvent('fabric:collaborationInvitation', { detail }));
       try {
-        toast.info('Collaboration invite received', {
-          header: peerIdentity ? `Invite for ${peerIdentity}` : 'Collaboration'
+        toast.info(notices.collaboration.received, {
+          header: peerIdentity ? notices.collaboration.inviteFor(peerIdentity) : notices.collaboration.header
         });
       } catch (e) { /* ignore */ }
       try {
         pushUiNotification({
           id: `collab-invite-${String(payload.invitationId)}`,
           kind: 'collaboration_invite',
-          title: 'Collaboration invite',
+          title: notices.collaboration.title,
           subtitle: fromPeerId
-            ? `From peer ${fromPeerId}`
-            : (peerIdentity ? `Invite for ${peerIdentity}` : 'Review and respond'),
+            ? notices.collaboration.fromPeer(fromPeerId)
+            : (peerIdentity ? notices.collaboration.inviteFor(peerIdentity) : notices.collaboration.review),
           href: '/settings/collaboration',
           copyText: `${String(payload.acceptUrl)}\n${String(payload.declineUrl)}`
         });
@@ -1589,22 +1581,22 @@ class Bridge extends React.Component {
    */
   async unlockHtlcEncryptedDocument (documentId, preimageHex) {
     if (typeof crypto === 'undefined' || !crypto.subtle) {
-      return { ok: false, error: 'Web Crypto API not available in this context.' };
+      return { ok: false, error: notices.htlc.noWebCrypto };
     }
     const id = documentId;
     const doc = this.globalState.documents && this.globalState.documents[id];
     if (!doc || !doc.htlcPendingDecrypt) {
-      return { ok: false, error: 'Document is not waiting for an HTLC preimage.' };
+      return { ok: false, error: notices.htlc.notPending };
     }
     const preimageU8 = this._hexToUint8(preimageHex);
     if (!preimageU8) {
-      return { ok: false, error: 'Preimage must be 64 hex characters (32 bytes).' };
+      return { ok: false, error: notices.htlc.badPreimage };
     }
     const hashBuf = await crypto.subtle.digest('SHA-256', preimageU8);
     const hashHex = this._bytesToHex(new Uint8Array(hashBuf)).toLowerCase();
     const expected = String(doc.htlcPaymentHashHex || '').toLowerCase();
     if (!expected || hashHex !== expected) {
-      return { ok: false, error: 'Preimage does not match the HTLC payment hash for this transfer.' };
+      return { ok: false, error: notices.htlc.wrongPreimage };
     }
     let iv;
     let ct;
@@ -1612,14 +1604,14 @@ class Bridge extends React.Component {
       iv = this._decodeBase64ToUint8(doc.htlcIvBase64);
       ct = this._decodeBase64ToUint8(doc.htlcCiphertextBase64);
     } catch (e) {
-      return { ok: false, error: 'Stored ciphertext or IV is invalid.' };
+      return { ok: false, error: notices.htlc.badCiphertext };
     }
     const key = await crypto.subtle.importKey('raw', preimageU8, { name: 'AES-GCM' }, false, ['decrypt']);
     let plain;
     try {
       plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, ct);
     } catch (e) {
-      return { ok: false, error: 'Decryption failed (wrong key or corrupted ciphertext).' };
+      return { ok: false, error: notices.htlc.decryptFailed };
     }
     const contentBase64 = this._uint8ToBase64(new Uint8Array(plain));
     const cleaned = { ...doc };
@@ -1778,8 +1770,10 @@ class Bridge extends React.Component {
 
     const id = `client-wallet-${phase}-${Date.now()}-${randomClientSuffix(5)}`;
     const created = new Date().toISOString();
-    const totalLabel = formatSatsDisplay(balanceSats);
-    const confU = `${formatSatsDisplay(confirmedSats)} conf · ${formatSatsDisplay(unconfirmedSats)} unconf`;
+    const sats = (v) => t.common.sats(formatSatsDisplay(v));
+    const amount = sats(d);
+    const totalLabel = sats(balanceSats);
+    const confU = notices.wallet.split(sats(confirmedSats), sats(unconfirmedSats));
     let content;
     let title;
     let subtitle;
@@ -1787,25 +1781,25 @@ class Bridge extends React.Component {
     let toastMsg;
     let kind;
     if (phase === 'mempool') {
-      content = `Unconfirmed +${formatSatsDisplay(d)} sats to your wallet (mempool). ${confU}. Total ~${totalLabel}.`;
-      title = 'Incoming (mempool)';
-      subtitle = `+${formatSatsDisplay(d)} unconfirmed · ${totalLabel} total`;
-      toastHeader = 'Wallet';
-      toastMsg = `+${formatSatsDisplay(d)} unconfirmed (mempool)`;
+      content = notices.wallet.mempoolContent(amount, confU, totalLabel);
+      title = notices.wallet.mempoolTitle;
+      subtitle = notices.wallet.mempoolSubtitle(amount, totalLabel);
+      toastHeader = notices.wallet.header;
+      toastMsg = notices.wallet.mempoolToast(amount);
       kind = 'wallet_receive_mempool';
     } else if (phase === 'confirmed') {
-      content = `Confirmed +${formatSatsDisplay(d)} sats. ${confU}. Total ${totalLabel}.`;
-      title = 'Incoming confirmed';
-      subtitle = `+${formatSatsDisplay(d)} confirmed · ${formatSatsDisplay(confirmedSats)} conf`;
-      toastHeader = 'Wallet';
-      toastMsg = `+${formatSatsDisplay(d)} confirmed on-chain`;
+      content = notices.wallet.confirmedContent(amount, confU, totalLabel);
+      title = notices.wallet.confirmedTitle;
+      subtitle = notices.wallet.confirmedSubtitle(amount, sats(confirmedSats));
+      toastHeader = notices.wallet.header;
+      toastMsg = notices.wallet.confirmedToast(amount);
       kind = 'wallet_receive_confirmed';
     } else {
-      content = `Your wallet balance increased by +${formatSatsDisplay(d)} (${totalLabel} total).`;
-      title = 'Incoming payment';
-      subtitle = `+${formatSatsDisplay(d)} · ${totalLabel} balance`;
-      toastHeader = 'Wallet';
-      toastMsg = `+${formatSatsDisplay(d)} received`;
+      content = notices.wallet.receivedContent(amount, totalLabel);
+      title = notices.wallet.receivedTitle;
+      subtitle = notices.wallet.receivedSubtitle(amount, totalLabel);
+      toastHeader = notices.wallet.header;
+      toastMsg = notices.wallet.receivedToast(amount);
       kind = 'wallet_receive';
     }
 
@@ -1858,11 +1852,11 @@ class Bridge extends React.Component {
     const dedupeKey = `${kind}:${txid}`;
     if (this._l1InvoiceActivityKeys.has(dedupeKey)) return;
     this._l1InvoiceActivityKeys.add(dedupeKey);
-    const label = detail.label ? String(detail.label) : 'Invoice';
+    const label = detail.label ? String(detail.label) : notices.invoice.fallbackLabel;
     const created = new Date().toISOString();
     const content = kind === 'confirmed'
-      ? `L1 invoice payment confirmed${detail.confirmations ? ` (${detail.confirmations} confirmations)` : ''}: ${label}`
-      : `L1 invoice payment seen (mempool): ${label}`;
+      ? notices.invoice.confirmedContent(label, detail.confirmations)
+      : notices.invoice.mempoolContent(label);
     const id = `client-l1-inv-${kind}-${txid.slice(0, 18)}`;
     this.globalState.messages = this.globalState.messages || {};
     this.globalState.messages[id] = {
@@ -1883,7 +1877,7 @@ class Bridge extends React.Component {
       }
     }));
     try {
-      toast.success(kind === 'confirmed' ? 'Invoice paid on-chain' : 'Invoice payment detected', {
+      toast.success(kind === 'confirmed' ? notices.invoice.paidToast : notices.invoice.detectedToast, {
         duration: 5000,
         header: label.length > 36 ? `${label.slice(0, 36)}…` : label
       });
@@ -1893,7 +1887,7 @@ class Bridge extends React.Component {
       pushUiNotification({
         id: `l1-inv-${dedupeKey}`,
         kind: 'l1_invoice',
-        title: kind === 'confirmed' ? 'Invoice confirmed' : 'Invoice in mempool',
+        title: kind === 'confirmed' ? notices.invoice.confirmedTitle : notices.invoice.mempoolTitle,
         subtitle: `${label} · ${txid.slice(0, 14)}…`,
         href: uf.bitcoinExplorer ? `/services/bitcoin/transactions/${encodeURIComponent(txid)}` : undefined,
         copyText: txid
@@ -1934,8 +1928,8 @@ class Bridge extends React.Component {
       pushUiNotification({
         id: `delegation-req-${messageId}`,
         kind: 'delegation',
-        title: 'Signature request',
-        subtitle: (pv && pv.slice(0, 120)) || 'Open Security & delegation to respond.',
+        title: notices.delegation.requestTitle,
+        subtitle: (pv && pv.slice(0, 120)) || notices.delegation.requestSubtitle,
         href: '/settings/security',
         copyText: String(messageId)
       });
@@ -1967,10 +1961,10 @@ class Bridge extends React.Component {
     }));
     try {
       const label = status === 'approved'
-        ? 'Signature approved'
+        ? notices.delegation.approved
         : status === 'timeout'
-          ? 'Signature request timed out'
-          : 'Signature request rejected';
+          ? notices.delegation.timedOut
+          : notices.delegation.rejected;
       pushUiNotification({
         id: `delegation-done-${messageId}`,
         kind: 'delegation_resolved',
@@ -2743,16 +2737,16 @@ class Bridge extends React.Component {
       if (kind === SESSION_KIND_HUB && sessionId === HUB_FABRIC_SESSION_ID) {
         try {
           toast.warning(
-            `Disconnected from hub${reason ? ` (${reason})` : ''}. Fabric transport reputation exhausted (score ${s.score}).`,
-            { header: 'Hub' }
+            notices.transport.hubDisconnected(reason, s.score),
+            { header: notices.transport.hubHeader }
           );
         } catch (_) { /* ignore */ }
         this._fabricDisconnectHubTransport(reason || 'transport-reputation');
       } else {
         try {
           toast.warning(
-            `Disconnected browser mesh peer${reason ? ` (${reason})` : ''}. Reputation exhausted (score ${s.score}, misbehavior ${s.misbehavior}).`,
-            { header: 'Mesh peer' }
+            notices.transport.meshDisconnected(reason, s.score, s.misbehavior),
+            { header: notices.transport.meshHeader }
           );
         } catch (_) { /* ignore */ }
         this.disconnectWebRTCPeer(sessionId);
@@ -3459,7 +3453,7 @@ class Bridge extends React.Component {
     }
     if (body && body.error) {
       const msg = body.error.message || body.error.data || JSON.stringify(body.error);
-      return { error: String(msg || 'RPC error') };
+      return { error: String(msg || notices.rpc.error) };
     }
     return { result: body && Object.prototype.hasOwnProperty.call(body, 'result') ? body.result : null };
   }
@@ -3700,7 +3694,7 @@ class Bridge extends React.Component {
         cache: 'no-store'
       });
       const body = await res.json().catch(() => ({}));
-      if (body && body.error) return { rpcError: body.error.message || 'RPC error' };
+      if (body && body.error) return { rpcError: body.error.message || notices.rpc.error };
       return body && body.result != null ? body.result : null;
     };
     const postResult = await rpc('PostDelegationSignatureMessage', {
@@ -3731,7 +3725,7 @@ class Bridge extends React.Component {
       }
       if (pj.status === 'approved' && pj.signature) {
         this._resolveDelegationSignRequestActivity(messageId, 'approved');
-        return { signature: pj.signature, publicKey: pj.pubkeyHex };
+        return { signature: pj.signature, publicKey: pj.pubkeyHex, tag: SIGNING_TAGS.DELEGATION };
       }
     }
     this._resolveDelegationSignRequestActivity(messageId, 'timeout');
@@ -3759,13 +3753,14 @@ class Bridge extends React.Component {
     }
   }
 
-  verifyArbitraryText (text, signatureHex, publicKeyHex) {
+  verifyArbitraryText (text, signatureHex, publicKeyHex, tag) {
     if (!text || !signatureHex || !publicKeyHex) return null;
     try {
       const key = new Key({ public: publicKeyHex.trim() });
       const sig = Buffer.from(signatureHex.trim(), 'hex');
       if (sig.length !== 64) return false;
-      return key.verifySchnorr(text, sig);
+      const tags = tag ? [tag] : [SIGNING_TAGS.SIGN, SIGNING_TAGS.DELEGATION];
+      return tags.some((t) => key.verifySchnorr(text, sig, t));
     } catch (error) {
       console.error('[BRIDGE]', 'Error verifying text:', safeIdentityErr(error));
       return null;
@@ -3813,15 +3808,12 @@ class Bridge extends React.Component {
     }
 
     const wireType = fabricMessage.type != null ? String(fabricMessage.type) : '';
-    const chainParent = fabricMessageParent &&
-      typeof fabricMessageParent.setMessageParent === 'function' &&
-      wireType &&
-      !BRIDGE_PARENT_CHAIN_SKIP.has(wireType);
+    const chainParent = wireType && !BRIDGE_PARENT_CHAIN_SKIP.has(wireType);
 
     try {
       if (chainParent) {
-        const parent = this._outboundMessageTip || fabricMessageParent.ZERO_PARENT;
-        fabricMessageParent.setMessageParent(fabricMessage, parent);
+        const parent = this._outboundMessageTip || Message.ZERO_PARENT;
+        Message.setMessageParent(fabricMessage, parent);
       }
       const signed = fabricMessage.signWithKey(signingKey);
       if (chainParent && signed && signed.id) {
@@ -4181,7 +4173,7 @@ class Bridge extends React.Component {
                 : (jsonCall.result || null);
 
               if (shouldToastHubJsonCallError(result)) {
-                toast.error(String(result.message), { header: 'Hub', duration: 6000 });
+                toast.error(String(result.message), { header: notices.transport.hubHeader, duration: 6000 });
               } else if (result && result.status === 'error' && this.settings && this.settings.debug) {
                 console.debug('[BRIDGE]', 'Hub RPC error (quiet):', result.message);
               }
@@ -4254,7 +4246,7 @@ class Bridge extends React.Component {
                   window.dispatchEvent(new CustomEvent('documentLoadFailed', {
                     detail: {
                       documentId: String(result.documentId),
-                      message: (result.message && String(result.message)) || 'Document not found.'
+                      message: (result.message && String(result.message)) || notices.documents.notFound
                     }
                   }));
                 }
@@ -4271,7 +4263,7 @@ class Bridge extends React.Component {
                   if (result.document) {
                     pending.resolve({ document: result.document });
                   } else {
-                    pending.resolve({ error: (result && result.message) || 'Claim failed' });
+                    pending.resolve({ error: (result && result.message) || notices.documents.claimFailed });
                   }
                 }
               }
@@ -4522,8 +4514,8 @@ class Bridge extends React.Component {
                   pushUiNotification({
                     id: `collab-invite-${String(payload.invitationId || Date.now())}`,
                     kind: 'collaboration_invite',
-                    title: 'Collaboration invite',
-                    subtitle: pid ? `Invite for ${pid}` : 'Review and respond',
+                    title: notices.collaboration.title,
+                    subtitle: pid ? notices.collaboration.inviteFor(pid) : notices.collaboration.review,
                     href: '/settings/collaboration',
                     copyText: `${String(payload.acceptUrl || '')}\n${String(payload.declineUrl || '')}`.trim()
                   });
@@ -5354,16 +5346,16 @@ class Bridge extends React.Component {
         return { ok: false, message: msg };
       }
       if (body && body.error) {
-        return { ok: false, message: body.error.message || 'RPC error' };
+        return { ok: false, message: body.error.message || notices.rpc.error };
       }
       const result = body && body.result != null ? body.result : null;
       if (result && result.status === 'error') {
-        return { ok: false, message: result.message || 'Operation failed' };
+        return { ok: false, message: result.message || notices.rpc.failed };
       }
       if (result && result.status === 'success') {
         return { ok: true, result };
       }
-      return { ok: false, message: (result && result.message) || 'Unexpected response from hub' };
+      return { ok: false, message: (result && result.message) || notices.rpc.unexpected };
     } catch (error) {
       console.error('[BRIDGE]', 'emitTombstone error:', safeIdentityErr(error));
       return { ok: false, message: error && error.message ? error.message : String(error) };
@@ -5713,7 +5705,7 @@ class Bridge extends React.Component {
         pushUiNotification({
           id: `list-documents-${Date.now()}`,
           kind: 'error',
-          title: 'Could not refresh document list',
+          title: notices.documents.refreshFailed,
           subtitle: error && error.message ? error.message : String(error),
           href: '/documents'
         });
@@ -5782,7 +5774,7 @@ class Bridge extends React.Component {
           window.dispatchEvent(new CustomEvent('documentLoadFailed', {
             detail: {
               documentId: String(result.documentId),
-              message: (result.message && String(result.message)) || 'Document not found.'
+              message: (result.message && String(result.message)) || notices.documents.notFound
             }
           }));
         }
@@ -5981,7 +5973,7 @@ class Bridge extends React.Component {
             window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
               detail: {
                 documentId: String(actorId || sha),
-                message: 'Unlock your Fabric identity — CreateDocument must be Schnorr-signed on the wire.'
+                message: notices.documents.unlockToUpload
               }
             }));
           }
@@ -5991,8 +5983,8 @@ class Bridge extends React.Component {
         pushUiNotification({
           id: `create-document-${Date.now()}`,
           kind: 'error',
-          title: 'Create document blocked',
-          subtitle: 'Unlock your Fabric identity to upload or publish.',
+          title: notices.documents.createBlocked,
+          subtitle: notices.documents.createBlockedSubtitle,
           href: '/documents'
         });
       } catch (_) {}
@@ -6052,7 +6044,7 @@ class Bridge extends React.Component {
         pushUiNotification({
           id: `create-document-${Date.now()}`,
           kind: 'error',
-          title: 'Create document failed',
+          title: notices.documents.createFailed,
           subtitle: error && error.message ? error.message : String(error),
           href: '/documents'
         });
@@ -6075,7 +6067,7 @@ class Bridge extends React.Component {
           window.dispatchEvent(new CustomEvent('publishDocumentFailed', {
             detail: {
               documentId: String(logical),
-              message: 'Unlock your Fabric identity — PublishDocument must be Schnorr-signed on the wire.'
+              message: notices.documents.unlockToPublish
             }
           }));
         }
@@ -6189,7 +6181,7 @@ class Bridge extends React.Component {
           window.dispatchEvent(new CustomEvent('purchaseInvoiceFailed', {
             detail: {
               documentId: backendKey,
-              message: 'Unlock your Fabric identity — CreatePurchaseInvoice must be Schnorr-signed on the wire.'
+              message: notices.documents.unlockToBuy
             }
           }));
         }
@@ -6226,9 +6218,9 @@ class Bridge extends React.Component {
    */
   async sendClaimPurchaseRequest (id, txid) {
     const logical = typeof id === 'object' && id && id.id ? id.id : id;
-    if (!logical || !txid) return { error: 'documentId and txid required' };
+    if (!logical || !txid) return { error: notices.documents.claimNeedsTx };
     if (!this._canSignOutgoing()) {
-      return { error: 'Unlock your Fabric identity — ClaimPurchase must be Schnorr-signed on the wire.' };
+      return { error: notices.documents.unlockToClaim };
     }
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
@@ -6264,7 +6256,7 @@ class Bridge extends React.Component {
           window.dispatchEvent(new CustomEvent('distributeInvoiceFailed', {
             detail: {
               documentId: backendKey,
-              message: 'Unlock your Fabric identity — CreateDistributeInvoice must be Schnorr-signed on the wire.'
+              message: notices.documents.unlockToHost
             }
           }));
         }
@@ -6309,7 +6301,7 @@ class Bridge extends React.Component {
           window.dispatchEvent(new CustomEvent('distributeProposalFailed', {
             detail: {
               documentId: String(documentId),
-              message: 'Unlock your Fabric identity — hosting offers must be Schnorr-signed on the wire.'
+              message: notices.documents.unlockToOffer
             }
           }));
         }
@@ -6346,7 +6338,7 @@ class Bridge extends React.Component {
         pushUiNotification({
           id: `distribute-proposal-${Date.now()}`,
           kind: 'error',
-          title: 'Hosting offer not sent',
+          title: notices.documents.hostingOfferNotSent,
           subtitle: error && error.message ? error.message : String(error),
           href: '/documents'
         });
@@ -6459,7 +6451,7 @@ class Bridge extends React.Component {
           window.dispatchEvent(new CustomEvent('storageContractBondFailed', {
             detail: {
               documentId: bid,
-              message: 'Unlock your Fabric identity — CreateStorageContract must be Schnorr-signed on the wire.'
+              message: notices.documents.unlockToContract
             }
           }));
         }
@@ -6541,7 +6533,7 @@ class Bridge extends React.Component {
     }
     if (body && body.error) {
       const msg = body.error.message || body.error.data || JSON.stringify(body.error);
-      return { ok: false, error: String(msg || 'RPC error') };
+      return { ok: false, error: String(msg || notices.rpc.error) };
     }
     const result = Object.prototype.hasOwnProperty.call(body, 'result') ? body.result : null;
     return { ok: true, result };

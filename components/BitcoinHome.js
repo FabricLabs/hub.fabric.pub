@@ -51,13 +51,28 @@ const {
   generateBlock,
   requestFaucet
 } = require('../functions/bitcoinClient');
-const { formatSatsDisplay, formatBtcFromSats } = require('../functions/formatSats');
+const { formatBtcFromSats } = require('../functions/formatSats');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { copyToClipboard, pushUiNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags, subscribeHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const { SATS_PER_BTC, UI_NUMBER_LOG_EXP_THRESHOLD } = require('../constants');
 const HubRegtestAdminTokenPanel = require('./HubRegtestAdminTokenPanel');
 const BitcoinWalletBranchBar = require('./BitcoinWalletBranchBar');
+const t = require('../locales/en');
+
+const c = t.bitcoin.home;
+const shared = t.bitcoin.shared;
+const health = t.bitcoin.health;
+
+function bitcoinHealthState (status) {
+  if (!status || typeof status !== 'object') return 'unknown';
+  if (status.available === true) return 'ok';
+  const code = String(status.status || '').toUpperCase();
+  if (code === 'STARTING') return 'starting';
+  if (code === 'UNAVAILABLE') return 'off';
+  if (code) return 'unreachable';
+  return 'unknown';
+}
 
 class BitcoinHome extends React.Component {
   constructor (props) {
@@ -239,14 +254,20 @@ class BitcoinHome extends React.Component {
 
   formatDifficulty (value) {
     const n = Number(value);
-    if (!Number.isFinite(n)) return '—';
+    if (!Number.isFinite(n)) return t.common.none;
     if (n >= UI_NUMBER_LOG_EXP_THRESHOLD) return n.toExponential(4);
     return n.toLocaleString();
   }
 
+  formatFeeRate (btcPerKvB) {
+    const n = Number(btcPerKvB);
+    if (!Number.isFinite(n)) return t.common.none;
+    return c.console.feeRate((n * 100000).toLocaleString(undefined, { maximumFractionDigits: 3 }));
+  }
+
   formatBytes (n) {
     const v = Number(n);
-    if (!Number.isFinite(v) || v < 0) return '—';
+    if (!Number.isFinite(v) || v < 0) return t.common.none;
     if (v < 1024) return `${Math.round(v)} B`;
     if (v < 1048576) return `${(v / 1024).toFixed(1)} KiB`;
     return `${(v / 1048576).toFixed(2)} MiB`;
@@ -305,7 +326,7 @@ class BitcoinHome extends React.Component {
   async handleBroadcastRawTx () {
     const token = this.props.adminToken;
     if (!token) {
-      this.setState({ rawTxResult: { error: 'Admin token required. Complete node setup or refresh your session.' } });
+      this.setState({ rawTxResult: { error: t.common.errors.adminTokenRequired } });
       return;
     }
     const settings = { ...this.state.upstream, apiToken: token };
@@ -326,13 +347,13 @@ class BitcoinHome extends React.Component {
   handleTxLookup () {
     const id = String(this.state.txLookupId || '').trim();
     if (!/^[0-9a-fA-F]{64}$/.test(id)) {
-      this.setState({ txLookupError: 'Enter a 64-character transaction id (hex).' });
+      this.setState({ txLookupError: c.tools.txidInvalid });
       return;
     }
     const f = loadHubUiFeatureFlags();
     if (!f.bitcoinExplorer) {
       this.setState({
-        txLookupError: 'Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility to open the transaction view.'
+        txLookupError: shared.explorerRoutesOff
       });
       return;
     }
@@ -489,7 +510,7 @@ class BitcoinHome extends React.Component {
     const receiveWallet = getNextReceiveWalletContext(this.getIdentity());
     const next = reserveNextReceiveAddress(receiveWallet, { network, identity: this.getIdentity() });
     if (!next || !next.currentAddress) {
-      this.setState({ paymentResult: { error: 'Unable to derive next receive address from xpub.' } });
+      this.setState({ paymentResult: { error: c.wallet.nextAddressFailed } });
       return;
     }
     this.setState((prev) => ({
@@ -509,11 +530,11 @@ class BitcoinHome extends React.Component {
     const paymentTo = String(this.state.paymentTo || '').trim();
     const paymentAmountSats = Number(this.state.paymentAmountSats || 0);
     if (!paymentTo) {
-      this.setState({ paymentResult: { error: 'Recipient is required.' } });
+      this.setState({ paymentResult: { error: c.errors.recipientRequired } });
       return;
     }
     if (!Number.isFinite(paymentAmountSats) || paymentAmountSats <= 0) {
-      this.setState({ paymentResult: { error: 'Amount (sats) must be greater than zero.' } });
+      this.setState({ paymentResult: { error: c.errors.amountPositive } });
       return;
     }
 
@@ -521,7 +542,7 @@ class BitcoinHome extends React.Component {
     if (!adminToken) {
       this.setState({
         paymentResult: {
-          error: 'Admin token required. Hub wallet spends use the setup token (same as Generate Block / broadcast).'
+          error: c.errors.adminSpend
         }
       });
       return;
@@ -554,13 +575,13 @@ class BitcoinHome extends React.Component {
   async handleLookupAddress () {
     const address = String(this.state.lookupAddress || '').trim();
     if (!address) {
-      this.setState({ lookupResult: { error: 'Address is required.' } });
+      this.setState({ lookupResult: { error: c.faucet.addressRequired } });
       return;
     }
     this.setState({ lookupLoading: true, lookupResult: null });
     try {
       const result = await fetchAddressBalance(this.state.upstream, address);
-      this.setState({ lookupResult: result || { error: 'No balance data returned.' }, lookupLoading: false });
+      this.setState({ lookupResult: result || { error: c.lookup.noData }, lookupLoading: false });
     } catch (error) {
       this.setState({
         lookupResult: { error: error && error.message ? error.message : String(error) },
@@ -572,7 +593,7 @@ class BitcoinHome extends React.Component {
   async handleRequestFaucet () {
     const address = String(this.state.faucetAddress || '').trim();
     if (!address) {
-      this.setState({ faucetResult: { error: 'Address is required.' } });
+      this.setState({ faucetResult: { error: c.faucet.addressRequired } });
       return;
     }
     const amountSats = Math.max(1, Math.min(1000000, Number(this.state.faucetAmountSats || 10000) || 10000));
@@ -595,7 +616,7 @@ class BitcoinHome extends React.Component {
   async handleCreateLightningInvoice () {
     const amountSats = Number(this.state.invoiceAmountSats || 0);
     if (!Number.isFinite(amountSats) || amountSats <= 0) {
-      this.setState({ lightningResult: { error: 'Invoice amount (sats) must be greater than zero.' } });
+      this.setState({ lightningResult: { error: c.lightning.invoiceAmountPositive } });
       return;
     }
     try {
@@ -616,7 +637,7 @@ class BitcoinHome extends React.Component {
   async handleDecodeLightningInvoice () {
     const invoice = String(this.state.invoiceInput || '').trim();
     if (!invoice) {
-      this.setState({ lightningResult: { error: 'Paste a Lightning invoice to decode.' } });
+      this.setState({ lightningResult: { error: c.lightning.pasteToDecode } });
       return;
     }
     try {
@@ -630,7 +651,7 @@ class BitcoinHome extends React.Component {
   async handlePayLightningInvoice () {
     const invoice = String(this.state.invoiceInput || '').trim();
     if (!invoice) {
-      this.setState({ lightningResult: { error: 'Paste a Lightning invoice to pay.' } });
+      this.setState({ lightningResult: { error: c.lightning.pasteToPay } });
       return;
     }
     try {
@@ -646,15 +667,15 @@ class BitcoinHome extends React.Component {
     const remote = String(this.state.channelCreateRemote || '').trim();
     const amountSats = Number(this.state.channelCreateAmountSats || 0);
     if (!remote) {
-      this.setState({ channelCreateResult: { error: 'Remote (id@ip:port) is required.' } });
+      this.setState({ channelCreateResult: { error: c.lightning.remoteRequired } });
       return;
     }
     if (!remote.includes('@')) {
-      this.setState({ channelCreateResult: { error: 'Remote must be id@ip:port (e.g. 03abc...@192.168.50.5:9735).' } });
+      this.setState({ channelCreateResult: { error: c.lightning.remoteFormat } });
       return;
     }
     if (!Number.isFinite(amountSats) || amountSats < 10000) {
-      this.setState({ channelCreateResult: { error: 'Amount must be at least 10000 sats.' } });
+      this.setState({ channelCreateResult: { error: c.lightning.amountMin(10000) } });
       return;
     }
     this.setState({ channelCreateLoading: true, channelCreateResult: null });
@@ -697,12 +718,12 @@ class BitcoinHome extends React.Component {
         const tip = hashes.length ? String(hashes[hashes.length - 1]) : '';
         const n = result && result.count != null ? Number(result.count) : hashes.length;
         const sub = tip
-          ? `${Number.isFinite(n) && n > 1 ? `${n} blocks · ` : ''}Tip ${tip.slice(0, 14)}…`
-          : 'Chain tip updated — check Bitcoin dashboard';
+          ? c.notify.blockSubtitle(Number.isFinite(n) ? n : 1, tip.slice(0, 14))
+          : c.notify.blockFallback;
         pushUiNotification({
           id: `regtest-block-${Date.now()}`,
           kind: 'bitcoin_block',
-          title: 'New block (regtest)',
+          title: c.notify.blockTitle,
           subtitle: sub,
           href: tip ? `/services/bitcoin/blocks/${encodeURIComponent(tip)}` : '/services/bitcoin',
           copyText: tip || undefined
@@ -716,7 +737,7 @@ class BitcoinHome extends React.Component {
 
   async handleCreatePayjoinDeposit () {
     if (!this.state.payjoinEnabled) {
-      this.setState({ payjoinResult: { error: 'Enable Payjoin first to create an optional payjoin deposit request.' } });
+      this.setState({ payjoinResult: { error: c.payjoin.turnOnFirst } });
       return;
     }
 
@@ -726,7 +747,7 @@ class BitcoinHome extends React.Component {
       const useJm = pjPref.receiveTaprootJoinmarket !== false;
       const session = await createPayjoinDeposit(this.state.upstream, receiveWallet, {
         ...(useJm
-          ? { receiveTemplate: 'joinmarket_taproot_v1' }
+          ? { receiveTemplate: 'hub_taproot_v2' }
           : { address: this.state.wallet.address }),
         amountSats: Number(this.state.payjoinAmountSats || 0),
         label: this.state.payjoinLabel,
@@ -742,13 +763,13 @@ class BitcoinHome extends React.Component {
       try {
         const sid = String(session.id || '').trim();
         const amt = session.amountSats != null && Number(session.amountSats) > 0
-          ? `${session.amountSats} sats`
-          : 'amount optional';
+          ? t.common.sats(session.amountSats)
+          : c.payjoin.notifyAnyAmount;
         if (sid) {
           pushUiNotification({
             id: `payjoin-session-${sid}`,
             kind: 'payjoin',
-            title: 'Payjoin deposit session ready',
+            title: c.payjoin.notifyTitle,
             subtitle: amt,
             href: `/payments?payjoinSession=${encodeURIComponent(sid)}`,
             copyText: session.bip21Uri || session.proposalURL || sid
@@ -775,10 +796,10 @@ class BitcoinHome extends React.Component {
   /** Placeholder and hint for address inputs based on Hub Bitcoin network. */
   getAddressPlaceholder (network) {
     const n = String(network || '').toLowerCase();
-    if (n === 'regtest') return 'bcrt1... or m/44\'/0\'/0\'/0/0';
-    if (n === 'testnet' || n === 'signet') return 'tb1... or 2N...';
-    if (n === 'mainnet' || n === 'main') return 'bc1... or 3...';
-    return 'address for current network';
+    if (n === 'regtest') return c.addressPlaceholder.regtest;
+    if (n === 'testnet' || n === 'signet') return c.addressPlaceholder.test;
+    if (n === 'mainnet' || n === 'main') return c.addressPlaceholder.main;
+    return c.addressPlaceholder.other;
   }
 
   render () {
@@ -827,6 +848,22 @@ class BitcoinHome extends React.Component {
     const explorerDataPending =
       this.state.refreshing ||
       (this.state.loading && this.state.blocks.length === 0 && this.state.transactions.length === 0);
+    const bitcoinHealth = bitcoinHealthState(this.state.bitcoinStatus);
+    const bitcoinHealthLabel = bitcoinHealth === 'ok'
+      ? health.running(bitcoinNetwork)
+      : bitcoinHealth === 'starting'
+        ? health.starting
+        : bitcoinHealth === 'off'
+          ? health.off
+          : health.unreachable;
+    const bitcoinHealthHint = bitcoinHealth === 'starting'
+      ? health.startingHint
+      : bitcoinHealth === 'off'
+        ? health.offHint
+        : health.unreachableHint;
+    const bitcoinStatusCode = this.state.bitcoinStatus && this.state.bitcoinStatus.status
+      ? String(this.state.bitcoinStatus.status)
+      : '';
 
     return (
       <div className='fade-in'>
@@ -846,24 +883,24 @@ class BitcoinHome extends React.Component {
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.5em' }}>
               <Header as="h2" id="bitcoin-home-heading" style={{ margin: 0 }}>
                 <Icon name="bitcoin" color="orange" aria-hidden="true" />
-                <Header.Content>Bitcoin</Header.Content>
+                <Header.Content>{c.title}</Header.Content>
               </Header>
-              <div id="fabric-bitcoin-regtest-toolbar" aria-label="Regtest: refresh, generate block, shortcuts" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
-                <Button basic icon onClick={() => this.setState({ settingsOpen: true, upstreamDraft: { ...this.state.upstream } })} title="Configure upstream APIs" aria-label="Configure upstream APIs">
+              <div id="fabric-bitcoin-regtest-toolbar" role="toolbar" aria-label={c.toolbarLabel} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', alignItems: 'center' }}>
+                <Button basic icon onClick={() => this.setState({ settingsOpen: true, upstreamDraft: { ...this.state.upstream } })} title={c.upstreamSettings} aria-label={c.upstreamSettings}>
                   <Icon name="cog" aria-hidden="true" />
                 </Button>
                 <Button primary loading={this.state.refreshing} onClick={() => this.refresh()}>
                   <Icon name="refresh" aria-hidden="true" />
-                  Refresh
+                  {t.common.actions.refresh}
                 </Button>
                 {canShowGenerateBlock && (
                   <Button
                     basic
                     onClick={() => this.handleGenerateBlock()}
-                    title="Mine one block: coinbase pays this node’s Hub bitcoind wallet only — not your browser wallet chip. Use Faucet to send from the Hub to your receive address, then mine again to confirm."
+                    title={c.generateBlockTitle}
                   >
                     <Icon name="cube" aria-hidden="true" />
-                    Generate Block
+                    {c.generateBlock}
                   </Button>
                 )}
                 {canGenerateBlocks ? (
@@ -871,46 +908,46 @@ class BitcoinHome extends React.Component {
                     as={Link}
                     to="/services/bitcoin/faucet"
                     basic
-                    title="Request regtest coins from the Hub wallet to your Fabric receive address (updates the top-bar balance after a confirm block)"
+                    title={c.faucetTitle}
                   >
                     <Icon name="tint" aria-hidden="true" />
-                    Faucet
+                    {c.faucetButton}
                   </Button>
                 ) : null}
                 {hubUi.bitcoinPayments ? (
-                  <Button as={Link} to="/payments" basic title="Open wallet payments manager">
+                  <Button as={Link} to="/payments" basic title={c.paymentsTitle}>
                     <Icon name="credit card outline" aria-hidden="true" />
-                    Payments
+                    {c.payments}
                   </Button>
                 ) : null}
                 {hubUi.bitcoinInvoices ? (
-                  <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic title="Create and manage invoices">
+                  <Button as={Link} to="/services/bitcoin/invoices#fabric-invoices-tab-demo" basic title={c.invoicesTitle}>
                     <Icon name="file alternate outline" aria-hidden="true" />
-                    Invoices
+                    {c.invoices}
                   </Button>
                 ) : null}
                 {hubUi.bitcoinResources ? (
-                  <Button as={Link} to="/services/bitcoin/resources" basic title="Browse Bitcoin HTTP resources (GET) and L1 verify">
+                  <Button as={Link} to="/services/bitcoin/resources" basic title={c.resourcesTitle}>
                     <Icon name="sitemap" aria-hidden="true" />
-                    Resources
+                    {c.resources}
                   </Button>
                 ) : null}
                 {hubUi.bitcoinCrowdfund ? (
-                  <Button as={Link} to="/services/bitcoin/crowdfunds" basic title="Taproot crowdfund vault, ACP donation PSBT, Payjoin to campaign address">
+                  <Button as={Link} to="/services/bitcoin/crowdfunds" basic title={c.crowdfundsTitle}>
                     <Icon name="heart outline" aria-hidden="true" />
-                    Crowdfunds
+                    {c.crowdfundsButton}
                   </Button>
                 ) : null}
                 {hubUi.bitcoinLightning ? (
-                  <Button as={Link} to="/services/lightning" basic title="Dedicated Lightning page">
+                  <Button as={Link} to="/services/lightning" basic title={c.lightningTitle}>
                     <Icon name="bolt" aria-hidden="true" />
-                    Lightning
+                    {c.lightningButton}
                   </Button>
                 ) : null}
                 {hubUi.bitcoinExplorer ? (
-                  <Button as={Link} to="/services/bitcoin/blocks" basic title="Dedicated Explorer page">
+                  <Button as={Link} to="/services/bitcoin/blocks" basic title={c.explorerTitle}>
                     <Icon name="search" aria-hidden="true" />
-                    Explorer
+                    {c.explorer}
                   </Button>
                 ) : null}
               </div>
@@ -920,15 +957,14 @@ class BitcoinHome extends React.Component {
             id="bitcoin-home-summary"
             style={{ marginTop: '0.5em', color: '#666', marginBottom: '0.5em', maxWidth: '42rem', lineHeight: 1.45 }}
           >
-            <strong>Your browser wallet</strong> (Fabric identity) powers invoices, client-signed sends, and the balance chip — see{' '}
-            <Link to="/settings/bitcoin-wallet">Bitcoin wallet &amp; derivation</Link>.
-            <strong> Hub wallet</strong> is this node&apos;s <code>bitcoind</code>{' '}
-            ({isRegtest ? 'mining on regtest, ' : ''}admin spends, Payjoin); it is not your identity&apos;s key.
+            <strong>{c.summary.yours}</strong> {c.summary.yoursBody}{' '}
+            <Link to="/settings/bitcoin-wallet">{c.summary.walletSettings}</Link>.{' '}
+            <strong>{c.summary.hub}</strong> {c.summary.hubBody(isRegtest)}
             {isRegtest ? (
               <>
                 {' '}
-                <strong>Regtest:</strong> <strong>Generate Block</strong> only increases the Hub wallet; it does not credit your browser balance.
-                Use the <Link to="/services/bitcoin/faucet">Faucet</Link> (or a paid invoice / Payjoin / peer payment) to move value to your receive address, then mine a block so it confirms.
+                <strong>{c.summary.regtestLead}</strong> {c.summary.regtestBefore}{' '}
+                <Link to="/services/bitcoin/faucet">{c.summary.faucetLink}</Link> {c.summary.regtestAfter}
               </>
             ) : null}
           </p>
@@ -950,17 +986,17 @@ class BitcoinHome extends React.Component {
         >
           <section aria-labelledby="bitcoin-home-wealth-heading">
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.65rem', justifyContent: 'space-between' }}>
-            <span id="bitcoin-home-wealth-heading" style={{ fontWeight: 600, color: '#3d3a33', fontSize: '0.95em' }}>Wealth stack</span>
+            <span id="bitcoin-home-wealth-heading" style={{ fontWeight: 600, color: '#3d3a33', fontSize: '0.95em' }}>{c.wealth.title}</span>
             <span style={{ color: '#5c574c', fontSize: '0.85em', maxWidth: '36rem', lineHeight: 1.4 }}>
-              Fabric contracts &amp; docs · Payjoin deposit coordination · Lightning channels
+              {c.wealth.body}
             </span>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem' }}>
               <Button as={Link} to="/documents" size="small" basic icon labelPosition="left">
-                <Icon name="file alternate outline" /> Documents
+                <Icon name="file alternate outline" /> {c.wealth.documents}
               </Button>
               {hubUi.peers ? (
                 <Button as={Link} to="/peers" size="small" basic icon labelPosition="left">
-                  <Icon name="users" /> Peers
+                  <Icon name="users" /> {c.wealth.peers}
                 </Button>
               ) : null}
             </div>
@@ -971,48 +1007,46 @@ class BitcoinHome extends React.Component {
         <Segment style={{ marginTop: '-1px', borderColor: '#d9e2f3', background: '#f8fbff' }}>
           <section aria-labelledby="operator-managed-deposits-heading">
             <Header as="h3" id="operator-managed-deposits-heading" style={{ marginBottom: '0.35em' }}>
-              Deposits Under Management
+              {c.deposits.title}
             </Header>
             <p style={{ color: '#4b5b73', marginBottom: '0.75em', maxWidth: '54rem', lineHeight: 1.45 }}>
-              Custody boundary: non-admin user keys stay in the browser wallet; the Hub manages shared-session flows (Lightning node channels and Payjoin receiver sessions) and may sign contract messages for coordinated settlement.
+              {c.deposits.body}
             </p>
             <Table compact celled unstackable size="small" style={{ marginBottom: '0.5em' }}>
               <Table.Body>
                 <Table.Row>
-                  <Table.Cell width={5}><strong>Client wallet (self-custody)</strong></Table.Cell>
-                  <Table.Cell>{formatSatsDisplay(clientWalletSats)} sats</Table.Cell>
-                  <Table.Cell style={{ color: '#666' }}>Private keys remain with user clients.</Table.Cell>
+                  <Table.Cell width={5}><strong>{c.deposits.client}</strong></Table.Cell>
+                  <Table.Cell>{t.common.sats(clientWalletSats)}</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>{c.deposits.clientNote}</Table.Cell>
                 </Table.Row>
                 <Table.Row>
-                  <Table.Cell><strong>Hub wallet (operator)</strong></Table.Cell>
-                  <Table.Cell>{formatSatsDisplay(hubWalletSats)} sats</Table.Cell>
-                  <Table.Cell style={{ color: '#666' }}>Node operations ({isRegtest ? 'regtest mining/' : ''}admin spends/settlement staging).</Table.Cell>
+                  <Table.Cell><strong>{c.deposits.hub}</strong></Table.Cell>
+                  <Table.Cell>{t.common.sats(hubWalletSats)}</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>{c.deposits.hubNote(isRegtest)}</Table.Cell>
                 </Table.Row>
                 <Table.Row>
-                  <Table.Cell><strong>Shared sessions (managed)</strong></Table.Cell>
-                  <Table.Cell>{formatSatsDisplay(sharedSessionsSats)} sats</Table.Cell>
+                  <Table.Cell><strong>{c.deposits.shared}</strong></Table.Cell>
+                  <Table.Cell>{t.common.sats(sharedSessionsSats)}</Table.Cell>
+                  <Table.Cell style={{ color: '#666' }}>{c.deposits.sharedNote}</Table.Cell>
+                </Table.Row>
+                <Table.Row>
+                  <Table.Cell><strong>{c.deposits.payjoin}</strong></Table.Cell>
+                  <Table.Cell>{c.deposits.payjoinActive(Number(payjoinSnapshot.activeNotExpired || 0))}</Table.Cell>
                   <Table.Cell style={{ color: '#666' }}>
-                    Lightning listfunds total across confirmed/unconfirmed/immature outputs.
-                  </Table.Cell>
-                </Table.Row>
-                <Table.Row>
-                  <Table.Cell><strong>Payjoin sessions</strong></Table.Cell>
-                  <Table.Cell>{Number(payjoinSnapshot.activeNotExpired || 0)} active</Table.Cell>
-                  <Table.Cell style={{ color: '#666' }}>
-                    {Number(payjoinSnapshot.awaitingCompletion || 0)} awaiting completion.
+                    {c.deposits.payjoinAwaiting(Number(payjoinSnapshot.awaitingCompletion || 0))}
                   </Table.Cell>
                 </Table.Row>
               </Table.Body>
             </Table>
             <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
               <Button as={Link} to="/services/lightning" size="small" basic icon labelPosition="left">
-                <Icon name="bolt" /> Manage Lightning channels
+                <Icon name="bolt" /> {c.deposits.manageLightning}
               </Button>
               <Button as={Link} to="/payments#wealth-payjoin-board" size="small" basic icon labelPosition="left">
-                <Icon name="shield alternate" /> Manage Payjoin sessions
+                <Icon name="shield alternate" /> {c.deposits.managePayjoin}
               </Button>
               <Button as={Link} to="/settings/bitcoin-wallet" size="small" basic icon labelPosition="left">
-                <Icon name="key" /> Client wallet boundary
+                <Icon name="key" /> {c.deposits.walletBoundary}
               </Button>
             </div>
           </section>
@@ -1020,36 +1054,37 @@ class BitcoinHome extends React.Component {
 
         {!hasUpstream && (
           <Message warning>
-            <Message.Header>Upstream APIs not configured</Message.Header>
-            <p>Open the settings cog and add your explorer/payments/lightning endpoints to enable live data and transactions.</p>
+            <Message.Header>{c.upstreamMissing.title}</Message.Header>
+            <p>{c.upstreamMissing.body}</p>
           </Message>
         )}
 
         {hasUpstream && !this.state.loading && !this.state.refreshing && !bitcoinReady && (
           <Message info>
-            <Message.Header>Hub Bitcoin backend unavailable</Message.Header>
+            <Message.Header>{bitcoinHealthLabel}</Message.Header>
             <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', lineHeight: 1.45 }}>
-              Explorer lists and the Hub wallet balance stay empty until this Hub can reach <code>bitcoind</code>
-              {isRegtest ? ' (or enable managed regtest).' : '.'}{' '}
-              Your <strong>identity wallet</strong> may still show receive addresses when the Payments API is up. Check server logs and{' '}
-              <Link to="/settings/admin">Admin</Link>.
+              {bitcoinHealthHint}
+              {bitcoinHealth === 'off' ? ` ${health.regtestHint}` : null}{' '}
+              {c.unavailable.identityNote}{' '}
+              <Link to="/settings/admin">{c.unavailable.admin}</Link>.
             </p>
           </Message>
         )}
 
         {hasUpstream && bitcoinReady && (
           <Message size="small" style={{ marginBottom: '0.75em' }}>
-            <Message.Header>Operator deposits checklist</Message.Header>
+            <Message.Header>{c.checklist.title}</Message.Header>
             <List bulleted style={{ margin: '0.35em 0 0', fontSize: '0.88em', color: '#555' }}>
+              <List.Item>{c.checklist.adminToken(isRegtest)}</List.Item>
               <List.Item>
-                Save the <strong>admin token</strong> (first-time setup / Settings → Admin) for{' '}
-                {isRegtest ? 'regtest block tools and ' : ''}hub-wallet sends{isRegtest ? '' : ' and other admin RPC actions'}.
+                <strong>{c.checklist.payjoinLead}</strong> {c.checklist.payjoin}
+                <details className="hub-developer-details">
+                  <summary>{t.common.developerDetails}</summary>
+                  {c.checklist.payjoinDeveloper}
+                </details>
               </List.Item>
               <List.Item>
-                <strong>Payjoin:</strong> ensure <code>GET /services/payjoin</code> reports available (mirror: <code>/payments/payjoin</code>); create sessions below when <strong>Bitcoin → Payments</strong> is enabled in feature flags. Capabilities include <code>fabricProtocol</code> (BIP78 receiver today; BIP77 async roadmap).
-              </List.Item>
-              <List.Item>
-                <strong>Lightning:</strong> Service Health should show L2 when Core Lightning is configured (or stub in dev).
+                <strong>{c.checklist.lightningLead}</strong> {c.checklist.lightning}
               </List.Item>
             </List>
           </Message>
@@ -1057,7 +1092,7 @@ class BitcoinHome extends React.Component {
 
         {this.state.error && (
           <Message negative>
-            <Message.Header>Bitcoin data refresh failed</Message.Header>
+            <Message.Header>{c.refreshFailed}</Message.Header>
             <p style={{ margin: '0.35em 0 0' }}>{this.state.error}</p>
             <Button
               type="button"
@@ -1068,182 +1103,178 @@ class BitcoinHome extends React.Component {
               onClick={() => this.refresh()}
             >
               <Icon name="refresh" />
-              Retry
+              {t.common.actions.retry}
             </Button>
           </Message>
         )}
 
         <Segment loading={this.state.loading}>
-          <Header as='h3'>Service Health</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge (Hub node):</strong> status, Hub wallet balance, Beacon, Lightning.</p>
+          <Header as='h3'>{c.serviceHealth.title}</Header>
+          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.serviceHealth.intro}</p>
           <p style={{ fontSize: '0.88em', color: '#666', margin: '0 0 0.65em', lineHeight: 1.45 }}>
-            <strong>Beacon / federation provability:</strong>{' '}
-            <Link to="/settings/admin/beacon-federation">Beacon Federation</Link>
-            {' · '}
-            <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">GET epoch</a>
-            {' · '}
-            <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">GET manifest</a>
+            <strong>{c.serviceHealth.beacon}</strong>{' '}
+            <Link to="/settings/admin/beacon-federation">{c.serviceHealth.beaconFederation}</Link>
           </p>
-          <div><strong>Bitcoin (RPC):</strong>{' '}
-            {this.state.loading || this.state.refreshing
-              ? 'Checking…'
-              : bitcoinReady
-                ? `${this.state.bitcoinStatus && this.state.bitcoinStatus.status ? this.state.bitcoinStatus.status : 'available'}${bitcoinNetwork ? ` (${bitcoinNetwork})` : ''}`
-                : `unavailable${(this.state.bitcoinStatus && this.state.bitcoinStatus.status) ? ` — ${this.state.bitcoinStatus.status}` : ''}`}
+          <details className="hub-developer-details" style={{ fontSize: '0.88em', color: '#666', margin: '0 0 0.65em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <a href="/services/distributed/epoch" target="_blank" rel="noopener noreferrer">{c.serviceHealth.epochJson}</a>
+            {' · '}
+            <a href="/services/distributed/manifest" target="_blank" rel="noopener noreferrer">{c.serviceHealth.manifestJson}</a>
+          </details>
+          <div><strong>{c.serviceHealth.bitcoin}</strong>{' '}
+            {this.state.loading || this.state.refreshing ? health.checking : bitcoinHealthLabel}
           </div>
           <div style={{ color: '#666', marginBottom: '0.5em', lineHeight: 1.45 }}>
             {bitcoinReady && this.state.bitcoinStatus && this.state.bitcoinStatus.message
               ? this.state.bitcoinStatus.message
               : null}
-            {!bitcoinReady && !this.state.loading && !this.state.refreshing ? (
-              <span>
-                The hub is not serving live chain data until <code>bitcoind</code> is reachable (or managed regtest is enabled). Balances below may be stale or zero.
-              </span>
+            {!bitcoinReady && !this.state.loading && !this.state.refreshing && bitcoinStatusCode ? (
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                {health.detail([bitcoinStatusCode, this.state.bitcoinStatus && this.state.bitcoinStatus.message].filter(Boolean).join(' · '))}
+              </details>
             ) : null}
           </div>
           {bitcoinReady && this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null && (
             <div>
-              <strong>Hub wallet balance:</strong> {Number(this.state.bitcoinStatus.balance || 0).toFixed(8)} BTC{' '}
-              {isRegtest ? '(regtest block rewards go here)' : '(on-chain wallet balance)'}
+              <strong>{c.serviceHealth.hubBalance}</strong> {t.common.sats(hubWalletSats)}{' '}
+              {c.serviceHealth.hubBalanceNote(isRegtest)}
             </div>
           )}
           {bitcoinReady && this.state.bitcoinStatus && this.state.bitcoinStatus.beacon && (
-            <div><strong>Beacon core balance:</strong> {this.satsToBTC(this.state.bitcoinStatus.beacon.balanceSats || 0)} BTC (epoch {this.state.bitcoinStatus.beacon.clock || 0})</div>
+            <div><strong>{c.serviceHealth.beaconBalance}</strong> {t.common.sats(this.state.bitcoinStatus.beacon.balanceSats || 0)} {c.serviceHealth.beaconEpoch(this.state.bitcoinStatus.beacon.clock || 0)}</div>
           )}
-          <div><strong>Lightning:</strong> {this.state.lightningStatus && this.state.lightningStatus.status === 'NOT_CONFIGURED'
-            ? (isRegtest ? 'runs with regtest' : 'not configured')
+          <div><strong>{c.serviceHealth.lightning}</strong> {this.state.lightningStatus && this.state.lightningStatus.status === 'NOT_CONFIGURED'
+            ? c.serviceHealth.lightningNotConfigured(isRegtest)
             : (this.state.lightningStatus && this.state.lightningStatus.status === 'STUB')
-              ? 'stub (UI testing)'
-              : (this.state.lightningStatus && this.state.lightningStatus.status ? this.state.lightningStatus.status : 'unknown')}</div>
+              ? c.serviceHealth.lightningStub
+              : (this.state.lightningStatus && this.state.lightningStatus.status
+                ? (t.bitcoin.lightning.statusLabels[String(this.state.lightningStatus.status)] || this.state.lightningStatus.status)
+                : c.serviceHealth.lightningUnknown)}</div>
           <div style={{ color: '#666' }}>{this.state.lightningStatus && this.state.lightningStatus.message ? this.state.lightningStatus.message : ''}</div>
         </Segment>
 
         <Segment loading={this.state.loading}>
-          <Header as='h3'>Node console</Header>
+          <Header as='h3'>{c.console.title}</Header>
           <p style={{ color: '#666', marginBottom: '0.75em' }}>
-            Data comes from this Hub&apos;s Bitcoin Core RPC.
+            {c.console.intro}
+            {bitcoinHealth !== 'ok' && !this.state.loading && !this.state.refreshing ? ` ${bitcoinHealthLabel}.` : null}
           </p>
 
-          <Header as='h4'>Dashboard</Header>
+          <Header as='h4'>{c.console.chain}</Header>
           <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
             <Table.Body>
               <Table.Row>
-                <Table.Cell><strong>Chain height</strong></Table.Cell>
-                <Table.Cell>{bc && bc.blocks != null ? bc.blocks : (this.state.bitcoinStatus.height != null ? this.state.bitcoinStatus.height : '—')}</Table.Cell>
-                <Table.Cell><strong>Headers</strong></Table.Cell>
-                <Table.Cell>{bc && bc.headers != null ? bc.headers : '—'}</Table.Cell>
+                <Table.Cell><strong>{c.console.chainHeight}</strong></Table.Cell>
+                <Table.Cell>{bc && bc.blocks != null ? bc.blocks : (this.state.bitcoinStatus.height != null ? this.state.bitcoinStatus.height : t.common.none)}</Table.Cell>
+                <Table.Cell><strong>{c.console.headers}</strong></Table.Cell>
+                <Table.Cell>{bc && bc.headers != null ? bc.headers : t.common.none}</Table.Cell>
               </Table.Row>
               <Table.Row>
-                <Table.Cell><strong>Verification</strong></Table.Cell>
+                <Table.Cell><strong>{c.console.verification}</strong></Table.Cell>
                 <Table.Cell>
                   {bc && bc.verificationprogress != null
                     ? `${(Number(bc.verificationprogress) * 100).toFixed(2)}%`
-                    : '—'}
-                  {bc && bc.initialblockdownload ? ' (IBD)' : ''}
+                    : t.common.none}
+                  {bc && bc.initialblockdownload ? ` ${c.console.initialSync}` : ''}
                 </Table.Cell>
-                <Table.Cell><strong>Difficulty</strong></Table.Cell>
-                <Table.Cell>{bc ? this.formatDifficulty(bc.difficulty) : '—'}</Table.Cell>
+                <Table.Cell><strong>{c.console.difficulty}</strong></Table.Cell>
+                <Table.Cell>{bc ? this.formatDifficulty(bc.difficulty) : t.common.none}</Table.Cell>
               </Table.Row>
               <Table.Row>
-                <Table.Cell><strong>Chain</strong></Table.Cell>
-                <Table.Cell>{bc && bc.chain ? String(bc.chain) : '—'}</Table.Cell>
-                <Table.Cell><strong>Median time</strong></Table.Cell>
+                <Table.Cell><strong>{c.console.network}</strong></Table.Cell>
+                <Table.Cell>{bc && bc.chain ? String(bc.chain) : t.common.none}</Table.Cell>
+                <Table.Cell><strong>{c.console.medianTime}</strong></Table.Cell>
                 <Table.Cell>
                   {bc && bc.mediantime
                     ? new Date(Number(bc.mediantime) * 1000).toLocaleString()
-                    : '—'}
+                    : t.common.none}
                 </Table.Cell>
               </Table.Row>
               {(this.state.bitcoinStatus.bitcoinPruned || (bc && bc.pruned)) ? (
                 <Table.Row>
-                  <Table.Cell><strong>Prune</strong></Table.Cell>
+                  <Table.Cell><strong>{c.console.pruning}</strong></Table.Cell>
                   <Table.Cell colSpan={3} style={{ fontSize: '0.92em', lineHeight: 1.45 }}>
-                    Pruned <code>bitcoind</code> — block files below height{' '}
+                    {c.console.prunedBefore}{' '}
                     <strong>
                       {this.state.bitcoinStatus.bitcoinPruneHeight != null
                         ? this.state.bitcoinStatus.bitcoinPruneHeight
-                        : (bc && bc.pruneheight != null ? bc.pruneheight : '—')}
+                        : (bc && bc.pruneheight != null ? bc.pruneheight : t.common.none)}
                     </strong>{' '}
-                    are not available over RPC. This hub removes matching Bitcoin block/tx documents from its <em>local</em> published catalog only; Fabric <code>BitcoinBlock</code> / Beacon epochs still track the chain tip, and peers can offer older blocks via inventory.
+                    {c.console.prunedAfter}
                   </Table.Cell>
                 </Table.Row>
               ) : null}
             </Table.Body>
           </Table>
 
-          <Header as='h4'>Mempool</Header>
+          <Header as='h4'>{c.console.mempool}</Header>
           <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
             <Table.Body>
               <Table.Row>
-                <Table.Cell><strong>Transactions</strong></Table.Cell>
+                <Table.Cell><strong>{c.console.mempoolTxs}</strong></Table.Cell>
                 <Table.Cell>
                   {this.state.bitcoinStatus.mempoolTxCount != null
                     ? this.state.bitcoinStatus.mempoolTxCount
-                    : (mp && mp.size != null ? mp.size : '—')}
+                    : (mp && mp.size != null ? mp.size : t.common.none)}
                 </Table.Cell>
-                <Table.Cell><strong>Memory usage</strong></Table.Cell>
-                <Table.Cell>{mp && mp.usage != null ? this.formatBytes(mp.usage) : '—'}</Table.Cell>
+                <Table.Cell><strong>{c.console.memoryUsage}</strong></Table.Cell>
+                <Table.Cell>{mp && mp.usage != null ? this.formatBytes(mp.usage) : t.common.none}</Table.Cell>
               </Table.Row>
               <Table.Row>
-                <Table.Cell><strong>Total vsize (mempool)</strong></Table.Cell>
-                <Table.Cell>{mp && mp.bytes != null ? this.formatBytes(mp.bytes) : '—'}</Table.Cell>
-                <Table.Cell><strong>Total fees (est.)</strong></Table.Cell>
+                <Table.Cell><strong>{c.console.mempoolSize}</strong></Table.Cell>
+                <Table.Cell>{mp && mp.bytes != null ? this.formatBytes(mp.bytes) : t.common.none}</Table.Cell>
+                <Table.Cell><strong>{c.console.mempoolFees}</strong></Table.Cell>
                 <Table.Cell>
                   {this.state.bitcoinStatus.mempoolFeeSats != null
                     ? (
-                      <>
-                        {this.satsToBTC(this.state.bitcoinStatus.mempoolFeeSats)} BTC
-                        {' '}
-                        <span style={{ color: '#888' }}>({formatSatsDisplay(this.state.bitcoinStatus.mempoolFeeSats)} sats)</span>
-                      </>
+                      <>{t.common.sats(this.state.bitcoinStatus.mempoolFeeSats)}</>
                       )
-                    : '—'}
+                    : t.common.none}
                   {this.state.bitcoinStatus.mempoolFeesTruncated
-                    ? <span style={{ color: '#b60' }}> (partial sum)</span>
+                    ? <span style={{ color: '#b60' }}> {c.console.partialSum}</span>
                     : null}
                 </Table.Cell>
               </Table.Row>
               <Table.Row>
-                <Table.Cell><strong>Min relay fee</strong></Table.Cell>
-                <Table.Cell>{mp && mp.minrelaytxfee != null ? `${mp.minrelaytxfee} BTC/kvB` : '—'}</Table.Cell>
-                <Table.Cell><strong>Mempool min fee</strong></Table.Cell>
-                <Table.Cell>{mp && mp.mempoolminfee != null ? `${mp.mempoolminfee} BTC/kvB` : '—'}</Table.Cell>
+                <Table.Cell><strong>{c.console.minRelayFee}</strong></Table.Cell>
+                <Table.Cell>{mp && mp.minrelaytxfee != null ? this.formatFeeRate(mp.minrelaytxfee) : t.common.none}</Table.Cell>
+                <Table.Cell><strong>{c.console.mempoolMinFee}</strong></Table.Cell>
+                <Table.Cell>{mp && mp.mempoolminfee != null ? this.formatFeeRate(mp.mempoolminfee) : t.common.none}</Table.Cell>
               </Table.Row>
             </Table.Body>
           </Table>
 
-          <Header as='h4'>Network</Header>
+          <Header as='h4'>{c.console.networkTitle}</Header>
           <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
             <Table.Body>
               <Table.Row>
-                <Table.Cell><strong>Connections</strong></Table.Cell>
+                <Table.Cell><strong>{c.console.connections}</strong></Table.Cell>
                 <Table.Cell>
                   {ni
-                    ? `${ni.connections != null ? ni.connections : '—'} total (${ni.connections_in != null ? ni.connections_in : 0} in / ${ni.connections_out != null ? ni.connections_out : 0} out)`
-                    : '—'}
+                    ? c.console.connectionsValue(ni.connections != null ? ni.connections : t.common.none, ni.connections_in != null ? ni.connections_in : 0, ni.connections_out != null ? ni.connections_out : 0)
+                    : t.common.none}
                 </Table.Cell>
-                <Table.Cell><strong>Relay fee</strong></Table.Cell>
-                <Table.Cell>{ni && ni.relayfee != null ? `${ni.relayfee} BTC/kvB` : '—'}</Table.Cell>
+                <Table.Cell><strong>{c.console.relayFee}</strong></Table.Cell>
+                <Table.Cell>{ni && ni.relayfee != null ? this.formatFeeRate(ni.relayfee) : t.common.none}</Table.Cell>
               </Table.Row>
               <Table.Row>
-                <Table.Cell><strong>User agent</strong></Table.Cell>
-                <Table.Cell colSpan='3'>{ni && ni.subversion ? String(ni.subversion) : '—'}</Table.Cell>
+                <Table.Cell><strong>{c.console.userAgent}</strong></Table.Cell>
+                <Table.Cell colSpan='3'>{ni && ni.subversion ? String(ni.subversion) : t.common.none}</Table.Cell>
               </Table.Row>
               <Table.Row>
-                <Table.Cell><strong>Protocol / version</strong></Table.Cell>
+                <Table.Cell><strong>{c.console.protocol}</strong></Table.Cell>
                 <Table.Cell colSpan='3'>
                   {ni
-                    ? `protocol ${ni.protocolversion != null ? ni.protocolversion : '—'} · version ${ni.version != null ? ni.version : '—'}`
-                    : '—'}
+                    ? c.console.protocolValue(ni.protocolversion != null ? ni.protocolversion : t.common.none, ni.version != null ? ni.version : t.common.none)
+                    : t.common.none}
                 </Table.Cell>
               </Table.Row>
               {Array.isArray(this.state.bitcoinStatus.p2pAddNodeTargets) && this.state.bitcoinStatus.p2pAddNodeTargets.length > 0 && (
                 <Table.Row>
-                  <Table.Cell><strong>Playnet P2P</strong></Table.Cell>
+                  <Table.Cell><strong>{c.console.playnet}</strong></Table.Cell>
                   <Table.Cell colSpan='3'>
-                    <span style={{ color: '#555' }}>Bitcoin Core </span>
-                    <code>addnode</code>
-                    <span style={{ color: '#555' }}> targets (L1 sync): </span>
+                    <span style={{ color: '#555' }}>{c.console.playnetLead} </span>
                     {this.state.bitcoinStatus.p2pAddNodeTargets.map((h, i) => (
                       <span key={String(h) + i}>
                         {i > 0 ? ', ' : ''}
@@ -1256,29 +1287,29 @@ class BitcoinHome extends React.Component {
             </Table.Body>
           </Table>
 
-          <Header as='h4'>Consensus deployments</Header>
+          <Header as='h4'>{c.console.deployments}</Header>
           {deploymentEntries.length === 0 ? (
-            <p style={{ color: '#666', marginBottom: '1em' }}>No deployment data (requires <code>getdeploymentinfo</code> on your Core version).</p>
+            <p style={{ color: '#666', marginBottom: '1em' }}>{c.console.deploymentsEmpty}</p>
           ) : (
             <Table compact celled unstackable size='small' style={{ marginBottom: '1em' }}>
               <Table.Header>
                 <Table.Row>
-                  <Table.HeaderCell>Deployment</Table.HeaderCell>
-                  <Table.HeaderCell>Status</Table.HeaderCell>
-                  <Table.HeaderCell>Height / bit</Table.HeaderCell>
+                  <Table.HeaderCell>{c.console.deployment}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.console.status}</Table.HeaderCell>
+                  <Table.HeaderCell>{c.console.heightBit}</Table.HeaderCell>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
                 {deploymentEntries.map(([name, info]) => {
                   const row = info && typeof info === 'object' ? info : {};
-                  const active = row.active === true ? 'active' : (row.active === false ? 'inactive' : '—');
-                  const h = row.height != null ? row.height : (row.min_activation_height != null ? row.min_activation_height : '—');
+                  const active = row.active === true ? c.console.active : (row.active === false ? c.console.inactive : t.common.none);
+                  const h = row.height != null ? row.height : (row.min_activation_height != null ? row.min_activation_height : t.common.none);
                   const bit = row.bip9 && row.bip9.bit != null ? row.bip9.bit : row.bit;
                   return (
                     <Table.Row key={name}>
                       <Table.Cell><code>{name}</code></Table.Cell>
                       <Table.Cell>{active}{row.type ? ` · ${row.type}` : ''}</Table.Cell>
-                      <Table.Cell>{h}{bit != null && bit !== '' ? ` · bit ${bit}` : ''}</Table.Cell>
+                      <Table.Cell>{h}{bit != null && bit !== '' ? c.console.bit(bit) : ''}</Table.Cell>
                     </Table.Row>
                   );
                 })}
@@ -1286,7 +1317,7 @@ class BitcoinHome extends React.Component {
             </Table>
           )}
 
-          <Header as='h4'>Peers ({nodePeers.length})</Header>
+          <Header as='h4'>{c.console.peers(nodePeers.length)}</Header>
           {nodePeers.length === 0 ? (
             <div style={{ marginBottom: '1em' }}>
               <p style={{ color: '#666', margin: '0 0 0.5em' }}>
@@ -1295,37 +1326,35 @@ class BitcoinHome extends React.Component {
                     <>
                       {ni && Number(ni.connections) > 0
                         ? (
-                          <span>
-                            <code>getnetworkinfo</code> reports {Number(ni.connections)} P2P connection(s), but the peer table did not load
-                            (<code>GET /services/bitcoin/peers</code> may have failed in this browser tab). Try <strong>Refresh peer list</strong> or your regular browser.
-                          </span>
+                          <span>{c.console.peersTableFailed(Number(ni.connections))}</span>
                           )
                         : (
                           <span>
-                            No Bitcoin P2P peers in <code>getpeerinfo</code>.
+                            {c.console.noPeers}
                             {isRegtest
                               ? (
                                 <>
-                                  {' '}
-                                  On managed regtest with <code>listen=0</code> this is usual until an outbound peer connects; use the <strong>Playnet P2P</strong>{' '}
-                                  <code>addnode</code> targets above or <code>npm run bitcoin:addnode</code>.
-                                  {' '}
-                                  After you have peers, you can pull regtest coins from another operator&apos;s hub wallet — e.g. open{' '}
-                                  <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">hub.fabric.pub/services/bitcoin/faucet</a>
-                                  {' '}and paste your receive address, then <strong>Generate block</strong> here to confirm.
+                                  {' '}{c.console.noPeersRegtest}{' '}
+                                  {c.console.noPeersFaucetBefore}{' '}
+                                  <a href="https://hub.fabric.pub/services/bitcoin/faucet" target="_blank" rel="noopener noreferrer">{c.console.noPeersFaucetLink}</a>
+                                  {c.console.noPeersFaucetAfter}
                                 </>
                                 )
-                              : ' Check connectivity, firewall, and addnode/connect settings on this Core node.'}
+                              : ` ${c.console.noPeersMainnet}`}
                           </span>
                           )}
                     </>
                     )
                   : (
-                    <>
-                      Could not load peers (Bitcoin RPC offline or <code>GET /services/bitcoin/peers</code> failed). Fix Bitcoin status first.
-                    </>
+                    <>{bitcoinHealthLabel}. {c.console.peersOffline}</>
                     )}
               </p>
+              {bitcoinReady && isRegtest && !(ni && Number(ni.connections) > 0) ? (
+                <details className="hub-developer-details" style={{ margin: '0 0 0.5em', color: '#666' }}>
+                  <summary>{t.common.developerDetails}</summary>
+                  {c.console.noPeersDeveloper}
+                </details>
+              ) : null}
               <Button
                 type="button"
                 size="small"
@@ -1337,7 +1366,7 @@ class BitcoinHome extends React.Component {
                 onClick={() => this.refresh()}
               >
                 <Icon name="refresh" />
-                {bitcoinReady ? 'Refresh peer list' : 'Retry'}
+                {bitcoinReady ? c.console.refreshPeers : t.common.actions.retry}
               </Button>
             </div>
           ) : (
@@ -1349,58 +1378,58 @@ class BitcoinHome extends React.Component {
                       sorted={this.state.bitcoinPeerSortColumn === 'addr' ? this.state.bitcoinPeerSortDirection : null}
                       onClick={() => this._handleBitcoinPeerSort('addr')}
                     >
-                      Address
+                      {c.console.address}
                     </Table.HeaderCell>
                     <Table.HeaderCell
                       sorted={this.state.bitcoinPeerSortColumn === 'direction' ? this.state.bitcoinPeerSortDirection : null}
                       onClick={() => this._handleBitcoinPeerSort('direction')}
                     >
-                      Direction
+                      {c.console.direction}
                     </Table.HeaderCell>
                     <Table.HeaderCell
                       sorted={this.state.bitcoinPeerSortColumn === 'ping' ? this.state.bitcoinPeerSortDirection : null}
                       onClick={() => this._handleBitcoinPeerSort('ping')}
                     >
-                      Ping (ms)
+                      {c.console.ping}
                     </Table.HeaderCell>
                     <Table.HeaderCell
                       sorted={this.state.bitcoinPeerSortColumn === 'bytes' ? this.state.bitcoinPeerSortDirection : null}
                       onClick={() => this._handleBitcoinPeerSort('bytes')}
                     >
-                      Bytes in / out
+                      {c.console.traffic}
                     </Table.HeaderCell>
                     <Table.HeaderCell
                       sorted={this.state.bitcoinPeerSortColumn === 'subver' ? this.state.bitcoinPeerSortDirection : null}
                       onClick={() => this._handleBitcoinPeerSort('subver')}
                     >
-                      User agent
+                      {c.console.userAgent}
                     </Table.HeaderCell>
                     <Table.HeaderCell
                       sorted={this.state.bitcoinPeerSortColumn === 'height' ? this.state.bitcoinPeerSortDirection : null}
                       onClick={() => this._handleBitcoinPeerSort('height')}
                     >
-                      Height
+                      {c.console.height}
                     </Table.HeaderCell>
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
                   {sortedNodePeers.slice(0, 40).map((p, i) => (
                     <Table.Row key={`${p.id != null ? p.id : i}-${p.addr || i}`}>
-                      <Table.Cell><code style={{ fontSize: '0.85em' }}>{p.addr || p.addrbind || '—'}</code></Table.Cell>
+                      <Table.Cell><code style={{ fontSize: '0.85em' }}>{p.addr || p.addrbind || t.common.none}</code></Table.Cell>
                       <Table.Cell>{p.inbound ? 'inbound' : 'outbound'}</Table.Cell>
-                      <Table.Cell>{p.pingtime != null ? Number(p.pingtime).toFixed(0) : '—'}</Table.Cell>
+                      <Table.Cell>{p.pingtime != null ? Number(p.pingtime).toFixed(0) : t.common.none}</Table.Cell>
                       <Table.Cell>
                         {p.bytesrecv != null || p.bytessent != null
-                          ? `${p.bytesrecv != null ? this.formatBytes(p.bytesrecv) : '—'} / ${p.bytessent != null ? this.formatBytes(p.bytessent) : '—'}`
-                          : '—'}
+                          ? `${p.bytesrecv != null ? this.formatBytes(p.bytesrecv) : t.common.none} / ${p.bytessent != null ? this.formatBytes(p.bytessent) : t.common.none}`
+                          : t.common.none}
                       </Table.Cell>
                       <Table.Cell style={{ maxWidth: '14em', wordBreak: 'break-word', fontSize: '0.85em' }}>
-                        {p.subver || '—'}
+                        {p.subver || t.common.none}
                       </Table.Cell>
                       <Table.Cell>
                         {p.synced_headers != null
                           ? p.synced_headers
-                          : (p.synced_blocks != null ? p.synced_blocks : (p.startingheight != null ? p.startingheight : '—'))}
+                          : (p.synced_blocks != null ? p.synced_blocks : (p.startingheight != null ? p.startingheight : t.common.none))}
                       </Table.Cell>
                     </Table.Row>
                   ))}
@@ -1409,13 +1438,14 @@ class BitcoinHome extends React.Component {
             </div>
           )}
 
-          <Header as='h4'>Search &amp; tools</Header>
+          <Header as='h4'>{c.tools.title}</Header>
           <Form style={{ marginBottom: '0.75em' }}>
             <Form.Group widths='equal'>
               <Form.Field>
-                <label>Open transaction by txid</label>
+                <label htmlFor='bitcoin-tx-lookup'>{c.tools.txidLabel}</label>
                 <Input
-                  placeholder='64-char hex txid'
+                  id='bitcoin-tx-lookup'
+                  placeholder={c.tools.txidPlaceholder}
                   value={this.state.txLookupId}
                   onChange={(e) => this.setState({ txLookupId: e.target.value, txLookupError: null })}
                 />
@@ -1425,11 +1455,11 @@ class BitcoinHome extends React.Component {
                   type='button'
                   primary
                   disabled={!bitcoinReady || !hubUi.bitcoinExplorer}
-                  title={!hubUi.bitcoinExplorer ? 'Enable Bitcoin — Block & transaction detail routes in Admin → Feature visibility' : undefined}
+                  title={!hubUi.bitcoinExplorer ? shared.explorerRoutesOff : undefined}
                   onClick={() => this.handleTxLookup()}
                 >
                   <Icon name='search' />
-                  Open
+                  {c.tools.openTransaction}
                 </Button>
               </Form.Field>
             </Form.Group>
@@ -1439,12 +1469,14 @@ class BitcoinHome extends React.Component {
           </Form>
 
           <p style={{ color: '#666', marginBottom: '0.35em' }}>
-            <strong>Broadcast raw transaction</strong> — <code>sendrawtransaction</code>. Requires admin token (same as Generate Block).
+            <strong>{c.tools.broadcastTitle}</strong> {c.tools.broadcastIntro}
           </p>
           <Form>
             <Form.TextArea
+              id='bitcoin-broadcast-hex'
+              label={c.tools.broadcastLabel}
               rows={4}
-              placeholder='Paste hex (no spaces required)'
+              placeholder={c.tools.broadcastPlaceholder}
               value={this.state.rawTxHex}
               onChange={(e) => this.setState({ rawTxHex: e.target.value, rawTxResult: null })}
               disabled={!hasAdminToken}
@@ -1457,7 +1489,7 @@ class BitcoinHome extends React.Component {
               onClick={() => this.handleBroadcastRawTx()}
             >
               <Icon name='send' />
-              Broadcast
+              {c.tools.broadcast}
             </Button>
           </Form>
           {this.state.rawTxResult && (
@@ -1466,12 +1498,12 @@ class BitcoinHome extends React.Component {
               negative={!!this.state.rawTxResult.error}
               positive={!this.state.rawTxResult.error}
             >
-              <Message.Header>{this.state.rawTxResult.error ? 'Broadcast failed' : 'Broadcast accepted'}</Message.Header>
+              <Message.Header>{this.state.rawTxResult.error ? c.tools.broadcastFailed : c.tools.broadcastOk}</Message.Header>
               {this.state.rawTxResult.error ? (
                 <p>{this.state.rawTxResult.error}</p>
               ) : (
                 <p>
-                  txid{' '}
+                  {c.tools.txidLead}{' '}
                   {this.state.rawTxResult.txid
                     ? (
                       hubUi.bitcoinExplorer ? (
@@ -1482,7 +1514,7 @@ class BitcoinHome extends React.Component {
                         <code>{this.state.rawTxResult.txid}</code>
                       )
                       )
-                    : '—'}
+                    : t.common.none}
                 </p>
               )}
             </Message>
@@ -1490,60 +1522,49 @@ class BitcoinHome extends React.Component {
         </Segment>
 
         <Segment loading={this.state.loading}>
-          <Header as='h3'>Wallet</Header>
+          <Header as='h3'>{c.wallet.title}</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <strong>Client:</strong> identity fingerprint, xpub, receive index, and client balance (matches the top-bar chip). <strong>Bridge:</strong> Hub node wallet —{' '}
-            {isRegtest ? 'regtest block rewards, ' : 'on-chain balance, '}optional admin spends, Payjoin receiver. <strong>Documents:</strong> publishing is free; paid <Link to="/documents">distribute</Link> uses L1 invoices tied to your identity.
-            {(hubUi.bitcoinPayments || hubUi.bitcoinLightning) ? (
-              <span>
-                {' '}This Hub runs{' '}
-                {hubUi.bitcoinPayments ? (
-                  <><strong>one Payjoin receiver</strong> (BIP78-shaped HTTP POST; <code>pj=</code> in BIP21; <code>asyncPayjoinRoadmap: BIP77</code> in JSON capabilities)</>
-                ) : null}
-                {hubUi.bitcoinPayments && hubUi.bitcoinLightning ? ' and ' : null}
-                {hubUi.bitcoinLightning ? <><strong>one Lightning</strong> service path</> : null}
-                {hubUi.bitcoinPayments && !hubUi.bitcoinLightning ? '.' : null}
-                {hubUi.bitcoinLightning ? '.' : null}
-              </span>
-            ) : (
-              <span>
-                {' '}Turn on <strong>Bitcoin — Payments</strong> and/or <strong>Lightning</strong> in Admin → Feature visibility for Payjoin deposit tooling and L2 controls on this page.
-              </span>
-            )}
+            <strong>{c.wallet.yoursLead}</strong> {c.wallet.yours}{' '}
+            <strong>{c.wallet.hubLead}</strong> {c.wallet.hub(isRegtest)}{' '}
+            <strong>{c.wallet.documentsLead}</strong> {c.wallet.documentsBefore} <Link to="/documents">{c.wallet.distribute}</Link> {c.wallet.documentsAfter}
+            {' '}
+            {(hubUi.bitcoinPayments || hubUi.bitcoinLightning)
+              ? c.wallet.hubRuns(!!hubUi.bitcoinPayments, !!hubUi.bitcoinLightning)
+              : c.wallet.turnOnFeatures}
             {!wallet.hasPrivateKey && wallet.walletId && (
               <span style={{ display: 'block', marginTop: '0.25em', color: '#0a6' }}>
-                <Icon name='eye' /> Watch-only: server never holds your keys. Balance is derived from xpub via scantxoutset.
+                <Icon name='eye' /> {c.wallet.watchOnly}
               </span>
             )}
           </p>
-          <div><strong>Master wallet:</strong> <code>{wallet.walletId || 'not available'}</code></div>
-          <div><strong>Identity fingerprint:</strong> <code>{wallet.fingerprint || 'not available'}</code></div>
-          <div><strong>Keys on server:</strong> {wallet.hasPrivateKey ? 'yes (signing capable)' : 'no (watch-only, keys never leave your device)'}</div>
-          <div style={{ marginTop: '0.75em' }}><strong>Client wallet balance:</strong> {this.satsToBTC(wallet.balanceSats)} BTC</div>
-          <div><strong>Confirmed:</strong> {this.satsToBTC(wallet.confirmedSats)} BTC</div>
-          <div><strong>Unconfirmed:</strong> {this.satsToBTC(wallet.unconfirmedSats)} BTC</div>
+          <div><strong>{c.wallet.walletId}</strong> <code>{wallet.walletId || shared.notAvailable}</code></div>
+          <div><strong>{c.wallet.fingerprint}</strong> <code>{wallet.fingerprint || shared.notAvailable}</code></div>
+          <div><strong>{c.wallet.keysOnHub}</strong> {wallet.hasPrivateKey ? c.wallet.keysYes : c.wallet.keysNo}</div>
+          <div style={{ marginTop: '0.75em' }}><strong>{c.wallet.balance}</strong> {t.common.sats(wallet.balanceSats)}</div>
+          <div><strong>{c.wallet.confirmed}</strong> {t.common.sats(wallet.confirmedSats)}</div>
+          <div><strong>{c.wallet.unconfirmed}</strong> {t.common.sats(wallet.unconfirmedSats)}</div>
           {wallet.balanceSats === 0 && bitcoinNetwork === 'regtest' && (
             <div style={{ marginTop: '0.5em', color: '#0a6', fontSize: '0.9em' }}>
-              <Icon name='info circle' /> Just received funds? Use <strong>Generate Block</strong> to confirm — balance shows only confirmed UTXOs. If you used a custom faucet address instead of <strong>Use my receive address</strong>, funds went elsewhere and will not appear here.
+              <Icon name='info circle' /> {c.wallet.regtestZero}
             </div>
           )}
           <div style={{ marginTop: '0.5em' }}>
-            <strong>Receive address:</strong>{' '}
-            <code>{wallet.address || 'address unavailable'}</code>
+            <strong>{c.wallet.receiveAddress}</strong>{' '}
+            <code>{wallet.address || shared.notAvailable}</code>
             {wallet.address ? (
               <Button
                 basic
                 size='mini'
                 style={{ marginLeft: '0.5em' }}
                 onClick={() => this.handleNextReceiveAddress()}
-                title='Derive next external payment address'
+                title={c.wallet.nextAddressTitle}
               >
                 <Icon name='plus' />
-                Next
+                {c.wallet.nextAddress}
               </Button>
             ) : null}
           </div>
-          <div><strong>Receive derivation index:</strong> {wallet.receiveIndex}</div>
+          <div><strong>{c.wallet.receiveIndex}</strong> {wallet.receiveIndex}</div>
           {hubUi.bitcoinPayments ? (
             <React.Fragment>
               <div style={{ marginTop: '0.75em' }}>
@@ -1555,28 +1576,29 @@ class BitcoinHome extends React.Component {
                     savePayjoinPreferences({ operatorDeposit: v });
                     this.setState({ payjoinEnabled: v });
                   }}
-                  label='Use Payjoin for operator deposit sessions (on by default)'
+                  label={c.wallet.payjoinToggle}
                   disabled={!(this.state.payjoinCapabilities && this.state.payjoinCapabilities.available)}
                 />
               </div>
               <div style={{ marginTop: '0.25em', color: '#666' }}>
-                Payjoin endpoint status:{' '}
-                <strong>{this.state.payjoinCapabilities && this.state.payjoinCapabilities.available ? 'available' : 'unavailable'}</strong>
+                {c.wallet.payjoinStatus}{' '}
+                <strong>{this.state.payjoinCapabilities && this.state.payjoinCapabilities.available ? c.wallet.payjoinAvailable : t.common.states.unavailable}</strong>
               </div>
             </React.Fragment>
           ) : null}
         </Segment>
 
         <Segment>
-          <Header as='h3'>Look Up Address Balance</Header>
+          <Header as='h3'>{c.lookup.title}</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <Icon name='search' /> Query balance for any on-chain address. <strong>Server does not hold keys</strong> — uses <code>scantxoutset</code> (UTXO scan). Works on pruned nodes; does not require <code>txindex</code>.
+            <Icon name='search' /> {c.lookup.intro}
           </p>
           <Form>
             <Form.Field>
-              <label>Address ({bitcoinNetwork || 'any'})</label>
+              <label htmlFor='bitcoin-lookup-address'>{c.lookup.label(bitcoinNetwork)}</label>
               <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
                 <Input
+                  id='bitcoin-lookup-address'
                   placeholder={addressPlaceholder}
                   value={this.state.lookupAddress}
                   onChange={(e) => this.setState({ lookupAddress: e.target.value })}
@@ -1587,9 +1609,9 @@ class BitcoinHome extends React.Component {
                     type='button'
                     basic
                     onClick={() => this.setState({ lookupAddress: wallet.address })}
-                    title='Use your current receive address'
+                    title={c.lookup.useMineTitle}
                   >
-                    Use my address
+                    {c.lookup.useMine}
                   </Button>
                 )}
                 <Button
@@ -1599,7 +1621,7 @@ class BitcoinHome extends React.Component {
                   disabled={!bitcoinReady || !(this.state.lookupAddress || '').trim()}
                 >
                   <Icon name='search' />
-                  Look Up
+                  {c.lookup.submit}
                 </Button>
               </div>
             </Form.Field>
@@ -1611,14 +1633,14 @@ class BitcoinHome extends React.Component {
               positive={!this.state.lookupResult.error}
             >
               <Message.Header>
-                {this.state.lookupResult.error ? 'Lookup failed' : 'Address balance (no keys on server)'}
+                {this.state.lookupResult.error ? c.lookup.failed : c.lookup.ok}
               </Message.Header>
               {this.state.lookupResult.error ? (
                 <p>{this.state.lookupResult.error}</p>
               ) : (
                 <div>
-                  <div><strong>Balance:</strong> {this.satsToBTC(this.state.lookupResult.balanceSats || 0)} BTC ({formatSatsDisplay(this.state.lookupResult.balanceSats || 0)} sats)</div>
-                  {this.state.lookupResult.network && <div><strong>Network:</strong> {this.state.lookupResult.network}</div>}
+                  <div><strong>{c.lookup.balance}</strong> {t.common.sats(this.state.lookupResult.balanceSats || 0)}</div>
+                  {this.state.lookupResult.network && <div><strong>{c.lookup.network}</strong> {this.state.lookupResult.network}</div>}
                 </div>
               )}
             </Message>
@@ -1628,11 +1650,10 @@ class BitcoinHome extends React.Component {
         {hubUi.bitcoinCrowdfund ? (
           <Segment id="fabric-bitcoin-crowdfunding">
             <Message info>
-              <Message.Header>Crowdfunds</Message.Header>
+              <Message.Header>{c.crowdfunds.title}</Message.Header>
               <p style={{ margin: '0.35em 0 0' }}>
-                Taproot campaign vaults, ACP donation PSBTs, Payjoin to vault, payout, and refund flows live on{' '}
-                <Link to="/services/bitcoin/crowdfunds">Crowdfunds</Link>
-                {' '}(bookmark <code>/services/bitcoin/crowdfunds</code> or <code>/crowdfunds</code>).
+                {c.crowdfunds.before}{' '}
+                <Link to="/services/bitcoin/crowdfunds">{c.crowdfunds.link}</Link> {c.crowdfunds.after}
               </p>
             </Message>
           </Segment>
@@ -1640,7 +1661,7 @@ class BitcoinHome extends React.Component {
 
         {hubUi.bitcoinPayments ? (
         <Segment id="fabric-bitcoin-payjoin" data-testid="hub-payjoin-deposit">
-          <Header as='h3'>Payjoin deposit</Header>
+          <Header as='h3'>{c.payjoin.title}</Header>
           {this.state.payjoinSessionsSnapshot ? (
             <Message
               id="fabric-bitcoin-payjoin-sessions-strip"
@@ -1649,44 +1670,44 @@ class BitcoinHome extends React.Component {
               style={{ marginTop: '0.25rem', marginBottom: '1rem' }}
             >
               <Icon name="list alternate outline" />
-              <strong>Hub deposit sessions</strong>
-              {' '}(not expired): {this.state.payjoinSessionsSnapshot.activeNotExpired}
-              {this.state.payjoinSessionsSnapshot.awaitingCompletion > 0 ? (
-                <> — {this.state.payjoinSessionsSnapshot.awaitingCompletion} still in progress</>
-              ) : null}
-              .{' '}
-              <Link to="/payments">Payments</Link>
-              {' '}lists sessions and payer tools.
+              {c.payjoin.sessions(
+                Number(this.state.payjoinSessionsSnapshot.activeNotExpired || 0),
+                Number(this.state.payjoinSessionsSnapshot.awaitingCompletion || 0)
+              )}{' '}
+              {c.payjoin.sessionsSee}{' '}
+              <Link to="/payments">{c.payjoin.sessionsPayments}</Link>
+              {' '}{c.payjoin.sessionsAfter}
             </Message>
           ) : null}
-          <p style={{ color: '#666' }}>
-            Creates a BIP21 URI with <code>pj=</code> pointing at this Hub&apos;s single Payjoin endpoint for BIP78-compatible payjoin clients.
-          </p>
+          <p style={{ color: '#666' }}>{c.payjoin.intro}</p>
           <Form>
             <Form.Group widths='equal'>
               <Form.Field>
-                <label>Requested amount (sats, optional)</label>
+                <label htmlFor='bitcoin-payjoin-amount'>{c.payjoin.amount}</label>
                 <Input
+                  id='bitcoin-payjoin-amount'
                   type='number'
                   min='0'
                   step='1'
-                  placeholder='25000'
+                  placeholder={c.payjoin.amountPlaceholder}
                   value={this.state.payjoinAmountSats}
                   onChange={(e) => this.setState({ payjoinAmountSats: e.target.value })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Label (optional)</label>
+                <label htmlFor='bitcoin-payjoin-label'>{c.payjoin.label}</label>
                 <Input
-                  placeholder='Initial hub deposit'
+                  id='bitcoin-payjoin-label'
+                  placeholder={c.payjoin.labelPlaceholder}
                   value={this.state.payjoinLabel}
                   onChange={(e) => this.setState({ payjoinLabel: e.target.value })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Memo (optional)</label>
+                <label htmlFor='bitcoin-payjoin-memo'>{c.payjoin.memo}</label>
                 <Input
-                  placeholder='Shown in wallet (optional)'
+                  id='bitcoin-payjoin-memo'
+                  placeholder={c.payjoin.memoPlaceholder}
                   value={this.state.payjoinMemo}
                   onChange={(e) => this.setState({ payjoinMemo: e.target.value })}
                 />
@@ -1694,11 +1715,11 @@ class BitcoinHome extends React.Component {
             </Form.Group>
             <Button primary onClick={() => this.handleCreatePayjoinDeposit()} disabled={!this.state.payjoinEnabled}>
               <Icon name='shield alternate' />
-              Create Payjoin Deposit Request
+              {c.payjoin.create}
             </Button>
             <Button basic onClick={() => this.handleRefreshPayjoinSession()} disabled={!this.state.payjoinSessionId}>
               <Icon name='refresh' />
-              Refresh Session
+              {c.payjoin.refresh}
             </Button>
           </Form>
           {this.state.payjoinResult && (
@@ -1707,7 +1728,7 @@ class BitcoinHome extends React.Component {
               negative={!!this.state.payjoinResult.error}
               positive={!this.state.payjoinResult.error}
             >
-              <Message.Header>{this.state.payjoinResult.error ? 'Payjoin request failed' : 'Payjoin session'}</Message.Header>
+              <Message.Header>{this.state.payjoinResult.error ? c.payjoin.failed : c.payjoin.session}</Message.Header>
               {!this.state.payjoinResult.error && (this.state.payjoinResult.id || this.state.payjoinResult.bip21Uri) && (
                 <div style={{ marginBottom: '0.75em', display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
                   <Button
@@ -1716,10 +1737,10 @@ class BitcoinHome extends React.Component {
                     type="button"
                     disabled={!this.state.payjoinResult.bip21Uri}
                     onClick={() => copyToClipboard(this.state.payjoinResult.bip21Uri || '')}
-                    title="Copy BIP21 URI for wallet paste"
+                    title={c.payjoin.copyLinkTitle}
                   >
                     <Icon name="copy outline" />
-                    Copy BIP21
+                    {c.payjoin.copyLink}
                   </Button>
                   <Button
                     size="small"
@@ -1727,10 +1748,9 @@ class BitcoinHome extends React.Component {
                     type="button"
                     disabled={!this.state.payjoinResult.id}
                     onClick={() => copyToClipboard(String(this.state.payjoinResult.id || ''))}
-                    title="Copy session id"
                   >
                     <Icon name="copy outline" />
-                    Copy session ID
+                    {c.payjoin.copySession}
                   </Button>
                   <Button
                     as={Link}
@@ -1741,11 +1761,15 @@ class BitcoinHome extends React.Component {
                       : '/payments'}
                   >
                     <Icon name="credit card outline" />
-                    Open Payments (submit PSBT)
+                    {c.payjoin.openPayments}
                   </Button>
                 </div>
               )}
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.payjoinResult, null, 2)}</pre>
+              {this.state.payjoinResult.error ? <p>{this.state.payjoinResult.error}</p> : null}
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.payjoinResult, null, 2)}</pre>
+              </details>
             </Message>
           )}
         </Segment>
@@ -1753,31 +1777,31 @@ class BitcoinHome extends React.Component {
 
         {isFaucetPage ? (
         <Segment data-faucet-segment id="fabric-bitcoin-faucet">
-          <Header as='h3'>Faucet</Header>
+          <Header as='h3'>{c.faucet.title}</Header>
           <p style={{ color: '#666', marginBottom: '0.5em' }}>
-            <strong>Bridge:</strong> draws from Beacon/Hub wallet (regtest only). Max 1,000,000 sats per request.
-            {bitcoinNetwork && <span> Use addresses for <strong>{bitcoinNetwork}</strong> (e.g. {addressPlaceholder}).</span>}
-            {' '}Choose <strong>Use my receive address</strong> so funds go to your wallet; otherwise balance will not update.
-            {' '}
-            <strong>Note:</strong> mining with <strong>Generate Block</strong> tops up the Hub wallet, not your browser chip — this flow is how you transfer from Hub to identity.
+            {c.faucet.intro(1000000)}
+            {bitcoinNetwork ? ` ${c.faucet.useNetwork(bitcoinNetwork, addressPlaceholder)}` : null}
+            {' '}{c.faucet.useMineHint}
+            {' '}{c.faucet.blockNote}
           </p>
           <div style={{ marginBottom: '0.5em' }}>
-            <strong>Network:</strong> {bitcoinNetwork || 'unknown'}
+            <strong>{c.faucet.network}</strong> {bitcoinNetwork || c.faucet.unknownNetwork}
           </div>
           <div style={{ marginBottom: '1em' }}>
-            <strong>Hub available balance:</strong>{' '}
-            {Number(this.state.bitcoinStatus && this.state.bitcoinStatus.balance != null ? this.state.bitcoinStatus.balance : 0).toFixed(8)} BTC
+            <strong>{c.faucet.hubBalance}</strong>{' '}
+            {t.common.sats(hubWalletSats)}
             {this.state.bitcoinStatus && this.state.bitcoinStatus.beacon && (
               <span style={{ marginLeft: '1em', color: '#666' }}>
-                (Beacon: {formatSatsDisplay(this.state.bitcoinStatus.beacon.balanceSats || 0)} sats)
+                {c.faucet.beaconBalance(t.common.sats(this.state.bitcoinStatus.beacon.balanceSats || 0))}
               </span>
             )}
           </div>
           <Form>
             <Form.Field>
-              <label>Send to address ({bitcoinNetwork || 'any'})</label>
+              <label htmlFor='bitcoin-faucet-address'>{c.faucet.addressLabel(bitcoinNetwork)}</label>
               <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap', alignItems: 'center' }}>
                 <Input
+                  id='bitcoin-faucet-address'
                   placeholder={addressPlaceholder}
                   value={this.state.faucetAddress}
                   onChange={(e) => this.setState({ faucetAddress: e.target.value })}
@@ -1788,21 +1812,21 @@ class BitcoinHome extends React.Component {
                     type='button'
                     basic
                     onClick={() => this.setState({ faucetAddress: wallet.address })}
-                    title='Fill with your current receive address (same network as Hub)'
+                    title={c.faucet.useMineTitle}
                   >
-                    Use my receive address
+                    {c.faucet.useMine}
                   </Button>
                 )}
               </div>
             </Form.Field>
             <Form.Field>
-              <label>Amount (sats)</label>
+              <label htmlFor='bitcoin-faucet-amount'>{c.faucet.amount}</label>
               <Input
+                id='bitcoin-faucet-amount'
                 type='number'
                 min='1'
                 max='1000000'
                 step='1'
-                placeholder='10000'
                 value={this.state.faucetAmountSats}
                 onChange={(e) => this.setState({ faucetAmountSats: e.target.value })}
               />
@@ -1811,15 +1835,15 @@ class BitcoinHome extends React.Component {
               primary
               onClick={() => this.handleRequestFaucet()}
               disabled={!canGenerateBlocks || !(this.state.faucetAddress || '').trim()}
-              title={!canGenerateBlocks ? 'Bitcoin must be available (regtest) to use faucet' : !(this.state.faucetAddress || '').trim() ? `Enter a ${bitcoinNetwork || 'regtest'} address (e.g. ${addressPlaceholder})` : 'Send test coins to this address'}
+              title={!canGenerateBlocks ? c.faucet.needsRegtest : !(this.state.faucetAddress || '').trim() ? c.faucet.needsAddress(bitcoinNetwork, addressPlaceholder) : c.faucet.submitTitle}
             >
               <Icon name='tint' />
-              Request from faucet
+              {c.faucet.submit}
             </Button>
           </Form>
           {this.state.faucetResult && (
             <Message style={{ marginTop: '1em' }} positive={!this.state.faucetResult.error} negative={!!this.state.faucetResult.error}>
-              <Message.Header>{this.state.faucetResult.error ? 'Faucet failed' : 'Faucet'}</Message.Header>
+              <Message.Header>{this.state.faucetResult.error ? c.faucet.failed : c.faucet.ok}</Message.Header>
               {!this.state.faucetResult.error && (() => {
                 const fr = this.state.faucetResult;
                 const faucet = fr && fr.faucet;
@@ -1829,13 +1853,12 @@ class BitcoinHome extends React.Component {
                 if (txid || amountSats) {
                   return (
                     <p style={{ marginTop: '0.5em', marginBottom: '0.5em' }}>
-                      {amountSats ? `Sent ${Number(amountSats).toLocaleString()} sats` : 'Sent'}
-                      {dest ? ` to ${dest.slice(0, 12)}…${dest.slice(-8)}` : ''}.
+                      {c.faucet.sent(amountSats ? Number(amountSats) : 0, dest ? `${dest.slice(0, 12)}…${dest.slice(-8)}` : '')}
                       {txid ? (
                         <span style={{ display: 'block', marginTop: '0.35em' }}>
                           {hubUi.bitcoinExplorer ? (
                             <Link to={`/services/bitcoin/transactions/${encodeURIComponent(String(txid))}`}>
-                              View transaction
+                              {shared.viewTransaction}
                             </Link>
                           ) : (
                             <code style={{ fontSize: '0.9em' }}>{String(txid)}</code>
@@ -1847,7 +1870,11 @@ class BitcoinHome extends React.Component {
                 }
                 return null;
               })()}
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '0.5em' }}>{JSON.stringify(this.state.faucetResult, null, 2)}</pre>
+              {this.state.faucetResult.error ? <p>{this.state.faucetResult.error}</p> : null}
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '0.5em' }}>{JSON.stringify(this.state.faucetResult, null, 2)}</pre>
+              </details>
             </Message>
           )}
         </Segment>
@@ -1855,51 +1882,50 @@ class BitcoinHome extends React.Component {
 
         {hubUi.bitcoinPayments ? (
         <Segment>
-          <Header as='h3'>Send Payment (Layer 1)</Header>
+          <Header as='h3'>{c.sendMoved.title}</Header>
           <p style={{ color: '#666', marginBottom: 0 }}>
-            This section moved to the dedicated wallet transactions screen (includes federation multisig vault tools).
-            {' '}
-            <Link to="/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel">Open wallet &amp; federation</Link>.
+            {c.sendMoved.body}{' '}
+            <Link to="/services/bitcoin/transactions?scope=wallet#fabric-federation-wallet-panel">{c.sendMoved.link}</Link>.
           </p>
         </Segment>
         ) : null}
 
         {hubUi.bitcoinLightning && isLightningPage ? (
         <Segment id="fabric-bitcoin-lightning">
-          <Header as='h3'>Lightning Node (Layer 2)</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge:</strong> create invoice, decode, and pay go through the Hub or external Lightning API.</p>
+          <Header as='h3'>{c.lightning.title}</Header>
+          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.lightning.intro}</p>
           {lightningAvailable && this.state.lightningStatus && this.state.lightningStatus.status === 'RUNNING' && (
             <>
               <Message positive style={{ marginBottom: '1em' }}>
                 <Message.Header>
                   <Icon name='bolt' />
-                  Lightning node running
+                  {c.lightning.running}
                   {this.state.lightningStatus.node && this.state.lightningStatus.node.alias
                     ? ` — ${this.state.lightningStatus.node.alias}`
                     : ''}
                 </Message.Header>
                 <p>
-                  {this.state.lightningChannels.length} channel(s).
+                  {c.lightning.channels(this.state.lightningChannels.length)}
                 </p>
               </Message>
               {this.state.lightningStatus.node && (this.state.lightningStatus.node.id || this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
                 <Segment style={{ padding: '0.75em', marginBottom: '1em', background: 'rgba(0,0,0,0.03)' }}>
-                  <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Share with other peers</Header>
+                  <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>{c.lightning.share}</Header>
                   {this.state.lightningStatus.node.id && (
                     <div style={{ marginBottom: '0.5em' }}>
-                      <strong>Peer ID:</strong>{' '}
+                      <strong>{c.lightning.nodeId}</strong>{' '}
                       <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.id}</code>
                     </div>
                   )}
                   {(this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
                     <div style={{ marginBottom: '0.5em' }}>
-                      <strong>IP:PORT:</strong>{' '}
+                      <strong>{c.lightning.address}</strong>{' '}
                       <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding}</code>
                     </div>
                   )}
                   {this.state.lightningStatus.node.id && (this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding) && (
                     <div style={{ marginBottom: '0.5em' }}>
-                      <strong>Connect string (for Create channel):</strong>{' '}
+                      <strong>{c.lightning.connect}</strong>{' '}
                       <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.id}@{this.state.lightningStatus.node.address || this.state.lightningStatus.node.binding}</code>
                     </div>
                   )}
@@ -1932,10 +1958,10 @@ class BitcoinHome extends React.Component {
                           }
                         } catch (e) {}
                       }}
-                      title='Copy Lightning peer ID and address'
+                      title={c.lightning.copyNodeTitle}
                     >
                       <Icon name='copy' />
-                      Copy to clipboard
+                      {c.lightning.copyNode}
                     </Button>
                   )}
                 </Segment>
@@ -1944,20 +1970,18 @@ class BitcoinHome extends React.Component {
           )}
           {!lightningAvailable && (
             <Message info>
-              <Message.Header>Lightning</Message.Header>
-              <p>{(this.state.lightningStatus && this.state.lightningStatus.message) || 'Lightning runs automatically with regtest. Use regtest for local development.'}</p>
+              <Message.Header>{c.lightning.unavailableTitle}</Message.Header>
+              <p>{(this.state.lightningStatus && this.state.lightningStatus.message) || c.lightning.unavailable}</p>
             </Message>
           )}
 
           {lightningAvailable && this.state.lightningStatus && this.state.lightningStatus.status === 'RUNNING' && (
             <Segment style={{ padding: '0.75em', marginBottom: '1em', background: 'rgba(0,0,0,0.02)' }}>
-              <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>Fund Lightning node</Header>
-              <p style={{ color: '#666', marginBottom: '0.5em', fontSize: '0.95em' }}>
-                Send on-chain Bitcoin to this address to fund the Lightning node. You need funds before creating channels. Use the Faucet below (regtest) or Send Payment.
-              </p>
+              <Header as='h5' style={{ margin: '0 0 0.5em 0' }}>{c.lightning.fundTitle}</Header>
+              <p style={{ color: '#666', marginBottom: '0.5em', fontSize: '0.95em' }}>{c.lightning.fundIntro}</p>
               {this.state.lightningStatus.node && this.state.lightningStatus.node.depositAddress && (
                 <div style={{ marginBottom: '0.5em' }}>
-                  <strong>Deposit address:</strong>{' '}
+                  <strong>{c.lightning.depositAddress}</strong>{' '}
                   <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{this.state.lightningStatus.node.depositAddress}</code>
                   <Button
                     size='mini'
@@ -1981,7 +2005,8 @@ class BitcoinHome extends React.Component {
                         }
                       } catch (e) {}
                     }}
-                    title='Copy deposit address'
+                    title={c.lightning.copyDeposit}
+                    aria-label={c.lightning.copyDeposit}
                   >
                     <Icon name='copy' />
                   </Button>
@@ -1995,10 +2020,10 @@ class BitcoinHome extends React.Component {
                       const faucetSegment = document.querySelector('[data-faucet-segment]');
                       if (faucetSegment) faucetSegment.scrollIntoView({ behavior: 'smooth' });
                     }}
-                    title='Use this address in the Faucet below'
+                    title={c.lightning.useInFaucetTitle}
                   >
                     <Icon name='tint' />
-                    Use in Faucet
+                    {c.lightning.useInFaucet}
                   </Button>
                 </div>
               )}
@@ -2016,29 +2041,29 @@ class BitcoinHome extends React.Component {
                 const total = bal.confirmed + bal.unconfirmed + bal.immature;
                 return (
                 <div style={{ marginBottom: '0.5em' }}>
-                  <strong>On-chain balance:</strong>{' '}
-                  {formatSatsDisplay(bal.confirmed)} sats confirmed
+                  <strong>{c.lightning.onChain}</strong>{' '}
+                  {c.lightning.confirmed(t.common.sats(bal.confirmed))}
                   {bal.unconfirmed > 0 && (
                     <span style={{ marginLeft: '0.5em' }}>
-                      + {formatSatsDisplay(bal.unconfirmed)} unconfirmed
+                      {c.lightning.plusUnconfirmed(t.common.sats(bal.unconfirmed))}
                     </span>
                   )}
                   {bal.immature > 0 && (
                     <span style={{ marginLeft: '0.5em' }}>
-                      + {formatSatsDisplay(bal.immature)} immature
+                      {c.lightning.plusImmature(t.common.sats(bal.immature))}
                     </span>
                   )}
                   {total > 0 && (bal.unconfirmed > 0 || bal.immature > 0) && (
                     <span style={{ marginLeft: '0.5em', fontWeight: 600 }}>
-                      = {formatSatsDisplay(total)} sats total
+                      {c.lightning.total(t.common.sats(total))}
                     </span>
                   )}
                   {total < 10000 && (
-                    <span style={{ marginLeft: '0.5em', color: '#b00' }}>(need at least 10,000 sats for channels)</span>
+                    <span style={{ marginLeft: '0.5em', color: '#b00' }}>{c.lightning.needMin(10000)}</span>
                   )}
                   {(this.state.bitcoinStatus && this.state.bitcoinStatus.network === 'regtest') && (
                     <p style={{ fontSize: '0.85em', color: '#666', marginTop: '0.25em', marginBottom: 0 }}>
-                      On regtest: generate blocks after sending to confirm. Click refresh to update.
+                      {c.lightning.regtestConfirm}
                     </p>
                   )}
                 </div>
@@ -2051,20 +2076,20 @@ class BitcoinHome extends React.Component {
             <>
               <Header as='h4' style={{ marginTop: '1em' }}>
                 <Link to="/contracts" style={{ color: 'inherit' }}>
-                  Channels ({this.state.lightningChannels.length})
+                  {c.lightning.channelsTitle(this.state.lightningChannels.length)}
                 </Link>
               </Header>
               {this.state.lightningChannels.length === 0 ? (
-                <p style={{ color: '#666' }}>No channels yet. Create one below to connect to another Lightning node.</p>
+                <p style={{ color: '#666' }}>{c.lightning.noChannels}</p>
               ) : (
                 <Table celled compact size='small'>
                   <Table.Header>
                     <Table.Row>
-                      <Table.HeaderCell>Peer</Table.HeaderCell>
-                      <Table.HeaderCell>State</Table.HeaderCell>
-                      <Table.HeaderCell>Capacity</Table.HeaderCell>
-                      <Table.HeaderCell>Our balance</Table.HeaderCell>
-                      <Table.HeaderCell>Short channel ID</Table.HeaderCell>
+                      <Table.HeaderCell>{c.lightning.peer}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.lightning.state}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.lightning.capacity}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.lightning.ourBalance}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.lightning.shortChannelId}</Table.HeaderCell>
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
@@ -2083,15 +2108,15 @@ class BitcoinHome extends React.Component {
                           <Table.Cell>
                             <code style={{ fontSize: '0.85em' }}>{this.trimHash(lnChannel.peer_id || lnChannel.funding_txid || '')}</code>
                           </Table.Cell>
-                          <Table.Cell>{lnChannel.state || '—'}</Table.Cell>
+                          <Table.Cell>{lnChannel.state || t.common.none}</Table.Cell>
                           <Table.Cell>
-                            {lnChannel.amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(lnChannel.amount_msat) / 1000))} sats` : (lnChannel.channel_sat != null ? `${formatSatsDisplay(lnChannel.channel_sat)} sats` : '—')}
+                            {lnChannel.amount_msat != null ? t.common.sats(Math.floor(Number(lnChannel.amount_msat) / 1000)) : (lnChannel.channel_sat != null ? t.common.sats(lnChannel.channel_sat) : t.common.none)}
                           </Table.Cell>
                           <Table.Cell>
-                            {lnChannel.our_amount_msat != null ? `${formatSatsDisplay(Math.floor(Number(lnChannel.our_amount_msat) / 1000))} sats` : '—'}
+                            {lnChannel.our_amount_msat != null ? t.common.sats(Math.floor(Number(lnChannel.our_amount_msat) / 1000)) : t.common.none}
                           </Table.Cell>
                           <Table.Cell>
-                            <code style={{ fontSize: '0.8em' }}>{lnChannel.short_channel_id || '—'}</code>
+                            <code style={{ fontSize: '0.8em' }}>{lnChannel.short_channel_id || t.common.none}</code>
                           </Table.Cell>
                         </Table.Row>
                       );
@@ -2100,16 +2125,15 @@ class BitcoinHome extends React.Component {
                 </Table>
               )}
 
-              <Header as='h4' style={{ marginTop: '1.5em' }}>Create channel</Header>
-              <p style={{ color: '#666', marginBottom: '0.5em' }}>
-                Connect to a peer and open a channel. Paste the <strong>connect string (id@ip:port)</strong> from the other node&apos;s Share section above.
-              </p>
+              <Header as='h4' style={{ marginTop: '1.5em' }}>{c.lightning.createTitle}</Header>
+              <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.lightning.createIntro}</p>
               <Form>
                 <Form.Group widths='equal'>
                   <Form.Field>
-                    <label>Remote (id@ip:port)</label>
+                    <label htmlFor='bitcoin-ln-remote'>{c.lightning.remote}</label>
                     <Input
-                      placeholder='03abc123...@192.168.50.5:9735'
+                      id='bitcoin-ln-remote'
+                      placeholder='03abc123…@192.168.50.5:9735'
                       value={this.state.channelCreateRemote}
                       onChange={(e) => this.setState({ channelCreateRemote: e.target.value })}
                     />
@@ -2117,21 +2141,21 @@ class BitcoinHome extends React.Component {
                 </Form.Group>
                 <Form.Group widths='equal'>
                   <Form.Field>
-                    <label>Amount (sats, min 10000)</label>
+                    <label htmlFor='bitcoin-ln-amount'>{c.lightning.channelAmount(10000)}</label>
                     <Input
+                      id='bitcoin-ln-amount'
                       type='number'
                       min='10000'
-                      placeholder='100000'
                       value={this.state.channelCreateAmountSats}
                       onChange={(e) => this.setState({ channelCreateAmountSats: e.target.value })}
                     />
                   </Form.Field>
                   <Form.Field>
-                    <label>Push to peer (msat, optional)</label>
+                    <label htmlFor='bitcoin-ln-push'>{c.lightning.push}</label>
                     <Input
+                      id='bitcoin-ln-push'
                       type='number'
                       min='0'
-                      placeholder='0'
                       value={this.state.channelCreatePushMsat}
                       onChange={(e) => this.setState({ channelCreatePushMsat: e.target.value })}
                     />
@@ -2144,7 +2168,7 @@ class BitcoinHome extends React.Component {
                   onClick={() => this.handleCreateChannel()}
                 >
                   <Icon name='plug' />
-                  Create channel
+                  {c.lightning.create}
                 </Button>
               </Form>
               {this.state.channelCreateResult && (
@@ -2153,7 +2177,7 @@ class BitcoinHome extends React.Component {
                   negative={!!this.state.channelCreateResult.error}
                   positive={!this.state.channelCreateResult.error}
                 >
-                  <Message.Header>{this.state.channelCreateResult.error ? 'Channel creation failed' : 'Channel created'}</Message.Header>
+                  <Message.Header>{this.state.channelCreateResult.error ? c.lightning.createFailed : c.lightning.created}</Message.Header>
                   {this.state.channelCreateResult.error && (
                     <p style={{ marginBottom: '0.5em' }}>
                       {this.state.channelCreateResult.error}
@@ -2162,24 +2186,24 @@ class BitcoinHome extends React.Component {
                   )}
                   {this.state.channelCreateResult.error && /connect|peer|connection/i.test(this.state.channelCreateResult.error) && (
                     <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
-                      Ensure the <strong>Remote (id@ip:port)</strong> field is filled with the other node&apos;s connect string from their Share section. The other node must be running and reachable (use the host&apos;s IP, not 127.0.0.1, when connecting across machines).
+                      {c.lightning.hintConnect}
                     </p>
                   )}
                   {this.state.channelCreateResult.error && /wrong key|handshake/i.test(this.state.channelCreateResult.error) && (
                     <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
-                      <strong>Wrong key / handshake failed</strong> means the node ID doesn&apos;t match the node at that address. Use the <strong>other</strong> node&apos;s connect string — not your own. If you&apos;re on the same machine, ensure you&apos;re not connecting this Hub to itself.
+                      {c.lightning.hintWrongKey}
                     </p>
                   )}
                   {this.state.channelCreateResult.error && /bad file descriptor/i.test(this.state.channelCreateResult.error) && (
                     <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
-                      <strong>Bad file descriptor</strong> often indicates a CLN resource issue. Try: restart the Lightning node; check <code>ulimit -n</code> (file descriptor limit); verify the remote is listening with <code>nc -zv host 9735</code>.
+                      {c.lightning.hintBadFd}
                     </p>
                   )}
                   {this.state.channelCreateResult.error && /Unsupported feature|feature 44|WIRE_WARNING|peer_disconnected/i.test(
                     [this.state.channelCreateResult.error, this.state.channelCreateResult.detail].filter(Boolean).join(' ')
                   ) && (
                     <p style={{ fontSize: '0.9em', color: '#666', marginTop: '0.5em' }}>
-                      <strong>Unsupported feature 44</strong> means the remote node does not support BOLT 9 channel_type. Upgrade the remote Lightning node (LND, CLN, or Eclair) to a version from 2021 or later.
+                      {c.lightning.hintFeature44}
                     </p>
                   )}
                   {this.state.channelCreateResult.hint && (
@@ -2189,41 +2213,45 @@ class BitcoinHome extends React.Component {
                   )}
                   {this.state.channelCreateResult.status && (
                     <p style={{ fontSize: '0.85em', color: '#555', marginTop: '0.5em' }}>
-                      <strong>Status:</strong> {this.state.channelCreateResult.status.peerCount != null ? `${this.state.channelCreateResult.status.peerCount} peers` : '—'} {this.state.channelCreateResult.status.idleDisconnected != null ? `(${this.state.channelCreateResult.status.idleDisconnected} idle disconnected)` : ''}
+                      <strong>{c.lightning.statusLead}</strong> {this.state.channelCreateResult.status.peerCount != null ? c.lightning.statusPeers(this.state.channelCreateResult.status.peerCount) : t.common.none} {this.state.channelCreateResult.status.idleDisconnected != null ? c.lightning.statusIdle(this.state.channelCreateResult.status.idleDisconnected) : ''}
                     </p>
                   )}
-                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '0.5em' }}>{JSON.stringify(this.state.channelCreateResult, null, 2)}</pre>
+                  <details className="hub-developer-details">
+                    <summary>{t.common.developerDetails}</summary>
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '0.5em' }}>{JSON.stringify(this.state.channelCreateResult, null, 2)}</pre>
+                  </details>
                 </Message>
               )}
             </>
           )}
 
-          <Header as='h4' style={{ marginTop: '1.5em' }}>Invoices & payments</Header>
+          <Header as='h4' style={{ marginTop: '1.5em' }}>{c.lightning.invoicesTitle}</Header>
           <p style={{ fontSize: '0.88em', color: '#666', margin: '0 0 0.75em' }}>
-            Below is <strong>Lightning (BOLT11)</strong>. For <strong>on-chain payment requests</strong> stored in the browser (account-to-account walkthrough), use{' '}
+            {c.lightning.invoicesBefore}{' '}
             {hubUi.bitcoinInvoices ? (
-              <Link to="/services/bitcoin/invoices#fabric-invoices-tab-demo">Invoices</Link>
+              <Link to="/services/bitcoin/invoices#fabric-invoices-tab-demo">{c.lightning.invoicesLink}</Link>
             ) : (
-              <strong>Invoices</strong>
+              <strong>{c.lightning.invoicesLink}</strong>
             )}.
           </p>
           <Form>
             <Form.Group widths='equal'>
               <Form.Field>
-                <label>Create invoice amount (sats)</label>
+                <label htmlFor='bitcoin-ln-invoice-amount'>{c.lightning.invoiceAmount}</label>
                 <Input
+                  id='bitcoin-ln-invoice-amount'
                   type='number'
                   min='1'
                   step='1'
-                  placeholder='500'
                   value={this.state.invoiceAmountSats}
                   onChange={(e) => this.setState({ invoiceAmountSats: e.target.value })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Invoice memo</label>
+                <label htmlFor='bitcoin-ln-invoice-memo'>{c.lightning.invoiceMemo}</label>
                 <Input
-                  placeholder='Shown to payer (optional)'
+                  id='bitcoin-ln-invoice-memo'
+                  placeholder={c.lightning.invoiceMemoPlaceholder}
                   value={this.state.invoiceMemo}
                   onChange={(e) => this.setState({ invoiceMemo: e.target.value })}
                 />
@@ -2231,24 +2259,25 @@ class BitcoinHome extends React.Component {
             </Form.Group>
             <Button onClick={() => this.handleCreateLightningInvoice()} disabled={!lightningAvailable}>
               <Icon name='add circle' />
-              Create Invoice
+              {c.lightning.createInvoice}
             </Button>
             <Form.Field style={{ marginTop: '1em' }}>
-              <label>Invoice (BOLT11)</label>
+              <label htmlFor='bitcoin-ln-invoice'>{c.lightning.invoiceInput}</label>
               <Form.TextArea
+                id='bitcoin-ln-invoice'
                 rows={3}
-                placeholder='lnbc...'
+                placeholder='lnbc…'
                 value={this.state.invoiceInput}
                 onChange={(e) => this.setState({ invoiceInput: e.target.value })}
               />
             </Form.Field>
             <Button basic onClick={() => this.handleDecodeLightningInvoice()} disabled={!lightningAvailable}>
               <Icon name='search' />
-              Decode
+              {c.lightning.decode}
             </Button>
             <Button color='green' onClick={() => this.handlePayLightningInvoice()} disabled={!lightningAvailable}>
               <Icon name='bolt' />
-              Pay Invoice
+              {c.lightning.pay}
             </Button>
           </Form>
           {this.state.lightningResult && (
@@ -2257,8 +2286,12 @@ class BitcoinHome extends React.Component {
               negative={!!this.state.lightningResult.error}
               positive={!this.state.lightningResult.error}
             >
-              <Message.Header>{this.state.lightningResult.error ? 'Lightning action failed' : 'Lightning response'}</Message.Header>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.lightningResult, null, 2)}</pre>
+              <Message.Header>{this.state.lightningResult.error ? c.lightning.failed : c.lightning.response}</Message.Header>
+              {this.state.lightningResult.error ? <p>{this.state.lightningResult.error}</p> : null}
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(this.state.lightningResult, null, 2)}</pre>
+              </details>
             </Message>
           )}
         </Segment>
@@ -2266,21 +2299,27 @@ class BitcoinHome extends React.Component {
 
         {isExplorerPage ? (
         <Segment id="bitcoin-explorer">
-          <Header as='h3'>Explorer</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge (Hub node):</strong> blocks and mempool transactions.</p>
+          <Header as='h3'>{c.explorerSection.title}</Header>
+          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.explorerSection.intro}</p>
           {!hubUi.bitcoinExplorer && (this.state.blocks.length > 0 || this.state.transactions.length > 0) ? (
             <Message info size="small" style={{ marginBottom: '0.75em' }}>
-              Enable <strong>Bitcoin — Block &amp; transaction detail routes</strong> in Admin → Feature visibility to open block and tx pages from the lists below.
+              {shared.explorerRoutesOff}
             </Message>
           ) : null}
-          <Header as='h4'>Recent Blocks</Header>
+          <Header as='h4'>{c.explorerSection.recentBlocks}</Header>
           {this.state.blocks.length === 0 ? (
             explorerDataPending ? (
               <p style={{ color: '#666' }}>
-                <Loader inline active size="small" /> Loading block list from the Hub…
+                <Loader inline active size="small" /> {c.explorerSection.loadingBlocks}
               </p>
             ) : (
-              <p style={{ color: '#666' }}>No block data yet.</p>
+              <div style={{ color: '#666' }}>
+                <p style={{ margin: '0 0 0.35em', fontWeight: 600, color: '#444' }}>{shared.noBlocks.title}</p>
+                <p style={{ margin: '0 0 0.35em' }}>{shared.noBlocks.body}</p>
+                {bitcoinHealth !== 'ok' ? <p style={{ margin: '0 0 0.35em' }}>{bitcoinHealthLabel}. {bitcoinHealthHint}</p> : null}
+                <p style={{ margin: '0 0 0.35em' }}>{shared.noBlocks.check}</p>
+                {isRegtest ? <p style={{ margin: 0 }}>{shared.noBlocks.regtest}</p> : null}
+              </div>
             )
           ) : (
             <List divided relaxed>
@@ -2291,13 +2330,13 @@ class BitcoinHome extends React.Component {
                 const rewardSats = block.rewardSats != null ? Number(block.rewardSats) : null;
                 const totalOutSats = block.totalOutSats != null ? Number(block.totalOutSats) : null;
                 const txPart = Number.isFinite(txCount)
-                  ? `${txCount} tx${txCount === 1 ? '' : 's'}`
+                  ? c.explorerSection.txCount(txCount)
                   : null;
                 const rewardPart = Number.isFinite(rewardSats) && rewardSats >= 0
-                  ? `reward ${this.satsToBTC(rewardSats)} BTC`
+                  ? c.explorerSection.reward(t.common.sats(rewardSats))
                   : null;
                 const volumePart = Number.isFinite(totalOutSats) && totalOutSats >= 0
-                  ? `volume ${this.satsToBTC(totalOutSats)} BTC`
+                  ? c.explorerSection.volume(t.common.sats(totalOutSats))
                   : null;
                 const metaBits = [txPart, rewardPart, volumePart].filter(Boolean);
                 const meta = metaBits.length ? ` · ${metaBits.join(' · ')}` : '';
@@ -2308,17 +2347,17 @@ class BitcoinHome extends React.Component {
                         {block.hash || block.id ? (
                           hubUi.bitcoinExplorer ? (
                             <Link to={`/services/bitcoin/blocks/${encodeURIComponent(block.hash || block.id)}`}>
-                              #{block.height != null ? block.height : 'n/a'} - {this.trimHash(block.hash || block.id || '')}
+                              {shared.blockLine(block.height != null ? block.height : shared.notAvailable, this.trimHash(block.hash || block.id || ''))}
                             </Link>
                           ) : (
-                            <span>#{block.height != null ? block.height : 'n/a'} - {this.trimHash(block.hash || block.id || '')}</span>
+                            <span>{shared.blockLine(block.height != null ? block.height : shared.notAvailable, this.trimHash(block.hash || block.id || ''))}</span>
                           )
                         ) : (
-                          <span>#{block.height != null ? block.height : 'n/a'} - hash unavailable</span>
+                          <span>{shared.blockLine(block.height != null ? block.height : shared.notAvailable, shared.hashUnavailable)}</span>
                         )}
                       </List.Header>
                       <List.Description>
-                        {block.time ? new Date(Number(block.time) * 1000).toLocaleString() : 'time unavailable'}
+                        {block.time ? new Date(Number(block.time) * 1000).toLocaleString() : shared.timeUnavailable}
                         {meta}
                       </List.Description>
                     </List.Content>
@@ -2328,14 +2367,14 @@ class BitcoinHome extends React.Component {
             </List>
           )}
 
-          <Header as='h4' style={{ marginTop: '1em' }}>Mempool Transactions ({this.state.transactions.length})</Header>
+          <Header as='h4' style={{ marginTop: '1em' }}>{c.explorerSection.mempool(this.state.transactions.length)}</Header>
           {this.state.transactions.length === 0 ? (
             explorerDataPending ? (
               <p style={{ color: '#666' }}>
-                <Loader inline active size="small" /> Loading mempool transactions…
+                <Loader inline active size="small" /> {c.explorerSection.loadingMempool}
               </p>
             ) : (
-              <p style={{ color: '#666' }}>No transaction data yet.</p>
+              <p style={{ color: '#666' }}>{shared.noMempool}</p>
             )
           ) : (
             <List divided relaxed>
@@ -2358,11 +2397,11 @@ class BitcoinHome extends React.Component {
                           this.trimHash(tid)
                         )}
                         {unconfirmed && (
-                          <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#f2711c' }}>(mempool)</span>
+                          <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#f2711c' }}>{shared.unconfirmed}</span>
                         )}
                       </List.Header>
                       <List.Description>
-                        {tx.value != null ? `${tx.value} BTC` : (tx.amountSats != null ? `${formatSatsDisplay(tx.amountSats)} sats` : 'amount unavailable')}
+                        {tx.amountSats != null ? t.common.sats(tx.amountSats) : (tx.value != null && Number.isFinite(Number(tx.value)) ? t.common.sats(Math.round(Number(tx.value) * SATS_PER_BTC)) : shared.amountUnavailable)}
                       </List.Description>
                     </List.Content>
                   </List.Item>
@@ -2376,31 +2415,31 @@ class BitcoinHome extends React.Component {
         <Segment>
           <Button basic size='small' onClick={() => this.setState({ advancedOpen: !this.state.advancedOpen })}>
             <Icon name='cogs' />
-            {this.state.advancedOpen ? 'Hide' : 'Show'} advanced UTXO controls
+            {this.state.advancedOpen ? c.utxos.hide : c.utxos.show}
           </Button>
           {this.state.advancedOpen && (
             <div style={{ marginTop: '0.75em' }}>
-              <Header as='h4'>UTXO detail (advanced)</Header>
-              <p style={{ color: '#666', marginBottom: '0.5em' }}><strong>Bridge (Hub node):</strong> UTXOs from upstream payments API.</p>
+              <Header as='h4'>{c.utxos.title}</Header>
+              <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.utxos.intro}</p>
               {this.state.utxos.length === 0 ? (
-                <p style={{ color: '#666' }}>No UTXO data returned by upstream payments API.</p>
+                <p style={{ color: '#666' }}>{c.utxos.empty}</p>
               ) : (
                 <Table compact='very' celled>
                   <Table.Header>
                     <Table.Row>
-                      <Table.HeaderCell>Txid</Table.HeaderCell>
-                      <Table.HeaderCell>Vout</Table.HeaderCell>
-                      <Table.HeaderCell>Amount</Table.HeaderCell>
-                      <Table.HeaderCell>Confirmations</Table.HeaderCell>
+                      <Table.HeaderCell>{c.utxos.txid}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.utxos.vout}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.utxos.amount}</Table.HeaderCell>
+                      <Table.HeaderCell>{c.utxos.confirmations}</Table.HeaderCell>
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
                     {this.state.utxos.map((utxo, listIndex) => (
                       <Table.Row key={`${utxo.txid || listIndex}:${utxo.vout || 0}`}>
                         <Table.Cell><code>{this.trimHash(utxo.txid || utxo.id || '')}</code></Table.Cell>
-                        <Table.Cell>{utxo.vout != null ? utxo.vout : '-'}</Table.Cell>
-                        <Table.Cell>{utxo.amount != null ? utxo.amount : (utxo.amountSats != null ? `${formatSatsDisplay(utxo.amountSats)} sats` : '-')}</Table.Cell>
-                        <Table.Cell>{utxo.confirmations != null ? utxo.confirmations : '-'}</Table.Cell>
+                        <Table.Cell>{utxo.vout != null ? utxo.vout : t.common.none}</Table.Cell>
+                        <Table.Cell>{utxo.amountSats != null ? t.common.sats(utxo.amountSats) : (utxo.amount != null && Number.isFinite(Number(utxo.amount)) ? t.common.sats(Math.round(Number(utxo.amount) * SATS_PER_BTC)) : t.common.none)}</Table.Cell>
+                        <Table.Cell>{utxo.confirmations != null ? utxo.confirmations : t.common.none}</Table.Cell>
                       </Table.Row>
                     ))}
                   </Table.Body>
@@ -2411,46 +2450,51 @@ class BitcoinHome extends React.Component {
         </Segment>
 
         <Modal open={this.state.settingsOpen} onClose={() => this.setState({ settingsOpen: false })} size='small'>
-          <Modal.Header>Bitcoin Upstream Settings</Modal.Header>
+          <Modal.Header>{c.upstream.title}</Modal.Header>
           <Modal.Content>
             <Form>
               <Form.Field>
-                <label>Explorer API base URL</label>
+                <label htmlFor='bitcoin-upstream-explorer'>{c.upstream.explorer}</label>
                 <Input
+                  id='bitcoin-upstream-explorer'
                   placeholder='https://explorer.fabric.pub'
                   value={this.state.upstreamDraft.explorerBaseUrl}
                   onChange={(e) => this.setState({ upstreamDraft: { ...this.state.upstreamDraft, explorerBaseUrl: e.target.value } })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Payments API base URL</label>
+                <label htmlFor='bitcoin-upstream-payments'>{c.upstream.payments}</label>
                 <Input
+                  id='bitcoin-upstream-payments'
                   placeholder='https://payments.fabric.pub'
                   value={this.state.upstreamDraft.paymentsBaseUrl}
                   onChange={(e) => this.setState({ upstreamDraft: { ...this.state.upstreamDraft, paymentsBaseUrl: e.target.value } })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Lightning API base URL</label>
+                <label htmlFor='bitcoin-upstream-lightning'>{c.upstream.lightning}</label>
                 <Input
+                  id='bitcoin-upstream-lightning'
                   placeholder='https://lightning.fabric.pub'
                   value={this.state.upstreamDraft.lightningBaseUrl}
                   onChange={(e) => this.setState({ upstreamDraft: { ...this.state.upstreamDraft, lightningBaseUrl: e.target.value } })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>Payjoin API base URL</label>
+                <label htmlFor='bitcoin-upstream-payjoin'>{c.upstream.payjoin}</label>
                 <Input
+                  id='bitcoin-upstream-payjoin'
                   placeholder='https://hub.fabric.pub/services/payjoin'
                   value={this.state.upstreamDraft.payjoinBaseUrl || ''}
                   onChange={(e) => this.setState({ upstreamDraft: { ...this.state.upstreamDraft, payjoinBaseUrl: e.target.value } })}
                 />
               </Form.Field>
               <Form.Field>
-                <label>API token (optional)</label>
+                <label htmlFor='bitcoin-upstream-token'>{c.upstream.token}</label>
                 <Input
+                  id='bitcoin-upstream-token'
                   type='password'
-                  placeholder='Bearer token'
+                  placeholder={c.upstream.tokenPlaceholder}
                   value={this.state.upstreamDraft.apiToken}
                   onChange={(e) => this.setState({ upstreamDraft: { ...this.state.upstreamDraft, apiToken: e.target.value } })}
                 />
@@ -2458,7 +2502,7 @@ class BitcoinHome extends React.Component {
             </Form>
           </Modal.Content>
           <Modal.Actions>
-            <Button onClick={() => this.setState({ settingsOpen: false })}>Cancel</Button>
+            <Button onClick={() => this.setState({ settingsOpen: false })}>{t.common.actions.cancel}</Button>
             <Button
               primary
               onClick={() => {
@@ -2466,7 +2510,7 @@ class BitcoinHome extends React.Component {
                 this.setState({ upstream: saved, settingsOpen: false }, () => this.refresh());
               }}
             >
-              Save
+              {t.common.actions.save}
             </Button>
           </Modal.Actions>
         </Modal>

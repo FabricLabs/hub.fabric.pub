@@ -34,7 +34,7 @@ function buildAcpCrowdfundDonationPsbt (opts = {}) {
     throw new Error('donationOutputSats must be at least 546 (dust limit).');
   }
   const psbt = new bitcoin.Psbt({ network });
-  psbt.addOutput({ address: addr, value: donationSats });
+  psbt.addOutput({ address: addr, value: BigInt(donationSats) });
   return {
     psbtBase64: psbt.toBase64(),
     donationOutputSats: donationSats,

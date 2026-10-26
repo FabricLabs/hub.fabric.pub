@@ -12,14 +12,14 @@ const cf = require('../functions/crowdfundingTaproot');
 bitcoin.initEccLib(ecc);
 const ecpair = ECPairFactory(ecc);
 
-function trim64 (buf) {
-  if (!Buffer.isBuffer(buf)) return buf;
+function trim64 (sig) {
+  const buf = Buffer.from(sig);
   return buf.length >= 64 ? buf.subarray(0, 64) : buf;
 }
 
 function sortTapSigsByPositionDesc (leafScript, tapScriptSig, leafHash) {
   const lh = leafHash;
-  const sigs = (tapScriptSig || []).filter((t) => t.leafHash.equals(lh));
+  const sigs = (tapScriptSig || []).filter((t) => Buffer.compare(t.leafHash, lh) === 0);
   return sigs
     .map((tss) => {
       const fake33 = Buffer.concat([Buffer.from([0x02]), tss.pubkey]);
@@ -31,10 +31,10 @@ function sortTapSigsByPositionDesc (leafScript, tapScriptSig, leafHash) {
 }
 
 function sortTapSigsByPubkeyAsc (tapScriptSig, leafHash) {
-  const sigs = (tapScriptSig || []).filter((t) => t.leafHash.equals(leafHash));
+  const sigs = (tapScriptSig || []).filter((t) => Buffer.compare(t.leafHash, leafHash) === 0);
   return sigs
     .slice()
-    .sort((a, b) => a.pubkey.compare(b.pubkey))
+    .sort((a, b) => Buffer.compare(a.pubkey, b.pubkey))
     .map((t) => trim64(t.signature));
 }
 
@@ -71,7 +71,7 @@ describe('crowdfundingTaproot', function () {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 2), 0, 0xffffffff);
-    tx.addOutput(built.output, 50000);
+    tx.addOutput(built.output, 50000n);
     assert.throws(() => cf.prepareCrowdfundPayoutPsbt({
       networkName: 'regtest',
       inputs: [{ txHex: tx.toHex(), vout: 0 }],
@@ -97,7 +97,7 @@ describe('crowdfundingTaproot', function () {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 3), 0, 0xffffffff);
-    tx.addOutput(built.output, 60000);
+    tx.addOutput(built.output, 60000n);
     const { psbt } = cf.prepareCrowdfundPayoutPsbt({
       networkName: 'regtest',
       inputs: [{ txHex: tx.toHex(), vout: 0 }],
@@ -129,7 +129,7 @@ describe('crowdfundingTaproot', function () {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 3), 0, 0xffffffff);
-    tx.addOutput(built.output, 60000);
+    tx.addOutput(built.output, 60000n);
     const { psbt } = cf.prepareCrowdfundPayoutPsbt({
       networkName: 'regtest',
       inputs: [{ txHex: tx.toHex(), vout: 0 }],
@@ -171,10 +171,10 @@ describe('crowdfundingTaproot', function () {
     });
     const tx1 = new bitcoin.Transaction();
     tx1.addInput(Buffer.alloc(32, 5), 0, 0xffffffff);
-    tx1.addOutput(built.output, 40000);
+    tx1.addOutput(built.output, 40000n);
     const tx2 = new bitcoin.Transaction();
     tx2.addInput(Buffer.alloc(32, 6), 0, 0xffffffff);
-    tx2.addOutput(built.output, 45000);
+    tx2.addOutput(built.output, 45000n);
     const prep = cf.prepareCrowdfundPayoutPsbt({
       networkName: 'regtest',
       inputs: [
@@ -214,7 +214,7 @@ describe('crowdfundingTaproot', function () {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 7), 0, 0xffffffff);
-    tx.addOutput(built.output, 60000);
+    tx.addOutput(built.output, 60000n);
     assert.throws(() => cf.prepareCrowdfundPayoutPsbt({
       networkName: 'regtest',
       inputs: [{ txHex: tx.toHex(), vout: 0 }],
@@ -240,7 +240,7 @@ describe('crowdfundingTaproot', function () {
     });
     const tx = new bitcoin.Transaction();
     tx.addInput(Buffer.alloc(32, 4), 0, 0xffffffff);
-    tx.addOutput(built.output, 25000);
+    tx.addOutput(built.output, 25000n);
     const { psbt } = cf.prepareCrowdfundRefundPsbt({
       networkName: 'regtest',
       fundedTxHex: tx.toHex(),
