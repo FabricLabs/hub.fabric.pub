@@ -11,7 +11,8 @@
 
 const Message = require('@fabric/core/types/message');
 const IdentityCluster = require('./identityCluster');
-const { verifyCrossSignObject, signCrossSign } = require('./identityCrossSignVerify');
+const { verifyCrossSignObject } = require('./identityCrossSignVerify');
+const parseFilesystemJson = require('./parseFilesystemJson');
 
 const CLUSTER_DOC = 'identity/CLUSTER';
 const PROOFS_DOC = 'identity/CROSS-SIGNS';
@@ -29,9 +30,27 @@ function persistCluster (hub) {
   } catch (_) { /* ignore */ }
 }
 
+/**
+ * Stored proofs that still verify; anything else (older formats included) is dropped.
+ * @param {object} hub
+ * @returns {object[]}
+ */
+function loadStoredProofs (hub) {
+  let doc = null;
+  try {
+    const raw = hub.fs && typeof hub.fs.readFile === 'function' ? hub.fs.readFile(PROOFS_DOC) : null;
+    doc = raw ? parseFilesystemJson(raw) : null;
+  } catch (_) {
+    doc = null;
+  }
+  const stored = doc && Array.isArray(doc.proofs) ? doc.proofs : [];
+  return stored.filter((proof) => verifyCrossSignObject(proof).ok);
+}
+
 function persistProof (hub, object, kind) {
   if (!hub.fs || typeof hub.fs.publish !== 'function' || !object) return;
-  const list = Array.isArray(hub._identityCrossSignProofs) ? hub._identityCrossSignProofs : [];
+  if (!Array.isArray(hub._identityCrossSignProofs)) hub._identityCrossSignProofs = loadStoredProofs(hub);
+  const list = hub._identityCrossSignProofs;
   list.push(Object.assign({ storedAt: new Date().toISOString(), kind }, object));
   while (list.length > 256) list.shift();
   hub._identityCrossSignProofs = list;
@@ -110,26 +129,38 @@ function handleClusterGet (hub, req, res) {
 
 function handleCrossSignPost (hub, req, res) {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
-  const kind = body.type || body['@type'] || IdentityCluster.SIGN_TYPE;
-  if (body.signature && body.identity) {
-    const rec = ingest(hub, body, body.pubkeyHex || body.localPubkey, { relay: true });
-    if (!rec.ok) return sendJson(res, 400, { ok: false, error: rec.error });
-    return sendJson(res, 200, { type: rec.kind, data: rec.record });
+  if (!body.signature || !body.identity) {
+    return sendJson(res, 400, { ok: false, error: 'a signed IdentityCrossSign is required' });
   }
-  const ident = hub._unlockedIdentity || null;
-  if (!ident) return sendJson(res, 401, { ok: false, error: 'Unlock your identity' });
-  try {
-    const obj = signCrossSign(ident, { peerPubkey: body.peerPubkey, nonce: body.nonce }, kind);
-    const rec = ingest(hub, obj, ident.pubkey, { relay: true });
-    if (!rec.ok) return sendJson(res, 400, { ok: false, error: rec.error });
-    return sendJson(res, 200, { type: rec.kind, data: rec.record });
-  } catch (e) {
-    return sendJson(res, 400, { ok: false, error: e.message || String(e) });
+  const rec = ingest(hub, body, body.pubkeyHex || body.localPubkey, { relay: true });
+  if (!rec.ok) return sendJson(res, 400, { ok: false, error: rec.error });
+  return sendJson(res, 200, { type: rec.kind, data: rec.record });
+}
+
+/**
+ * Rebuild the cluster from stored proofs that still verify, in the order they were stored.
+ * @param {object} hub
+ * @returns {object} the cluster
+ */
+function restoreCluster (hub) {
+  const cluster = ensureCluster(hub);
+  const proofs = loadStoredProofs(hub);
+  hub._identityCrossSignProofs = proofs;
+  for (const proof of proofs) {
+    const checked = verifyCrossSignObject(proof);
+    if (!checked.ok) continue;
+    if (checked.kind === IdentityCluster.REVOKE_TYPE) cluster.ingestRevoke(checked.record);
+    else cluster.ingestCrossSign(checked.record);
   }
+  persistCluster(hub);
+  if (hub.fs && typeof hub.fs.publish === 'function') {
+    try { void hub.fs.publish(PROOFS_DOC, { proofs }); } catch (_) { /* ignore */ }
+  }
+  return cluster;
 }
 
 function mountIdentityClusterHttp (hub) {
-  ensureCluster(hub);
+  restoreCluster(hub);
   hub.http._addRoute('GET', '/identity/cluster', (req, res) => handleClusterGet(hub, req, res));
   hub.http._addRoute('POST', '/identity/cross-sign', (req, res) => handleCrossSignPost(hub, req, res));
 }
@@ -137,6 +168,8 @@ function mountIdentityClusterHttp (hub) {
 module.exports = {
   mountIdentityClusterHttp,
   ingestIdentityCrossSign: ingest,
+  loadStoredProofs,
+  restoreCluster,
   ensureCluster,
   relayIdentityCrossSign
 };

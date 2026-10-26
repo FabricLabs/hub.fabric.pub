@@ -4266,7 +4266,9 @@ class Hub extends Service {
         msgBuf,
         federationWitness,
         validators,
-        threshold
+        threshold,
+        undefined,
+        require('@fabric/core/functions/signingTags').SIDECHAIN_STATE
       );
       if (!ok) {
         return { status: 'error', message: 'federationWitness invalid or insufficient' };

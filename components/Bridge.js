@@ -17,6 +17,7 @@ const {
 // Fabric Types
 const Message = require('@fabric/core/types/message');
 const Key = require('@fabric/core/types/key');
+const SIGNING_TAGS = require('@fabric/core/functions/signingTags');
 const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, P2P_CHAT_MESSAGE, P2P_PEER_ALIAS, P2P_FILE_SEND, MAGIC_BYTES } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
 const { pushUiNotification } = require('../functions/uiNotifications');
@@ -3724,7 +3725,7 @@ class Bridge extends React.Component {
       }
       if (pj.status === 'approved' && pj.signature) {
         this._resolveDelegationSignRequestActivity(messageId, 'approved');
-        return { signature: pj.signature, publicKey: pj.pubkeyHex };
+        return { signature: pj.signature, publicKey: pj.pubkeyHex, tag: SIGNING_TAGS.DELEGATION };
       }
     }
     this._resolveDelegationSignRequestActivity(messageId, 'timeout');
@@ -3752,13 +3753,14 @@ class Bridge extends React.Component {
     }
   }
 
-  verifyArbitraryText (text, signatureHex, publicKeyHex) {
+  verifyArbitraryText (text, signatureHex, publicKeyHex, tag) {
     if (!text || !signatureHex || !publicKeyHex) return null;
     try {
       const key = new Key({ public: publicKeyHex.trim() });
       const sig = Buffer.from(signatureHex.trim(), 'hex');
       if (sig.length !== 64) return false;
-      return key.verifySchnorr(text, sig);
+      const tags = tag ? [tag] : [SIGNING_TAGS.SIGN, SIGNING_TAGS.DELEGATION];
+      return tags.some((t) => key.verifySchnorr(text, sig, t));
     } catch (error) {
       console.error('[BRIDGE]', 'Error verifying text:', safeIdentityErr(error));
       return null;

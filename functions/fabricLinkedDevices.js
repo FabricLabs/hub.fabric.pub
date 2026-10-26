@@ -58,10 +58,24 @@ function removeLinkedDevice (peerFabricId) {
   return next;
 }
 
-async function publishHubIdentityCrossSign (key, peerPubkey, nonce, kind) {
-  if (!peerPubkey || !nonce) return { ok: false, error: 'peerPubkey and nonce required' };
+/**
+ * @param {object} key unlocked Fabric Key
+ * @param {string} peerPubkey linked device's compressed pubkey
+ * @param {{ sessionId: string, nonce: string, origin: string }} binding the device-link session both sides signed
+ * @param {string} [kind] IdentityCrossSign (default) or IdentityCrossSignRevoke
+ */
+async function publishHubIdentityCrossSign (key, peerPubkey, binding, kind) {
+  const b = binding && typeof binding === 'object' ? binding : {};
+  if (!peerPubkey || !b.sessionId || !b.nonce || !b.origin) {
+    return { ok: false, error: 'peerPubkey, sessionId, nonce, and origin required' };
+  }
   try {
-    const obj = signCrossSign(key, { peerPubkey, nonce }, kind);
+    const obj = signCrossSign(key, {
+      peerPubkey,
+      nonce: b.nonce,
+      sessionId: b.sessionId,
+      origin: b.origin
+    }, kind);
     const res = await fetch('/identity/cross-sign', {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -96,16 +110,20 @@ function unlockedHubKey () {
  */
 async function revokeLinkedDevice (device, keyOpt) {
   const peerPubkey = device && (device.peerPubkey || device.pubkey);
-  const nonce = device && device.nonce;
+  const binding = {
+    sessionId: device && device.sessionId,
+    nonce: device && device.nonce,
+    origin: device && device.hubOrigin
+  };
   const peerFabricId = peerIdOf(device);
-  if (!nonce || !peerPubkey) {
-    return { ok: false, error: 'No pairing nonce — complete fabric://link again before revoking.' };
+  if (!binding.sessionId || !binding.nonce || !binding.origin || !peerPubkey) {
+    return { ok: false, error: 'This device was linked with an older version. Link it again, then revoke.' };
   }
   const key = keyOpt || unlockedHubKey();
   if (!key) {
     return { ok: false, error: 'Unlock your Fabric identity before revoking a device.' };
   }
-  const posted = await publishHubIdentityCrossSign(key, peerPubkey, nonce, REVOKE_TYPE);
+  const posted = await publishHubIdentityCrossSign(key, peerPubkey, binding, REVOKE_TYPE);
   if (!posted.ok) return posted;
   removeLinkedDevice(peerFabricId);
   return { ok: true };

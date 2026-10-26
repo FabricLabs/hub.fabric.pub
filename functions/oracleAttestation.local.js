@@ -10,6 +10,7 @@ const Key = require('@fabric/core/types/key');
 
 const ATTESTATION_TYPE = 'OracleAttestation';
 const KIND_PEERING = 'PeeringCapability';
+const ORACLE_ATTESTATION_TAG = require('@fabric/core/functions/signingTags').ORACLE_ATTESTATION;
 
 let _canon;
 try {
@@ -55,7 +56,8 @@ function buildOracleAttestation (opts = {}) {
   const body = { version: 1, kind, claim };
   const signingPayload = stableStringify(body);
   const signature = key.signSchnorr(
-    Buffer.isBuffer(signingPayload) ? signingPayload : Buffer.from(signingPayload, 'utf8')
+    Buffer.isBuffer(signingPayload) ? signingPayload : Buffer.from(signingPayload, 'utf8'),
+    ORACLE_ATTESTATION_TAG
   );
   const issuer = opts.issuer || {
     publicKeyHex: key.pubkey,
@@ -100,7 +102,8 @@ function verifyOracleAttestation (attestation) {
     const sig = Buffer.from(String(attestation.signature || ''), 'hex');
     return key.verifySchnorr(
       Buffer.isBuffer(signingPayload) ? signingPayload : Buffer.from(signingPayload, 'utf8'),
-      sig
+      sig,
+      ORACLE_ATTESTATION_TAG
     );
   } catch (_) {
     return false;

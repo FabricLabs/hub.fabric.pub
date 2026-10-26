@@ -51,12 +51,14 @@ function epochCommitmentDigestHex (epochPayload) {
   return _fed().epochCommitmentDigestHex(epochPayload);
 }
 
-function verifyFederationWitnessOnMessage (messageBuffer, witness, validatorPubkeys, threshold) {
+function verifyFederationWitnessOnMessage (messageBuffer, witness, validatorPubkeys, threshold, scheme, tag) {
   return _fed().verifyFederationWitnessOnMessage(
     messageBuffer,
     witness,
     validatorPubkeys,
-    threshold
+    threshold,
+    scheme,
+    tag
   );
 }
 

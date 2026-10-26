@@ -148,10 +148,10 @@ function mountFabricLocalSignerHub (hub, opts = {}) {
     approve,
     includeXpub: (origin) => ownOrigins.has(origin),
     linkBase: canLink ? () => `http://127.0.0.1:${port}` : null,
-    onLinkAccepted: ({ peerPubkey, nonce }) => {
+    onLinkAccepted: ({ peerPubkey, nonce, sessionId, origin }) => {
       const identity = hubFabricIdentity(hub);
       if (!identity) return;
-      const object = signCrossSign(identity, { peerPubkey, nonce });
+      const object = signCrossSign(identity, { peerPubkey, nonce, sessionId, origin });
       ingestIdentityCrossSign(hub, object, object.pubkeyHex, { relay: true });
     }
   });

@@ -48,7 +48,7 @@ describe('Beacon reorg / prune', function () {
       {
         type: 'BEACON_EPOCH',
         payload: epochOk,
-        federationWitness: { signatures: { [key.pubkey]: key.signSchnorr(msg).toString('hex') } }
+        federationWitness: { signatures: { [key.pubkey]: key.signSchnorr(msg, 'Fabric/FederationWitness').toString('hex') } }
       },
       { type: 'BEACON_EPOCH', payload: epochBad, federationWitness: null }
     ]);

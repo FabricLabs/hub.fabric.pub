@@ -74,9 +74,13 @@ function fakeHub () {
 
 function link (hub, device) {
   const own = hubFabricIdentity(hub);
-  const nonce = crypto.randomBytes(32).toString('hex');
-  const mine = signCrossSign(own, { peerPubkey: device.fabricKey.pubkey, nonce });
-  const theirs = signCrossSign(device, { peerPubkey: own.fabricKey.pubkey, nonce });
+  const binding = {
+    nonce: crypto.randomBytes(32).toString('hex'),
+    sessionId: crypto.randomBytes(24).toString('hex'),
+    origin: 'http://127.0.0.1:8080'
+  };
+  const mine = signCrossSign(own, Object.assign({ peerPubkey: device.fabricKey.pubkey }, binding));
+  const theirs = signCrossSign(device, Object.assign({ peerPubkey: own.fabricKey.pubkey }, binding));
   assert.strictEqual(ingestIdentityCrossSign(hub, mine, mine.pubkeyHex).ok, true);
   assert.strictEqual(ingestIdentityCrossSign(hub, theirs, theirs.pubkeyHex).ok, true);
 }

@@ -59,12 +59,21 @@ const {
   fabricRootXpubFromMasterXprv,
   identityFromFabricProtocolSigningXprv
 } = require('../functions/fabricAccountDerivedIdentity');
-const { verifyFabricDesktopLoginSignedPayload, buildFabricIdentitySignedPayload } = require('../functions/fabricDesktopLoginVerify');
 const {
+  verifyFabricDesktopLoginSignedPayload,
+  buildFabricIdentitySignedPayload,
+  resolveFabricSigningIdentity
+} = require('../functions/fabricDesktopLoginVerify');
+const {
+  DEVICE_LINK_OFFER_TAG,
+  DEVICE_LINK_TAG,
+  buildDeviceLinkOfferMessage,
   prepareDeviceLinkOffer,
   commitDeviceLinkOffer,
   fetchDeviceLinkSession,
-  postDeviceLinkSignature
+  postDeviceLinkSignature,
+  cancelDeviceLinkSession,
+  verifyDeviceLinkResponder
 } = require('../functions/fabricDeviceLinkClient');
 const {
   STORAGE_LINKED_DEVICES,
@@ -760,20 +769,32 @@ function IdentityManager (props) {
     const label = copy.linkDevice.browserLabel;
     try {
       const key = new Key({ xprv: localIdentity.xprv });
-      const signedProbe = buildFabricIdentitySignedPayload(key, 'fabric:device-link:id-probe');
-      const identId = localIdentity.id || signedProbe.identity.id;
+      const signing = resolveFabricSigningIdentity(key);
+      const ownId = String(signing.identityId);
+      const ownXpub = signing.fabricKey.xpub;
       const prepared = await prepareDeviceLinkOffer({
         hubBase: origin,
         origin,
         label,
-        identity: { id: identId, xpub: localIdentity.xpub || signedProbe.identity.xpub }
+        identity: { id: ownId, xpub: ownXpub }
       });
       if (!prepared.ok) {
         setError(prepared.error || copy.linkDevice.prepareFailed);
         setDeviceLinkBusy(false);
         return;
       }
-      const offerSigned = buildFabricIdentitySignedPayload(key, prepared.offerMessage);
+      let offerMessage = null;
+      try {
+        offerMessage = buildDeviceLinkOfferMessage(prepared.sessionId, prepared.nonce, ownId, label, origin);
+      } catch (_) {
+        offerMessage = null;
+      }
+      if (!offerMessage || prepared.offerMessage !== offerMessage) {
+        setError(copy.linkDevice.prepareFailed);
+        setDeviceLinkBusy(false);
+        return;
+      }
+      const offerSigned = buildFabricIdentitySignedPayload(signing, offerMessage, DEVICE_LINK_OFFER_TAG);
       const created = await commitDeviceLinkOffer({
         hubBase: origin,
         origin,
@@ -794,77 +815,88 @@ function IdentityManager (props) {
         pollSecret: created.pollSecret,
         label
       });
+      const sessionId = prepared.sessionId;
+      const nonce = prepared.nonce;
+      let asked = false;
+      let countersigned = null;
+      const stop = (message) => {
+        clearDeviceLinkPoll();
+        setDeviceLinkBusy(false);
+        if (message) setError(message);
+      };
+      const finish = (responder, linkLabel) => {
+        clearDeviceLinkPoll();
+        mergeLinkedDevice({
+          kind: 'device-link',
+          peerFabricId: responder.id,
+          peerXpub: responder.xpub,
+          peerPubkey: responder.pubkeyHex,
+          sessionId,
+          nonce,
+          label: linkLabel || copy.linkDevice.linkedFallback,
+          hubOrigin: origin,
+          linkedAt: new Date().toISOString(),
+          role: 'initiator'
+        });
+        setLinkedDevicesRev((n) => n + 1);
+        void publishHubIdentityCrossSign(key, responder.pubkeyHex, { sessionId, nonce, origin });
+        setDeviceLinkOffer(null);
+        setDeviceLinkBusy(false);
+      };
       let attempts = 0;
       deviceLinkPollRef.current = setInterval(() => {
         attempts += 1;
         if (attempts > 240) {
-          clearDeviceLinkPoll();
-          setDeviceLinkBusy(false);
-          setError(copy.linkDevice.timedOut);
+          stop(copy.linkDevice.timedOut);
           return;
         }
         void (async () => {
           try {
-            const st = await fetchDeviceLinkSession(origin, created.sessionId, {
+            const st = await fetchDeviceLinkSession(origin, sessionId, {
               origin,
               pollSecret: created.pollSecret
             });
             if (!st.ok) return;
-            if (st.status === 'accepted' && st.linkMessage) {
-              const countersigned = buildFabricIdentitySignedPayload(key, st.linkMessage);
-              const done = await postDeviceLinkSignature(origin, created.sessionId, {
-                role: 'initiator',
-                signature: countersigned.signature,
-                pubkeyHex: countersigned.pubkeyHex,
-                identity: countersigned.identity
-              }, { origin });
-              if (!done.ok) {
-                clearDeviceLinkPoll();
-                setDeviceLinkBusy(false);
-                setError(done.error || copy.linkDevice.countersignFailed);
+            if (st.status === 'accepted' && !countersigned) {
+              if (asked) return;
+              asked = true;
+              const checked = verifyDeviceLinkResponder(st);
+              const sameSession = st.sessionId === sessionId && st.nonce === nonce && st.label === label &&
+                st.origin === origin && st.initiator && st.initiator.id === ownId;
+              if (!checked.ok || !sameSession) {
+                stop(copy.linkDevice.countersignFailed);
                 return;
               }
-              if (done.status === 'linked' && done.responder) {
-                clearDeviceLinkPoll();
-                mergeLinkedDevice({
-                  kind: 'device-link',
-                  peerFabricId: done.responder.id,
-                  peerXpub: done.responder.xpub,
-                  peerPubkey: done.responder.pubkeyHex,
-                  nonce: st.nonce || created.nonce,
-                  label: done.label || st.label || copy.linkDevice.linkedFallback,
-                  hubOrigin: origin,
-                  linkedAt: new Date().toISOString(),
-                  role: 'initiator'
-                });
-                setLinkedDevicesRev((n) => n + 1);
-                void publishHubIdentityCrossSign(
-                  key,
-                  done.responder.pubkeyHex,
-                  st.nonce || created.nonce
-                );
+              const responder = checked.responder;
+              const approved = typeof window.confirm === 'function' &&
+                window.confirm(copy.linkDevice.confirmResponder(responder.id, responder.pubkeyHex));
+              if (!approved) {
+                void cancelDeviceLinkSession(origin, sessionId, { origin, pollSecret: created.pollSecret });
                 setDeviceLinkOffer(null);
-                setDeviceLinkBusy(false);
+                stop(copy.linkDevice.declined);
+                return;
               }
+              const signed = buildFabricIdentitySignedPayload(signing, checked.linkMessage, DEVICE_LINK_TAG);
+              const done = await postDeviceLinkSignature(origin, sessionId, {
+                role: 'initiator',
+                signature: signed.signature,
+                pubkeyHex: signed.pubkeyHex,
+                identity: signed.identity
+              }, { origin });
+              if (!done.ok) {
+                stop(done.error || copy.linkDevice.countersignFailed);
+                return;
+              }
+              countersigned = responder;
+              if (done.status === 'linked') finish(responder, done.label || st.label);
               return;
             }
             if (st.status === 'linked' && st.responder) {
-              clearDeviceLinkPoll();
-              mergeLinkedDevice({
-                kind: 'device-link',
-                peerFabricId: st.responder.id,
-                peerXpub: st.responder.xpub,
-                peerPubkey: st.responder.pubkeyHex,
-                nonce: st.nonce,
-                label: st.label || copy.linkDevice.linkedFallback,
-                hubOrigin: origin,
-                linkedAt: new Date().toISOString(),
-                role: 'initiator'
-              });
-              setLinkedDevicesRev((n) => n + 1);
-              void publishHubIdentityCrossSign(key, st.responder.pubkeyHex, st.nonce);
-              setDeviceLinkOffer(null);
-              setDeviceLinkBusy(false);
+              if (!countersigned || String(st.responder.pubkeyHex || '').toLowerCase() !== countersigned.pubkeyHex) {
+                stop(copy.linkDevice.countersignFailed);
+                return;
+              }
+              finish(countersigned, st.label);
             }
           } catch (err) {
             /* keep polling */

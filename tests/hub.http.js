@@ -864,50 +864,47 @@ describe('@fabric/hub', function () {
         assert.strictEqual(authedToken.body.kind, 'delegation');
       });
 
-      it('desktop login accepts client-signed player completion (Schnorr over challenge)', async function () {
+      it('desktop login accepts a client-signed SiteLoginResponse', async function () {
         const Key = require('@fabric/core/types/key');
         const Identity = require('@fabric/core/types/identity');
+        const { signSiteLoginResponse } = require('@fabric/core/functions/fabricSiteLogin');
         const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
         assert.strictEqual(create.status, 200, JSON.stringify(create.body));
         const sid = create.body.sessionId;
         const message = create.body.message;
         assert.ok(typeof message === 'string' && message.length > 20);
+        const nonce = message.split(':')[3];
 
-        const key = new Key();
-        const ident = new Identity(key);
-        const fabric = ident.fabricKey;
-        const signature = fabric.signSchnorr(Buffer.from(message, 'utf8')).toString('hex');
-        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
-          signature,
-          pubkeyHex: fabric.pubkey,
-          identity: { id: ident.id, xpub: fabric.xpub }
-        });
+        const ident = new Identity(new Key());
+        const fabric = signSiteLoginResponse({
+          origin: baseUrl,
+          nonce,
+          signer: 'passport',
+          xpub: ident.fabricKey.xpub
+        }, ident.fabricKey).uri;
+        const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, { fabric });
         assert.strictEqual(sign.status, 200, JSON.stringify(sign.body));
         assert.strictEqual(sign.body.ok, true);
-        assert.strictEqual(sign.body.signer, 'client');
-        assert.strictEqual(String(sign.body.identity.id), String(ident.id));
+        assert.strictEqual(sign.body.pubkeyHex, ident.fabricKey.pubkey.toLowerCase());
 
         const g1 = await makeRequest('GET', `/sessions/${encodeURIComponent(sid)}`, null, { Accept: 'application/json' });
         assert.strictEqual(g1.status, 200);
         assert.strictEqual(g1.body.status, 'signed');
-        assert.strictEqual(g1.body.signer, 'client');
         assert.ok(g1.body.delegationToken);
       });
 
-      it('desktop login rejects tampered client signature', async function () {
+      it('desktop login refuses a raw client signature', async function () {
         const Key = require('@fabric/core/types/key');
         const Identity = require('@fabric/core/types/identity');
         const create = await makeRequest('POST', '/sessions', { origin: baseUrl }, { Accept: 'application/json' });
         assert.strictEqual(create.status, 200, JSON.stringify(create.body));
         const sid = create.body.sessionId;
-        const key = new Key();
-        const ident = new Identity(key);
-        const fabric = ident.fabricKey;
-        const badSig = 'ab'.repeat(64);
+        const ident = new Identity(new Key());
+        const fabricKey = ident.fabricKey;
         const sign = await makeRequest('POST', `/sessions/${encodeURIComponent(sid)}/signatures`, {
-          signature: badSig,
-          pubkeyHex: fabric.pubkey,
-          identity: { id: ident.id, xpub: fabric.xpub }
+          signature: fabricKey.signSchnorr(Buffer.from(create.body.message, 'utf8'), 'Fabric/Sign').toString('hex'),
+          pubkeyHex: fabricKey.pubkey,
+          identity: { id: ident.id, xpub: fabricKey.xpub }
         });
         assert.strictEqual(sign.status, 400, JSON.stringify(sign.body));
         assert.strictEqual(sign.body.ok, false);

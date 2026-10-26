@@ -45,7 +45,6 @@ module.exports = {
   randomNonce: siteLoginHttp.randomNonce,
   randomSessionId: siteLoginHttp.randomSessionId,
   originsMatchForDesktopSession: siteLoginHttp.originsMatchForDesktopSession,
-  hasClientSignatureBody: siteLoginHttp.hasClientSignatureBody,
   handleSessionCreate,
   handleSessionGet,
   handleDesktopSign,

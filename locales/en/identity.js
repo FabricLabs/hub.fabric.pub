@@ -50,7 +50,9 @@ module.exports = {
       prepareFailed: 'Could not prepare the device link. Try again.',
       createFailed: 'Could not create the device link. Try again.',
       timedOut: 'The other device did not approve the link in time. Create a new link and try again.',
-      countersignFailed: 'Could not confirm the link with the other device. Create a new link and try again.'
+      countersignFailed: 'Could not confirm the link with the other device. Create a new link and try again.',
+      confirmResponder: (id, pubkeyHex) => `A device asks to link with this identity as one account.\n\nDevice: ${id}\nKey fingerprint: ${String(pubkeyHex).slice(0, 16)}\n\nCheck that the other device shows the same fingerprint. Link it?`,
+      declined: 'Link declined. Nothing was signed.'
     },
     keyStatus: {
       label: 'Private key:',

@@ -27,7 +27,7 @@ describe('Beacon federation ready-round retry', function () {
     });
     const msg = beaconFederationSigning.messageBufferForPayload(payload);
     const added = beaconFederationSigning.addSignature(
-      round, k1.pubkey, k1.signSchnorr(msg).toString('hex')
+      round, k1.pubkey, k1.signSchnorr(msg, 'Fabric/FederationWitness').toString('hex')
     );
     assert.strictEqual(added.sealed, true);
     const digest = round.commitmentDigest;
@@ -80,7 +80,7 @@ describe('Beacon federation ready-round retry', function () {
     const payload = { clock: 4, height: 4, blockHash: 'dd'.repeat(32) };
     const digest = beaconFederationSigning.epochCommitmentDigestHex(payload);
     const msg = beaconFederationSigning.messageBufferForPayload(payload);
-    const sig = k1.signSchnorr(msg).toString('hex');
+    const sig = k1.signSchnorr(msg, 'Fabric/FederationWitness').toString('hex');
     const round = {
       commitmentDigest: digest,
       payload,
