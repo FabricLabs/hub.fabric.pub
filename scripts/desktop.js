@@ -54,6 +54,12 @@ const { configureDesktopUserData, hubStoreDir } = require('../functions/desktopU
 const { RotatingLogFile } = require('../functions/desktopLogFile');
 const { createDesktopSecureStore } = require('../functions/desktopSecureStore');
 const {
+  HUB_ROOT_KEY_REQUEST,
+  HUB_ROOT_KEY_RESULT,
+  rootKeyPath,
+  loadOrCreateHubRootKey
+} = require('../functions/hubRootKey');
+const {
   hubStatusLabel,
   restorableWindowBounds,
   trayStatusLines
@@ -950,8 +956,27 @@ function spawnHub () {
   child.on('message', (msg) => {
     if (msg && msg.type === 'ready') setHubStatus('running');
     if (msg && msg.type === FABRIC_SIGN_REQUEST) void answerFabricSignRequest(child, msg);
+    if (msg && msg.type === HUB_ROOT_KEY_REQUEST && child === hubProcess) answerHubRootKeyRequest(child, msg);
   });
   child.once('exit', (code) => onHubExit(child, code));
+}
+
+/** The Hub has no operator key: hand it the one kept (sealed with safeStorage) in its store. */
+function answerHubRootKeyRequest (child, msg) {
+  let reply;
+  try {
+    const sealing = secureStorageAvailable()
+      ? { seal: (value) => safeStorage.encryptString(value), unseal: (buffer) => safeStorage.decryptString(buffer) }
+      : {};
+    const filePath = rootKeyPath(hubStoreDir(app.getPath('userData')));
+    const result = loadOrCreateHubRootKey({ filePath, ...sealing });
+    reply = { type: HUB_ROOT_KEY_RESULT, id: msg.id, xprv: result.xprv, created: result.created, sealed: result.sealed };
+  } catch (err) {
+    reply = { type: HUB_ROOT_KEY_RESULT, id: msg.id, error: err && err.message ? err.message : String(err) };
+  }
+  try {
+    child.postMessage(reply);
+  } catch (_) {}
 }
 
 /** Passport asked the Hub to sign in or link: only a native dialog here can approve it. */

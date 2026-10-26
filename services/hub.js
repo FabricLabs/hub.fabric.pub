@@ -9850,9 +9850,12 @@ class Hub extends Service {
 
       let txid;
       try {
-        txid = feeRateSatVb != null
-          ? await this._hubWalletSend({ address: to, amountSats: Math.round(amountSats), feeRateSatVb, label: 'bridge_payment', meta: { memo: memo || undefined } })
-          : await bitcoin._processSpendMessage({ destination: to, amount: amountBTC, comment: memo });
+        if (feeRateSatVb != null) {
+          txid = await this._hubWalletSend({ address: to, amountSats: Math.round(amountSats), feeRateSatVb, label: 'bridge_payment', meta: { memo: memo || undefined } });
+        } else {
+          txid = await bitcoin._processSpendMessage({ destination: to, amount: amountBTC, comment: memo });
+          await this._broadcastWalletTx(bitcoin, txid);
+        }
       } catch (err) {
         return res.status(400).json({ status: 'error', message: err && err.message ? err.message : String(err) });
       }
@@ -9942,6 +9945,7 @@ class Hub extends Service {
         try {
           if (txid) this._mergePersistedTxLabel(String(txid), 'faucet_payment', { destination: to });
         } catch (_) {}
+        await this._broadcastWalletTx(bitcoin, txid);
 
         return res.json({
           status: 'success',
@@ -10122,9 +10126,9 @@ class Hub extends Service {
   }
 
   /**
-   * Fetch and verify another Hub's root key from its peering attestation.
+   * Fetch another Hub's federation (cosigner) key from its signed peering attestation.
    * @param {string} url Hub origin (http/https)
-   * @returns {Promise<{ pubkey: string, url: string, alias: (string|null), fabricPeerId: (string|null) }>}
+   * @returns {Promise<{ pubkey: string, identityPubkey: string, url: string, alias: (string|null), fabricPeerId: (string|null) }>}
    * @private
    */
   async _resolveHubIdentity (url) {
@@ -10164,8 +10168,18 @@ class Hub extends Service {
     const checked = PeeringService.verifyHubAttestation(body);
     if (!checked.ok) throw new Error(`${origin}: ${checked.error}`);
     const claim = checked.claim || {};
+    const federationPubkey = String(claim.federationPubkey || '').trim().toLowerCase();
+    if (!/^0[23][0-9a-f]{64}$/.test(federationPubkey)) {
+      throw new Error(`${origin} does not publish a federation key (Federations are off there, or it runs an older Hub). Add it by key instead.`);
+    }
     const alias = claim.hub && claim.hub.alias ? String(claim.hub.alias).slice(0, 80) : null;
-    return { pubkey: checked.pubkey, url: origin, alias, fabricPeerId: claim.fabricPeerId || null };
+    return {
+      pubkey: federationPubkey,
+      identityPubkey: checked.pubkey,
+      url: origin,
+      alias,
+      fabricPeerId: claim.fabricPeerId || null
+    };
   }
 
   /**
@@ -10239,7 +10253,29 @@ class Hub extends Service {
     try {
       if (txid && opts.label) this._mergePersistedTxLabel(String(txid), opts.label, { destination: String(opts.address), ...(opts.meta || {}) });
     } catch (_) {}
+    await this._broadcastWalletTx(bitcoin, txid);
     return txid;
+  }
+
+  /**
+   * Submit a Hub wallet transaction to the mempool. A node running with
+   * `-walletbroadcast=0` (Core's default under `-blocksonly`) only records it in the wallet.
+   * @param {Object} bitcoin Bitcoin service
+   * @param {string} txid
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _broadcastWalletTx (bitcoin, txid) {
+    if (!txid || typeof txid !== 'string') return;
+    const tx = await bitcoin._makeWalletRequest('gettransaction', [txid], bitcoin.walletName);
+    if (!tx || !tx.hex || Number(tx.confirmations) !== 0) return;
+    try {
+      await bitcoin._makeRPCRequest('sendrawtransaction', [tx.hex]);
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      if (/already in (the )?(mempool|block ?chain|utxo set)|txn-already-known|txn-already-in-mempool/i.test(message)) return;
+      throw new Error(`Transaction ${txid} is in the Hub wallet but was not broadcast: ${message}`);
+    }
   }
 
   /** @private */

@@ -63,21 +63,30 @@ const NETWORKS = Object.freeze({
     base: 31000,
     seed: false,
     beaconIntervalMs: 0,
+    // Public chains sync from the internet; pruned (MiB) so each instance stays small.
+    prune: 550,
     extraParams: ['-fallbackfee=0.0002']
   },
   mainnet: {
     base: 32000,
     seed: false,
     beaconIntervalMs: 0,
+    prune: 550,
     extraParams: []
   }
 });
 
-/** Named instances, in start order. `seed` only exists on networks with `seed: true`. */
+/**
+ * Named instances, in start order. `seed` only exists on networks with
+ * `seed: true`; stand-ins are left out when the real public Hubs take part.
+ * `operator` is the local member (the role a desktop Hub plays). It has a
+ * fixed `slot` because other tools take the ports just past the instances.
+ */
 const INSTANCES = Object.freeze([
   { name: 'seed', label: 'Seed (Bitcoin P2P, Beacon miner)', signer: false, seedOnly: true },
-  { name: 'hub-fabric-pub', label: 'hub.fabric.pub (local stand-in)', signer: true },
-  { name: 'hub-goon-vc', label: 'hub.goon.vc (local stand-in)', signer: true }
+  { name: 'hub-fabric-pub', label: 'hub.fabric.pub (local stand-in)', signer: true, standIn: true },
+  { name: 'hub-goon-vc', label: 'hub.goon.vc (local stand-in)', signer: true, standIn: true },
+  { name: 'operator', label: 'Operator (local member)', signer: true, slot: 8 }
 ]);
 
 /**
@@ -112,14 +121,18 @@ function instancePorts (base, index) {
  * Instances for a network (drops the seed where the network syncs publicly).
  * @param {string} network
  * @param {number} [base] port base (defaults to the network's)
+ * @param {Object} [opts]
+ * @param {boolean} [opts.remotes] the real public Hubs take part, so the stand-ins are left out
  * @returns {Array<object>} `{ name, label, signer, index, ports }`
  */
-function instancesFor (network, base) {
+function instancesFor (network, base, opts = {}) {
   const profile = networkProfile(network);
   const portBase = base != null ? Number(base) : profile.base;
+  // Ports follow the full list, so an instance keeps its ports with or without the stand-ins.
   return INSTANCES
     .filter((i) => profile.seed || !i.seedOnly)
-    .map((i, index) => Object.assign({}, i, { index, ports: instancePorts(portBase, index) }));
+    .map((i, index) => Object.assign({}, i, { index, ports: instancePorts(portBase, i.slot != null ? i.slot : index) }))
+    .filter((i) => !(opts.remotes && i.standIn));
 }
 
 /**
@@ -173,10 +186,11 @@ function ensureInstanceKey (dir) {
 /**
  * Settings fragment merged over `settings/local.js` by `playnet-hub-with-settings.js`.
  * @param {object} opts
+ * @param {boolean} [opts.mine=true] run the seed's Beacon miner (off on a shared public chain)
  * @returns {object}
  */
 function buildFragment (opts) {
-  const { network, instance, dir, key, seedPort, fabricPeers, bitcoinPeers } = opts;
+  const { network, instance, dir, key, seedPort, fabricPeers, bitcoinPeers, mine = true } = opts;
   const profile = networkProfile(network);
   const ports = instance.ports;
   const isSeed = instance.name === 'seed';
@@ -210,7 +224,7 @@ function buildFragment (opts) {
       skipPlaynetPeer: true,
       bitcoinExtraParams: extra
     },
-    beacon: isSeed && profile.beaconIntervalMs > 0
+    beacon: isSeed && mine && profile.beaconIntervalMs > 0
       ? { enable: true, interval: profile.beaconIntervalMs, regtestOnly: true }
       : { enable: false },
     lightning: { managed: false, stub: true },
@@ -300,8 +314,9 @@ async function bootstrapAdmin (port, nodeName, tokenFile, opts = {}) {
     BITCOIN_NETWORK: opts.network || 'regtest',
     BITCOIN_LISTEN: opts.listen === true,
     BITCOIN_TXRELAY: true,
-    BITCOIN_PRUNE: 0,
-    BITCOIN_TXINDEX: true
+    // txindex can't run on a pruned node.
+    BITCOIN_PRUNE: opts.prune || 0,
+    BITCOIN_TXINDEX: !opts.prune
   });
   if (r.status === 200) {
     const token = r.body && (r.body.token || (r.body.result && r.body.result.token));

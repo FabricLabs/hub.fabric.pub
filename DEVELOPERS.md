@@ -44,7 +44,7 @@ To restore published packages: `npm install` (overwrites the symlinks with the v
 
 **Major release / downstream apps:** See **[docs/UPSTREAM_MONOREPO.md](docs/UPSTREAM_MONOREPO.md)** for what to align across Hub, `@fabric/http`, and `@fabric/core` before bumping downstream apps.
 
-The Hub passes `bitcoinExtraParams` for managed bitcoind (`-dnsseed=0` on regtest; new setups also get `-blocksonly=1` unless transaction relay is on) and `listen: false` for local-dev. For active UI iteration:
+The Hub passes `bitcoinExtraParams` for managed bitcoind (`-dnsseed=0` on regtest; new setups also get `-blocksonly=1 -walletbroadcast=1` unless transaction relay is on) and `listen: false` for local-dev. For active UI iteration:
 ```bash
 npm run dev
 ```

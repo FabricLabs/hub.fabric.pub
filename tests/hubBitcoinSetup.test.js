@@ -34,6 +34,7 @@ describe('hubBitcoinSetup', function () {
     assert.strictEqual(settings.bitcoin.constraints.storage.size, 0);
     assert.strictEqual(settings.bitcoin.txrelay, false);
     assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-blocksonly=1'));
+    assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-walletbroadcast=1'));
     assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-dbcache=450'));
     assert.ok(settings.bitcoin.bitcoinExtraParams.includes('-dnsseed=0'));
   });
@@ -61,6 +62,7 @@ describe('hubBitcoinSetup', function () {
     applyBitcoinSetupToSettings(settings, parsed);
     assert.strictEqual(settings.bitcoin.txrelay, true);
     assert.ok(!settings.bitcoin.bitcoinExtraParams.includes('-blocksonly=1'));
+    assert.ok(!settings.bitcoin.bitcoinExtraParams.includes('-walletbroadcast=1'));
   });
 
   it('forces full/txindex and txrelay when Lightning is enabled', function () {

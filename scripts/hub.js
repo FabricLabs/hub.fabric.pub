@@ -256,6 +256,47 @@ try {
   }
 }
 
+function _keyBagHasAny (bag) {
+  return !_keyBagEmpty(bag) || !!String((bag && bag.xpub) || '').trim();
+}
+
+/** The desktop main process holds the OS keychain, so it reads (or creates) the sealed key. */
+function requestRootKeyFromDesktop (timeoutMs = 30000) {
+  const { HUB_ROOT_KEY_REQUEST, HUB_ROOT_KEY_RESULT } = require('../functions/hubRootKey');
+  return new Promise((resolve, reject) => {
+    const id = require('crypto').randomBytes(8).toString('hex');
+    const done = () => {
+      clearTimeout(timer);
+      process.parentPort.removeListener('message', onMessage);
+    };
+    const onMessage = (event) => {
+      const msg = event && event.data;
+      if (!msg || msg.type !== HUB_ROOT_KEY_RESULT || msg.id !== id) return;
+      done();
+      if (msg.error) reject(new Error(msg.error));
+      else resolve(msg);
+    };
+    const timer = setTimeout(() => {
+      done();
+      reject(new Error('The desktop app did not provide the Hub key'));
+    }, timeoutMs);
+    process.parentPort.on('message', onMessage);
+    process.parentPort.postMessage({ type: HUB_ROOT_KEY_REQUEST, id });
+  });
+}
+
+/** Without an operator key, keep one Hub root key in the store instead of a new one per start. */
+async function ensurePersistentHubKey () {
+  if (_keyBagHasAny(settings.key)) return;
+  const { rootKeyPath, loadOrCreateHubRootKey } = require('../functions/hubRootKey');
+  const filePath = rootKeyPath(settings.path || path.join(userDataRoot, 'stores', 'hub'));
+  const result = process.parentPort && process.env.FABRIC_HUB_USER_DATA
+    ? await requestRootKeyFromDesktop()
+    : loadOrCreateHubRootKey({ filePath });
+  settings = { ...settings, key: { xprv: result.xprv } };
+  console.log('[FABRIC:HUB] Hub key', result.created ? 'created in' : 'loaded from', filePath, result.sealed ? '(sealed with the OS keychain)' : '');
+}
+
 // Services
 const Hub = require('../services/hub');
 const { logCrashReportHint } = require('../functions/fabricReportHint');
@@ -393,7 +434,7 @@ process.on('exit', (code) => {
   }
 });
 
-main(settings).catch((exception) => {
+ensurePersistentHubKey().then(() => main(settings)).catch((exception) => {
   console.error('[FABRIC:HUB]', 'Main process threw Exception:', exception && exception.stack ? exception.stack : exception);
   logCrashReportHint('[FABRIC:HUB]');
   void exitWithHubStop('main exception', 1);

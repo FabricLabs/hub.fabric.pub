@@ -11,6 +11,7 @@ The desktop shell runs the same Hub **Node** process as `npm start` and opens a 
 | `functions/desktopShellStatus.js` | Tray status lines, window-bounds restore |
 | `functions/fabricSignApprovalDialog.js` | Native dialog for Passport sign and link requests (Decline by default, lists exactly what is shared) |
 | `functions/desktopSecureStore.js` | `safeStorage`-encrypted `secure-store.json` for the admin token |
+| `functions/hubRootKey.js` | The Hub root key when no operator key is set: `stores/hub/ROOT_KEY`, sealed with `safeStorage` |
 | `functions/desktopLogFile.js` | Rotating, secret-scrubbed `logs/fabric-hub.log` |
 | `scripts/desktop-preload.js` | Exposes `window.fabricDesktop` (`isDesktopShell`, platform, versions, `onMessagePrompt`, `pullPendingMessagePrompt`, `getPaths`, `payjoinPost`, `secureStore`) |
 | `scripts/desktopHubProbe.js` | Startup HTTP/P2P probes (whether to use an existing loopback Hub) |
@@ -182,6 +183,7 @@ Main-process output and the Hub's stdout / stderr go to **`<userData>/logs/fabri
 | Permissions | Denied by default; the Hub origin may use clipboard write, fullscreen, and notifications. No device (USB / HID / serial) access. |
 | Spellcheck | Linux would download Hunspell dictionaries from Google, so it is off there unless `FABRIC_DESKTOP_SPELLCHECK=1` |
 | Admin token | Stored with Electron **`safeStorage`** (macOS Keychain, Windows DPAPI, Linux libsecret / kwallet) in `<userData>/secure-store.json` (mode 0600) and held in renderer memory; an existing `localStorage` copy is moved there on first launch. Linux without a keyring (`basic_text`) keeps browser storage. |
+| Hub key | Without `FABRIC_XPRV` (or seed / mnemonic / an unlocked `~/.fabric/wallet.json`) the Hub's root key is generated once and kept in `<userData>/stores/hub/ROOT_KEY` (mode 0600), sealed with **`safeStorage`**. The main process unseals it and sends it to the Hub process over the parent port, not the environment. Linux without a keyring stores it unsealed. A key that can't be unsealed stops the Hub instead of being replaced; wiping local data removes it. |
 | Packaged fuses | `build.electronFuses`: RunAsNode, `NODE_OPTIONS`, and `--inspect` off; cookie encryption, embedded asar integrity, and load-only-from-asar on |
 | Hub HTTP | Loopback trust needs a loopback socket **and** a rebind-safe `Host` (IP literal, `localhost`, or `FABRIC_HUB_ALLOWED_HOSTS` / the configured hostname) **and** no proxy forward headers; other Hosts on a loopback socket get **421**. Responses carry a Content-Security-Policy (`FABRIC_HUB_CSP=0` turns it off). |
 

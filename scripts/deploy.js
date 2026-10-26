@@ -11,8 +11,10 @@
  *   npm run deploy -- --network regtest --local --playnet restart
  *
  * Instances (see `scripts/lib/localNetwork.js`): `seed` (Bitcoin P2P listen +
- * Beacon miner, regtest only), `hub-fabric-pub`, and `hub-goon-vc`, each with
- * its own generated key under `stores/local-network/<network>/<instance>/`.
+ * Beacon miner, regtest only), `hub-fabric-pub`, `hub-goon-vc`, and `operator`
+ * (the local member), each with its own generated key under
+ * `stores/local-network/<network>/<instance>/`. With remotes the two stand-ins
+ * are left out: the real Hubs take their place.
  * On regtest the managed bitcoinds form a private network (`-addnode` to the
  * seed).
  *
@@ -20,7 +22,8 @@
  * instance dial the public Hubs (hub.fabric.pub, hub.goon.vc) over Fabric, and
  * `start` / `status` compare them with this tree: bundle, key, chain. The seed's
  * bitcoind also addnodes each remote (port 18444 on regtest); the most-work
- * chain wins, so a longer public chain replaces this network's chain.
+ * chain wins, so a longer public chain replaces this network's chain. The seed
+ * then neither pre-mines nor runs its Beacon, so nothing mines onto the public chain.
  * Running instances keep their old peers until `restart`.
  *
  * `start` writes `stores/local-network/<network>/network-profile.json` (HTTP
@@ -108,12 +111,12 @@ function context (opts) {
   const profile = net.networkProfile(opts.network);
   if (opts.base != null) profile.base = Number(opts.base);
   const root = net.networkRoot(profile.name, opts.root);
-  const instances = net.instancesFor(profile.name, profile.base).map((i) => Object.assign(i, {
+  const remotes = (opts.remotes || (opts.playnet ? PLAYNET_HUBS : [])).map(parseRemote);
+  const instances = net.instancesFor(profile.name, profile.base, { remotes: remotes.length > 0 }).map((i) => Object.assign(i, {
     dir: path.join(root, i.name),
     tokenFile: path.join(root, i.name, 'admin-token.txt'),
     fragmentFile: path.join(root, i.name, 'fragment.json')
   }));
-  const remotes = (opts.remotes || (opts.playnet ? PLAYNET_HUBS : [])).map(parseRemote);
   return { profile, root, instances, remotes, profileFile: path.join(root, 'network-profile.json') };
 }
 
@@ -508,6 +511,8 @@ async function start (ctx) {
       key,
       seedPort: seed ? seed.ports.btcP2p : null,
       fabricPeers,
+      // Never mine onto a public chain.
+      mine: ctx.remotes.length === 0,
       // The others sync from the seed.
       bitcoinPeers: instance.name === 'seed' ? remoteBitcoin : []
     });
@@ -521,13 +526,14 @@ async function start (ctx) {
     // First-time setup gates managed bitcoind, so the admin token comes first.
     const token = await net.bootstrapAdmin(instance.ports.http, instance.label, instance.tokenFile, {
       network: ctx.profile.name,
-      listen: instance.name === 'seed'
+      listen: instance.name === 'seed',
+      prune: ctx.profile.prune || 0
     });
     if (token) console.log(`[deploy] ${instance.name}: admin token → ${instance.tokenFile}`);
     await net.waitBitcoinOnline(instance.ports.http, 240000);
   }
 
-  if (seed) await matureSeed(ctx, seed);
+  if (seed && !ctx.remotes.length) await matureSeed(ctx, seed);
 
   let health = [];
   let remotes = [];
