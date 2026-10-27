@@ -89,7 +89,50 @@ function faucetFromOptionsDocument (arc) {
   });
 }
 
+const FAUCET_LIMIT_PER_ADDRESS = 10;
+const FAUCET_LIMIT_TOTAL = 120;
+const FAUCET_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Hourly limits for the open faucet: per client address and for the whole Hub.
+ * @param {object} [opts]
+ * @param {number} [opts.perAddress]
+ * @param {number} [opts.total]
+ * @param {number} [opts.windowMs]
+ * @param {Function} [opts.now]
+ * @returns {{ take: Function }} `take(address)` → null, or a refusal message
+ */
+function createFaucetLimiter (opts = {}) {
+  const perAddress = Number(opts.perAddress) || FAUCET_LIMIT_PER_ADDRESS;
+  const total = Number(opts.total) || FAUCET_LIMIT_TOTAL;
+  const windowMs = Number(opts.windowMs) || FAUCET_WINDOW_MS;
+  const now = typeof opts.now === 'function' ? opts.now : Date.now;
+  let since = now();
+  let count = 0;
+  let hits = new Map();
+  return {
+    take (address) {
+      const t = now();
+      if (t - since >= windowMs) {
+        since = t;
+        count = 0;
+        hits = new Map();
+      }
+      const key = String(address || 'unknown');
+      const mine = hits.get(key) || 0;
+      if (mine >= perAddress) return 'Faucet limit reached for your address; try again within the hour.';
+      if (count >= total) return 'Faucet is busy; try again within the hour.';
+      hits.set(key, mine + 1);
+      count += 1;
+      return null;
+    }
+  };
+}
+
 module.exports = {
+  FAUCET_LIMIT_PER_ADDRESS,
+  FAUCET_LIMIT_TOTAL,
+  createFaucetLimiter,
   FAUCET_MAX_SATS,
   FAUCET_DEFAULT_SATS,
   FAUCET_ENDPOINT,

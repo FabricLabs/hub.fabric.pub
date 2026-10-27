@@ -43,4 +43,12 @@ describe('local network instances', function () {
     assert.deepStrictEqual(ctx.instances.map((i) => i.name), ['seed', 'operator']);
     assert.strictEqual(ctx.remotes.length, 2);
   });
+
+  it('deploy --additive keeps the whole local network and adds the public Hubs', function () {
+    assert.strictEqual(deploy.parseArgs(['--additive']).additive, true);
+    const ctx = deploy.context({ network: 'regtest', additive: true, root: '/tmp/fabric-localnet-test' });
+    assert.deepStrictEqual(ctx.instances.map((i) => i.name), ['seed', 'hub-fabric-pub', 'hub-goon-vc', 'operator']);
+    assert.strictEqual(ctx.additive, true);
+    assert.strictEqual(ctx.remotes.length, 2);
+  });
 });

@@ -52,4 +52,60 @@ function bridgeWebSocketLoadingHint (bridgeInstance) {
   return phase ? t.shell.connection[phase] : null;
 }
 
-module.exports = { isHubNetworkStatusShape, bridgeConnectionPhase, bridgeWebSocketLoadingHint };
+/** Status fields dropped, in order, when the whole status won't fit one Fabric frame. */
+const NETWORK_STATUS_HEAVY_FIELDS = Object.freeze([
+  'fabricMessages',
+  'messages',
+  'state',
+  'documents',
+  'publishedDocuments',
+  'webrtcPeers'
+]);
+
+/**
+ * Fit a {@link GetNetworkStatus} payload into `maxBytes` of JSON by dropping
+ * {@link NETWORK_STATUS_HEAVY_FIELDS} in order. Dropped names are listed in
+ * `truncated`, so clients keep their last copy of those fields
+ * ({@link mergeTruncatedNetworkStatus}) and fetch them with their own calls.
+ * @param {object} status
+ * @param {number} maxBytes JSON byte budget (frame body minus the JSONCall envelope)
+ * @returns {object} `status` itself when it fits, else a trimmed copy
+ */
+function fitHubNetworkStatus (status, maxBytes) {
+  const size = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+  if (!status || typeof status !== 'object' || size(status) <= maxBytes) return status;
+  const out = Object.assign({}, status);
+  const truncated = [];
+  for (const field of NETWORK_STATUS_HEAVY_FIELDS) {
+    if (!(field in out)) continue;
+    delete out[field];
+    truncated.push(field);
+    out.truncated = truncated.slice();
+    if (size(out) <= maxBytes) break;
+  }
+  return out;
+}
+
+/**
+ * Keep `previous` values for the fields a trimmed status left out.
+ * @param {object} next status from the Hub (may carry `truncated`)
+ * @param {object|null} previous last applied status
+ * @returns {object}
+ */
+function mergeTruncatedNetworkStatus (next, previous) {
+  if (!next || !Array.isArray(next.truncated) || !previous || typeof previous !== 'object') return next;
+  const merged = Object.assign({}, next);
+  for (const field of next.truncated) {
+    if (field in previous) merged[field] = previous[field];
+  }
+  return merged;
+}
+
+module.exports = {
+  NETWORK_STATUS_HEAVY_FIELDS,
+  isHubNetworkStatusShape,
+  bridgeConnectionPhase,
+  bridgeWebSocketLoadingHint,
+  fitHubNetworkStatus,
+  mergeTruncatedNetworkStatus
+};

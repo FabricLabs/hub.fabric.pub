@@ -36,7 +36,7 @@ const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
 const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput, findFabricPeerRow } = require('../functions/peerIdentity');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
-const { isHubNetworkStatusShape } = require('../functions/hubNetworkStatus');
+const { isHubNetworkStatusShape, mergeTruncatedNetworkStatus } = require('../functions/hubNetworkStatus');
 const {
   fabricTcpInventoryTarget,
   isFabricTcpConnectedPeer,
@@ -4742,6 +4742,7 @@ class Bridge extends React.Component {
     if (!result || typeof result !== 'object' || result.type || !isHubNetworkStatusShape(result)) {
       return false;
     }
+    result = mergeTruncatedNetworkStatus(result, this.state && (this.state.networkStatus || this.state.lastNetworkStatus));
     this.setState({ networkStatus: result, lastNetworkStatus: result }, () => {
       try {
         this._flushPeerMessageQueue();

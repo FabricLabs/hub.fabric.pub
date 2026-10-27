@@ -80,10 +80,24 @@ describe('adversarialEnvironment.basics (@fabric/hub)', function () {
     assert.strictEqual(shouldAutoFundDesktopLocalKey(Object.assign({}, base, { network: 'signet' })), false);
   });
 
-  it('documents that Hub faucet HTTP spend requires admin token (regtest)', function () {
-    // Regression guard for shared-mode drain: handler checks verifyAdminToken before sendtoaddress.
+  it('open faucet is regtest-only and rate limited before any wallet spend', function () {
     const src = require('fs').readFileSync(require('path').join(__dirname, '../services/hub.js'), 'utf8');
-    assert.ok(/_handleBitcoinFaucetRequest[\s\S]*verifyAdminToken/.test(src));
-    assert.ok(/Admin token required for faucet/.test(src));
+    const start = src.indexOf('_handleBitcoinFaucetRequest (req, res)');
+    const handler = src.slice(start, src.indexOf('sendtoaddress', start));
+    assert.ok(/network !== 'regtest'/.test(handler));
+    assert.ok(/_faucetLimiter\.take/.test(handler));
+  });
+
+  it('faucet limiter caps per address and in total, then resets', function () {
+    const { createFaucetLimiter } = require('../functions/bitcoinFaucetCapability');
+    let t = 0;
+    const limiter = createFaucetLimiter({ perAddress: 2, total: 3, windowMs: 1000, now: () => t });
+    assert.strictEqual(limiter.take('a'), null);
+    assert.strictEqual(limiter.take('a'), null);
+    assert.ok(limiter.take('a'));
+    assert.strictEqual(limiter.take('b'), null);
+    assert.ok(limiter.take('c'));
+    t = 1000;
+    assert.strictEqual(limiter.take('a'), null);
   });
 });

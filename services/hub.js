@@ -145,8 +145,15 @@ const {
   P2P_PEER_ALIAS,
   MAX_PEERS,
   HEADER_SIZE,
+  MAX_MESSAGE_SIZE,
   P2P_CHAIN_SYNC_REQUEST
 } = require('@fabric/core/constants');
+const { fitHubNetworkStatus } = require('../functions/hubNetworkStatus');
+
+// JSONCall / JSONCallResult envelope (method, hash, ids) around a status body.
+const NETWORK_STATUS_MAX_BYTES = MAX_MESSAGE_SIZE - 1024;
+// Walk the whole UTXO set; on signet and mainnet they outlast core's 15 s RPC timeout.
+const BITCOIN_SLOW_RPC_METHODS = new Set(['scantxoutset', 'gettxoutsetinfo']);
 
 // Hard limits and validation patterns
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
@@ -2603,6 +2610,52 @@ class Hub extends Service {
       instances: parsed.instances,
       applied
     };
+  }
+
+  /**
+   * RPC call that may outlast core's 15 s client timeout, such as `scantxoutset`
+   * over a full (non-regtest) UTXO set. Uses a copy of core's own client, auth
+   * included, with a 5 minute timeout.
+   * @private
+   */
+  _bitcoinSlowRPC (bitcoin, method, params = [], fallback = null) {
+    const base = bitcoin && bitcoin.rpc;
+    if (!base || !base.options || typeof base.request !== 'function') {
+      return fallback ? fallback(method, params) : Promise.reject(new Error('RPC manager does not exist'));
+    }
+    if (!this._bitcoinSlowClient || this._bitcoinSlowClientBase !== base) {
+      const jayson = require('jayson/lib/client');
+      const options = Object.assign({}, base.options, { timeout: 300000 });
+      this._bitcoinSlowClient = (bitcoin.settings && bitcoin.settings.secure) ? jayson.https(options) : jayson.http(options);
+      this._bitcoinSlowClientBase = base;
+    }
+    return new Promise((resolve, reject) => {
+      this._bitcoinSlowClient.request(method, params, (err, response) => {
+        if (err) return reject(err);
+        if (!response) return reject(new Error(`No response from RPC call ${method}`));
+        if (response.error) {
+          const re = response.error;
+          const error = new Error(re && re.message ? re.message : JSON.stringify(re));
+          if (re && re.code != null) error.code = re.code;
+          return reject(error);
+        }
+        resolve(response.result);
+      });
+    });
+  }
+
+  /**
+   * Send the RPC methods that walk the whole UTXO set through
+   * `_bitcoinSlowRPC`, core's own sync (`gettxoutsetinfo`) included.
+   * @private
+   */
+  _routeSlowBitcoinRPC (bitcoin) {
+    if (!bitcoin || typeof bitcoin._makeRPCRequestOnce !== 'function' || bitcoin._hubSlowRPCRouted) return;
+    const once = bitcoin._makeRPCRequestOnce.bind(bitcoin);
+    bitcoin._makeRPCRequestOnce = (method, params = []) => (BITCOIN_SLOW_RPC_METHODS.has(method)
+      ? this._bitcoinSlowRPC(bitcoin, method, params, once)
+      : once(method, params));
+    bitcoin._hubSlowRPCRouted = true;
   }
 
   _getBitcoinService () {
@@ -9885,18 +9938,22 @@ class Hub extends Service {
         const body = req.body || {};
         const token = SetupService.extractBearerToken(req) ||
           String(body.adminToken || body.token || '').trim();
-        if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' ||
-            !this.setup.verifyAdminToken(token)) {
-          return res.status(401).json({
-            status: 'error',
-            message: 'Admin token required for faucet (regtest Hub wallet spend).'
-          });
-        }
+        const isAdmin = !!(token && this.setup && typeof this.setup.verifyAdminToken === 'function' &&
+          this.setup.verifyAdminToken(token));
 
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
         if (bitcoin.network !== 'regtest') {
           return res.status(400).json({ status: 'error', message: 'Faucet is only available on regtest.' });
+        }
+
+        if (!isAdmin) {
+          if (!this._faucetLimiter) {
+            this._faucetLimiter = bitcoinFaucetCapability.createFaucetLimiter();
+          }
+          const who = String(req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
+          const refusal = this._faucetLimiter.take(who);
+          if (refusal) return res.status(429).json({ status: 'error', message: refusal });
         }
 
         const FAUCET_MAX_SATS = bitcoinFaucetCapability.FAUCET_MAX_SATS;
@@ -12246,6 +12303,7 @@ class Hub extends Service {
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
         this._repairManagedRegtestSettingsJsonIfCorrupt();
+        this._routeSlowBitcoinRPC(this.bitcoin);
         console.log('[HUB] Starting Bitcoin (blocking until ready or timeout)...');
         const result = await this._startBitcoinServiceWithTimeout();
         if (result && result.started) {
@@ -12289,6 +12347,15 @@ class Hub extends Service {
           key: this._cosignerKey,
           publish: (body) => this._publishContractMessage(body, this._cosignerKey, 'FEDERATION'),
           relay: (message) => this.agent.relayFrom('_hub', message),
+          deliver: async (url, fabric) => {
+            const res = await fetch(`${String(url).replace(/\/+$/, '')}/services/federations/messages`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({ fabric }),
+              signal: AbortSignal.timeout(15000)
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          },
           rpc: (method, params) => {
             const bitcoin = this._getBitcoinService();
             if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') throw new Error('Bitcoin is not available');
@@ -15252,7 +15319,7 @@ class Hub extends Service {
 
       this.http._registerMethod('GetNetworkStatus', async (...params) => {
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return buildNetworkStatus();
+        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetSetupStatus', (...params) => {
@@ -15334,7 +15401,7 @@ class Hub extends Service {
         // For the UI we return the same shape as GetNetworkStatus
         // so the bridge/networkStatus wiring can remain consistent.
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return buildNetworkStatus();
+        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetWorkerStatus', (...params) => {
@@ -15509,7 +15576,7 @@ class Hub extends Service {
       // Push network status to all WebSocket clients when peer connections change
       const pushNetworkStatus = () => {
         try {
-          const status = buildNetworkStatus();
+          const status = fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
             method: 'JSONCallResult',
             params: [null, status]

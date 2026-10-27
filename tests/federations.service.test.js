@@ -262,6 +262,18 @@ describe('named federation mailbox', function () {
     assert.strictEqual(hub.list()[0].withdrawals[0].status, 'broadcast');
   });
 
+  it('posts its own frames to members it can reach by URL', async function () {
+    const { hub, passport } = await hubWithPassport();
+    const delivered = [];
+    hub.attach({ deliver: async (url, fabric) => { delivered.push({ url, fabric }); } });
+    const created = await hub.create({ threshold: 2, members: [{ pubkey: passport.pubkey, url: 'https://member.example' }] });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(delivered.map((d) => d.url), ['https://member.example']);
+    const invite = read(delivered[0].fabric);
+    assert.strictEqual(invite.type, Federation.MESSAGE_TYPES.invite);
+    assert.strictEqual(Federation.descriptorId(invite.descriptor), created.id);
+  });
+
   it('keeps only frames from members of federations it has seen', async function () {
     const { hub, passport } = await hubWithPassport();
     const stranger = new Key({ private: crypto.randomBytes(32).toString('hex') });

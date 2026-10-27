@@ -371,19 +371,26 @@ function startDetached (dir, fragmentFile, env) {
 }
 
 /**
- * SIGTERM, wait, then SIGKILL. Removes the pid file.
+ * SIGTERM, wait, then SIGKILL. Removes the pid file only once the process is gone,
+ * so a stop that could not signal it (EPERM, a sandbox) leaves it findable.
  * @returns {Promise<boolean>} true when a process was stopped
  */
 async function stopDetached (dir, timeoutMs = 45000) {
+  const pidFile = path.join(dir, 'hub.pid');
   const pid = readPid(dir);
-  try { fs.unlinkSync(path.join(dir, 'hub.pid')); } catch (_) {}
-  if (!pid || !pidAlive(pid)) return false;
+  if (!pid || !pidAlive(pid)) {
+    try { fs.unlinkSync(pidFile); } catch (_) {}
+    return false;
+  }
   try { process.kill(pid, 'SIGTERM'); } catch (_) {}
   const t0 = Date.now();
   while (pidAlive(pid) && Date.now() - t0 < timeoutMs) await sleep(500);
   if (pidAlive(pid)) {
     try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+    await sleep(1000);
   }
+  if (pidAlive(pid)) throw new Error(`pid ${pid} (${dir}) is still running; stop it by hand`);
+  try { fs.unlinkSync(pidFile); } catch (_) {}
   return true;
 }
 
