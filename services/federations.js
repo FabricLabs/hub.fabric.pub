@@ -125,6 +125,7 @@ class FederationsService extends Service {
     this._descriptors = new Map();
     this._vaultCache = new Map();
     this._lastSent = new Map();
+    this._sentFrames = new Map();
     this._timer = null;
     this._queue = Promise.resolve();
     this._started = false;
@@ -483,6 +484,9 @@ class FederationsService extends Service {
     try {
       const sent = this._publish({ ...body, sentAt: now });
       if (sent && typeof sent.toBuffer === 'function') {
+        this._sentFrames.delete(throttleKey);
+        this._sentFrames.set(throttleKey, sent);
+        if (this._sentFrames.size > 500) this._sentFrames.delete(this._sentFrames.keys().next().value);
         try {
           this.recordFrame(sent);
         } catch (err) {
@@ -840,18 +844,56 @@ class FederationsService extends Service {
       .catch((err) => this.emit('debug', `[FEDERATIONS] ignored ${body && body.type}: ${err.message}`));
   }
 
+  /**
+   * Answer a federation frame a linked signer asked this Hub to sign (a
+   * delegation request): accept the invite, or approve the withdrawal
+   * (still within `maxWithdrawalSats`). Returns the frame this Hub sent.
+   * @param {Object} body The inner CONTRACT_MESSAGE body.
+   * @param {string} author Its verified author (the requester's cosigner key).
+   * @returns {Promise<Object>} The signed `Message` this Hub published.
+   */
+  async answerDelegated (body, author) {
+    const signer = pubkeyXOnly(author);
+    if (!signer || !this._self) throw new Error('this Hub cannot sign federation frames');
+    if (!body || !Federation.isMessage(body)) throw new Error('not a federation frame');
+    const id = String(body.federationId || '').toLowerCase();
+    if (body.type === TYPES.invite) {
+      await this._enqueue(() => this._handle(body, signer, { delegated: true }));
+      await this.respond(id, true);
+      return this._sentFrames.get(`response:${id}`) || null;
+    }
+    if (body.type === TYPES.withdrawal) {
+      await this._enqueue(() => this._handle(body, signer, { delegated: true }));
+      const record = this._record(id);
+      const { requestId } = Federation.verifyWithdrawalRequest(record.descriptor, body);
+      await this.approveWithdrawal(id, requestId);
+      return this._sentFrames.get(`signature:${requestId}`) || null;
+    }
+    throw new Error(`${body.type} is not signed on request`);
+  }
+
+  /**
+   * Network of a federation this Hub knows, or null.
+   * @param {string} federationId
+   * @returns {string|null}
+   */
+  networkOf (federationId) {
+    const descriptor = this._descriptorFor(federationId);
+    return descriptor && descriptor.network ? String(descriptor.network) : null;
+  }
+
   /** @private */
-  async _handle (body, signer) {
+  async _handle (body, signer, opts = {}) {
     if (!signer || !this._self || signer === this._self) return;
     if (body.contract !== body.federationId) throw new Error('contract must be the federation id');
-    if (body.type === TYPES.invite) return this._onInvite(body, signer);
+    if (body.type === TYPES.invite) return this._onInvite(body, signer, opts);
     const record = this._records.get(String(body.federationId || '').toLowerCase());
     if (!record) return;
     Federation.verifySender(record.descriptor, body, signer);
     switch (body.type) {
       case TYPES.response: return this._onResponse(record, body, signer);
       case TYPES.sync: return this._onSync(record);
-      case TYPES.withdrawal: return this._onWithdrawal(record, body, signer);
+      case TYPES.withdrawal: return this._onWithdrawal(record, body, signer, opts);
       case TYPES.signature: return this._onSignature(record, body, signer);
       case TYPES.broadcast: return this._onBroadcast(record, body);
       default:
@@ -859,7 +901,7 @@ class FederationsService extends Service {
   }
 
   /** @private */
-  async _onInvite (body, signer) {
+  async _onInvite (body, signer, opts = {}) {
     const descriptor = Federation.verifyInvite(body, signer);
     if (!Federation.isValidator(descriptor, this._self)) return;
     this._checkNetwork(descriptor.network);
@@ -879,7 +921,7 @@ class FederationsService extends Service {
     }
     this._refreshStatus(record);
     await this._save(record);
-    this.emit('invite', this._view(record));
+    this.emit('invite', Object.assign(this._view(record), { inviter: signer, network: descriptor.network, delegated: !!opts.delegated }));
     // Ask the others for their answers.
     this._send(Federation.syncMessage(record.id), `sync:${record.id}`, true);
   }
@@ -908,7 +950,7 @@ class FederationsService extends Service {
   }
 
   /** @private */
-  async _onWithdrawal (record, body, signer) {
+  async _onWithdrawal (record, body, signer, opts = {}) {
     this._checkNetwork(record.descriptor.network);
     if (!record.members[this._self]) return;
     const prepared = Federation.verifyWithdrawalRequest(record.descriptor, body);
@@ -924,7 +966,15 @@ class FederationsService extends Service {
       destinationAddress: String(body.destinationAddress).trim()
     });
     await this._save(record);
-    this.emit('withdrawal', { federationId: record.id, requestId: prepared.requestId });
+    this.emit('withdrawal', {
+      federationId: record.id,
+      requestId: prepared.requestId,
+      requester: signer,
+      amountSats: prepared.amountSats,
+      destinationAddress: String(body.destinationAddress).trim(),
+      network: record.descriptor.network,
+      delegated: !!opts.delegated
+    });
   }
 
   /** @private */

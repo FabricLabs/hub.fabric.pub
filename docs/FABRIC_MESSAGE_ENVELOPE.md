@@ -18,8 +18,8 @@ JSON inside a **`GenericMessage`** body, keyed by **`@fabric/MessageEnvelope`: `
 |------|--------|------|-----------|
 | `SiteLoginRequest` | `0x4230` | `origin`, `nonce`, `issuedAt`, `expiresAt`, `purpose` | the site (optional) |
 | `SiteLoginResponse` | `0x4231` | `origin`, `nonce`, `issuedAt`, `expiresAt`, `identityId`, `pubkey`, `signer`, `xpub`, `crossSign` | the identity logging in |
-| `FabricSignRequest` | `0x4232` | `origin`, `nonce`, `issuedAt`, `expiresAt`, `inner` (the `SiteLoginRequest` frame) | a device linked to the desktop |
+| `FabricSignRequest` | `0x4232` | `origin`, `nonce`, `issuedAt`, `expiresAt`, `inner` (the `SiteLoginRequest` frame) | retired: refused |
 
-Lifetimes are capped at 5 minutes (`SITE_LOGIN_MAX_TTL_MS`). A page asks Passport for a login to **itself**; Passport binds the request to the origin the browser reports. Passport answers itself, or wraps the request in a `FabricSignRequest` and asks a linked desktop at `POST /services/fabric/sign` (Hub on 8080, GoonCitizen on 3041). The page verifies with `verifySiteLoginResponse(fabric, { origin, nonce })`. Builders and verifiers: `@fabric/core` `functions/fabricSiteLogin`; the desktop routes: `@fabric/http` `functions/fabricLocalSigner`.
+Lifetimes are capped at 5 minutes (`SITE_LOGIN_MAX_TTL_MS`). A page asks Passport for a login to **itself**; Passport binds the request to the origin the browser reports. Site login is retired in favor of Passport v2 (`@fabric/core` `docs/PASSPORT.md`); a linked signer is asked with a `DELEGATION_REQUEST` (`docs/DELEGATION.md`), not a `FabricSignRequest`. The page verifies with `verifySiteLoginResponse(fabric, { origin, nonce })`. Builders and verifiers: `@fabric/core` `functions/fabricSiteLogin`; the delegate routes: `@fabric/http` `functions/fabricDelegate`.
 
 **Execution contracts:** `DelegationSignRequest` step + `RunExecutionContract` → `fabricMessageWireHex` + optional modal via `fabric:delegationSignRequest`.

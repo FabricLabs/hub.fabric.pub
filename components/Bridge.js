@@ -32,6 +32,7 @@ const t = require('../locales/en');
 
 const notices = t.notices;
 const { toast } = require('../functions/toast');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
 const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput, findFabricPeerRow } = require('../functions/peerIdentity');
@@ -4110,6 +4111,10 @@ class Bridge extends React.Component {
                 if (this._pendingCreatePurchaseInvoiceBackendIds) {
                   this._pendingCreatePurchaseInvoiceBackendIds.delete(purchaseDid);
                 }
+                if (result.claimToken) {
+                  if (!this._purchaseClaimTokens) this._purchaseClaimTokens = new Map();
+                  this._purchaseClaimTokens.set(purchaseDid, { invoiceId: result.invoiceId, claimToken: result.claimToken });
+                }
                 window.dispatchEvent(new CustomEvent('purchaseInvoiceReady', {
                   detail: {
                     documentId: purchaseDid,
@@ -5951,8 +5956,15 @@ class Bridge extends React.Component {
     }
 
     try {
-      const params = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats))
-        ? [{ id: resolved, purchasePriceSats: Number(opts.purchasePriceSats) }]
+      // Pricing and re-listing need the operator's admin token.
+      const adminToken = readHubAdminTokenFromBrowser();
+      const priced = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats));
+      const params = priced || adminToken
+        ? [{
+          id: resolved,
+          ...(priced ? { purchasePriceSats: Number(opts.purchasePriceSats) } : {}),
+          ...(adminToken ? { adminToken } : {})
+        }]
         : [resolved];
       const backendKey = String(resolved);
       if (this._pendingPublishDocumentBackendIds) {
@@ -6063,10 +6075,11 @@ class Bridge extends React.Component {
     }
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
+    const claim = this._purchaseClaimTokens && this._purchaseClaimTokens.get(String(backendId));
     return new Promise((resolve) => {
       this._pendingClaimCallbacks.set(backendId, { resolve });
       try {
-        const payload = { method: 'ClaimPurchase', params: [{ documentId: backendId, txid }] };
+        const payload = { method: 'ClaimPurchase', params: [{ documentId: backendId, txid, ...(claim || {}) }] };
         const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
         this.sendSignedMessage(message.toBuffer());
       } catch (error) {

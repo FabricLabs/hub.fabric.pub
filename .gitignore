@@ -122,6 +122,8 @@ stores/hub-test
 
 # Hub operator debug mirror (see functions/hubDebugFileLog.js)
 stores/hub/debug.log
+# V8 heap snapshots hold keys (see functions/hubHeapSnapshot.js)
+*.heapsnapshot
 logs/hub/debug.log
 logs/hub/debug.log.1
 

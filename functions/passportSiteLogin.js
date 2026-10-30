@@ -6,12 +6,13 @@
  * Passport over a private `MessagePort`, Passport answers with a signed
  * `PASSPORT_ASSERTION`, and `POST /sessions` verifies it and sets the
  * HttpOnly session cookie. The page only ever sees the public session view.
+ * Whether Passport is there is asked over a port too (`probePassport`), not
+ * read from a page attribute any script could set.
  */
 
 const {
   PASSPORT_MARKER,
-  passportInstalled,
-  passportStatus,
+  probePassport,
   askPassport,
   signInWithPassport
 } = require('@fabric/http/functions/passportPage');
@@ -42,8 +43,7 @@ async function loginWithPassport (params = {}) {
 
 module.exports = {
   PASSPORT_MARKER,
-  passportInstalled,
-  passportStatus,
+  probePassport,
   askPassport,
   loginWithPassport
 };

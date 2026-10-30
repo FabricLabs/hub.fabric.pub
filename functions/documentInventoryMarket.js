@@ -11,6 +11,7 @@
  */
 
 const COLLECTION = 'documentoffers';
+const EARLIER_QUOTES_MAX = 4;
 
 // Smallest HTLC that settles on Bitcoin mainnet (dust + claim fee at 1 sat/vB);
 // the literal covers `@fabric/core` pins from before the constant existed.
@@ -57,9 +58,21 @@ function peerKeyFromHex (value) {
   return null;
 }
 
+/**
+ * A Fabric peer id the session authenticated (not a key; any short token).
+ * @param {*} value
+ * @returns {string|null}
+ */
+function peerIdKey (value) {
+  const s = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{1,128}$/.test(s) ? s : null;
+}
+
 function peerKey (peer) {
   const p = peer && typeof peer === 'object' ? peer : {};
+  const id = peerIdKey(p.peerId);
   return peerKeyFromHex(p.peerPubkey)
+    || (id ? 'id:' + id : null)
     || (p.peerAddress ? String(p.peerAddress).trim().toLowerCase() : null)
     || 'unknown';
 }
@@ -212,6 +225,7 @@ function normalizeInventoryItem (item, peer) {
     purchasePriceSats,
     published,
     peerPubkey: peerKeyFromHex(peer && peer.peerPubkey),
+    ...(peerIdKey(peer && peer.peerId) ? { peerId: peerIdKey(peer.peerId) } : {}),
     peerAddress: peer && peer.peerAddress ? String(peer.peerAddress) : null,
     peerAlias: peer && peer.peerAlias ? String(peer.peerAlias) : null,
     receivedAt: new Date().toISOString(),
@@ -242,21 +256,42 @@ function replacePeerOffers (map, peer, items, opts = {}) {
   const out = map && typeof map === 'object' ? map : {};
   const key = peerKey(peer);
   const inventoryId = opts.inventoryId ? String(opts.inventoryId).slice(0, 64) : null;
+  // A reply without quotes (a resync after the seller reconnects) must not take away
+  // a quote the buyer may already have paid.
+  const quotes = {};
   for (const id of Object.keys(out)) {
     const row = out[id];
     if (!row) continue;
     const rowKey = peerKey({
       peerPubkey: row.peerPubkey,
+      peerId: row.peerId,
       peerAddress: row.peerAddress
     });
     if (rowKey !== key) continue;
     if (inventoryId && row.inventoryId === inventoryId) continue;
+    if (row.htlc && row.documentId) {
+      quotes[row.documentId] = row;
+      // A later page of this snapshot may list the document; hold the quote for it,
+      // through at most one snapshot that doesn't.
+      if (inventoryId && !row.quoteHeld) {
+        out[id] = Object.assign({}, row, { inventoryId, quoteHeld: true });
+        continue;
+      }
+    }
     delete out[id];
   }
   const saved = [];
   for (const item of (Array.isArray(items) ? items : [])) {
     const rec = normalizeInventoryItem(item, peer);
     if (!rec) continue;
+    const prior = quotes[rec.documentId] || (out[rec.id] && out[rec.id].htlc ? out[rec.id] : null);
+    if (prior && !rec.htlc) {
+      rec.htlc = prior.htlc;
+      if (prior.earlierQuotes) rec.earlierQuotes = prior.earlierQuotes;
+    } else if (prior && prior.htlc.settlementId !== rec.htlc.settlementId) {
+      // Asking again gives a new quote; the buyer may still pay one it was given before.
+      rec.earlierQuotes = [prior.htlc].concat(prior.earlierQuotes || []).slice(0, EARLIER_QUOTES_MAX);
+    }
     if (inventoryId) rec.inventoryId = inventoryId;
     out[rec.id] = rec;
     saved.push(rec);
@@ -275,7 +310,7 @@ function dropClosedSessionOffers (map, isOpen) {
   let dropped = 0;
   for (const id of Object.keys(map || {})) {
     const row = map[id];
-    if (!row || row.local || peerKeyFromHex(row.peerPubkey) || !row.peerAddress) continue;
+    if (!row || row.local || peerKeyFromHex(row.peerPubkey) || peerIdKey(row.peerId) || !row.peerAddress) continue;
     if (isOpen(String(row.peerAddress))) continue;
     delete map[id];
     dropped++;

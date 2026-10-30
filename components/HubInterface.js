@@ -383,6 +383,8 @@ const {
 const { ToastContainer, toast: toastify, Slide } = require('react-toastify');
 const { toast } = require('../functions/toast');
 const SecurityHome = require('./SecurityHome');
+const SignerRulesHome = require('./SignerRulesHome');
+const DelegationRequestWatcher = require('./DelegationRequestWatcher');
 const SettingsHome = require('./SettingsHome');
 const CollaborationHome = require('./CollaborationHome');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
@@ -1620,6 +1622,7 @@ class HubInterface extends React.Component {
               responseCapture={this.responseCapture}
             />
             <FabricMessagePrompt />
+            <DelegationRequestWatcher adminToken={this.state.adminToken} />
             <FederationContractInviteModal
               open={this.state.federationInviteModalOpen}
               detail={this.state.federationInviteDetail}
@@ -2843,7 +2846,11 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/security"
-                    element={hubPv(<SecurityHome identity={this.state.uiLocalIdentity} />)}
+                    element={hubPv(<SecurityHome adminToken={this.state.adminToken} />)}
+                  />
+                  <Route
+                    path="/settings/signing"
+                    element={hubPv(<SignerRulesHome adminToken={this.state.adminToken} />)}
                   />
                   <Route
                     path="/admin/beacon-federation"

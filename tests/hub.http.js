@@ -991,13 +991,17 @@ describe('@fabric/hub', function () {
           }
         });
 
-        it('the local signer routes are not served outside the desktop app', async function () {
+        it('the retired local signer routes and the delegation admin routes are not served without the admin token', async function () {
           for (const [method, route] of [
             ['GET', '/services/fabric/identity'],
             ['POST', '/services/fabric/sign'],
-            ['POST', '/services/fabric/link']
+            ['POST', '/services/fabric/link'],
+            ['GET', '/services/delegation/requests'],
+            ['GET', '/services/delegation/rules'],
+            ['PUT', '/services/delegation/rules'],
+            ['GET', '/services/delegation/signers']
           ]) {
-            const response = await makeRequest(method, route, method === 'POST' ? {} : null, jsonApi);
+            const response = await makeRequest(method, route, method === 'GET' ? null : {}, jsonApi);
             assert.notStrictEqual(response.status, 200, `${method} ${route}`);
           }
         });

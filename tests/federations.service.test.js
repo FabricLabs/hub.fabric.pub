@@ -330,3 +330,70 @@ describe('named federation mailbox', function () {
     await assert.rejects(hub.vault('cd'.repeat(32)), /unknown federation/);
   });
 });
+
+describe('delegated federation answers', function () {
+  const Message = require('@fabric/core/types/message');
+  const Federation = require('@fabric/core/types/federation');
+
+  function member (chain) {
+    const key = new Key({ private: crypto.randomBytes(32).toString('hex') });
+    const out = [];
+    const svc = new FederationsService({ network: 'regtest', tickMs: 0, resendMinMs: 0 });
+    svc.attach({
+      key,
+      rpc: async (m, p) => chain.rpc(m, p),
+      walletSend: async (o) => chain.walletSend(o),
+      publish: (body) => {
+        out.push(JSON.parse(JSON.stringify(body)));
+        return Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]).signWithKey(key);
+      }
+    });
+    return { svc, key, out };
+  }
+
+  it('accepts an invite and co-signs a withdrawal a linked signer asked for, returning the frame sent', async function () {
+    const chain = fakeChain();
+    const a = member(chain);
+    const b = member(chain);
+    await a.svc.start();
+    await b.svc.start();
+    const events = [];
+    b.svc.on('invite', (ev) => events.push(['invite', ev]));
+    b.svc.on('withdrawal', (ev) => events.push(['withdrawal', ev]));
+
+    const created = await a.svc.create({ name: 'Escrow', threshold: 2, members: [{ pubkey: b.key.pubkey }] });
+    assert.strictEqual(b.svc.networkOf(created.id), null, 'unknown until the invite arrives');
+    const invite = a.out.find((body) => body.type === Federation.MESSAGE_TYPES.invite);
+    const reply = await b.svc.answerDelegated(invite, a.key.pubkey);
+    const replyBody = JSON.parse(reply.data);
+    assert.strictEqual(replyBody.type, Federation.MESSAGE_TYPES.response);
+    assert.strictEqual(replyBody.accept, true);
+    assert.strictEqual(b.svc.networkOf(created.id), 'regtest');
+    assert.strictEqual(events[0][1].delegated, true);
+    assert.strictEqual(events[0][1].inviter, a.key.pubkey.slice(2));
+
+    a.svc.handleContractMessage(replyBody, b.key.pubkey.slice(2));
+    await settle([a.svc, b.svc]);
+    assert.strictEqual(a.svc.list()[0].status, 'active');
+    await a.svc.deposit(created.id, { amountSats: 100000 });
+    const dest = address.toBech32(crypto.randomBytes(20), 0, 'bcrt');
+    const w = await a.svc.createWithdrawal(created.id, { destinationAddress: dest, amountSats: 40000, feeSats: 500 });
+    const request = a.out.find((body) => body.type === Federation.MESSAGE_TYPES.withdrawal);
+    const signed = await b.svc.answerDelegated(request, a.key.pubkey);
+    const signedBody = JSON.parse(signed.data);
+    assert.strictEqual(signedBody.type, Federation.MESSAGE_TYPES.signature);
+    assert.strictEqual(signedBody.requestId, w.requestId);
+    const withdrawal = events.find((e) => e[0] === 'withdrawal')[1];
+    assert.strictEqual(withdrawal.delegated, true);
+    assert.strictEqual(withdrawal.amountSats, 40000);
+    assert.strictEqual(withdrawal.destinationAddress, dest);
+    assert.strictEqual(withdrawal.requester, a.key.pubkey.slice(2));
+
+    a.svc.handleContractMessage(signedBody, b.key.pubkey.slice(2));
+    await settle([a.svc, b.svc]);
+    assert.strictEqual(chain.broadcasts.length, 1);
+
+    const sync = Federation.syncMessage(created.id);
+    await assert.rejects(b.svc.answerDelegated(sync, a.key.pubkey), /not signed on request/);
+  });
+});

@@ -979,7 +979,7 @@ function answerHubRootKeyRequest (child, msg) {
   } catch (_) {}
 }
 
-/** Passport asked the Hub to sign in or link: only a native dialog here can approve it. */
+/** A signer asked to pair with the Hub, or a linked signer asked it to sign: only a native dialog here can approve it. */
 async function answerFabricSignRequest (child, msg) {
   let approved = false;
   // Close the dialog when the request expires, so a late click can't approve it.
@@ -1137,7 +1137,7 @@ async function handleFabricProtocolUrl (urlStr) {
 
   const host = url.hostname;
   if (host === 'link') {
-    console.warn('[DESKTOP] fabric://link is handled by the renderer / device-link UI; open Hub Identity to complete.');
+    console.warn('[DESKTOP] fabric://link is retired; pair from Passport (Linked signers) with this Hub instead.');
     return;
   }
   if (host !== 'message' && host !== 'msg') {

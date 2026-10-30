@@ -179,11 +179,11 @@ function waitInventoryHtlc (buyerHub, docId, timeoutMs = 30000) {
   });
 }
 
-async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000) {
+async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000, adminToken = null) {
   const deadline = Date.now() + timeoutMs;
   let lastMsg = '';
   while (Date.now() < deadline) {
-    const r = await rpc(baseUrl, 'GetDocument', [{ id: docId }]);
+    const r = await rpc(baseUrl, 'GetDocument', [{ id: docId, ...(adminToken ? { adminToken } : {}) }]);
     const doc = r && r.document;
     if (doc && typeof doc.contentBase64 === 'string' && doc.contentBase64.length > 0) {
       return doc;
@@ -205,6 +205,7 @@ async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000) {
   const httpBases = [];
   let fabricPorts = [];
   let btc0 = null;
+  const adminTokens = [];
   let prevDefaultMaxListeners;
 
   before(async function () {
@@ -298,6 +299,7 @@ async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000) {
       });
       assert.strictEqual(boot.status, 200, boot.raw);
       assert.ok(boot.body && boot.body.token, `admin token hub ${i}`);
+      adminTokens[i] = boot.body.token;
     }
 
     await waitBitcoinHttp(httpBases[0], 120000);
@@ -359,12 +361,13 @@ async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000) {
 
     const pub = await rpc(httpBases[0], 'PublishDocument', [{
       id: docId,
-      purchasePriceSats: PRICE_SATS
+      purchasePriceSats: PRICE_SATS,
+      adminToken: adminTokens[0]
     }]);
     assert.ok(pub && pub.document && pub.document.published, 'PublishDocument sets published');
     assert.strictEqual(Number(pub.document.purchasePriceSats), PRICE_SATS);
 
-    const sellerHeld = await rpc(httpBases[0], 'GetDocument', [{ id: docId }]);
+    const sellerHeld = await rpc(httpBases[0], 'GetDocument', [{ id: docId, adminToken: adminTokens[0] }]);
     const sealedB64 = sellerHeld && sellerHeld.document && sellerHeld.document.contentBase64;
     assert.ok(sealedB64, 'seller holds sealed bytes after priced publish');
     assert.notStrictEqual(sealedB64, contentBase64, 'priced publish stores ciphertext, not plaintext');
@@ -447,7 +450,7 @@ async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000) {
     assert.strictEqual(confirm.documentId, docId);
     assert.ok(confirm.keyRevealed, 'seller reports HTLC_KEY_REVEAL sent');
 
-    const delivered = await waitDocumentBytes(httpBases[1], docId, 45000);
+    const delivered = await waitDocumentBytes(httpBases[1], docId, 45000, adminTokens[1]);
     assert.strictEqual(delivered.contentBase64, sealedB64, 'buyer receives seller ciphertext');
     assert.notStrictEqual(delivered.contentBase64, contentBase64, 'buyer store is still sealed');
   });

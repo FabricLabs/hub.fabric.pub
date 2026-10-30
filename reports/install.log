@@ -1,12 +1,13 @@
 $ npm i --allow-git=all
+npm warn skipping integrity check for git dependency ssh://git@github.com/FabricLabs/fabric.git
 npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
 npm warn deprecated rimraf@2.6.3: Rimraf versions prior to v4 are no longer supported
 npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
-added 1113 packages, and audited 1114 packages in 36s
+added 1113 packages, and audited 1114 packages in 2m
 
-208 packages are looking for funding
+209 packages are looking for funding
   run `npm fund` for details
 
 found 0 vulnerabilities

@@ -35,6 +35,7 @@ const DocumentBook = require('@fabric/core/types/documentBook');
 const MarketAgent = require('@fabric/core/services/market');
 const ChannelBook = require('@fabric/core/types/channelBook');
 const Message = require('@fabric/core/types/message');
+const Watchtower = require('@fabric/core/services/watchtower');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
 
 class MarketService extends Service {
@@ -162,6 +163,7 @@ class MarketService extends Service {
     if (!book) return null;
     try {
       const reply = book.ingest(body, meta);
+      this._filePenalties();
       this._schedulePersist();
       return reply;
     } catch (e) {
@@ -208,6 +210,9 @@ class MarketService extends Service {
     const destinationAddress = bitcoin && typeof bitcoin.getUnusedAddress === 'function'
       ? await Promise.resolve(bitcoin.getUnusedAddress()).catch(() => null)
       : null;
+    // File before the scan so a penalty signed on this pass is in the tower
+    // for the transactions of this same block.
+    this._filePenalties();
     const result = book.onBlock({
       height: payload.height,
       txHexes,
@@ -219,12 +224,61 @@ class MarketService extends Service {
       if (obs.kind !== 'stale') continue;
       this.emit('channelBreach', obs);
       if (obs.fraudProof) this._publishChannelBody(obs.fraudProof);
-      if (obs.justice && bitcoin && typeof bitcoin._spendRawTX === 'function') {
-        try { await bitcoin._spendRawTX(obs.justice.txHex); } catch (e) { this.emit('warning', `[MARKET] justice broadcast failed: ${e.message}`); }
-      }
+    }
+    await this._broadcastActionTransactions(result.actions, destinationAddress);
+    if (bitcoin && typeof bitcoin.broadcastWatchtower === 'function' && txHexes.length) {
+      try { await bitcoin.broadcastWatchtower(txHexes); } catch (e) { this.emit('warning', `[MARKET] watchtower scan failed: ${e.message}`); }
     }
     if (result.published.length || result.observations.length) this._schedulePersist();
     return result;
+  }
+
+  /**
+   * Sign this node's own revoked commitments into the Bitcoin service's
+   * watchtower. Justice broadcast happens there, when the commitment is seen,
+   * rather than from the live observation.
+   * @returns {number} filings stored
+   * @private
+   */
+  _filePenalties () {
+    const book = this.channels;
+    const bitcoin = this.hub && this.hub.bitcoin;
+    const tower = bitcoin && bitcoin.watchtower;
+    if (!book || !tower || !this.key || !this.key.private) return 0;
+    if (this.hub && typeof this.hub._wireWatchtower === 'function') this.hub._wireWatchtower();
+    let n = 0;
+    for (const filing of book.penaltyFilings()) {
+      try {
+        const filed = tower.file(Watchtower.appointment(filing, this.key.private));
+        if (filed.updated) n += 1;
+      } catch (e) {
+        this.emit('warning', `[MARKET] watchtower filing failed: ${e.message}`);
+      }
+    }
+    if (n && this.hub && typeof this.hub._persistWatchtower === 'function') this.hub._persistWatchtower();
+    return n;
+  }
+
+  /**
+   * Broadcast this node's own force-close, HTLC claim, and HTLC timeout.
+   * A transaction already in the mempool or chain is success.
+   * @param {object[]} actions
+   * @param {string|null} destinationAddress
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _broadcastActionTransactions (actions, destinationAddress) {
+    const book = this.channels;
+    const bitcoin = this.hub && this.hub.bitcoin;
+    if (!book || !bitcoin || typeof bitcoin._spendRawTX !== 'function') return;
+    const txs = book.actionTransactions(actions, destinationAddress ? { destinationAddress } : {});
+    for (const txHex of txs) {
+      try {
+        await bitcoin._spendRawTX(txHex);
+      } catch (e) {
+        if (!Watchtower.broadcastSettled(e)) this.emit('warning', `[MARKET] channel action broadcast failed: ${e.message}`);
+      }
+    }
   }
 
   /** @returns {object} */
@@ -518,6 +572,7 @@ class MarketService extends Service {
       const raw = this.fs.readFile(this.settings.channelsPath);
       if (!raw) return false;
       book.import(JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)));
+      this._filePenalties();
       return true;
     } catch (_) {
       return false;

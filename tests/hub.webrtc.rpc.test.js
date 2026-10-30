@@ -358,8 +358,12 @@ describe('Hub WebRTC RPC methods', function () {
     const byName = await methods.GetDocument('browser.min.js');
     assert.strictEqual(byName.type, 'GetDocumentResult');
     assert.strictEqual(byName.document, null);
-    assert.strictEqual(byName.documentId, 'browser.min.js');
-    assert.ok(/not found/i.test(byName.message));
+    assert.strictEqual(byName.documentId, null, 'a file name is not a document id');
+    assert.ok(/id required/i.test(byName.message));
+
+    const unknown = await methods.GetDocument('f'.repeat(64));
+    assert.strictEqual(unknown.document, null);
+    assert.ok(/not found/i.test(unknown.message));
   });
 
   it('publishes document metadata only into documents collection', async function () {

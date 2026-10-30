@@ -164,10 +164,31 @@ Nothing from v1 is accepted, and every refusal says what to do:
   (`@fabric/http` `passportHttp`). goon.vc's old
   `POST /services/members/passport/requests` answers the same. The challenge
   isn't spent, so the user can try again once updated.
-- **Desktop signer.** The Hub and GoonCitizen local signer answer a v1
-  `FABRIC_SIGN_REQUEST` with the same 426 before any prompt opens.
-- **Pages.** Passport v2 marks pages `data-fabric-passport="2"`. A page that
-  finds an older marker says "Update Fabric Passport to sign in here" instead
-  of offering sign-in (`passportStatus` in `@fabric/http` `passportPage`).
+- **Desktop signer.** The `/services/fabric/sign` local signer is gone.
+  A Passport that still sends `PASSPORT_SIGN_REQUEST` (or a v1
+  `FABRIC_SIGN_REQUEST`) to the delegate gets 426 `passport_outdated`.
+  Desktop apps sign through delegation (step 5).
+- **Pages.** A page asks whether Passport is there with `PASSPORT_HELLO` on a
+  transferred port (`probePassport` in `@fabric/http` `passportPage`); only an
+  answer with `v: 2` counts. A page that finds only an older Passport's
+  `<html>` marker says "Update Fabric Passport to sign in here" instead of
+  offering sign-in.
 - **Extension.** A v2 Passport whose desktop app is still v1 tells the user to
   update the desktop app.
+
+## Step 5: linked signers replace device links
+
+Device links, identity clusters, `IdentityCrossSign`, and the desktop
+`/services/fabric/{identity,sign,link}` routes are removed everywhere at once
+(core, http, Hub, Passport, GoonCitizen, goon.vc). Nothing carries over:
+
+- **Pair again.** In Passport, open **Linked signers → Pair with a Hub** (or a
+  GoonCitizen desktop) on the machine where it runs. Both screens show a
+  six-digit code; approve it in the app's window. Old device links are not
+  read.
+- **Signing rules start empty.** Until the operator adds rules
+  (`/settings/signing`), every request waits under Notifications (and in the
+  desktop dialog).
+- **goon.vc proxying.** If goon.vc proxies `/delegations` to the Hub, add
+  `https://goon.vc` to `FABRIC_HUB_PASSPORT_ORIGINS` so the rendezvous serves
+  that origin.

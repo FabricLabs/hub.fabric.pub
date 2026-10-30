@@ -31,6 +31,25 @@ describe('local network instances', function () {
     assert.notStrictEqual(ports.http, 30000 + 180 + 3);
   });
 
+  it('dials only the peers it was given, not whoever bitcoind remembers', function () {
+    const list = net.instancesFor('regtest');
+    const seed = list[0];
+    const operator = list.find((i) => i.name === 'operator');
+    const key = { xprv: 'xprv' };
+    const seedAlone = net.buildFragment({ network: 'regtest', instance: seed, dir: '/tmp/x', key });
+    assert.ok(seedAlone.bitcoin.bitcoinExtraParams.includes('-connect=0'));
+    assert.ok(!seedAlone.bitcoin.bitcoinExtraParams.some((p) => String(p).startsWith('-addnode=')));
+    const member = net.buildFragment({
+      network: 'regtest', instance: operator, dir: '/tmp/x', key, seedPort: seed.ports.btcP2p
+    });
+    assert.ok(member.bitcoin.bitcoinExtraParams.includes(`-connect=127.0.0.1:${seed.ports.btcP2p}`));
+    const joined = net.buildFragment({
+      network: 'regtest', instance: seed, dir: '/tmp/x', key, bitcoinPeers: ['hub.fabric.pub:18444']
+    });
+    assert.ok(joined.bitcoin.bitcoinExtraParams.includes('-connect=hub.fabric.pub:18444'));
+    assert.ok(!joined.bitcoin.bitcoinExtraParams.includes('-connect=0'));
+  });
+
   it('turns the seed Beacon off when it should not mine', function () {
     const seed = net.instancesFor('regtest')[0];
     const opts = { network: 'regtest', instance: seed, dir: '/tmp/x', key: { xprv: 'xprv' } };

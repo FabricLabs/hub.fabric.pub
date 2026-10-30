@@ -29,6 +29,31 @@ const {
   stableStringify
 } = oracleAttestation;
 
+/**
+ * Whether the Hub's Fabric Peer accepts inbound connections, read from its
+ * socket server; `http.agent` is not that Peer.
+ * @param {Object} hub
+ * @returns {{ listenAddress: (string|null), listening: boolean }}
+ */
+function p2pListener (hub) {
+  const peers = [hub && hub.agent, hub && hub.http && hub.http.agent];
+  for (const peer of peers) {
+    if (!peer) continue;
+    const server = peer.server;
+    const listening = (server && typeof server.listening === 'boolean')
+      ? server.listening
+      : peer.listening === true;
+    if (!listening && !peer.listenAddress) continue;
+    let listenAddress = peer.listenAddress || null;
+    if (!listenAddress && listening && server && typeof server.address === 'function') {
+      const bound = server.address();
+      if (bound && typeof bound === 'object') listenAddress = `${bound.address}:${bound.port}`;
+    }
+    return { listenAddress, listening };
+  }
+  return { listenAddress: null, listening: false };
+}
+
 class PeeringService extends Service {
   constructor (settings = {}) {
     super(settings);
@@ -123,8 +148,7 @@ class PeeringService extends Service {
         clock: http.clock != null ? http.clock : null
       },
       p2p: {
-        listenAddress: http.agent ? http.agent.listenAddress : null,
-        listening: !!(http.agent && http.agent.listening),
+        ...p2pListener(h),
         connections: p2pConn,
         maxPeers
       },
@@ -186,3 +210,4 @@ module.exports = PeeringService;
 module.exports.stableStringify = stableStringify;
 module.exports.ATTESTATION_TYPE = ATTESTATION_TYPE;
 module.exports.KIND_PEERING = KIND_PEERING;
+module.exports.p2pListener = p2pListener;
