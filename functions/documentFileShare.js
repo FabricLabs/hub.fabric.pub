@@ -17,8 +17,16 @@ const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SE
 const FILE_SHARE_FRAME_RESERVE = 2048;
 /** Raw bytes per blob: base64 fills the rest of the body (23,040 B → 30,720 base64 chars). */
 const FILE_SHARE_BLOB_BYTES = Math.floor((MAX_MESSAGE_SIZE - FILE_SHARE_FRAME_RESERVE) * 3 / 4);
-/** Theoretical maximum shared file: MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (188,743,680 B = 180 MiB). */
-const FILE_SHARE_MAX_BYTES = MAX_DOCUMENT_BLOBS * FILE_SHARE_BLOB_BYTES;
+/**
+ * Largest share, in bytes. Core's blob count covers a file of
+ * `MAX_DOCUMENT_BYTES` (2^32 − 1). Multiplying that count by this share's
+ * chunk size overshoots, because the chunk is sealed ciphertext and the count
+ * uses the smaller plaintext chunk. The byte cap is the limit.
+ */
+const FILE_SHARE_MAX_BYTES = Math.min(
+  MAX_DOCUMENT_BLOBS * FILE_SHARE_BLOB_BYTES,
+  Number.isFinite(constants.MAX_DOCUMENT_BYTES) ? constants.MAX_DOCUMENT_BYTES : Infinity
+);
 const FILE_NAME_MAX_CHARS = 255;
 const MIME_MAX_CHARS = 127;
 
@@ -36,8 +44,23 @@ function clip (value, max) {
 }
 
 /**
+ * Byte length of a share payload. A caller can pass `{ length }` or
+ * `{ byteLength }` so an oversized file is refused before those bytes are copied.
+ * @param {*} buffer
+ * @returns {number}
+ * @private
+ */
+function inputByteLength (buffer) {
+  if (buffer == null) return 0;
+  if (typeof buffer === 'string') return Buffer.byteLength(buffer);
+  if (typeof buffer.byteLength === 'number') return buffer.byteLength;
+  if (typeof buffer.length === 'number') return buffer.length;
+  throw new TypeError('buffer required');
+}
+
+/**
  * Build the signed-ready `P2P_FILE_SEND` bodies for one document.
- * @param {Buffer} buffer bytes on the wire (ciphertext when HTLC-sealed)
+ * @param {Buffer|string} buffer bytes on the wire (ciphertext when HTLC-sealed)
  * @param {Object} meta
  * @param {string} meta.documentId Hub document id
  * @param {string} [meta.actorId] sender Fabric id
@@ -51,10 +74,11 @@ function clip (value, max) {
  * @returns {{ frames: string[], merkleRootHex: string, contentSha256: string, blobTotal: number, chunkBytes: number }}
  */
 function buildFileShareFrames (buffer, meta = {}) {
-  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer == null ? '' : buffer);
-  if (buf.length > FILE_SHARE_MAX_BYTES) {
+  const byteLength = inputByteLength(buffer);
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > FILE_SHARE_MAX_BYTES) {
     throw new RangeError(`file exceeds FILE_SHARE_MAX_BYTES (${FILE_SHARE_MAX_BYTES})`);
   }
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer == null ? '' : buffer);
   const documentId = String(meta.documentId || '').trim();
   if (!documentId) throw new TypeError('documentId required');
 

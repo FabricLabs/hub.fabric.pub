@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const Key = require('@fabric/core/types/key');
 const Message = require('@fabric/core/types/message');
 const Peer = require('@fabric/core/types/peer');
-const { HEADER_SIZE, MAX_MESSAGE_SIZE } = require('@fabric/core/constants');
+const { HEADER_SIZE, MAX_DOCUMENT_BYTES, MAX_MESSAGE_SIZE } = require('@fabric/core/constants');
 const Document = require('@fabric/core/types/document');
 const {
   FILE_SHARE_BLOB_BYTES,
@@ -29,12 +29,13 @@ function ingest (peer, frame) {
 }
 
 describe('documentFileShare', function () {
-  it('has a theoretical maximum of MAX_DOCUMENT_BLOBS × FILE_SHARE_BLOB_BYTES (180 MiB)', function () {
-    assert.strictEqual(MAX_DOCUMENT_BLOBS, 8192);
-    assert.strictEqual(FILE_SHARE_BLOB_BYTES, 23040);
-    assert.strictEqual(FILE_SHARE_MAX_BYTES, 180 * 1024 * 1024);
+  it('caps a share at the core document byte limit', function () {
+    const { MAX_DOCUMENT_BLOBS: coreBlobs } = require('@fabric/core/constants');
+    assert.strictEqual(MAX_DOCUMENT_BLOBS, coreBlobs);
+    assert.strictEqual(FILE_SHARE_BLOB_BYTES, Math.floor((MAX_MESSAGE_SIZE - 2048) * 3 / 4));
+    assert.strictEqual(FILE_SHARE_MAX_BYTES, Math.min(MAX_DOCUMENT_BLOBS * FILE_SHARE_BLOB_BYTES, MAX_DOCUMENT_BYTES));
     assert.throws(
-      () => buildFileShareFrames(Buffer.allocUnsafe(FILE_SHARE_MAX_BYTES + 1), { documentId: 'd' }),
+      () => buildFileShareFrames({ length: FILE_SHARE_MAX_BYTES + 1 }, { documentId: 'd' }),
       RangeError
     );
     assert.throws(() => buildFileShareFrames(Buffer.from('x'), {}), TypeError);

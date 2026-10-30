@@ -467,6 +467,11 @@
       "packageName": "fabrichub"
     }
   },
+  "overrides": {
+    "@fabric/http": {
+      "@fabric/core": "FabricLabs/fabric#768ec74bca06daef81d9acd195c07dc57d0efcaf"
+    }
+  },
   "allowScripts": {
     "@fabric/core": true,
     "classic-level": true,
