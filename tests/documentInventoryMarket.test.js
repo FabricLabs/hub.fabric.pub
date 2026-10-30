@@ -123,6 +123,19 @@ describe('documentInventoryMarket', function () {
     assert.deepStrictEqual(row.earlierQuotes.map((q) => q.settlementId), [5, 4, 3, 2].map((n) => quote(n).settlementId));
   });
 
+  it('does not offer a quote at an old price once the resync lists a new one', function () {
+    const map = {};
+    const peer = { peerPubkey: '02' + 'ae'.repeat(32) };
+    const doc = { id: 'cd'.repeat(32), name: 'build', purchasePriceSats: 716, published: true };
+    const quote = { settlementId: 'cc'.repeat(16), paymentAddress: 'bcrt1pquote', amountSats: 716 };
+    market.replacePeerOffers(map, peer, [{ ...doc, htlc: quote }], { inventoryId: 'aaaa' });
+    market.replacePeerOffers(map, peer, [{ ...doc, purchasePriceSats: 900 }], { inventoryId: 'bbbb' });
+    const [row] = market.listOffers(map);
+    assert.strictEqual(row.purchasePriceSats, 900);
+    assert.strictEqual(row.htlc, undefined, 'no current quote');
+    assert.deepStrictEqual(row.earlierQuotes.map((q) => q.settlementId), [quote.settlementId], 'the old quote stays findable');
+  });
+
   it('keys a seller by its authenticated peer id across reconnects', function () {
     const map = {};
     const doc = { id: 'ab'.repeat(32), name: 'build', purchasePriceSats: 900, published: true };

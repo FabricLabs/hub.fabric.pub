@@ -203,7 +203,7 @@ function buildFragment (opts) {
   for (const peer of bitcoinPeers || []) connects.push(peer);
   if (connects.length) {
     for (const peer of connects) extra.push(`-connect=${peer}`);
-  } else {
+  } else if (profile.seed) {
     extra.push('-connect=0');
   }
   return {

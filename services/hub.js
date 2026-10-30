@@ -75,7 +75,7 @@ const { hubServerKeys } = require('../functions/hubAccount');
 const hubHeapBounds = require('../functions/hubHeapBounds');
 const hubHeapTelemetry = require('../functions/hubHeapTelemetry');
 const hubHeapSnapshot = require('../functions/hubHeapSnapshot');
-const { createLatestOnlyQueue, createSingleFlight } = require('../functions/hubWorkQueues');
+const { createSerialQueue, createSingleFlight } = require('../functions/hubWorkQueues');
 const {
   installFilesystemPublishHeapGuard
 } = require('../functions/hubFilesystemPersist');
@@ -617,7 +617,7 @@ class Hub extends Service {
     this._bitcoinScanInflight = new Map();
     this._bitcoinTxOutSet = createSingleFlight({ ttlMs: BITCOIN_TXOUTSET_CACHE_MS });
     this._bitcoinSlowRPCInflight = 0;
-    this._bitcoinBlockQueue = createLatestOnlyQueue((payload) => this._handleBitcoinBlockUpdate(payload), {
+    this._bitcoinBlockQueue = createSerialQueue((payload) => this._handleBitcoinBlockUpdate(payload), {
       onError: (err) => console.error('[HUB] block update failed:', err && err.message ? err.message : err)
     });
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
@@ -2370,7 +2370,10 @@ class Hub extends Service {
     const snap = hubHeapTelemetry.logHubHeapTelemetry(this, { previous: this._lastHeapTelemetry });
     if (snap) {
       this._lastHeapTelemetry = snap;
-      if (this._heapThreshold && this._heapThreshold.check(snap.memory.heapUsed)) this._writeHeapSnapshot('threshold');
+      const heapUsed = snap.memory.heapUsed;
+      if (this._heapThreshold && this._heapThreshold.check(heapUsed) && this._writeHeapSnapshot('threshold')) {
+        this._heapThreshold.record(heapUsed);
+      }
     }
     return snap;
   }
@@ -6791,13 +6794,13 @@ class Hub extends Service {
       return { type: 'PayInventoryHtlcResult', status: 'success', message: 'Already paid.', purchase: this._inventoryPurchases.get(settlementId) };
     }
     const found = documentInventoryMarket.listOffers(this._documentOffersMap())
-      .filter((o) => o && o.htlc && o.htlc.settlementId &&
+      .filter((o) => o && ((o.htlc && o.htlc.settlementId) || (settlementId && Array.isArray(o.earlierQuotes))) &&
         (!documentId || this._normalizeDocumentId(o.documentId || o.sha256) === documentId))
       .map((o) => ({
         offer: o,
-        htlc: !settlementId || o.htlc.settlementId === settlementId
+        htlc: o.htlc && (!settlementId || o.htlc.settlementId === settlementId)
           ? o.htlc
-          : (Array.isArray(o.earlierQuotes) ? o.earlierQuotes : []).find((q) => q && q.settlementId === settlementId)
+          : (settlementId && Array.isArray(o.earlierQuotes) ? o.earlierQuotes : []).find((q) => q && q.settlementId === settlementId)
       }))
       .filter((c) => c.htlc)
       .sort((a, b) => (Date.parse(b.offer.receivedAt) || 0) - (Date.parse(a.offer.receivedAt) || 0))[0];
@@ -13549,7 +13552,12 @@ class Hub extends Service {
         this.bitcoin.on('error', (...error) => console.error('[BITCOIN]', '[ERROR]', ...error));
         this.bitcoin.on('log', (...log) => console.log('[BITCOIN]', ...log));
         this.bitcoin.on('warning', (...warning) => console.warn('[BITCOIN]', '[WARNING]', ...warning));
-        this.bitcoin.on('block', (payload) => this._bitcoinBlockQueue.push(payload));
+        // Core's payload can carry the whole block; queue only what the handler reads.
+        this.bitcoin.on('block', (payload = {}) => this._bitcoinBlockQueue.push({
+          tip: payload.tip,
+          height: payload.height,
+          supply: payload.supply
+        }));
         this.bitcoin.on('transaction', this._handleBitcoinTransactionUpdate.bind(this));
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });

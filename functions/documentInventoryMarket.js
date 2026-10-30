@@ -285,9 +285,12 @@ function replacePeerOffers (map, peer, items, opts = {}) {
     const rec = normalizeInventoryItem(item, peer);
     if (!rec) continue;
     const prior = quotes[rec.documentId] || (out[rec.id] && out[rec.id].htlc ? out[rec.id] : null);
-    if (prior && !rec.htlc) {
+    if (prior && !rec.htlc && Number(prior.htlc.amountSats) === rec.purchasePriceSats) {
       rec.htlc = prior.htlc;
       if (prior.earlierQuotes) rec.earlierQuotes = prior.earlierQuotes;
+    } else if (prior && !rec.htlc) {
+      // The price changed: the old quote is no longer the offer, but stays findable by its settlement id.
+      rec.earlierQuotes = [prior.htlc].concat(prior.earlierQuotes || []).slice(0, EARLIER_QUOTES_MAX);
     } else if (prior && prior.htlc.settlementId !== rec.htlc.settlementId) {
       // Asking again gives a new quote; the buyer may still pay one it was given before.
       rec.earlierQuotes = [prior.htlc].concat(prior.earlierQuotes || []).slice(0, EARLIER_QUOTES_MAX);

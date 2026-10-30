@@ -56,7 +56,8 @@ function SignerRulesHome (props) {
   const [valid, setValid] = React.useState([]);
   const [invalid, setInvalid] = React.useState([]);
   const [decisions, setDecisions] = React.useState([]);
-  const [dirty, setDirty] = React.useState(false);
+  const [dirty, setDirtyState] = React.useState(false);
+  const dirtyRef = React.useRef(false);
   const [busy, setBusy] = React.useState(false);
   const [note, setNote] = React.useState(null);
   const [error, setError] = React.useState(null);
@@ -65,8 +66,13 @@ function SignerRulesHome (props) {
   const [destinations, setDestinations] = React.useState('');
   const [dailyLimit, setDailyLimit] = React.useState('');
 
-  const apply = (r) => {
-    setRules(r.rules || []);
+  const setDirty = (value) => {
+    dirtyRef.current = value;
+    setDirtyState(value);
+  };
+
+  const apply = (r, keepRules = false) => {
+    if (!keepRules) setRules(r.rules || []);
     setValid(r.valid || []);
     setInvalid(r.invalid || []);
   };
@@ -74,9 +80,9 @@ function SignerRulesHome (props) {
   const load = React.useCallback(async () => {
     if (!adminToken) return;
     try {
-      apply(await getSignerRules(adminToken));
+      const loaded = await getSignerRules(adminToken);
+      apply(loaded, dirtyRef.current);
       setDecisions(await listSignerDecisions(adminToken, 25));
-      setDirty(false);
     } catch (e) {
       setError(t.common.errors.withReason(c.loadFailed, e.message));
     }

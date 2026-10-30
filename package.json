@@ -41,6 +41,7 @@
     "contracts/**",
     "functions/**/*.js",
     "libs/**/*.js",
+    "locales/**/*.js",
     "routes/**/*.js",
     "scripts/**/*.js",
     "scripts/startup/**",
@@ -97,7 +98,6 @@
     "start": "npm run build && node scripts/hub.js",
     "start:fast": "node scripts/prepare-hub-dev-port.js && node scripts/hub.js",
     "verify:noise-handshake": "node scripts/verify-noise-handshake.js",
-    "example:tutorials": "node scripts/example-tutorials.js",
     "reset:stores": "node scripts/reset-hub-stores.js",
     "hub-ui:test-secrets": "node scripts/hub-ui-write-test-secrets.js",
     "hub-ui:test-secrets:inject": "node scripts/hub-ui-write-test-secrets.js --print-inject",
@@ -465,11 +465,6 @@
     },
     "deb": {
       "packageName": "fabrichub"
-    }
-  },
-  "overrides": {
-    "@fabric/http": {
-      "@fabric/core": "FabricLabs/fabric#768ec74bca06daef81d9acd195c07dc57d0efcaf"
     }
   },
   "allowScripts": {

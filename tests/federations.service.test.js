@@ -396,4 +396,41 @@ describe('delegated federation answers', function () {
     const sync = Federation.syncMessage(created.id);
     await assert.rejects(b.svc.answerDelegated(sync, a.key.pubkey), /not signed on request/);
   });
+
+  it('returns no frame when this answer could not be published, not an earlier one', async function () {
+    const chain = fakeChain();
+    const a = member(chain);
+    const b = member(chain);
+    await a.svc.start();
+    await b.svc.start();
+    await a.svc.create({ threshold: 2, members: [{ pubkey: b.key.pubkey }] });
+    const invite = a.out.find((body) => body.type === Federation.MESSAGE_TYPES.invite);
+    assert.ok(await b.svc.answerDelegated(invite, a.key.pubkey));
+    b.svc.attach({ publish: () => null });
+    assert.strictEqual(await b.svc.answerDelegated(invite, a.key.pubkey), null);
+  });
+});
+
+describe('declined withdrawals', function () {
+  it('leaves the queue and can no longer be approved', async function () {
+    const { hubs } = mesh(3);
+    await Promise.all(hubs.map((h) => h.start()));
+    const [a, b, c] = hubs;
+    const created = await a.create({ threshold: 2, members: [{ pubkey: b.pubkey }, { pubkey: c.pubkey }] });
+    await settle(hubs);
+    await b.respond(created.id, true);
+    await c.respond(created.id, true);
+    await settle(hubs);
+    await a.deposit(created.id, { amountSats: 100000 });
+    const dest = address.toBech32(crypto.randomBytes(20), 0, 'bcrt');
+    const w = await a.createWithdrawal(created.id, { destinationAddress: dest, amountSats: 60000, feeSats: 600 });
+    await settle(hubs);
+    assert.strictEqual(b.pending().withdrawals.length, 1);
+
+    const declined = await b.declineWithdrawal(created.id, w.requestId);
+    assert.strictEqual(declined.status, 'declined');
+    assert.strictEqual(b.pending().withdrawals.length, 0);
+    await assert.rejects(b.approveWithdrawal(created.id, w.requestId), /withdrawal is declined/);
+    await assert.rejects(b.declineWithdrawal(created.id, w.requestId), /withdrawal is declined/);
+  });
 });

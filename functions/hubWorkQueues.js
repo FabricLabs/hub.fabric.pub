@@ -1,33 +1,31 @@
 'use strict';
 
 /**
- * @fileoverview Bounded async work for bursty inputs such as Bitcoin block
- * notifications during a chain sync or reorg.
+ * @fileoverview Serialized and shared async work for bursty inputs such as
+ * Bitcoin block notifications during a chain sync or reorg.
  */
 
 /**
- * Run `handler` one item at a time, keeping only the newest item that arrives
- * while one is running. A burst of N pushes costs at most two runs.
+ * Run `handler` one item at a time, in arrival order, keeping every item that
+ * arrives while one is running. Callers should push small items: a burst
+ * waits in memory until it is handled.
  * @param {Function} handler async (item) => any
  * @param {Object} [opts]
  * @param {Function} [opts.onError] (err, item) => void
  * @returns {{ push: Function, idle: Function, stats: Function }}
  */
-function createLatestOnlyQueue (handler, opts = {}) {
+function createSerialQueue (handler, opts = {}) {
   let running = false;
-  let pending = null;
-  let hasPending = false;
+  const pending = [];
+  let maxPending = 0;
   let processed = 0;
-  let coalesced = 0;
   let failed = 0;
   let idleWaiters = [];
 
   const drain = async () => {
     running = true;
-    while (hasPending) {
-      const item = pending;
-      pending = null;
-      hasPending = false;
+    while (pending.length) {
+      const item = pending.shift();
       try {
         await handler(item);
       } catch (err) {
@@ -44,17 +42,16 @@ function createLatestOnlyQueue (handler, opts = {}) {
 
   return {
     push (item) {
-      if (hasPending) coalesced++;
-      pending = item;
-      hasPending = true;
+      pending.push(item);
+      if (pending.length > maxPending) maxPending = pending.length;
       if (!running) drain();
     },
     idle () {
-      if (!running && !hasPending) return Promise.resolve();
+      if (!running && !pending.length) return Promise.resolve();
       return new Promise((resolve) => idleWaiters.push(resolve));
     },
     stats () {
-      return { running, pending: hasPending, processed, coalesced, failed };
+      return { running, pending: pending.length, maxPending, processed, failed };
     }
   };
 }
@@ -102,6 +99,6 @@ function createSingleFlight (opts = {}) {
 }
 
 module.exports = {
-  createLatestOnlyQueue,
+  createSerialQueue,
   createSingleFlight
 };

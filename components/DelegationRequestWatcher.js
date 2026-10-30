@@ -2,14 +2,18 @@
 
 const React = require('react');
 const { listDelegationRequests } = require('../functions/hubDelegationClient');
-const { pushUiNotification } = require('../functions/uiNotifications');
+const {
+  readUiNotifications,
+  pushUiNotification,
+  removeUiNotification
+} = require('../functions/uiNotifications');
 
 const POLL_MS = 15000;
 
 /**
  * Puts each new signing request from a linked signer into the in-app
- * notifications (and so the top-bar badge), linking to `/notifications`.
- * Renders nothing; operator only (needs the admin token).
+ * notifications (and so the top-bar badge), linking to `/notifications`,
+ * and removes it once the request is no longer pending. Renders nothing; operator only (needs the admin token).
  * @param {{ adminToken?: string }} props
  */
 function DelegationRequestWatcher (props) {
@@ -23,6 +27,10 @@ function DelegationRequestWatcher (props) {
       try {
         const list = await listDelegationRequests(adminToken);
         if (stopped) return;
+        const pending = new Set(list.map((r) => `delegation:${r.hash}`));
+        for (const n of readUiNotifications()) {
+          if (n && n.kind === 'delegation' && !pending.has(n.id)) removeUiNotification(n.id);
+        }
         for (const r of list) {
           if (seen.current.has(r.hash)) continue;
           seen.current.add(r.hash);

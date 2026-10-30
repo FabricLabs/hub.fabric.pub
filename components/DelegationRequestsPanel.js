@@ -25,18 +25,22 @@ function DelegationRequestsPanel (props) {
   const adminToken = props && props.adminToken ? String(props.adminToken).trim() : '';
   const onCount = props && props.onCount;
   const [requests, setRequests] = React.useState(null);
+  const loadGeneration = React.useRef(0);
   const [busy, setBusy] = React.useState('');
   const [note, setNote] = React.useState(null);
   const [error, setError] = React.useState(null);
 
   const load = React.useCallback(async () => {
     if (!adminToken) return;
+    const generation = ++loadGeneration.current;
     try {
       const list = await listDelegationRequests(adminToken);
+      if (generation !== loadGeneration.current) return;
       setRequests(list);
       setError(null);
       if (typeof onCount === 'function') onCount(list.length);
     } catch (e) {
+      if (generation !== loadGeneration.current) return;
       if (e.status === 404) setRequests([]);
       else setError(e.message);
     }

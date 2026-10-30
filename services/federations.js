@@ -760,6 +760,25 @@ class FederationsService extends Service {
   }
 
   /**
+   * Refuse a pending withdrawal: this Hub does not sign it, and it leaves the
+   * operator's queue. Other members may still reach the threshold without it.
+   * @param {string} federationId
+   * @param {string} requestId
+   * @returns {Promise<Object>}
+   */
+  async declineWithdrawal (federationId, requestId) {
+    const record = this._record(federationId);
+    const w = record.withdrawals[String(requestId || '').toLowerCase()];
+    if (!w) throw new Error('unknown withdrawal request');
+    if (w.status !== 'pending') throw new Error(`withdrawal is ${w.status}`);
+    if (w.signatures[this._self]) throw new Error('this Hub already signed that withdrawal');
+    w.status = 'declined';
+    w.declinedAt = Date.now();
+    await this._save(record);
+    return this._view(record).withdrawals.find((x) => x.requestId === w.requestId);
+  }
+
+  /**
    * Finalize and broadcast once the threshold is met (any member may).
    * @param {string} federationId
    * @param {string} requestId
@@ -859,6 +878,7 @@ class FederationsService extends Service {
     const id = String(body.federationId || '').toLowerCase();
     if (body.type === TYPES.invite) {
       await this._enqueue(() => this._handle(body, signer, { delegated: true }));
+      this._sentFrames.delete(`response:${id}`);
       await this.respond(id, true);
       return this._sentFrames.get(`response:${id}`) || null;
     }
@@ -866,6 +886,7 @@ class FederationsService extends Service {
       await this._enqueue(() => this._handle(body, signer, { delegated: true }));
       const record = this._record(id);
       const { requestId } = Federation.verifyWithdrawalRequest(record.descriptor, body);
+      this._sentFrames.delete(`signature:${requestId}`);
       await this.approveWithdrawal(id, requestId);
       return this._sentFrames.get(`signature:${requestId}`) || null;
     }

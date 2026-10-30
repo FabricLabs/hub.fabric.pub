@@ -50,6 +50,12 @@ describe('local network instances', function () {
     assert.ok(!joined.bitcoin.bitcoinExtraParams.includes('-connect=0'));
   });
 
+  it('lets a public chain sync from the internet when it was given no peers', function () {
+    const operator = net.instancesFor('signet').find((i) => i.name === 'operator');
+    const fragment = net.buildFragment({ network: 'signet', instance: operator, dir: '/tmp/x', key: { xprv: 'xprv' } });
+    assert.ok(!fragment.bitcoin.bitcoinExtraParams.some((p) => String(p).startsWith('-connect=')));
+  });
+
   it('turns the seed Beacon off when it should not mine', function () {
     const seed = net.instancesFor('regtest')[0];
     const opts = { network: 'regtest', instance: seed, dir: '/tmp/x', key: { xprv: 'xprv' } };

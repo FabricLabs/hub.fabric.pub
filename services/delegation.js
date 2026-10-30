@@ -115,6 +115,12 @@ class HubDelegation extends EventEmitter {
     });
     this.rules = new SignerRules({ dir, now: this._now }).load();
     this.rules.on('warning', (msg) => this.emit('warning', msg));
+    this._held = new Map();
+    // The delegate settles a rule's sign through these; it is logged only once the answer is stored.
+    const sign = this.store.sign.bind(this.store);
+    const decline = this.store.decline.bind(this.store);
+    this.store.sign = (hash, answer, options) => this._settleHeld(hash, options, () => sign(hash, answer, options), null);
+    this.store.decline = (hash, reason, options) => this._settleHeld(hash, options, () => decline(hash, reason, options), reason || 'declined');
     this.mailbox = createDelegationMailbox({
       store: dir ? fileStore(path.join(dir, 'delegation')) : undefined,
       now: this._now,
@@ -184,14 +190,71 @@ class HubDelegation extends EventEmitter {
   async _decide (item) {
     const facts = factsForRequest(item.read, { networkOf: (id) => this._networkOf(id) });
     const decision = this.rules.decide(facts, await this._context());
-    if (decision.action !== 'notify') {
-      const entry = this.rules.record(decision, facts, { request: item.hash, title: item.notification && item.notification.title });
-      this.emit('decided', entry);
+    const extra = { request: item.hash, title: item.notification && item.notification.title };
+    if (decision.action === 'sign') {
+      this._sweepHeld();
+      this._held.set(String(item.hash).toLowerCase(), {
+        decision,
+        facts,
+        extra,
+        expiresAt: item.read.request.expiresAt,
+        reservation: this.rules.reserve(decision, facts)
+      });
+      return decision;
+    }
+    if (decision.action === 'decline') {
+      this.emit('decided', this.rules.record(decision, facts, extra));
       return decision;
     }
     this.emit('notification', Object.assign({ hash: item.hash }, item.notification));
     this._prompt(item);
     return decision;
+  }
+
+  /**
+   * The delegate stores the answer to a request a rule signed: log the sign,
+   * or, when the answer could not be built, the decline, giving the use back.
+   * @private
+   * @param {string} hash
+   * @param {Object} [options] `{ rule }` the delegate stores the answer under.
+   * @param {Function} store Stores the answer.
+   * @param {string|null} declined Reason, when the delegate declines.
+   */
+  async _settleHeld (hash, options, store, declined) {
+    const key = String(hash || '').toLowerCase();
+    const held = this._held.get(key);
+    if (!held || !options || options.rule !== held.decision.rule) return store();
+    this._held.delete(key);
+    let out;
+    try {
+      out = await store();
+    } catch (err) {
+      this.rules.release(held.reservation);
+      throw err;
+    }
+    if (declined == null) {
+      this.emit('decided', this.rules.record(held.decision, held.facts, held.extra, held.reservation));
+    } else {
+      this.rules.release(held.reservation);
+      this.emit('decided', this.rules.record({ action: 'decline', rule: held.decision.rule, reason: declined }, held.facts, held.extra));
+    }
+    return out;
+  }
+
+  /**
+   * Give back the uses of rule signs that never settled (expired, or left
+   * pending while the Hub could not answer).
+   * @private
+   * @param {string} [hash] Also this one, whatever its expiry.
+   */
+  _sweepHeld (hash) {
+    const now = this._now();
+    const only = hash ? String(hash).toLowerCase() : null;
+    for (const [key, held] of this._held) {
+      if (key !== only && !(held.expiresAt <= now)) continue;
+      this._held.delete(key);
+      this.rules.release(held.reservation);
+    }
   }
 
   /**
@@ -230,6 +293,7 @@ class HubDelegation extends EventEmitter {
    */
   async answer (hash, action, options = {}) {
     const out = await this.delegate.resolve(hash, { action, reason: options.reason });
+    if (out && out.json && (out.json.status === 'signed' || out.json.status === 'declined')) this._sweepHeld(hash);
     if (out && out.json && out.json.alreadySettled !== true && (out.json.status === 'signed' || out.json.status === 'declined')) {
       const item = await this.store.inboxItem(hash);
       if (item && item.read && item.read.ok) {
@@ -318,13 +382,21 @@ class HubDelegation extends EventEmitter {
       : requestFacts({ scope: 'federation', kind, from: await this._identityOf(ev.inviter), federationId: ev.id, network: ev.network });
     const decision = this.rules.decide(facts, await this._context());
     if (decision.action === 'notify') return decision;
-    if (kind === 'withdrawal' && decision.action === 'sign') {
-      await this.federations.approveWithdrawal(ev.federationId, ev.requestId);
-    } else if (kind === 'invite') {
-      await this.federations.respond(ev.id, decision.action === 'sign');
+    const reservation = this.rules.reserve(decision, facts);
+    try {
+      if (kind === 'withdrawal' && decision.action === 'sign') {
+        await this.federations.approveWithdrawal(ev.federationId, ev.requestId);
+      } else if (kind === 'withdrawal') {
+        await this.federations.declineWithdrawal(ev.federationId, ev.requestId);
+      } else {
+        await this.federations.respond(ev.id, decision.action === 'sign');
+      }
+    } catch (err) {
+      this.rules.release(reservation);
+      throw err;
     }
     const title = kind === 'withdrawal' ? `Co-sign a withdrawal of ${facts.amountSats} sats` : `Join the shared wallet "${ev.name || ev.id.slice(0, 12)}"`;
-    this.emit('decided', this.rules.record(decision, facts, { title }));
+    this.emit('decided', this.rules.record(decision, facts, { title }, reservation));
     return decision;
   }
 

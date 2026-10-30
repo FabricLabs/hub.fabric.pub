@@ -164,10 +164,13 @@ Nothing from v1 is accepted, and every refusal says what to do:
   (`@fabric/http` `passportHttp`). goon.vc's old
   `POST /services/members/passport/requests` answers the same. The challenge
   isn't spent, so the user can try again once updated.
-- **Desktop signer.** The `/services/fabric/sign` local signer is gone.
-  A Passport that still sends `PASSPORT_SIGN_REQUEST` (or a v1
-  `FABRIC_SIGN_REQUEST`) to the delegate gets 426 `passport_outdated`.
-  Desktop apps sign through delegation (step 5).
+- **Desktop signer.** The `/services/fabric/sign` local signer is gone: the
+  Hub no longer registers `/services/fabric/{identity,sign,link}`, so an
+  older Passport gets no signature there (`GET` is a 404, and a `POST` falls
+  through to `@fabric/http`'s generic resource handler like any unregistered
+  path). Only the delegate route (`POST /services/delegation/requests`)
+  answers a `PASSPORT_SIGN_REQUEST` (or a v1 `FABRIC_SIGN_REQUEST`) with 426
+  `passport_outdated`. Desktop apps sign through delegation (step 5).
 - **Pages.** A page asks whether Passport is there with `PASSPORT_HELLO` on a
   transferred port (`probePassport` in `@fabric/http` `passportPage`); only an
   answer with `v: 2` counts. A page that finds only an older Passport's

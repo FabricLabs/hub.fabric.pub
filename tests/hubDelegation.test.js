@@ -66,6 +66,7 @@ function fakeFederations () {
   federations.answered = [];
   federations.approved = [];
   federations.responded = [];
+  federations.declined = [];
   federations.networkOf = () => 'regtest';
   federations.answerDelegated = async (body, author) => {
     federations.answered.push({ body, author });
@@ -73,6 +74,7 @@ function fakeFederations () {
     return Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(reply)]).signWithKey(HUB.cosigner.key);
   };
   federations.approveWithdrawal = async (id, requestId) => { federations.approved.push({ id, requestId }); };
+  federations.declineWithdrawal = async (id, requestId) => { federations.declined.push({ id, requestId }); };
   federations.respond = async (id, accept) => { federations.responded.push({ id, accept }); };
   return federations;
 }
@@ -232,6 +234,50 @@ describe('Hub delegation (HubDelegation)', function () {
     federations.emit('withdrawal', { federationId: FED, requestId: 'm3', requester: 'cd'.repeat(32), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.strictEqual(federations.approved.length, 1, 'delegated frames and strangers are not co-signed here');
+  });
+
+  it('takes a mesh withdrawal a rule declines out of the queue', async function () {
+    const { service, federations, origin } = await setup();
+    const passport = new Delegation({ key: PASSPORT.identity.key });
+    await pair(origin, passport);
+    service.rules.set([{ id: 'no-spend', action: 'decline', scope: 'federation', from: 'identity-linked' }]);
+    const decided = new Promise((resolve) => service.once('decided', resolve));
+    federations.emit('withdrawal', { federationId: FED, requestId: 'm1', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
+    assert.strictEqual((await decided).action, 'decline');
+    assert.deepStrictEqual(federations.declined, [{ id: FED, requestId: 'm1' }]);
+    assert.strictEqual(federations.approved.length, 0);
+  });
+
+  it('co-signs only as many mesh withdrawals arriving together as the rule allows', async function () {
+    const { service, federations, origin } = await setup();
+    const passport = new Delegation({ key: PASSPORT.identity.key });
+    await pair(origin, passport);
+    service.rules.set([{ id: 'spend', action: 'sign', scope: 'federation', from: 'identity-linked', maxAmountSats: 10000, maxPerHour: 1, destinations: [ADDRESS] }]);
+    const ev = (requestId) => ({ federationId: FED, requestId, requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
+    const decided = await Promise.all([
+      service._federationEvent('withdrawal', ev('m1')),
+      service._federationEvent('withdrawal', ev('m2'))
+    ]);
+    assert.deepStrictEqual(decided.map((d) => d.action).sort(), ['notify', 'sign']);
+    assert.strictEqual(federations.approved.length, 1);
+    assert.strictEqual(service.rules.list().valid[0].usage.hourCount, 1);
+  });
+
+  it('gives a rule\'s use back and logs a decline when the Hub could not send its answer', async function () {
+    const { service, federations, origin } = await setup();
+    const passport = new Delegation({ key: PASSPORT.identity.key });
+    await pair(origin, passport);
+    service.rules.set([{ id: 'spend', action: 'sign', scope: 'federation', from: 'identity-linked', maxAmountSats: 10000, destinations: [ADDRESS] }]);
+    federations.answerDelegated = async () => null;
+    const req = await passport.request({ target: HUB.identity.pubkey, request: withdrawalFrame() });
+    const out = await send(origin, 'POST', '/services/delegation/requests', { frame: req.uri });
+    assert.strictEqual(out.body.status, 'declined');
+    assert.deepStrictEqual(service.rules.list().valid[0].usage, { daySats: 0, hourCount: 0 });
+    const decisions = service.rules.decisions();
+    assert.strictEqual(decisions.length, 1);
+    assert.strictEqual(decisions[0].action, 'decline');
+    assert.strictEqual(decisions[0].rule, 'spend');
+    assert.match(decisions[0].reason, /could not send/);
   });
 
   it('revokes a grant it gave', async function () {

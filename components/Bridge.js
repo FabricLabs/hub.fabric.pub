@@ -2033,6 +2033,21 @@ class Bridge extends React.Component {
     return '';
   }
 
+  /**
+   * Whether this Bridge talks to the Hub that served the page: the admin token
+   * kept in this browser was issued by that Hub only.
+   * @returns {boolean}
+   */
+  _hubIsPageOrigin () {
+    if (typeof window === 'undefined' || !window.location) return false;
+    const host = this.settings && this.settings.host;
+    if (!host) return true;
+    const loc = window.location;
+    const pagePort = Number(loc.port) || (loc.protocol === 'https:' ? 443 : 80);
+    return String(host).toLowerCase() === String(loc.hostname).toLowerCase() &&
+      Number(this.settings.port) === pagePort;
+  }
+
   _parseHubAddressString (input) {
     try {
       const raw = input == null ? '' : String(input).trim();
@@ -5957,7 +5972,7 @@ class Bridge extends React.Component {
 
     try {
       // Pricing and re-listing need the operator's admin token.
-      const adminToken = readHubAdminTokenFromBrowser();
+      const adminToken = this._hubIsPageOrigin() ? readHubAdminTokenFromBrowser() : '';
       const priced = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats));
       const params = priced || adminToken
         ? [{

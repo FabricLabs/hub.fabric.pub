@@ -16,7 +16,7 @@
  *   and while any rule is invalid nothing is signed without asking (declines
  *   still apply);
  * - a constraint the request cannot answer (an origin on a federation
- *   request, a destination on an invite) does not match;
+ *   request, a destination or an amount on an invite) does not match;
  * - a `sign` rule covers a federation withdrawal only when it sets
  *   `maxAmountSats`, and never above the Hub's own `maxWithdrawalSats`;
  * - `decline` wins over `sign`; no match means the user is asked.
@@ -221,7 +221,7 @@ function matches (rule, facts, context) {
   if (rule.federations && !(facts.federationId && rule.federations.includes(facts.federationId))) return false;
   if (rule.networks && !(facts.network && rule.networks.includes(facts.network))) return false;
   if (rule.destinations && !(facts.destination && rule.destinations.includes(facts.destination))) return false;
-  if (rule.maxAmountSats != null && facts.amountSats != null && facts.amountSats > rule.maxAmountSats) return false;
+  if (rule.maxAmountSats != null && (facts.amountSats == null || facts.amountSats > rule.maxAmountSats)) return false;
   return true;
 }
 
@@ -295,6 +295,22 @@ function countUse (counter, facts, now) {
   return { day, daySats: used.daySats + (facts.amountSats || 0), hours };
 }
 
+/**
+ * Take back one use {@link countUse} added at `at` (a sign that did not go out).
+ * @param {Object} counter
+ * @param {{ at: number, amountSats: (number|undefined) }} use
+ * @returns {Object} The new counter.
+ */
+function uncountUse (counter, use) {
+  const c = counter || {};
+  const hours = Array.isArray(c.hours) ? c.hours.slice() : [];
+  const index = hours.indexOf(use.at);
+  if (index !== -1) hours.splice(index, 1);
+  const daySats = Number(c.daySats) || 0;
+  const sameDay = c.day === new Date(use.at).toISOString().slice(0, 10);
+  return { day: c.day, daySats: sameDay ? Math.max(0, daySats - (use.amountSats || 0)) : daySats, hours };
+}
+
 module.exports = {
   RULE_FIELDS,
   ACTIONS,
@@ -307,5 +323,6 @@ module.exports = {
   factsForRequest,
   evaluate,
   usageAt,
-  countUse
+  countUse,
+  uncountUse
 };

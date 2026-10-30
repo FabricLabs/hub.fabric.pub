@@ -160,6 +160,8 @@ async function buy (args, t) {
   if (!mine.fabricPeerId) throw new Error('this Hub reports no Fabric key for the refund path');
   const sellerStatus = await rpc(seller, 'GetNetworkStatus', {}, []);
   if (!sellerStatus.fabricIdentityId) throw new Error('the seller Hub does not report fabricIdentityId (update it)');
+  if (!sellerStatus.fabricPeerId) throw new Error('the seller Hub does not report fabricPeerId');
+  const sellerKey = String(sellerStatus.fabricPeerId).toLowerCase();
   const via = args.via ? await peerId(args, args.via, t) : null;
 
   const askedAt = Date.now();
@@ -172,7 +174,10 @@ async function buy (args, t) {
 
   const offer = await waitFor(wait, async () => {
     const r = await rpc(t, 'ListDocumentOffers', { documentId });
-    return (r.offers || []).find((o) => o.htlc && o.htlc.settlementId && Date.parse(o.receivedAt) >= askedAt - 1000) || null;
+    // Only a quote the seller's own key claims; a relay or another seller may list the same document.
+    return (r.offers || []).find((o) => o.htlc && o.htlc.settlementId &&
+      String(o.htlc.sellerPublicKeyHex || '').toLowerCase() === sellerKey &&
+      Date.parse(o.receivedAt) >= askedAt - 1000) || null;
   });
   if (!offer) throw new Error(`no HTLC offer for ${documentId} within ${wait}s (published and priced on the seller?)`);
   const h = offer.htlc;
@@ -193,6 +198,7 @@ async function buy (args, t) {
   if (args.payOnly) {
     const result = { documentId, paidSats: Number(args.amount != null ? args.amount : h.amountSats), txid, settlementId: h.settlementId, refundLockHeight: h.refundLockHeight };
     if (args.json) return console.log(JSON.stringify(result, null, 2));
+    if (args.amount != null) return log('not asking the seller to confirm; an unchecked payment leaves no purchase record, so this Hub cannot refund it');
     return log(`not asking the seller to confirm; refund after block ${h.refundLockHeight} with: node scripts/documents.js refund ${h.settlementId}`);
   }
 

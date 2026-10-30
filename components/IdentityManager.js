@@ -522,7 +522,13 @@ function IdentityManager (props) {
     if (typeof window === 'undefined') return;
     clearPassportWait();
     setError(null);
-    const passport = await probePassport(window);
+    let passport;
+    try {
+      passport = await probePassport(window);
+    } catch (e) {
+      setError((e && e.message) ? e.message : copy.login.passportMissing);
+      return;
+    }
     if (passport !== 'ready') {
       setError(passport === 'outdated' ? copy.login.passportOutdated : copy.login.passportMissing);
       return;

@@ -13,7 +13,8 @@ const {
   validateRules,
   evaluate,
   usageAt,
-  countUse
+  countUse,
+  uncountUse
 } = require('../functions/signerRules');
 
 const FILE = 'signer-rules.json';
@@ -100,7 +101,7 @@ class SignerRules extends EventEmitter {
     if (!Array.isArray(rules)) throw new TypeError('rules must be a list');
     this._state.rules = JSON.parse(JSON.stringify(rules));
     this._check();
-    const ids = new Set(this._valid.map((r) => r.id));
+    const ids = new Set(this._state.rules.map((r) => String((r && r.id) || '').trim().toLowerCase()).filter(Boolean));
     for (const id of Object.keys(this._state.usage)) if (!ids.has(id)) delete this._state.usage[id];
     this._save();
     return this.list();
@@ -123,15 +124,44 @@ class SignerRules extends EventEmitter {
   }
 
   /**
-   * Log a decision and, when a rule signed, count it against the rule's limits.
+   * Count a rule's sign against its limits now, before the signature goes
+   * out, so that a second request decided meanwhile sees the use. Pass the
+   * result to {@link SignerRules#record} once signed, or to
+   * {@link SignerRules#release} when nothing was signed.
+   * @param {Object} decision `{ action, rule }` from {@link SignerRules#decide}
+   * @param {Object} facts
+   * @returns {Object|null} The reservation (null unless a rule signed).
+   */
+  reserve (decision, facts) {
+    if (!decision || decision.action !== 'sign' || !decision.rule) return null;
+    const at = this._now();
+    this._state.usage[decision.rule] = countUse(this._state.usage[decision.rule], facts, at);
+    this._save();
+    return { rule: decision.rule, at, amountSats: facts.amountSats || 0 };
+  }
+
+  /**
+   * Give back a reservation whose sign did not go out.
+   * @param {Object|null} reservation From {@link SignerRules#reserve}.
+   */
+  release (reservation) {
+    if (!reservation || !this._state.usage[reservation.rule]) return;
+    this._state.usage[reservation.rule] = uncountUse(this._state.usage[reservation.rule], reservation);
+    this._save();
+  }
+
+  /**
+   * Log a decision and, when a rule signed, count it against the rule's
+   * limits (unless it was counted by {@link SignerRules#reserve}).
    * @param {Object} decision `{ action, rule, reason }`
    * @param {Object} facts
    * @param {Object} [extra] `{ request, title }` shown in the log
+   * @param {Object|null} [reservation] From {@link SignerRules#reserve}.
    * @returns {Object} The log entry.
    */
-  record (decision, facts, extra = {}) {
+  record (decision, facts, extra = {}, reservation = null) {
     const now = this._now();
-    if (decision.action === 'sign' && decision.rule) {
+    if (decision.action === 'sign' && decision.rule && !reservation) {
       this._state.usage[decision.rule] = countUse(this._state.usage[decision.rule], facts, now);
     }
     const entry = {

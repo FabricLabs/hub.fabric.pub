@@ -58,9 +58,9 @@ function writeHeapSnapshot (dir, reason) {
 }
 
 /**
- * Tracks the heap threshold: each snapshot doubles the next threshold, up to `max` snapshots.
+ * Tracks the heap threshold: each snapshot written doubles the next threshold, up to `max` snapshots.
  * @param {{ thresholdBytes: number, max: number }} cfg
- * @returns {{ check: Function, taken: Function }}
+ * @returns {{ check: Function, record: Function, taken: Function }}
  */
 function createHeapThreshold (cfg) {
   let next = cfg.thresholdBytes;
@@ -71,10 +71,15 @@ function createHeapThreshold (cfg) {
      * @returns {boolean} true when a snapshot is due now
      */
     check (heapUsed) {
-      if (!(next > 0) || taken >= cfg.max || !(heapUsed >= next)) return false;
+      return next > 0 && taken < cfg.max && heapUsed >= next;
+    },
+    /**
+     * Count a snapshot once it is written (until then `check` stays due).
+     * @param {number} heapUsed
+     */
+    record (heapUsed) {
       taken++;
       while (next <= heapUsed) next *= 2;
-      return true;
     },
     taken () {
       return taken;

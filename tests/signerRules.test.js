@@ -71,6 +71,9 @@ describe('signer rules (pure)', function () {
     const invite = requestFacts({ scope: 'federation', kind: 'invite', from: ALICE, federationId: FED, network: 'regtest' });
     assert.strictEqual(evaluate(open, invite, ctx()).action, 'sign', 'but invites, yes');
     assert.strictEqual(evaluate(rules, invite, ctx()).action, 'notify', 'an invite has no destination to match');
+    const capped = validateRules([spend({ destinations: undefined })]).rules;
+    assert.strictEqual(evaluate(capped, invite, ctx()).action, 'notify', 'an invite has no amount to match');
+    assert.strictEqual(evaluate(capped, withdrawal(), ctx()).action, 'sign');
   });
 
   it('counts a rule\'s use by day and hour', function () {
@@ -117,5 +120,35 @@ describe('SignerRules service', function () {
     assert.strictEqual(again.decisions(5)[0].title, 'Co-sign 5000 sats');
     const mode = fs.statSync(path.join(dir, SignerRules.FILE)).mode & 0o777;
     assert.strictEqual(mode, 0o600);
+  });
+
+  it('counts a reserved sign once, and gives it back when nothing was signed', function () {
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    const rules = new SignerRules({ dir, now: () => now }).load();
+    rules.set([spend({ maxPerHour: 1 })]);
+    const facts = withdrawal();
+    const decision = rules.decide(facts, ctx());
+    const held = rules.reserve(decision, facts);
+    assert.strictEqual(rules.decide(withdrawal(), ctx()).action, 'notify', 'a second request sees the reserved use');
+    rules.release(held);
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 0, hourCount: 0 });
+    assert.strictEqual(rules.decide(withdrawal(), ctx()).action, 'sign');
+
+    const kept = rules.reserve(decision, facts);
+    rules.record(decision, facts, {}, kept);
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 5000, hourCount: 1 });
+    assert.strictEqual(rules.reserve({ action: 'notify' }, facts), null);
+  });
+
+  it('keeps a rule\'s counters while it is broken and fixed again', function () {
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    const rules = new SignerRules({ dir, now: () => now }).load();
+    rules.set([spend({ dailyLimitSats: 6000 })]);
+    const facts = withdrawal();
+    rules.record(rules.decide(facts, ctx()), facts);
+    rules.set([spend({ dailyLimitSats: 6000, sudo: true })]);
+    rules.set([spend({ dailyLimitSats: 6000 })]);
+    assert.strictEqual(rules.list().valid[0].usage.daySats, 5000);
+    assert.strictEqual(rules.decide(withdrawal(), ctx()).action, 'notify', 'the day limit is still spent');
   });
 });

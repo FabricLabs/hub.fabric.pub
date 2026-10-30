@@ -130,7 +130,23 @@ function collectBitcoinServiceRetainers (hub) {
 }
 
 /**
- * Heap and RSS change since the previous snapshot, per hour.
+ * Change in every numeric field present in both objects.
+ * @private
+ * @param {object} [current]
+ * @param {object} [previous]
+ * @returns {object}
+ */
+function numericDeltas (current, previous) {
+  const out = {};
+  for (const [key, value] of Object.entries(current || {})) {
+    const before = previous ? previous[key] : undefined;
+    if (Number.isFinite(value) && Number.isFinite(before)) out[key] = value - before;
+  }
+  return out;
+}
+
+/**
+ * Memory and retainer change since the previous snapshot (heap and RSS also per hour).
  * @param {object} current
  * @param {object} [previous]
  * @returns {object|null}
@@ -142,13 +158,16 @@ function growthSince (current, previous) {
   const heapUsed = current.memory.heapUsed - previous.memory.heapUsed;
   const rss = current.memory.rss - previous.memory.rss;
   const external = current.memory.external - previous.memory.external;
+  const arrayBuffers = Number(current.memory.arrayBuffers || 0) - Number(previous.memory.arrayBuffers || 0);
   return {
     sinceSec: Math.round(hours * 3600),
     heapUsed,
     rss,
     external,
+    arrayBuffers,
     heapUsedPerHour: Math.round(heapUsed / hours),
-    rssPerHour: Math.round(rss / hours)
+    rssPerHour: Math.round(rss / hours),
+    retainers: numericDeltas(current.retainers, previous.retainers)
   };
 }
 
