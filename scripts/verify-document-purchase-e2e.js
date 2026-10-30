@@ -16,7 +16,7 @@
 
 const BASE = (process.env.HUB_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
 const ADMIN = process.env.FABRIC_HUB_ADMIN_TOKEN || process.env.FABRIC_ADMIN_TOKEN || '';
-const PRICE_SATS = Math.max(500, Number(process.env.FABRIC_DOC_PURCHASE_E2E_AMOUNT_SATS || 3000));
+const PRICE_SATS = Math.max(716, Number(process.env.FABRIC_DOC_PURCHASE_E2E_AMOUNT_SATS || 3000));
 const SKIP_MINE = process.env.FABRIC_DOC_PURCHASE_E2E_SKIP_MINE === '1' || process.env.FABRIC_DOC_PURCHASE_E2E_SKIP_MINE === 'true';
 
 async function rpc (method, params) {
@@ -79,7 +79,7 @@ async function main () {
   console.log('[doc-purchase-e2e] documentId =', doc.id);
 
   console.log('[doc-purchase-e2e] PublishDocument (purchase price)…');
-  const pub = await rpc('PublishDocument', [{ id: doc.id, purchasePriceSats: PRICE_SATS }]);
+  const pub = await rpc('PublishDocument', [{ id: doc.id, purchasePriceSats: PRICE_SATS, adminToken: ADMIN }]);
   if (!pub || !pub.document || !pub.document.published) {
     throw new Error('PublishDocument: expected published document');
   }
@@ -115,7 +115,7 @@ async function main () {
   }
 
   console.log('[doc-purchase-e2e] ClaimPurchase…');
-  const claim = await rpc('ClaimPurchase', [{ documentId: doc.id, txid }]);
+  const claim = await rpc('ClaimPurchase', [{ documentId: doc.id, txid, claimToken: inv.claimToken }]);
   if (!claim || !claim.document || !claim.document.contentBase64) {
     throw new Error('ClaimPurchase: missing document content');
   }

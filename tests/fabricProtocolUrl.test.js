@@ -51,18 +51,16 @@ describe('fabricProtocolUrl', function () {
   });
 
   it('decodeOpaqueFabricUri checks the author signature with a current core', function () {
-    let siteLogin = null;
+    let fabricUri = null;
     try {
-      siteLogin = require('@fabric/core/functions/fabricSiteLogin');
-      require('@fabric/core/functions/fabricUri');
+      fabricUri = require('@fabric/core/functions/fabricUri');
     } catch (_) {
       this.skip();
     }
     const Key = require('@fabric/core/types/key');
     const key = new Key();
-    const nonce = 'a'.repeat(64);
-    const response = siteLogin.signSiteLoginResponse({ origin: 'https://shop.example', nonce, signer: 'passport' }, key);
-    const out = decodeOpaqueFabricUri(response.uri);
+    const signed = Message.fromVector(['GenericMessage', JSON.stringify({ x: 1 })]).signWithKey(key);
+    const out = decodeOpaqueFabricUri(fabricUri.encodeFabricUri(signed));
     assert.strictEqual(out.ok, true, out.error);
     assert.strictEqual(out.verified, true);
     assert.strictEqual(out.signed, true);

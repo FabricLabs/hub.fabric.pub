@@ -93,6 +93,75 @@ describe('documentInventoryMarket', function () {
     assert.deepStrictEqual(market.listOffers(map).map((o) => o.name), ['build-5'], 'an unpaged response still replaces everything');
   });
 
+  it('keeps a quote when the resync lists its document on a later page', function () {
+    const map = {};
+    const peer = { peerPubkey: '02' + 'ac'.repeat(32) };
+    const doc = (n) => ({ id: String(n).repeat(64).slice(0, 64), name: `build-${n}`, purchasePriceSats: 716, published: true });
+    const quote = { settlementId: 'bb'.repeat(16), paymentAddress: 'bcrt1pquote', amountSats: 716 };
+    market.replacePeerOffers(map, peer, [doc(1), { ...doc(2), htlc: quote }], { inventoryId: 'aaaa' });
+    market.replacePeerOffers(map, peer, [doc(1)], { inventoryId: 'bbbb' });
+    market.replacePeerOffers(map, peer, [doc(2)], { inventoryId: 'bbbb' });
+    const row = market.listOffers(map).find((o) => o.name === 'build-2');
+    assert.strictEqual(row && row.htlc && row.htlc.settlementId, quote.settlementId);
+    assert.ok(!row.quoteHeld, 'listed again, the row is an ordinary offer');
+
+    market.replacePeerOffers(map, peer, [doc(1)], { inventoryId: 'cccc' });
+    assert.ok(market.listOffers(map).some((o) => o.name === 'build-2' && o.quoteHeld), 'held through one snapshot');
+    market.replacePeerOffers(map, peer, [doc(1)], { inventoryId: 'dddd' });
+    assert.deepStrictEqual(market.listOffers(map).map((o) => o.name), ['build-1'], 'a second snapshot without it drops the quote');
+  });
+
+  it('keeps the last few quotes a buyer was given for a document', function () {
+    const map = {};
+    const peer = { peerPubkey: '02' + 'ad'.repeat(32) };
+    const doc = { id: 'ef'.repeat(32), name: 'build', purchasePriceSats: 716, published: true };
+    const quote = (n) => ({ settlementId: String(n).repeat(32), paymentAddress: `bcrt1pquote${n}`, amountSats: 716 });
+    for (let n = 1; n <= 6; n++) market.replacePeerOffers(map, peer, [{ ...doc, htlc: quote(n) }], { inventoryId: `inv${n}` });
+    market.replacePeerOffers(map, peer, [doc], { inventoryId: 'inv7' });
+    const [row] = market.listOffers(map);
+    assert.strictEqual(row.htlc.settlementId, quote(6).settlementId, 'the newest quote is the offer');
+    assert.deepStrictEqual(row.earlierQuotes.map((q) => q.settlementId), [5, 4, 3, 2].map((n) => quote(n).settlementId));
+  });
+
+  it('does not offer a quote at an old price once the resync lists a new one', function () {
+    const map = {};
+    const peer = { peerPubkey: '02' + 'ae'.repeat(32) };
+    const doc = { id: 'cd'.repeat(32), name: 'build', purchasePriceSats: 716, published: true };
+    const quote = { settlementId: 'cc'.repeat(16), paymentAddress: 'bcrt1pquote', amountSats: 716 };
+    market.replacePeerOffers(map, peer, [{ ...doc, htlc: quote }], { inventoryId: 'aaaa' });
+    market.replacePeerOffers(map, peer, [{ ...doc, purchasePriceSats: 900 }], { inventoryId: 'bbbb' });
+    const [row] = market.listOffers(map);
+    assert.strictEqual(row.purchasePriceSats, 900);
+    assert.strictEqual(row.htlc, undefined, 'no current quote');
+    assert.deepStrictEqual(row.earlierQuotes.map((q) => q.settlementId), [quote.settlementId], 'the old quote stays findable');
+  });
+
+  it('keys a seller by its authenticated peer id across reconnects', function () {
+    const map = {};
+    const doc = { id: 'ab'.repeat(32), name: 'build', purchasePriceSats: 900, published: true };
+    market.replacePeerOffers(map, { peerId: 'id1seller', peerAddress: '127.0.0.1:50001' }, [doc]);
+    market.replacePeerOffers(map, { peerId: 'id1seller', peerAddress: '127.0.0.1:50777' }, [doc]);
+    const offers = market.listOffers(map);
+    assert.strictEqual(offers.length, 1, 'a new session replaces the old row');
+    assert.strictEqual(offers[0].peerAddress, '127.0.0.1:50777');
+    assert.strictEqual(offers[0].peerId, 'id1seller');
+
+    market.replacePeerOffers(map, { peerAddress: '127.0.0.1:50888' }, [doc]);
+    assert.strictEqual(market.listOffers(map).length, 2, 'an address-only seller is someone else');
+    assert.strictEqual(market.dropClosedSessionOffers(map, () => false), 1, 'only the address-only row goes with its session');
+
+    const quote = { settlementId: 'aa'.repeat(16), paymentAddress: 'bcrt1pquote', amountSats: 900 };
+    market.replacePeerOffers(map, { peerId: 'id1seller', peerAddress: '127.0.0.1:50777' }, [{ ...doc, htlc: quote }]);
+    market.replacePeerOffers(map, { peerId: 'id1seller', peerAddress: '127.0.0.1:51000' }, [doc]);
+    const kept = market.listOffers(map).find((o) => o.peerId === 'id1seller');
+    assert.strictEqual(kept.htlc.settlementId, quote.settlementId, 'a reply without quotes keeps the outstanding quote');
+    market.replacePeerOffers(map, { peerId: 'id1seller', peerAddress: '127.0.0.1:51000' }, []);
+    assert.ok(!market.listOffers(map).some((o) => o.peerId === 'id1seller'), 'an unlisted document drops its row');
+
+    market.replacePeerOffers(map, { peerId: '../etc', peerAddress: '127.0.0.1:50999' }, [doc]);
+    assert.ok(market.listOffers(map).every((o) => o.peerId !== '../etc'), 'an odd id is not a key');
+  });
+
   it('decorates a local catalog row with cheapest remote without dropping the local listing', function () {
     const fileId = 'cd'.repeat(32);
     const map = {};

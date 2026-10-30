@@ -44,25 +44,6 @@ const {
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const FabricHubAdminTokenNotice = require('./fabricIdentity/FabricHubAdminTokenNotice');
 const {
-  DEVICE_LINK_OFFER_TAG,
-  DEVICE_LINK_TAG,
-  buildDeviceLinkOfferMessage,
-  prepareDeviceLinkOffer,
-  commitDeviceLinkOffer,
-  fetchDeviceLinkSession,
-  postDeviceLinkSignature,
-  cancelDeviceLinkSession,
-  verifyDeviceLinkResponder
-} = require('../functions/fabricDeviceLinkClient');
-const { buildFabricIdentitySignedPayload } = require('@fabric/core/functions/fabricIdentitySchnorr');
-const {
-  STORAGE_LINKED_DEVICES,
-  readLinkedDevices,
-  mergeLinkedDevice,
-  publishHubIdentityCrossSign,
-  revokeLinkedDevice
-} = require('../functions/fabricLinkedDevices');
-const {
   DEFAULT_LOCK_TIMEOUT_MINUTES,
   readFabricIdentityLockTimeoutMinutes,
   writeFabricIdentityLockTimeoutMinutes,
@@ -70,7 +51,7 @@ const {
 } = require('../functions/fabricIdentityLockPrefs');
 const { useHubHttpAvailable } = require('./hubUiRuntime');
 const {
-  passportStatus,
+  probePassport,
   loginWithPassport
 } = require('../functions/passportSiteLogin');
 const t = require('../locales/en');
@@ -267,31 +248,7 @@ function IdentityManager (props) {
   const [importVault, setImportVault] = React.useState(null);
   const [importPassword, setImportPassword] = React.useState('');
   const [unlockPassword, setUnlockPassword] = React.useState('');
-  const [deviceLinkBusy, setDeviceLinkBusy] = React.useState(false);
-  const [deviceLinkOffer, setDeviceLinkOffer] = React.useState(null);
-  const [deviceLinkQr, setDeviceLinkQr] = React.useState(null);
-  const [linkedDevicesRev, setLinkedDevicesRev] = React.useState(0);
-  const deviceLinkPollRef = React.useRef(null);
   const passportWaitRef = React.useRef(null);
-  const linkedDevices = React.useMemo(() => readLinkedDevices(), [linkedDevicesRev, localIdentity]);
-
-  React.useEffect(() => {
-    const url = deviceLinkOffer && deviceLinkOffer.protocolUrl;
-    if (!url) {
-      setDeviceLinkQr(null);
-      return;
-    }
-    let cancelled = false;
-    try {
-      const QRCode = require('qrcode');
-      QRCode.toDataURL(url, { width: 196, margin: 1, errorCorrectionLevel: 'M' })
-        .then((data) => { if (!cancelled) setDeviceLinkQr(data); })
-        .catch(() => { if (!cancelled) setDeviceLinkQr(null); });
-    } catch (_) {
-      setDeviceLinkQr(null);
-    }
-    return () => { cancelled = true; };
-  }, [deviceLinkOffer && deviceLinkOffer.protocolUrl]);
 
   React.useEffect(() => {
     if (loginMethod === 'generate' && !newMnemonic && !localIdentity) {
@@ -532,7 +489,6 @@ function IdentityManager (props) {
   const applyPassportSession = React.useCallback((session) => {
     const watch = watchIdentityFromSession(session);
     if (!watch) return { ok: false, error: copy.login.verifyFailed };
-    const fromPassport = watch.signer === 'passport';
     const stored = {
       id: watch.id,
       pubkey: watch.pubkey,
@@ -543,14 +499,6 @@ function IdentityManager (props) {
     try {
       writeStorageJSON(STORAGE_KEY, stored);
     } catch (e) {}
-    mergeLinkedDevice({
-      kind: fromPassport ? 'fabric-passport' : 'fabric-desktop',
-      hubOrigin: window.location.origin,
-      fabricId: watch.id,
-      linkedAt: new Date().toISOString(),
-      label: fromPassport ? copy.signerPassport : copy.signerDesktop
-    });
-    setLinkedDevicesRev((n) => n + 1);
     const next = Object.assign({}, stored, { xprv: null, passwordProtected: false, wallet: watch.wallet });
     setLocalIdentity(next);
     if (typeof props.onUnlockSuccess === 'function') props.onUnlockSuccess(next);
@@ -574,7 +522,13 @@ function IdentityManager (props) {
     if (typeof window === 'undefined') return;
     clearPassportWait();
     setError(null);
-    const passport = passportStatus(document);
+    let passport;
+    try {
+      passport = await probePassport(window);
+    } catch (e) {
+      setError((e && e.message) ? e.message : copy.login.passportMissing);
+      return;
+    }
     if (passport !== 'ready') {
       setError(passport === 'outdated' ? copy.login.passportOutdated : copy.login.passportMissing);
       return;
@@ -632,190 +586,11 @@ function IdentityManager (props) {
     }
   }, [applyPassportSession]);
 
-  const clearDeviceLinkPoll = React.useCallback(() => {
-    if (deviceLinkPollRef.current) {
-      clearInterval(deviceLinkPollRef.current);
-      deviceLinkPollRef.current = null;
-    }
-  }, []);
-
-  React.useEffect(() => () => clearDeviceLinkPoll(), [clearDeviceLinkPoll]);
-
-  /**
-   * Start a mutual device-link offer (this browser is initiator). Peer opens
-   * fabric://link (Passport / another Hub / peer app) as responder; we countersign.
-   */
-  const handleCreateDeviceLink = React.useCallback(async () => {
-    if (typeof window === 'undefined') return;
-    const signing = identitySigner(localIdentity);
-    if (!signing) {
-      setError(keyState === 'locked'
-        ? copy.linkDevice.needKey.locked
-        : (keyState === 'session' ? copy.linkDevice.needKey.session : copy.linkDevice.needKey.none));
-      return;
-    }
-    clearDeviceLinkPoll();
-    setDeviceLinkBusy(true);
-    setError(null);
-    const origin = window.location.origin;
-    const label = copy.linkDevice.browserLabel;
-    try {
-      const ownId = signing.id;
-      const resolved = { fabricKey: signing.fabricKey, identityId: ownId };
-      const prepared = await prepareDeviceLinkOffer({
-        hubBase: origin,
-        origin,
-        label,
-        identity: { id: ownId, xpub: signing.fabricKey.xpub }
-      });
-      if (!prepared.ok) {
-        setError(prepared.error || copy.linkDevice.prepareFailed);
-        setDeviceLinkBusy(false);
-        return;
-      }
-      let offerMessage = null;
-      try {
-        offerMessage = buildDeviceLinkOfferMessage(prepared.sessionId, prepared.nonce, ownId, label, origin);
-      } catch (_) {
-        offerMessage = null;
-      }
-      if (!offerMessage || prepared.offerMessage !== offerMessage) {
-        setError(copy.linkDevice.prepareFailed);
-        setDeviceLinkBusy(false);
-        return;
-      }
-      const offerSigned = buildFabricIdentitySignedPayload(resolved, offerMessage, DEVICE_LINK_OFFER_TAG);
-      const created = await commitDeviceLinkOffer({
-        hubBase: origin,
-        origin,
-        sessionId: prepared.sessionId,
-        label,
-        identity: offerSigned.identity,
-        pubkeyHex: offerSigned.pubkeyHex,
-        signature: offerSigned.signature
-      });
-      if (!created.ok) {
-        setError(created.error || copy.linkDevice.createFailed);
-        setDeviceLinkBusy(false);
-        return;
-      }
-      setDeviceLinkOffer({
-        sessionId: created.sessionId,
-        protocolUrl: created.protocolUrl,
-        pollSecret: created.pollSecret,
-        label
-      });
-      const sessionId = prepared.sessionId;
-      const nonce = prepared.nonce;
-      let asked = false;
-      let countersigned = null;
-      const stop = (message) => {
-        clearDeviceLinkPoll();
-        setDeviceLinkBusy(false);
-        if (message) setError(message);
-      };
-      const finish = (responder, linkLabel) => {
-        clearDeviceLinkPoll();
-        mergeLinkedDevice({
-          kind: 'device-link',
-          peerFabricId: responder.id,
-          peerXpub: responder.xpub,
-          peerPubkey: responder.pubkeyHex,
-          sessionId,
-          nonce,
-          label: linkLabel || copy.linkDevice.linkedFallback,
-          hubOrigin: origin,
-          linkedAt: new Date().toISOString(),
-          role: 'initiator'
-        });
-        setLinkedDevicesRev((n) => n + 1);
-        void publishHubIdentityCrossSign(signing, responder.pubkeyHex, { sessionId, nonce, origin });
-        setDeviceLinkOffer(null);
-        setDeviceLinkBusy(false);
-      };
-      let attempts = 0;
-      deviceLinkPollRef.current = setInterval(() => {
-        attempts += 1;
-        if (attempts > 240) {
-          stop(copy.linkDevice.timedOut);
-          return;
-        }
-        void (async () => {
-          try {
-            const st = await fetchDeviceLinkSession(origin, sessionId, {
-              origin,
-              pollSecret: created.pollSecret
-            });
-            if (!st.ok) return;
-            if (st.status === 'accepted' && !countersigned) {
-              if (asked) return;
-              asked = true;
-              const checked = verifyDeviceLinkResponder(st);
-              const sameSession = st.sessionId === sessionId && st.nonce === nonce && st.label === label &&
-                st.origin === origin && st.initiator && st.initiator.id === ownId;
-              if (!checked.ok || !sameSession) {
-                stop(copy.linkDevice.countersignFailed);
-                return;
-              }
-              const responder = checked.responder;
-              const approved = typeof window.confirm === 'function' &&
-                window.confirm(copy.linkDevice.confirmResponder(responder.id, responder.pubkeyHex));
-              if (!approved) {
-                void cancelDeviceLinkSession(origin, sessionId, { origin, pollSecret: created.pollSecret });
-                setDeviceLinkOffer(null);
-                stop(copy.linkDevice.declined);
-                return;
-              }
-              const signed = buildFabricIdentitySignedPayload(resolved, checked.linkMessage, DEVICE_LINK_TAG);
-              const done = await postDeviceLinkSignature(origin, sessionId, {
-                role: 'initiator',
-                signature: signed.signature,
-                pubkeyHex: signed.pubkeyHex,
-                identity: signed.identity
-              }, { origin });
-              if (!done.ok) {
-                stop(done.error || copy.linkDevice.countersignFailed);
-                return;
-              }
-              countersigned = responder;
-              if (done.status === 'linked') finish(responder, done.label || st.label);
-              return;
-            }
-            if (st.status === 'linked' && st.responder) {
-              if (!countersigned || String(st.responder.pubkeyHex || '').toLowerCase() !== countersigned.pubkeyHex) {
-                stop(copy.linkDevice.countersignFailed);
-                return;
-              }
-              finish(countersigned, st.label);
-            }
-          } catch (err) {
-            /* keep polling */
-          }
-        })();
-      }, 1500);
-    } catch (e) {
-      setError((e && e.message) ? e.message : String(e));
-      setDeviceLinkBusy(false);
-    }
-  }, [localIdentity, keyState, clearDeviceLinkPoll]);
-
-  const handleRevokeLinkedDevice = React.useCallback(async (device) => {
-    if (!device) return;
-    setError(null);
-    const r = await revokeLinkedDevice(device, identitySigner(localIdentity));
-    if (!r.ok) {
-      setError(r.error || copy.devices.revokeFailed);
-      return;
-    }
-    setLinkedDevicesRev((n) => n + 1);
-  }, [localIdentity]);
-
   const handleForget = () => {
     try {
       if (typeof props.onForgetIdentity === 'function') props.onForgetIdentity();
       if (typeof window !== 'undefined') {
         void endPassportSession();
-        try { removeStorageKey(STORAGE_LINKED_DEVICES); } catch (eLink) {}
         clearFabricBrowserIdentityLocal();
         removeStorageKey('fabric:documents');
       }
@@ -867,110 +642,12 @@ function IdentityManager (props) {
           ) : null}
         </Message>
       ) : null}
-      {suppressForget ? null : linkedDevices.length > 0 ? (
-        <Segment style={{ marginTop: '1em' }}>
-          <Header as="h4" size="small">
-            <Icon name="linkify" aria-hidden="true" />
-            {copy.devices.title}
-          </Header>
-          <p style={{ color: '#666', fontSize: '0.95em' }}>
-            {copy.devices.intro}{' '}
-            {copy.devices.revokeWhere}{' '}
-            <Link to="/settings/security">{copy.securityLink}</Link>.
-          </p>
-          <details className="hub-developer-details">
-            <summary>{t.common.developerDetails}</summary>
-            <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.devices.developer}</p>
-          </details>
-          <ul style={{ margin: '0.5em 0 0 1em' }}>
-            {linkedDevices.map((d, i) => (
-              <li key={i} style={{ marginBottom: '0.45em' }}>
-                <strong>{d.label || d.kind || copy.devices.fallbackName}</strong>
-                {d.peerFabricId ? (
-                  <span> — <code style={{ fontSize: '0.85em' }}>{String(d.peerFabricId).slice(0, 18)}…</code></span>
-                ) : null}
-                {d.hubOrigin ? ` — ${d.hubOrigin}` : ''}
-                {d.linkedAt ? ` (${new Date(d.linkedAt).toLocaleString()})` : ''}
-                {' '}
-                <Button size="mini" negative basic disabled={busy} onClick={() => void handleRevokeLinkedDevice(d)}>
-                  {copy.devices.revoke}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </Segment>
-      ) : (
-        <p style={{ color: '#888', fontSize: '0.92em', marginTop: '0.75em', marginBottom: 0 }}>
-          {keyState === 'unlocked'
-            ? copy.devices.emptyCanLink
-            : (keyState === 'locked' ? copy.devices.emptyLocked : copy.devices.emptySession)}
+      {suppressForget ? null : (
+        <p style={{ color: '#666', fontSize: '0.92em', marginTop: '0.75em' }} data-testid="identity-linked-signers">
+          {copy.linkedSigners}{' '}
+          <Link to="/settings/security">{copy.securityLink}</Link>
         </p>
       )}
-      {!suppressForget && keyState === 'unlocked' ? (
-        <Segment style={{ marginTop: '1em' }}>
-          <Header as="h4" size="small">
-            <Icon name="qrcode" aria-hidden="true" />
-            {copy.linkDevice.title}
-          </Header>
-          <p style={{ color: '#666', fontSize: '0.95em' }}>{copy.linkDevice.intro}</p>
-          <details className="hub-developer-details" style={{ marginBottom: '0.5em' }}>
-            <summary>{t.common.developerDetails}</summary>
-            <p style={{ color: '#666', fontSize: '0.9em', margin: '0.35em 0 0' }}>{copy.linkDevice.developer}</p>
-          </details>
-          <Button size="small" primary loading={deviceLinkBusy} disabled={deviceLinkBusy} onClick={() => void handleCreateDeviceLink()}>
-            <Icon name="linkify" aria-hidden="true" />
-            {copy.linkDevice.create}
-          </Button>
-          {deviceLinkOffer && deviceLinkOffer.protocolUrl ? (
-            <div style={{ marginTop: '0.75em' }}>
-              <p style={{ marginBottom: '0.35em', fontSize: '0.9em' }}>{copy.linkDevice.scanHint}</p>
-              {deviceLinkQr ? (
-                <img
-                  src={deviceLinkQr}
-                  alt={copy.linkDevice.qrAlt}
-                  width={196}
-                  height={196}
-                  style={{ background: '#fff', borderRadius: 4, marginBottom: 8 }}
-                />
-              ) : null}
-              <code style={identityMonospaceBlockStyle}>{deviceLinkOffer.protocolUrl}</code>
-              <Button
-                size="mini"
-                onClick={() => {
-                  try {
-                    void navigator.clipboard.writeText(deviceLinkOffer.protocolUrl);
-                  } catch (_) {}
-                  const a = document.createElement('a');
-                  a.href = deviceLinkOffer.protocolUrl;
-                  a.rel = 'noopener noreferrer';
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                }}
-              >
-                {copy.linkDevice.copyOpen}
-              </Button>
-              <Button
-                size="mini"
-                style={{ marginLeft: '0.35em' }}
-                onClick={() => {
-                  try {
-                    window.postMessage({
-                      source: 'fabric-site',
-                      type: 'FABRIC_DEVICE_LINK_REQUEST',
-                      sessionId: deviceLinkOffer.sessionId,
-                      hub: window.location.origin,
-                      origin: window.location.origin
-                    }, window.location.origin);
-                  } catch (_) {}
-                }}
-              >
-                {copy.linkDevice.approvePassport}
-              </Button>
-            </div>
-          ) : null}
-        </Segment>
-      ) : null}
       <p style={{ color: '#666' }}>
         <strong>{copy.keyStatus.label}</strong>{' '}
         {keyState === 'unlocked'

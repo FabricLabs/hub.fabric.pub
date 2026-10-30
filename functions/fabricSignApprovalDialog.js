@@ -1,9 +1,11 @@
 'use strict';
 
 /**
- * Native approval dialog for Passport requests to the Hub local signer
- * (`functions/fabricLocalSignerHub.js` → parentPort → `scripts/desktop.js`).
- * Pure: builds `dialog.showMessageBox` options; button 0 approves.
+ * Native approval dialog for delegation on the desktop Hub
+ * (`functions/fabricDelegateHub.js` → parentPort → `scripts/desktop.js`):
+ * pairing with a linked signer, and requests from linked signers that no
+ * signer rule answered. Pure: builds `dialog.showMessageBox` options; button
+ * 0 approves.
  */
 
 const APPROVAL_REQUEST = 'fabric-sign-request';
@@ -25,25 +27,44 @@ const SHARE_TEXT = {
 };
 
 /**
- * @param {object} msg `{ kind, origin, purpose, label, device, network, account, shares, code, expiresAt }` from the Hub process
+ * @param {object} msg `{ kind, origin, purpose, title, summary, label, from, network, account, shares, code, expiresAt }` from the Hub process
  * @returns {object} options for `dialog.showMessageBox`
  */
 function fabricSignApprovalDialog (msg = {}) {
-  const device = shortKey(msg.device);
+  const from = shortKey(msg.from);
+  const label = plainText(msg.label, 64);
+  const who = label ? `“${label}” (${from})` : from;
   if (msg.kind === 'link') {
-    const label = plainText(msg.label || msg.purpose, 64) || 'a device';
     const code = /^[0-9]{6}$/.test(String(msg.code || '')) ? String(msg.code) : null;
     return {
       type: 'question',
-      title: 'Link a device',
-      message: `Link “${label}” to this Hub?`,
+      title: 'Pair with a signer',
+      message: `Pair ${label ? `“${label}”` : 'a signer'} with this Hub?`,
       detail: [
-        code ? `Pairing code: ${code}\n\nCheck that the device shows the same code. If it doesn’t, cancel.` : null,
-        `Device key ${device}.`,
-        'Once linked, this device can ask the Hub to sign you in to websites. ' +
-          'You approve each sign-in here. Only link a device you control.'
+        code ? `Pairing code: ${code}\n\nCheck that the other screen shows the same code. If it doesn’t, cancel.` : null,
+        `Signer key ${from}.`,
+        'Once paired, it can ask this Hub to sign for it: sign-ins, shared-wallet signatures, messages. ' +
+          'Each request waits for you here unless one of your signer rules answers it. Only pair with a signer you control.'
       ].filter(Boolean).join('\n\n'),
-      buttons: ['Link device', 'Cancel'],
+      buttons: ['Pair', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true
+    };
+  }
+  if (msg.kind === 'request') {
+    const title = plainText(msg.title, 120) || 'Sign a message';
+    const summary = plainText(msg.summary, 300);
+    return {
+      type: 'question',
+      title: 'Signature request',
+      message: `${title}?`,
+      detail: [
+        `Requested by your linked signer ${who}.`,
+        summary || null,
+        'Only approve if you started this.'
+      ].filter(Boolean).join('\n\n'),
+      buttons: ['Sign', 'Decline'],
       defaultId: 1,
       cancelId: 1,
       noLink: true
@@ -56,7 +77,7 @@ function fabricSignApprovalDialog (msg = {}) {
   const network = plainText(msg.network, 16);
   const account = Number.isInteger(msg.account) ? msg.account : null;
   const lines = [
-    `Requested by your linked device ${device}.`,
+    `Requested by your linked signer ${who}.`,
     purpose ? `The site says: “${purpose}”` : null,
     (network || account != null)
       ? `Account ${account != null ? account : 0}${network ? ` on ${network}` : ''}.`
@@ -68,7 +89,7 @@ function fabricSignApprovalDialog (msg = {}) {
     title: 'Sign in',
     message: `Sign in to ${origin} as this Hub?`,
     detail: lines.join('\n\n'),
-    buttons: ['Sign in', 'Cancel'],
+    buttons: ['Sign in', 'Decline'],
     defaultId: 1,
     cancelId: 1,
     noLink: true

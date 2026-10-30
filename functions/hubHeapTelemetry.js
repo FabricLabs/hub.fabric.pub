@@ -63,11 +63,121 @@ function resolveHeapTelemetryIntervalMs (settings, env) {
 }
 
 /**
+ * @param {*} value object (keys) or array (length)
+ * @returns {number}
+ */
+function entryCount (value) {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value.size === 'number') return value.size;
+  return mapSize(value);
+}
+
+/**
+ * Total listeners across every event name of an EventEmitter.
+ * @param {*} emitter
+ * @returns {number|null}
+ */
+function listenerTotal (emitter) {
+  if (!emitter || typeof emitter.eventNames !== 'function' || typeof emitter.listenerCount !== 'function') return null;
+  let total = 0;
+  for (const name of emitter.eventNames()) total += emitter.listenerCount(name);
+  return total;
+}
+
+/**
+ * Active libuv handles and requests by type (timers, sockets, …).
+ * @returns {Object<string, number>|null}
+ */
+function activeResources () {
+  if (typeof process.getActiveResourcesInfo !== 'function') return null;
+  const counts = {};
+  for (const type of process.getActiveResourcesInfo()) counts[type] = (counts[type] || 0) + 1;
+  return counts;
+}
+
+/**
+ * Work started but not finished: block notifications, slow RPCs, scans.
+ * @param {object} hub
+ * @returns {object}
+ */
+function collectPendingWork (hub) {
+  const stats = (x) => (x && typeof x.stats === 'function' ? x.stats() : null);
+  return {
+    bitcoinBlocks: stats(hub && hub._bitcoinBlockQueue),
+    bitcoinTxOutSet: stats(hub && hub._bitcoinTxOutSet),
+    bitcoinSlowRPC: Number((hub && hub._bitcoinSlowRPCInflight) || 0),
+    bitcoinScans: entryCount(hub && hub._bitcoinScanInflight)
+  };
+}
+
+/**
+ * In-memory caches inside core's Bitcoin service, which grow per block.
+ * @param {object} hub
+ * @returns {object|null}
+ */
+function collectBitcoinServiceRetainers (hub) {
+  const bitcoin = hub && hub.bitcoin;
+  if (!bitcoin) return null;
+  const state = bitcoin._state || {};
+  const content = state.content || {};
+  return {
+    rawBlocks: entryCount(state.blocks),
+    blocks: entryCount(content.blocks),
+    transactions: entryCount(content.transactions),
+    headers: entryCount(bitcoin.headers),
+    listeners: listenerTotal(bitcoin)
+  };
+}
+
+/**
+ * Change in every numeric field present in both objects.
+ * @private
+ * @param {object} [current]
+ * @param {object} [previous]
+ * @returns {object}
+ */
+function numericDeltas (current, previous) {
+  const out = {};
+  for (const [key, value] of Object.entries(current || {})) {
+    const before = previous ? previous[key] : undefined;
+    if (Number.isFinite(value) && Number.isFinite(before)) out[key] = value - before;
+  }
+  return out;
+}
+
+/**
+ * Memory and retainer change since the previous snapshot (heap and RSS also per hour).
+ * @param {object} current
+ * @param {object} [previous]
+ * @returns {object|null}
+ */
+function growthSince (current, previous) {
+  if (!previous || !previous.memory || !previous.at) return null;
+  const hours = (Date.parse(current.at) - Date.parse(previous.at)) / 3600000;
+  if (!(hours > 0)) return null;
+  const heapUsed = current.memory.heapUsed - previous.memory.heapUsed;
+  const rss = current.memory.rss - previous.memory.rss;
+  const external = current.memory.external - previous.memory.external;
+  const arrayBuffers = Number(current.memory.arrayBuffers || 0) - Number(previous.memory.arrayBuffers || 0);
+  return {
+    sinceSec: Math.round(hours * 3600),
+    heapUsed,
+    rss,
+    external,
+    arrayBuffers,
+    heapUsedPerHour: Math.round(heapUsed / hours),
+    rssPerHour: Math.round(rss / hours),
+    retainers: numericDeltas(current.retainers, previous.retainers)
+  };
+}
+
+/**
  * Cheap retainer-oriented counts from a live Hub (or stub). No disk I/O.
  * Does not JSON.stringify STATE — callers should pass last commit byte length.
  * @param {object} hub
  * @param {object} [opts]
  * @param {number} [opts.stateContentBytes] Last commit `STATE` UTF-8 length
+ * @param {object} [opts.previous] Previous snapshot, for `growth`
  * @returns {object}
  */
 function collectHubHeapTelemetry (hub, opts = {}) {
@@ -122,7 +232,7 @@ function collectHubHeapTelemetry (hub, opts = {}) {
     ? Number(opts.stateContentBytes)
     : (hub && hub._lastStateWriteBytes != null ? Number(hub._lastStateWriteBytes) : null);
 
-  return {
+  const snapshot = {
     at: new Date().toISOString(),
     pid: process.pid,
     uptimeSec: Math.floor(process.uptime()),
@@ -164,6 +274,14 @@ function collectHubHeapTelemetry (hub, opts = {}) {
       sidechainClock,
       stateContentBytes: Number.isFinite(stateContentBytes) ? stateContentBytes : null
     },
+    bitcoinService: collectBitcoinServiceRetainers(hub),
+    pending: collectPendingWork(hub),
+    listeners: {
+      hub: listenerTotal(hub),
+      agent: listenerTotal(agent),
+      http: listenerTotal(http)
+    },
+    resources: activeResources(),
     caps: {
       activityMessages: hubHeapBounds.MAX_ACTIVITY_MESSAGES,
       fabricMessages: hubHeapBounds.MAX_FABRIC_MESSAGE_LOG,
@@ -176,6 +294,8 @@ function collectHubHeapTelemetry (hub, opts = {}) {
       note: 'Log-only snapshot; messages/ STATE documents remain for full replay'
     }
   };
+  snapshot.growth = growthSince(snapshot, opts.previous);
+  return snapshot;
 }
 
 /**
@@ -216,5 +336,8 @@ module.exports = {
   collectHubHeapTelemetry,
   formatHubHeapTelemetryLine,
   logHubHeapTelemetry,
-  mapSize
+  mapSize,
+  growthSince,
+  collectPendingWork,
+  collectBitcoinServiceRetainers
 };

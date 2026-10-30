@@ -54,10 +54,10 @@ Electron ≥42 has no install script: the binary downloads the first time `elect
 | Wallet cache / crowdfund account / docs upload race / edit `response.ok` | Fixed |
 | Extension identity sync writing `xprv` | Fixed — `chrome.storage.local` payload is watch-only |
 | Payment test route default | Fixed — opt-in (`FABRIC_HTTP_PAYMENTS_EXPOSE_TEST_ROUTE`) |
-| Device-link linked GET starving the peer | Fixed upstream in `@fabric/http` (keep until TTL; Hub re-exports) |
-| Site-login / device-link Origin redeem | Open — inherited from `@fabric/http` (possession proof). Http device-link also allows thin-client Origins on allowlisted hubs; still not a possession proof. |
-| Device-link client-supplied nonce | Open — inherited from `@fabric/http` (prefer always-fresh nonce) |
-| Device-link FIFO eviction under create flood | Fixed — http `MAX_SESSIONS_PER_ORIGIN`; Hub re-exports |
+| Device-link linked GET starving the peer | Retired — device-link removed; pairing is core delegation (`DELEGATION_LINK_*`, code shown on both screens, native confirm) |
+| Site-login / device-link Origin redeem | Retired — device-link removed; pairing is core delegation (`DELEGATION_LINK_*`, code shown on both screens, native confirm) |
+| Device-link client-supplied nonce | Retired — device-link removed; pairing is core delegation (`DELEGATION_LINK_*`, code shown on both screens, native confirm) |
+| Device-link FIFO eviction under create flood | Retired — device-link removed; pairing is core delegation (`DELEGATION_LINK_*`, code shown on both screens, native confirm) |
 | Identity import / stronger at-rest crypto | Deferred — heavy lift |
 | Large WIP split into stacked PRs | Open — process ([#15](https://github.com/FabricLabs/hub.fabric.pub/pull/15) merged; remaining RSI is follow-up PRs) |
 | Fabric hallmarks (opt-in OP_RETURN) | In tree — Hub publish/scan + docs; regtest-only |

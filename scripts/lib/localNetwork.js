@@ -57,7 +57,7 @@ const NETWORKS = Object.freeze({
     base: 30000,
     seed: true,
     beaconIntervalMs: 10000,
-    extraParams: ['-dnsseed=0', '-fallbackfee=0.0002', '-maxtxfee=10', '-incrementalrelayfee=0']
+    extraParams: ['-dnsseed=0', '-fallbackfee=0.00001', '-incrementalrelayfee=0']
   },
   signet: {
     base: 31000,
@@ -65,7 +65,7 @@ const NETWORKS = Object.freeze({
     beaconIntervalMs: 0,
     // Public chains sync from the internet; pruned (MiB) so each instance stays small.
     prune: 550,
-    extraParams: ['-fallbackfee=0.0002']
+    extraParams: ['-fallbackfee=0.00001']
   },
   mainnet: {
     base: 32000,
@@ -196,8 +196,16 @@ function buildFragment (opts) {
   const isSeed = instance.name === 'seed';
   const extra = profile.extraParams.slice();
   if (isSeed) extra.push('-bind=127.0.0.1');
-  if (seedPort && !isSeed) extra.push(`-addnode=127.0.0.1:${seedPort}`);
-  for (const peer of bitcoinPeers || []) extra.push(`-addnode=${peer}`);
+  // -connect, not -addnode: bitcoind also redials whoever it remembers in
+  // peers.dat, which put a private chain onto the public playnet node.
+  const connects = [];
+  if (seedPort && !isSeed) connects.push(`127.0.0.1:${seedPort}`);
+  for (const peer of bitcoinPeers || []) connects.push(peer);
+  if (connects.length) {
+    for (const peer of connects) extra.push(`-connect=${peer}`);
+  } else if (profile.seed) {
+    extra.push('-connect=0');
+  }
   return {
     title: instance.label,
     alias: instance.name,
