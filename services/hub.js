@@ -2842,8 +2842,9 @@ class Hub extends Service {
    * `_bitcoinSlowRPC`, core's own sync (`gettxoutsetinfo`) included. A bare
    * `gettxoutsetinfo` (core asks on every block, for height and supply) skips
    * the UTXO set hash and shares one call per `BITCOIN_TXOUTSET_CACHE_MS`.
-   * Core's supply sync runs in the background: on a cold node the walk takes
-   * longer than the Hub waits for Bitcoin to become ready.
+   * Core's supply sync runs in the background (on a cold node the walk takes
+   * longer than the Hub waits for Bitcoin to become ready) and skips that
+   * cache, which may hold an earlier tip's supply.
    * @private
    */
   _routeSlowBitcoinRPC (bitcoin) {
@@ -2858,7 +2859,7 @@ class Hub extends Service {
     };
     if (typeof bitcoin._syncSupply === 'function') {
       bitcoin._syncSupply = async () => {
-        bitcoin._makeRPCRequestOnce('gettxoutsetinfo', []).then((supply) => {
+        this._bitcoinSlowRPC(bitcoin, 'gettxoutsetinfo', ['none'], once).then((supply) => {
           if (!supply || supply.total_amount == null) return;
           if (bitcoin._state && bitcoin._state.content) bitcoin._state.content.supply = supply.total_amount;
           if (typeof bitcoin.commit === 'function') bitcoin.commit();

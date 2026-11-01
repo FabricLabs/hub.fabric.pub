@@ -29,7 +29,9 @@ function DelegationRequestWatcher (props) {
         if (stopped) return;
         const pending = new Set(list.map((r) => `delegation:${r.hash}`));
         for (const n of readUiNotifications()) {
-          if (n && n.kind === 'delegation' && !pending.has(n.id)) removeUiNotification(n.id);
+          if (!n || n.kind !== 'delegation' || pending.has(n.id)) continue;
+          removeUiNotification(n.id);
+          seen.current.delete(String(n.id).replace(/^delegation:/, ''));
         }
         for (const r of list) {
           if (seen.current.has(r.hash)) continue;

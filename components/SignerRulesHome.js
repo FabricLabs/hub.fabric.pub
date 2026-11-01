@@ -146,6 +146,7 @@ function SignerRulesHome (props) {
                       <List.Content floated="right">
                         <Checkbox
                           toggle
+                          disabled={busy}
                           checked={rule.enabled !== false}
                           label={rule.enabled !== false ? c.enabled : c.disabled}
                           onChange={(e, d) => {
@@ -156,6 +157,7 @@ function SignerRulesHome (props) {
                         <Button
                           basic
                           size="mini"
+                          disabled={busy}
                           style={{ marginLeft: '0.75em' }}
                           onClick={() => {
                             setRules((list) => list.filter((_, j) => j !== i));
@@ -192,7 +194,7 @@ function SignerRulesHome (props) {
               <Form.TextArea rows={2} label={c.fields.origins} value={origins} onChange={(e, d) => setOrigins(d.value)} />
               <Button
                 size="small"
-                disabled={!lines(origins).length}
+                disabled={busy || !lines(origins).length}
                 onClick={() => {
                   add({ action: 'sign', scope: 'passport', label: c.presets.signIn, from: 'identity-linked', origins: lines(origins) });
                   setOrigins('');
@@ -210,7 +212,7 @@ function SignerRulesHome (props) {
               <Form.TextArea rows={2} label={c.fields.destinations} value={destinations} onChange={(e, d) => setDestinations(d.value)} />
               <Button
                 size="small"
-                disabled={!(Number(maxAmount) > 0) || !lines(destinations).length}
+                disabled={busy || !(Number(maxAmount) > 0) || !lines(destinations).length}
                 onClick={() => {
                   const rule = {
                     action: 'sign',
@@ -234,6 +236,7 @@ function SignerRulesHome (props) {
               <p style={{ color: '#666' }}>{c.presets.acceptHint}</p>
               <Button
                 size="small"
+                disabled={busy}
                 onClick={() => add({ action: 'sign', scope: 'federation', label: c.presets.accept, from: 'identity-linked' })}
               >
                 {c.add}

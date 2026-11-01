@@ -263,6 +263,20 @@ describe('Hub delegation (HubDelegation)', function () {
     assert.strictEqual(service.rules.list().valid[0].usage.hourCount, 1);
   });
 
+  it('gives back the use of a rule sign that expired unsettled before deciding the next', async function () {
+    const { service, federations, origin } = await setup();
+    const passport = new Delegation({ key: PASSPORT.identity.key });
+    await pair(origin, passport);
+    service.rules.set([{ id: 'spend', action: 'sign', scope: 'federation', from: 'identity-linked', maxAmountSats: 10000, maxPerHour: 1, destinations: [ADDRESS] }]);
+    const decision = { action: 'sign', rule: 'spend' };
+    service._held.set('ee'.repeat(32), { decision, facts: {}, extra: {}, expiresAt: Date.now() - 1, reservation: service.rules.reserve(decision, { amountSats: 4000 }) });
+    const req = await passport.request({ target: HUB.identity.pubkey, request: withdrawalFrame() });
+    const out = await send(origin, 'POST', '/services/delegation/requests', { frame: req.uri });
+    assert.strictEqual(out.body.status, 'signed', out.body.error);
+    assert.strictEqual(federations.answered.length, 1);
+    assert.strictEqual(service.rules.list().valid[0].usage.hourCount, 1);
+  });
+
   it('gives a rule\'s use back and logs a decline when the Hub could not send its answer', async function () {
     const { service, federations, origin } = await setup();
     const passport = new Delegation({ key: PASSPORT.identity.key });

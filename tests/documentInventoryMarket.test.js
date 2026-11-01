@@ -134,6 +134,9 @@ describe('documentInventoryMarket', function () {
     assert.strictEqual(row.purchasePriceSats, 900);
     assert.strictEqual(row.htlc, undefined, 'no current quote');
     assert.deepStrictEqual(row.earlierQuotes.map((q) => q.settlementId), [quote.settlementId], 'the old quote stays findable');
+    market.replacePeerOffers(map, peer, [{ ...doc, purchasePriceSats: 900 }], { inventoryId: 'cccc' });
+    const [again] = market.listOffers(map);
+    assert.deepStrictEqual(again.earlierQuotes.map((q) => q.settlementId), [quote.settlementId], 'and through a later resync');
   });
 
   it('keys a seller by its authenticated peer id across reconnects', function () {

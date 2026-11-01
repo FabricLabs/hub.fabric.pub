@@ -189,10 +189,11 @@ class HubDelegation extends EventEmitter {
    */
   async _decide (item) {
     const facts = factsForRequest(item.read, { networkOf: (id) => this._networkOf(id) });
-    const decision = this.rules.decide(facts, await this._context());
+    const context = await this._context();
+    this._sweepHeld();
+    const decision = this.rules.decide(facts, context);
     const extra = { request: item.hash, title: item.notification && item.notification.title };
     if (decision.action === 'sign') {
-      this._sweepHeld();
       this._held.set(String(item.hash).toLowerCase(), {
         decision,
         facts,

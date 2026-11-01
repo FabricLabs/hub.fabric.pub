@@ -1,8 +1,7 @@
 $ npm i --allow-git=all
-npm warn skipping integrity check for git dependency ssh://git@github.com/FabricLabs/fabric.git
 npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
-added 1070 packages, and audited 1071 packages in 48s
+added 1070 packages, and audited 1071 packages in 1m
 
 208 packages are looking for funding
   run `npm fund` for details

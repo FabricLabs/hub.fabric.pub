@@ -269,7 +269,7 @@ function replacePeerOffers (map, peer, items, opts = {}) {
     });
     if (rowKey !== key) continue;
     if (inventoryId && row.inventoryId === inventoryId) continue;
-    if (row.htlc && row.documentId) {
+    if ((row.htlc || (row.earlierQuotes && row.earlierQuotes.length)) && row.documentId) {
       quotes[row.documentId] = row;
       // A later page of this snapshot may list the document; hold the quote for it,
       // through at most one snapshot that doesn't.
@@ -284,16 +284,18 @@ function replacePeerOffers (map, peer, items, opts = {}) {
   for (const item of (Array.isArray(items) ? items : [])) {
     const rec = normalizeInventoryItem(item, peer);
     if (!rec) continue;
-    const prior = quotes[rec.documentId] || (out[rec.id] && out[rec.id].htlc ? out[rec.id] : null);
-    if (prior && !rec.htlc && Number(prior.htlc.amountSats) === rec.purchasePriceSats) {
+    const current = out[rec.id];
+    const prior = quotes[rec.documentId] || (current && (current.htlc || current.earlierQuotes) ? current : null);
+    const earlier = prior && Array.isArray(prior.earlierQuotes) ? prior.earlierQuotes : [];
+    if (prior && prior.htlc && !rec.htlc && Number(prior.htlc.amountSats) === rec.purchasePriceSats) {
       rec.htlc = prior.htlc;
-      if (prior.earlierQuotes) rec.earlierQuotes = prior.earlierQuotes;
-    } else if (prior && !rec.htlc) {
-      // The price changed: the old quote is no longer the offer, but stays findable by its settlement id.
-      rec.earlierQuotes = [prior.htlc].concat(prior.earlierQuotes || []).slice(0, EARLIER_QUOTES_MAX);
-    } else if (prior && prior.htlc.settlementId !== rec.htlc.settlementId) {
-      // Asking again gives a new quote; the buyer may still pay one it was given before.
-      rec.earlierQuotes = [prior.htlc].concat(prior.earlierQuotes || []).slice(0, EARLIER_QUOTES_MAX);
+      if (earlier.length) rec.earlierQuotes = earlier;
+    } else if (prior && prior.htlc && (!rec.htlc || prior.htlc.settlementId !== rec.htlc.settlementId)) {
+      // A new price or a new quote: the old quote is no longer the offer, but the buyer
+      // may still pay it, so it stays findable by its settlement id.
+      rec.earlierQuotes = [prior.htlc].concat(earlier).slice(0, EARLIER_QUOTES_MAX);
+    } else if (earlier.length) {
+      rec.earlierQuotes = earlier;
     }
     if (inventoryId) rec.inventoryId = inventoryId;
     out[rec.id] = rec;

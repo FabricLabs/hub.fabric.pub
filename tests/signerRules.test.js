@@ -140,6 +140,36 @@ describe('SignerRules service', function () {
     assert.strictEqual(rules.reserve({ action: 'notify' }, facts), null);
   });
 
+  it('takes nothing when a reservation cannot be saved', function () {
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    const rules = new SignerRules({ dir, now: () => now }).load();
+    rules.set([spend({ maxPerHour: 1 })]);
+    const facts = withdrawal();
+    const decision = rules.decide(facts, ctx());
+    const save = rules._save;
+    rules._save = () => { throw new Error('disk full'); };
+    assert.throws(() => rules.reserve(decision, facts), /disk full/);
+    rules._save = save;
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 0, hourCount: 0 });
+    assert.strictEqual(rules.decide(withdrawal(), ctx()).action, 'sign');
+  });
+
+  it('gives back reservations left open by a restart', function () {
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    const rules = new SignerRules({ dir, now: () => now }).load();
+    rules.set([spend({ maxPerHour: 2 })]);
+    const facts = withdrawal();
+    const decision = rules.decide(facts, ctx());
+    rules.record(decision, facts, {}, rules.reserve(decision, facts));
+    rules.reserve(decision, facts);
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 10000, hourCount: 2 });
+
+    const restarted = new SignerRules({ dir, now: () => now }).load();
+    assert.deepStrictEqual(restarted.list().valid[0].usage, { daySats: 5000, hourCount: 1 }, 'only the recorded sign still counts');
+    const again = new SignerRules({ dir, now: () => now }).load();
+    assert.deepStrictEqual(again.list().valid[0].usage, { daySats: 5000, hourCount: 1 });
+  });
+
   it('keeps a rule\'s counters while it is broken and fixed again', function () {
     const now = Date.parse('2026-10-30T12:00:00Z');
     const rules = new SignerRules({ dir, now: () => now }).load();

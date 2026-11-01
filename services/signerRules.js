@@ -30,7 +30,7 @@ class SignerRules extends EventEmitter {
     super();
     this.settings = Object.assign({ dir: null }, settings);
     this._now = typeof settings.now === 'function' ? settings.now : () => Date.now();
-    this._state = { rules: [], usage: {}, decisions: [] };
+    this._state = { rules: [], usage: {}, decisions: [], reserved: [] };
     this._valid = [];
     this._invalid = [];
   }
@@ -55,11 +55,28 @@ class SignerRules extends EventEmitter {
       this._state = {
         rules: Array.isArray(raw.rules) ? raw.rules : [],
         usage: raw.usage && typeof raw.usage === 'object' ? raw.usage : {},
-        decisions: Array.isArray(raw.decisions) ? raw.decisions.slice(-MAX_DECISIONS) : []
+        decisions: Array.isArray(raw.decisions) ? raw.decisions.slice(-MAX_DECISIONS) : [],
+        reserved: []
       };
+      // Reservations live as long as the requests the Hub held in memory; after a restart none can settle.
+      const left = Array.isArray(raw.reserved) ? raw.reserved.filter((r) => r && r.rule && this._state.usage[r.rule]) : [];
+      for (const r of left) this._state.usage[r.rule] = uncountUse(this._state.usage[r.rule], r);
+      if (Array.isArray(raw.reserved) && raw.reserved.length) {
+        try {
+          this._save();
+        } catch (err) {
+          this.emit('warning', `[SIGNER-RULES] could not save the released reservations: ${err.message}`);
+        }
+      }
     }
     this._check();
     return this;
+  }
+
+  /** @private */
+  _unreserve (reservation) {
+    const index = this._state.reserved.findIndex((r) => r.rule === reservation.rule && r.at === reservation.at && r.amountSats === reservation.amountSats);
+    if (index !== -1) this._state.reserved.splice(index, 1);
   }
 
   /** @private */
@@ -135,9 +152,19 @@ class SignerRules extends EventEmitter {
   reserve (decision, facts) {
     if (!decision || decision.action !== 'sign' || !decision.rule) return null;
     const at = this._now();
-    this._state.usage[decision.rule] = countUse(this._state.usage[decision.rule], facts, at);
-    this._save();
-    return { rule: decision.rule, at, amountSats: facts.amountSats || 0 };
+    const before = this._state.usage[decision.rule];
+    const reservation = { rule: decision.rule, at, amountSats: facts.amountSats || 0 };
+    this._state.usage[decision.rule] = countUse(before, facts, at);
+    this._state.reserved.push(reservation);
+    try {
+      this._save();
+    } catch (err) {
+      if (before === undefined) delete this._state.usage[decision.rule];
+      else this._state.usage[decision.rule] = before;
+      this._unreserve(reservation);
+      throw err;
+    }
+    return Object.assign({}, reservation);
   }
 
   /**
@@ -145,8 +172,11 @@ class SignerRules extends EventEmitter {
    * @param {Object|null} reservation From {@link SignerRules#reserve}.
    */
   release (reservation) {
-    if (!reservation || !this._state.usage[reservation.rule]) return;
-    this._state.usage[reservation.rule] = uncountUse(this._state.usage[reservation.rule], reservation);
+    if (!reservation) return;
+    this._unreserve(reservation);
+    if (this._state.usage[reservation.rule]) {
+      this._state.usage[reservation.rule] = uncountUse(this._state.usage[reservation.rule], reservation);
+    }
     this._save();
   }
 
@@ -164,6 +194,7 @@ class SignerRules extends EventEmitter {
     if (decision.action === 'sign' && decision.rule && !reservation) {
       this._state.usage[decision.rule] = countUse(this._state.usage[decision.rule], facts, now);
     }
+    if (reservation) this._unreserve(reservation);
     const entry = {
       at: now,
       action: decision.action,
