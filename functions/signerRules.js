@@ -180,7 +180,7 @@ function requestFacts (input = {}) {
 }
 
 /**
- * Facts for a delegation request read by `@fabric/core/functions/delegation` `readRequest`.
+ * Facts for a delegation request read by `@fabric/core/types/delegation` `readRequest`.
  * @param {Object} read
  * @param {Object} [context]
  * @param {Function} [context.networkOf] `(federationId) => network` for withdrawals.

@@ -20,6 +20,10 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - Document market / inventory HTLC must rebuild buyer-bound addresses before funding (see `@fabric/core` SECURITY.md).
 - Shared HTTP bind and public peering advertisement expand the attack surface — default carefully on production hosts.
 - `bitcoinClient` attaches `hubAdminToken` only for Hub `/services/bitcoin` bases; explorer/payments URLs use `apiToken` only.
+- The bitcoind JSON-RPC passthrough (`POST /services/bitcoin` with `jsonrpc: '2.0'`) forwards only read-only chain methods publicly; everything else needs the admin Bearer token, and host-file / shutdown methods are never forwarded (`functions/bitcoindRpcPolicy.js`).
+- HTTP JSON-RPC loopback privileges (`CreateDocument { filePath }`) need a loopback socket, a rebind-safe Host, no proxy headers, **and** no cross-origin browser request (`Hub#_isLocalRpcRequest`). CORS stays `*` for CDN builds, so never grant anything else on the strength of the socket address alone.
+- Operator-only JSON-RPC methods check `Hub#_rpcCallerIsOperator` (admin token, or the local HTTP call above). New methods that spend, dial, or reveal wallet/peer state should use it.
+- Loopback WebSocket upgrades are origin-checked (`createWebSocketOriginCheck`; extra origins via `FABRIC_HUB_WS_ORIGINS`).
 - **Fabric hallmarks** (`bitcoin.hallmarks` / `FABRIC_HALLMARKS`) spend wallet UTXOs when enabled (regtest); off by default. Commitment digests are public on L1 by design — never enable on mainnet until fee/policy review.
 
 ## Outstanding (PR #16 / RSI follow-ups)

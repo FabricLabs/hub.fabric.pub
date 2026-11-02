@@ -5,7 +5,7 @@
  *
  * Public (any caller):
  * - `/delegations…` pairing rendezvous (`@fabric/http` fabricDelegationHttp)
- * - `/services/delegation/mailbox` (`@fabric/http` fabricDelegationMailbox)
+ * - `/services/delegation/mailbox` (`@fabric/http` fabricDelegationHttp)
  *
  * Loopback, Passport's extension origin only (`@fabric/http` fabricDelegate):
  * - `GET /services/delegation`, `POST /services/delegation/links`,

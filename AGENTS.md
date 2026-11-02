@@ -111,6 +111,7 @@ Fabric-native invoices and settlement are the default product shape. Future **L4
   - `FABRIC_HUB_INTERFACE` / `INTERFACE` / `FABRIC_HTTP_INTERFACE` — **HTTP** bind interface (default `0.0.0.0`). Behind Caddy use `127.0.0.1`; bare public HTTP may use `65.21.231.149`.
   - `FABRIC_HUB_ALLOWED_HOSTS` — Comma list of extra `Host` names that count as loopback (besides IP literals, `localhost`, and `FABRIC_HUB_HOSTNAME`). A loopback socket with any other Host gets **421** (DNS-rebinding guard); proxied requests (forward headers) are never loopback-trusted.
  - `FABRIC_HUB_PUBLIC_ORIGIN` — the Hub's public origin (payjoin `pj=`, Passport sign-in). `FABRIC_HUB_PASSPORT_ORIGINS` — comma list of further public origins Passport sign-in is issued for (e.g. `https://hub.goon.vc`).
+ - `FABRIC_HUB_WS_ORIGINS` — comma list of extra browser origins allowed to open the Hub WebSocket over loopback (besides the Hub's own, Passport extension origins, and non-browser clients).
  - `FABRIC_HUB_CSP` — `0` drops the Content-Security-Policy header (default on; `'unsafe-inline'` scripts only with `FABRIC_DEV_PUSH_BROWSER_IDENTITY`).
  - `FABRIC_HUB_DEBUG` — Set to `true` or `1` for verbose hub logging (`settings.debug`).
   - `FABRIC_EXPLORER_URL` — Optional HTTP **origin** for `@fabric/core` Bitcoin explorer fallback (e.g. `http://127.0.0.1:8080` when this Hub serves `/services/bitcoin`). Omit for RPC-only block/tx in core; address-index helpers require an explorer.

@@ -80,7 +80,8 @@ const NETWORK_STATUS_KEPT_FIELDS = Object.freeze([
  * {@link NETWORK_STATUS_HEAVY_FIELDS} in order. Dropped names are listed in
  * `truncated`, so clients keep their last copy of those fields
  * ({@link mergeTruncatedNetworkStatus}) and fetch them with their own calls.
- * Still too large, it keeps the first `peers` (with `peersTotal`), then drops
+ * Still too large, it keeps the first `peers` (with `peersTotal`, and `peers`
+ * listed in `truncated`), then drops
  * the largest remaining fields outside {@link NETWORK_STATUS_KEPT_FIELDS}.
  * @param {object} status
  * @param {number} maxBytes JSON byte budget (frame body minus the JSONCall envelope)
@@ -107,6 +108,11 @@ function fitHubNetworkStatus (status, maxBytes) {
     while (keep > 0 && size(out) > maxBytes) {
       keep = Math.floor(keep / 2);
       out.peers = status.peers.slice(0, keep);
+    }
+    // A partial list is listed as truncated so a client keeps the full one it has.
+    if (keep < status.peers.length) {
+      truncated.push('peers');
+      out.truncated = truncated.slice();
     }
     if (size(out) <= maxBytes) return out;
   }

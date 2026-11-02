@@ -339,6 +339,8 @@ module.exports = {
     htlc: {
       verifiedHeading: 'Payment verified. The document is on its way.',
       heading: 'Payment check',
+      pendingHeading: 'Payment seen. Waiting for confirmation.',
+      pending: (have, need) => `The seller sends the document once the payment has ${Number(need) || 1} confirmation${Number(need) === 1 ? '' : 's'} (${Number(have) || 0} so far). It arrives on its own; you don’t need to confirm again.`,
       funded: 'Payment accepted. If the document does not arrive, check the connection and try again.',
       document: 'Document',
       transaction: 'Transaction',

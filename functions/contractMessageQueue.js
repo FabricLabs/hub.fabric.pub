@@ -96,8 +96,10 @@ function _parseMaybe (raw) {
  * Store façade over Hub Filesystem (`readFile` / `publish`, `writeFile` when present).
  *
  * Documents are cached in memory after the first read, so delivery marks don't
- * re-read the file. With `flushMs` > 0, writes are coalesced: every `put` within
- * the window lands in one compact write per contract (call `flush()` on stop).
+ * re-read the file. With `flushMs` > 0, delivery marks are coalesced: every
+ * such `put` within the window lands in one compact write per contract (call
+ * `flush()` on stop). A `put` that adds a frame is written at once, so a crash
+ * can lose a delivery mark (the frame is sent again) but never a frame.
  * @param {{ readFile: Function, publish: Function, writeFile: (Function|undefined) }} fs
  * @param {{ root: (string|undefined), flushMs: (number|undefined), maxBytes: (number|undefined), maxDeliveredPeers: (number|undefined) }} [opts]
  * @returns {{ get: Function, put: Function, listContractIds: Function, flush: Function }}
@@ -111,6 +113,8 @@ function createFilesystemStore (fs, opts = {}) {
   const limits = { maxBytes: opts.maxBytes, maxDeliveredPeers: opts.maxDeliveredPeers };
   const cache = new Map();
   const dirty = new Set();
+  // Frame hashes each contract's document held when it was last read or written.
+  const stored = new Map();
   let index = null;
   let timer = null;
 
@@ -127,9 +131,14 @@ function createFilesystemStore (fs, opts = {}) {
     if (pending && typeof pending.catch === 'function') pending.catch(() => {});
   }
 
+  function hashesOf (value) {
+    return new Set(((value && value.entries) || []).map((e) => e && e.hash).filter(Boolean));
+  }
+
   function writeDoc (key, value) {
     if (typeof fs.writeFile === 'function') fs.writeFile(docPath(key), JSON.stringify(value));
     else publish(docPath(key), value);
+    stored.set(key, hashesOf(value));
   }
 
   function flush () {
@@ -145,8 +154,12 @@ function createFilesystemStore (fs, opts = {}) {
   }
 
   function markDirty (key) {
-    if (!flushMs) {
-      writeDoc(key, cache.get(key));
+    const value = cache.get(key);
+    const known = stored.get(key);
+    const added = !known || ((value && value.entries) || []).some((e) => e && e.hash && !known.has(e.hash));
+    if (!flushMs || added) {
+      dirty.delete(key);
+      writeDoc(key, value);
       return;
     }
     dirty.add(key);
@@ -183,6 +196,7 @@ function createFilesystemStore (fs, opts = {}) {
       const parsed = _parseMaybe(fs.readFile(docPath(key)));
       if (!parsed || typeof parsed !== 'object') return parsed;
       cache.set(key, parsed);
+      stored.set(key, hashesOf(parsed));
       if (fitQueueDoc(parsed, limits)) markDirty(key);
       return parsed;
     },

@@ -406,7 +406,7 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
     assert.deepStrictEqual(Object.keys(fs.readFile(path).entries[0].deliveredTo), ['fabric:kept']);
   });
 
-  it('coalesces a drain into one compact write per contract with flushMs', function () {
+  it('writes each new frame at once, and coalesces a drain into one compact write with flushMs', function () {
     const fs = memoryFs();
     const writes = [];
     fs.writeFile = (p, content) => {
@@ -420,9 +420,13 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
       const msg = signContractMessage(author, contractId, 'GroupChat', { body: `d${i}` });
       contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
     }
+    assert.strictEqual(writes.length, 10, 'a crash cannot lose an enqueued frame');
+    const onDisk = JSON.parse(fs._files[`contract-message-queue/${contractId}.json`]);
+    assert.strictEqual(onDisk.entries.length, 10);
+    writes.length = 0;
     const result = drainQueueToMockPeer(store, mailbox('peer-a'));
     assert.strictEqual(result.delivered, 10);
-    assert.strictEqual(writes.length, 0, 'nothing written before the flush');
+    assert.strictEqual(writes.length, 0, 'delivery marks wait for the flush');
     store.flush();
     assert.deepStrictEqual(writes, [`contract-message-queue/${contractId}.json`]);
     const saved = JSON.parse(fs._files[`contract-message-queue/${contractId}.json`]);

@@ -187,10 +187,11 @@ function ensureInstanceKey (dir) {
  * Settings fragment merged over `settings/local.js` by `playnet-hub-with-settings.js`.
  * @param {object} opts
  * @param {boolean} [opts.mine=true] run the seed's Beacon miner (off on a shared public chain)
+ * @param {string[]} [opts.redialPeers] Fabric peers the Hub keeps dialing but skips at boot
  * @returns {object}
  */
 function buildFragment (opts) {
-  const { network, instance, dir, key, seedPort, fabricPeers, bitcoinPeers, mine = true } = opts;
+  const { network, instance, dir, key, seedPort, fabricPeers, redialPeers, bitcoinPeers, mine = true } = opts;
   const profile = networkProfile(network);
   const ports = instance.ports;
   const isSeed = instance.name === 'seed';
@@ -212,6 +213,8 @@ function buildFragment (opts) {
     port: ports.fabric,
     interface: '127.0.0.1',
     peers: fabricPeers || [],
+    // Not dialed at boot (deploy staggers those handshakes), but redialed whenever the session drops.
+    redialPeers: redialPeers || [],
     // Busy public Hubs can sit silent for 20 s or more mid-handshake (core's default idle timeout is 5 s).
     connectTimeout: 60000,
     path: dir,

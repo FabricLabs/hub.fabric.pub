@@ -16,7 +16,8 @@ module.exports = {
     badPreimage: 'The unlock key must be 64 hex characters (32 bytes).',
     wrongPreimage: 'That unlock key does not match this purchase.',
     badCiphertext: 'The stored encrypted copy is damaged. Request the document again.',
-    decryptFailed: 'Could not decrypt the document. The key is wrong or the encrypted copy is damaged.'
+    decryptFailed: 'Could not decrypt the document. The key is wrong or the encrypted copy is damaged.',
+    openOnBuyingHub: 'This copy opens on the Hub that bought it. Sign in to that Hub as its operator (admin token), then open it there.'
   },
   wallet: {
     header: 'Wallet',

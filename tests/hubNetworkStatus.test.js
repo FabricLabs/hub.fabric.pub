@@ -94,6 +94,9 @@ describe('hubNetworkStatus', function () {
       assert.deepStrictEqual(fitted.network, { address: 'a' });
       assert.strictEqual(fitted.peersTotal, 2000);
       assert.ok(fitted.truncated.includes('chain'));
+      assert.ok(fitted.truncated.includes('peers'), 'a halved peer list is marked so clients keep theirs');
+      const merged = mergeTruncatedNetworkStatus(fitted, { peers: status.peers });
+      assert.strictEqual(merged.peers.length, 2000);
       assert.strictEqual(status.peers.length, 2000, 'input is not mutated');
       Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
     });

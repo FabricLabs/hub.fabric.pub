@@ -56,6 +56,15 @@ describe('local network instances', function () {
     assert.ok(!fragment.bitcoin.bitcoinExtraParams.some((p) => String(p).startsWith('-connect=')));
   });
 
+  it('passes redial-only Fabric peers through without adding them to the boot dials', function () {
+    const operator = net.instancesFor('regtest').find((i) => i.name === 'operator');
+    const opts = { network: 'regtest', instance: operator, dir: '/tmp/x', key: { xprv: 'xprv' }, fabricPeers: ['127.0.0.1:7777'] };
+    assert.deepStrictEqual(net.buildFragment(opts).redialPeers, []);
+    const fragment = net.buildFragment(Object.assign({ redialPeers: ['hub.fabric.pub:7777'] }, opts));
+    assert.deepStrictEqual(fragment.redialPeers, ['hub.fabric.pub:7777']);
+    assert.deepStrictEqual(fragment.peers, ['127.0.0.1:7777']);
+  });
+
   it('turns the seed Beacon off when it should not mine', function () {
     const seed = net.instancesFor('regtest')[0];
     const opts = { network: 'regtest', instance: seed, dir: '/tmp/x', key: { xprv: 'xprv' } };

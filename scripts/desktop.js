@@ -86,6 +86,8 @@ const FABRIC_PROTOCOL = 'fabric';
 const BITCOIN_PROTOCOL = 'bitcoin';
 
 const HUB_STOP_TIMEOUT_MS = 30000;
+// After a timed-out stop: how long to wait for the exit after SIGTERM, and again after SIGKILL.
+const HUB_KILL_GRACE_MS = 5000;
 const HUB_RESTART_WINDOW_MS = 5 * 60 * 1000;
 const HUB_MAX_RESTARTS = 5;
 const HUB_STATUS_POLL_MS = 30000;
@@ -1081,19 +1083,32 @@ function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
   const child = hubProcess;
   if (usesExternalHub || !child) return Promise.resolve();
   setHubStatus('stopping');
+  let exited = false;
+  const exit = new Promise((resolve) => child.once('exit', () => { exited = true; resolve(); }));
+  const within = (ms) => Promise.race([exit, new Promise((resolve) => setTimeout(resolve, ms).unref())]);
   hubStopPromise = new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       console.warn(`[DESKTOP] Hub did not stop within ${timeoutMs}ms; killing it`);
       try {
         child.kill();
       } catch (_) {}
+      // A restart must not fork a second Hub on the same port and data dir while
+      // this one still runs: wait for its exit, then SIGKILL and wait again.
+      await within(HUB_KILL_GRACE_MS);
+      if (!exited && child.pid) {
+        console.warn('[DESKTOP] Hub still running after SIGTERM; sending SIGKILL');
+        try {
+          process.kill(child.pid, 'SIGKILL');
+        } catch (_) {}
+        await within(HUB_KILL_GRACE_MS);
+      }
       if (hubProcess === child) {
         hubProcess = null;
         setHubStatus('stopped');
       }
       resolve();
     }, timeoutMs);
-    child.once('exit', () => {
+    exit.then(() => {
       clearTimeout(timer);
       resolve();
     });

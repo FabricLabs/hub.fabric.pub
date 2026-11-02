@@ -70,6 +70,17 @@ const {
 } = require('../functions/fabricTransportSession');
 const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChatNormalize');
 
+/**
+ * A per-blob (v2) sealed delivery header, as `functions/documentFileShare.isPerBlobHeader`
+ * checks it (that module needs Node crypto, so it stays out of the browser bundle).
+ * @param {*} header `htlcFileV1`
+ * @returns {boolean}
+ */
+function isPerBlobHtlcHeader (header) {
+  return !!(header && typeof header === 'object' && Number(header.v) === 2 && header.perBlob === true &&
+    /^[0-9a-f]{64}$/.test(String(header.paymentHashHex || '').toLowerCase()));
+}
+
 /** Ping/pong keep genesis parent on browser-originated durable frames. */
 const BRIDGE_PARENT_CHAIN_SKIP = new Set([
   'Ping',
@@ -1509,6 +1520,11 @@ class Bridge extends React.Component {
       };
       if (doc.htlcFileV1 && Number(doc.htlcFileV1.v) === 1 && doc.htlcFileV1.iv && doc.htlcFileV1.paymentHashHex) {
         state.htlcFileV1 = doc.htlcFileV1;
+      } else if (isPerBlobHtlcHeader(doc.htlcFileV1)) {
+        // v2: each blob has its own key, wrapped under K. Only the Hub that bought it holds the wraps.
+        state.htlcFileV1 = doc.htlcFileV1;
+        state.meta.htlcFileV1 = doc.htlcFileV1;
+        if (Array.isArray(doc.parts)) state.meta.parts = doc.parts;
       }
     }
     state.chunks[index] = doc.contentBase64;
@@ -1530,6 +1546,7 @@ class Bridge extends React.Component {
 
     if (state.htlcFileV1) {
       const h = state.htlcFileV1;
+      const perBlob = isPerBlobHtlcHeader(h);
       this.globalState.documents = this.globalState.documents || {};
       const existing = this.globalState.documents[targetId] || {};
       this.globalState.documents[targetId] = {
@@ -1538,7 +1555,9 @@ class Bridge extends React.Component {
         id: targetId,
         htlcPendingDecrypt: true,
         htlcPaymentHashHex: String(h.paymentHashHex).toLowerCase(),
-        htlcIvBase64: h.iv,
+        ...(perBlob
+          ? { htlcPerBlob: true, htlcHubDocumentId: rawId }
+          : { htlcIvBase64: h.iv }),
         htlcCiphertextBase64: this._uint8ToBase64(merged),
         receivedFromPeer: true
       };
@@ -1574,13 +1593,15 @@ class Bridge extends React.Component {
    * @returns {Promise<{ ok: boolean, error?: string }>}
    */
   async unlockHtlcEncryptedDocument (documentId, preimageHex) {
-    if (typeof crypto === 'undefined' || !crypto.subtle) {
-      return { ok: false, error: notices.htlc.noWebCrypto };
-    }
     const id = documentId;
     const doc = this.globalState.documents && this.globalState.documents[id];
     if (!doc || !doc.htlcPendingDecrypt) {
       return { ok: false, error: notices.htlc.notPending };
+    }
+    // Per-blob keys are wrapped on the Hub that bought the copy; the browser never sees them.
+    if (doc.htlcPerBlob) return this.openPurchasedDocumentViaHub(id, preimageHex);
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+      return { ok: false, error: notices.htlc.noWebCrypto };
     }
     const preimageU8 = this._hexToUint8(preimageHex);
     if (!preimageU8) {
@@ -1613,7 +1634,67 @@ class Bridge extends React.Component {
     delete cleaned.htlcPaymentHashHex;
     delete cleaned.htlcIvBase64;
     delete cleaned.htlcCiphertextBase64;
+    // _storeDocument merges into the stored record; drop it first so the htlc fields go.
+    this.globalState.documents[id] = cleaned;
     this._storeDocument(id, { ...cleaned, contentBase64, receivedFromPeer: true });
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+        globalState: this.globalState
+      }
+    }));
+    return { ok: true };
+  }
+
+  /**
+   * Open a per-blob (v2) purchase through this page's Hub (`OpenPurchasedDocument`), which
+   * holds the wrapped blob keys and the seller's key reveal. Needs the Hub admin token.
+   * @param {string} documentId local document id
+   * @param {string} [preimageHex] the key from the seller's claim, when no reveal arrived
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  async openPurchasedDocumentViaHub (documentId, preimageHex) {
+    const id = documentId;
+    const doc = this.globalState.documents && this.globalState.documents[id];
+    if (!doc || !doc.htlcPendingDecrypt) return { ok: false, error: notices.htlc.notPending };
+    const adminToken = this._hubIsPageOrigin() ? readHubAdminTokenFromBrowser() : '';
+    if (!adminToken) return { ok: false, error: notices.htlc.openOnBuyingHub };
+    const origin = typeof window !== 'undefined' && window.location && window.location.origin ? window.location.origin : '';
+    if (!origin || typeof fetch !== 'function') return { ok: false, error: notices.htlc.openOnBuyingHub };
+    const params = [{
+      id: doc.htlcHubDocumentId || doc.sha256 || id,
+      adminToken,
+      ...(preimageHex ? { preimageHex: String(preimageHex).trim().toLowerCase() } : {})
+    }];
+    let result;
+    try {
+      const res = await fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: this._hubJsonRpcHttpHeaders(),
+        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'OpenPurchasedDocument', params })
+      });
+      const body = await res.json().catch(() => null);
+      result = body && body.result;
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+    if (!result || result.status !== 'success' || !result.document || !result.document.contentBase64) {
+      return { ok: false, error: (result && result.message) || notices.htlc.decryptFailed };
+    }
+    const cleaned = { ...doc };
+    for (const k of Object.keys(cleaned)) {
+      if (k.startsWith('htlc')) delete cleaned[k];
+    }
+    delete cleaned.parts;
+    this.globalState.documents[id] = cleaned;
+    this._storeDocument(id, {
+      ...cleaned,
+      mime: result.document.mime || cleaned.mime,
+      size: result.document.size,
+      contentBase64: result.document.contentBase64,
+      receivedFromPeer: true
+    });
     this._persistDocuments();
     window.dispatchEvent(new CustomEvent('globalStateUpdate', {
       detail: {
@@ -2039,6 +2120,16 @@ class Bridge extends React.Component {
    * kept in this browser was issued by that Hub only.
    * @returns {boolean}
    */
+  /**
+   * Extra JSON-RPC param carrying the admin token for operator-only Hub methods
+   * (`AddPeer`, `RemovePeer`, `SetPeerNickname`); empty when this page is not the Hub's own.
+   * @returns {Object}
+   */
+  _operatorRpcAuth () {
+    const adminToken = this._hubIsPageOrigin() ? readHubAdminTokenFromBrowser() : '';
+    return adminToken ? { adminToken } : {};
+  }
+
   _hubIsPageOrigin () {
     if (typeof window === 'undefined' || !window.location) return false;
     const host = this.settings && this.settings.host;
@@ -4863,7 +4954,7 @@ class Bridge extends React.Component {
     try {
       const payload = {
         method: 'AddPeer',
-        params: [{ address: normalizedAddr }]
+        params: [{ address: normalizedAddr }, this._operatorRpcAuth()]
       };
 
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
@@ -4892,7 +4983,7 @@ class Bridge extends React.Component {
     const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
     if (!resolved) return;
     try {
-      const payload = { method: 'RemovePeer', params: [resolved] };
+      const payload = { method: 'RemovePeer', params: [resolved, this._operatorRpcAuth()] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
       setTimeout(() => {
@@ -5461,7 +5552,7 @@ class Bridge extends React.Component {
       }
     } catch (_) { /* best-effort mesh alias */ }
     try {
-      const payload = { method: 'SetPeerNickname', params: [resolved, clean] };
+      const payload = { method: 'SetPeerNickname', params: [resolved, clean, this._operatorRpcAuth()] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
       // Ensure UI updates even if push misses for some reason

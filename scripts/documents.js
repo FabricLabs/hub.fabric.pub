@@ -204,16 +204,25 @@ async function buy (args, t) {
 
   let confirmed = null;
   let lastError = null;
+  let waitingSaid = false;
   await waitFor(wait, async () => {
     try {
-      confirmed = await rpc(seller, 'ConfirmInventoryHtlcPayment', { settlementId: h.settlementId, txid });
+      const r = await rpc(seller, 'ConfirmInventoryHtlcPayment', { settlementId: h.settlementId, txid });
+      if (r && r.status === 'pending') {
+        // The seller hands the file over once the payment confirms; asking again is harmless.
+        lastError = r.message;
+        if (!waitingSaid) log(`seller saw the payment; waiting for ${r.required} confirmation${r.required === 1 ? '' : 's'} (${r.confirmations} so far)`);
+        waitingSaid = true;
+        return false;
+      }
+      confirmed = r;
       return true;
     } catch (err) {
       lastError = err.message;
       return false;
     }
   });
-  if (!confirmed) throw new Error(`seller did not confirm: ${lastError}`);
+  if (!confirmed) throw new Error(`seller did not confirm within ${wait}s: ${lastError}`);
   log('seller confirmed, sending the file and key');
 
   let opened = null;
@@ -351,7 +360,9 @@ async function main () {
     case 'confirm': {
       if (!args.positional[0] || !args.txid) throw new Error('confirm <settlementId> --txid <txid>');
       const r = await rpc(t, 'ConfirmInventoryHtlcPayment', { settlementId: args.positional[0], txid: args.txid });
-      return out(r, (x) => console.log(`${x.message || 'confirmed; sending the file and key'}  ${x.documentId || ''}`));
+      return out(r, (x) => console.log(x.status === 'pending'
+        ? `${x.message} (${x.confirmations} of ${x.required}; the seller sends it on its own once confirmed)  ${x.documentId || ''}`
+        : `${x.message || 'confirmed; sending the file and key'}  ${x.documentId || ''}`));
     }
     case 'claim': {
       if (!args.positional[0]) throw new Error('claim <settlementId>');

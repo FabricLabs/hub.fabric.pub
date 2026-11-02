@@ -51,6 +51,7 @@ function timingSafeSha256Utf8Match (provided, expected) {
   }
 }
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
+const { bitcoindRpcAccess } = require('../functions/bitcoindRpcPolicy');
 const bitcoinFaucetCapability = require('../functions/bitcoinFaucetCapability');
 const { SATS_PER_BTC, FEATURE_FLAGS, publicFeatureFlags } = require('../constants');
 const {
@@ -63,7 +64,10 @@ const {
   buildContentSecurityPolicy,
   createBrowserSecretsGuard,
   createLoopbackHostGuard,
-  isTrustedLoopbackRequest
+  createWebSocketOriginCheck,
+  isTrustedLoopbackRequest,
+  isCrossOriginRead,
+  webSocketOriginsFromEnv
 } = require('../functions/hubHttpLocalTrust');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
@@ -74,7 +78,6 @@ const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const { hubServerKeys } = require('../functions/hubAccount');
 const hubHeapBounds = require('../functions/hubHeapBounds');
 const hubHeapTelemetry = require('../functions/hubHeapTelemetry');
-const hubHeapSnapshot = require('../functions/hubHeapSnapshot');
 const { createSerialQueue, createSingleFlight } = require('../functions/hubWorkQueues');
 const {
   installFilesystemPublishHeapGuard
@@ -188,6 +191,8 @@ const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SAT
 const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
+// How long a redial peer's resolved addresses are trusted before looking the name up again.
+const PEER_HOST_LOOKUP_TTL_MS = 5 * 60 * 1000;
 const FABRIC_PEERING_OFFER_INTERVAL_MS = Number(process.env.FABRIC_PEERING_OFFER_INTERVAL_MS || 30000);
 /** Document ids are content hashes or actor ids: no dots or separators. */
 const SAFE_DOCUMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -286,7 +291,7 @@ function payjoinContributionFlag (body = {}) {
   return value != null ? !!value : undefined;
 }
 const { mountHubPassport } = require('../functions/hubPassport');
-const { mountFabricDelegateHub } = require('../functions/fabricDelegateHub');
+const { mountFabricDelegateHub, passportExtensionIds } = require('../functions/fabricDelegateHub');
 // const Queue = require('../types/queue');
 
 // Routes (Request Handlers)
@@ -446,7 +451,11 @@ class Hub extends Service {
           markupBps: Number(process.env.FABRIC_DOCUMENT_MARKET_MARKUP_BPS || 1000),
           markupSats: Number(process.env.FABRIC_DOCUMENT_MARKET_MARKUP_SATS || 0),
           minPriceSats: Number(process.env.FABRIC_DOCUMENT_MARKET_MIN_PRICE_SATS || 0)
-        }
+        },
+        // A sale delivers once its payment has this many confirmations; 0 delivers from the mempool.
+        minPaymentConfirmations: process.env.FABRIC_DOCUMENT_MIN_CONFIRMATIONS != null && process.env.FABRIC_DOCUMENT_MIN_CONFIRMATIONS !== ''
+          ? Number(process.env.FABRIC_DOCUMENT_MIN_CONFIRMATIONS)
+          : 1
       },
       distributed: {
         enable: process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE ? process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE !== 'false' : true,
@@ -521,10 +530,12 @@ class Hub extends Service {
       const raw = Array.isArray(this.settings.peers) ? this.settings.peers : [];
       // `merge({}, settings/local.js, { http: … })` keeps production seed hosts.
       // Dialing them from mocha on a deploy host is wrong; keep only explicit extras.
-      this.settings.peers = raw.filter((p) => {
+      const notSeed = (p) => {
         const s = String(p || '').replace(/^[^@]+@/, '').trim();
         return s && !/^(hub\.fabric\.pub|relay\.goon\.vc|sensemaker\.io)(?::\d+)?$/i.test(s);
-      });
+      };
+      this.settings.peers = raw.filter(notSeed);
+      if (Array.isArray(this.settings.redialPeers)) this.settings.redialPeers = this.settings.redialPeers.filter(notSeed);
     }
     if (runningUnderTests && process.env.FABRIC_TEST_ALLOW_HOST_HTTP_BIND !== '1') {
       // `settings/local.js` copies FABRIC_HUB_INTERFACE / INTERFACE / FABRIC_INTERFACE
@@ -916,7 +927,13 @@ class Hub extends Service {
       jsonBodyLimit: (this.settings.http && this.settings.http.jsonBodyLimit) ||
         process.env.FABRIC_HTTP_JSON_LIMIT ||
         '12mb',
-      websocket: this.settings.websocket || {},
+      websocket: Object.assign({}, this.settings.websocket || {}, {
+        verifyOrigin: createWebSocketOriginCheck({
+          allowedHosts: this._loopbackAllowedHosts,
+          allowedOrigins: webSocketOriginsFromEnv(),
+          passportExtensionIds: passportExtensionIds(this)
+        })
+      }),
       middlewares: {
         loopbackHostGuard: createLoopbackHostGuard({ allowedHosts: this._loopbackAllowedHosts }),
         securityHeaders: (req, res, next) => {
@@ -1172,21 +1189,66 @@ class Hub extends Service {
   }
 
   /**
-   * Dial each configured `settings.peers` entry that is neither connected nor
-   * being dialed. Core dials configured peers once at start and never again, so a
-   * failed first dial (or a dropped session) would otherwise last until restart.
+   * `host:port` for each `settings.peers` and `settings.redialPeers` entry (pubkey pin dropped).
+   * @returns {string[]}
+   */
+  _configuredRedialAddresses () {
+    const entries = [].concat(
+      Array.isArray(this.settings.peers) ? this.settings.peers : [],
+      Array.isArray(this.settings.redialPeers) ? this.settings.redialPeers : []
+    );
+    const out = [];
+    for (const entry of entries) {
+      const raw = String(entry || '').replace(/^[^@]+@/, '').trim().toLowerCase();
+      if (!raw) continue;
+      const address = /:\d+$/.test(raw) ? raw : `${raw}:7777`;
+      if (!out.includes(address)) out.push(address);
+    }
+    return out;
+  }
+
+  /**
+   * Resolve the hostnames among the redial addresses, so a session core keyed by IP
+   * counts as connected. Each name is looked up again after `PEER_HOST_LOOKUP_TTL_MS`.
+   * @returns {Promise<void>}
+   */
+  async _refreshPeerHostAddresses () {
+    if (!this._peerHostAddresses) this._peerHostAddresses = new Map();
+    const now = Date.now();
+    await Promise.all(this._configuredRedialAddresses().map(async (address) => {
+      const host = address.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+      if (net.isIP(host)) return;
+      const cached = this._peerHostAddresses.get(host);
+      if (cached && now - cached.at < PEER_HOST_LOOKUP_TTL_MS) return;
+      try {
+        const found = await dns.lookup(host, { all: true });
+        this._peerHostAddresses.set(host, { at: now, ips: found.map((a) => a.address) });
+      } catch (_) {
+        // Keep what we had; an unresolvable name is simply dialed (and fails) as before.
+        if (cached) cached.at = now;
+      }
+    }));
+  }
+
+  /**
+   * Dial each configured `settings.peers` and `settings.redialPeers` entry that is
+   * neither connected nor being dialed. Core dials `peers` once at start and never
+   * again, so a failed first dial (or a dropped session) would otherwise last until
+   * restart. `redialPeers` are never dialed at boot, only here.
    * @returns {string[]} addresses dialed
    */
   _redialConfiguredPeers () {
     if (!this.agent || typeof this.agent._connect !== 'function') return [];
     const connections = this.agent.connections || {};
     const dialing = this.agent._outboundDialTargets;
+    const live = (a) => !!(connections[a] || (dialing && dialing.has(a)));
     const dialed = [];
-    for (const entry of Array.isArray(this.settings.peers) ? this.settings.peers : []) {
-      const raw = String(entry || '').replace(/^[^@]+@/, '').trim().toLowerCase();
-      if (!raw) continue;
-      const address = raw.includes(':') ? raw : `${raw}:7777`;
-      if (connections[address] || (dialing && dialing.has(address))) continue;
+    for (const address of this._configuredRedialAddresses()) {
+      if (live(address)) continue;
+      const port = address.slice(address.lastIndexOf(':') + 1);
+      const host = address.slice(0, address.lastIndexOf(':')).replace(/^\[|\]$/g, '');
+      const resolved = this._peerHostAddresses && this._peerHostAddresses.get(host);
+      if (resolved && resolved.ips.some((ip) => live(`${ip}:${port}`) || live(`[${ip}]:${port}`))) continue;
       try {
         this._connectPeer(address);
         dialed.push(address);
@@ -1635,6 +1697,37 @@ class Hub extends Service {
    */
   _documentMarketPolicy () {
     return documentInventoryMarket.normalizeMarketPolicy(this.settings);
+  }
+
+  /**
+   * Confirmations a sale's payment needs before the document is handed over
+   * (`documents.minPaymentConfirmations`). An unconfirmed payment can be replaced.
+   * @returns {number}
+   */
+  _documentMinPaymentConfirmations () {
+    const raw = this.settings && this.settings.documents ? this.settings.documents.minPaymentConfirmations : undefined;
+    const n = Number(raw);
+    return raw != null && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
+  }
+
+  /**
+   * A purchase claim whose payment is still short of the confirmations a sale needs.
+   * @param {{ confirmations: number }} paid result of `_l1PaymentVerificationDetail`
+   * @returns {Object|null} the pending result, or null once the payment may be redeemed
+   */
+  _purchaseClaimPending (paid, documentId, txid) {
+    const required = this._documentMinPaymentConfirmations();
+    const confirmations = Number(paid && paid.confirmations) || 0;
+    if (confirmations >= required) return null;
+    return {
+      status: 'pending',
+      message: `Payment seen; the document opens after ${required} confirmation${required === 1 ? '' : 's'}.`,
+      confirmations,
+      required,
+      documentId,
+      txid,
+      retryWithSameTxid: true
+    };
   }
 
   _documentOffersMap () {
@@ -2397,7 +2490,7 @@ class Hub extends Service {
    * @returns {string|null}
    */
   _writeHeapSnapshot (reason) {
-    return hubHeapSnapshot.writeHeapSnapshot(this._heapSnapshotDir(), reason);
+    return hubHeapTelemetry.writeHeapSnapshot(this._heapSnapshotDir(), reason);
   }
 
   /**
@@ -2407,8 +2500,8 @@ class Hub extends Service {
    */
   _startHeapSnapshots () {
     if (this._heapSnapshotSignal !== undefined) return;
-    const cfg = hubHeapSnapshot.resolveHeapSnapshotSettings(this.settings);
-    this._heapThreshold = cfg.thresholdBytes > 0 ? hubHeapSnapshot.createHeapThreshold(cfg) : null;
+    const cfg = hubHeapTelemetry.resolveHeapSnapshotSettings(this.settings);
+    this._heapThreshold = cfg.thresholdBytes > 0 ? hubHeapTelemetry.createHeapThreshold(cfg) : null;
     this._heapSnapshotSignal = null;
     if (!cfg.signal) return;
     this._heapSnapshotOnSignal = () => this._writeHeapSnapshot('signal');
@@ -4472,6 +4565,22 @@ class Hub extends Service {
       return true;
     }
     return isOperatorAdminToken(t, [this._fabricKey]);
+  }
+
+  /**
+   * Whether a JSON-RPC caller may use operator-only methods: an admin token in any object
+   * param (`adminToken` or `token`), or a same-origin / non-browser HTTP call over loopback
+   * ({@link Hub#_isLocalRpcRequest}). WebSocket calls are never local and need the token.
+   * @param {Array} params JSON-RPC params
+   * @returns {boolean}
+   */
+  _rpcCallerIsOperator (params) {
+    const list = Array.isArray(params) ? params : [params];
+    for (const p of list) {
+      if (p && typeof p === 'object' && this._verifyOperatorAdminToken(p.adminToken || p.token)) return true;
+    }
+    const local = _rpcHttpLocalStore.getStore();
+    return !!(local && local.isLocal === true);
   }
 
   async _acceptTrackedApplicationContract (params = {}) {
@@ -7454,7 +7563,8 @@ class Hub extends Service {
         message: 'Already completed.',
         documentId: s.documentId,
         settlementId,
-        txid: s.fundedTxid
+        txid: s.fundedTxid,
+        keyRevealed: true
       });
     }
 
@@ -7477,23 +7587,30 @@ class Hub extends Service {
       });
     }
 
-    const needVerify = s.status !== 'FUNDED_PENDING_SEND' || s.fundedTxid !== txid;
-    if (needVerify) {
+    const newFunding = s.status !== 'FUNDED_PENDING_SEND' || s.fundedTxid !== txid;
+    if (newFunding) {
       // Quotes for one document at one lock height share an address; one coin pays for one sale.
       for (const other of this._inventoryHtlcById.values()) {
         if (other && other !== s && other.fundedTxid === txid && other.paymentAddress === s.paymentAddress) {
           return _htlcResult({ status: 'error', message: 'That payment already paid for another settlement.', settlementId, documentId: s.documentId });
         }
       }
-      const paid = await this._l1PaymentVerificationDetail(bitcoin, txid, s.paymentAddress, s.amountSats, {
-        fromHeight: Number.isFinite(Number(s.quoteHeight)) ? Number(s.quoteHeight) : Number(s.refundLockHeight) - 144
+    }
+    // Checked every time: a recorded payment may since have been replaced, or gained confirmations.
+    // A payment out of the mempool is looked for block by block; for one already recorded, only the
+    // blocks since the last check (each new block retries it, and a replaced one never turns up).
+    const quoteFloor = Number.isFinite(Number(s.quoteHeight)) ? Number(s.quoteHeight) : Number(s.refundLockHeight) - 144;
+    const scannedTo = Number(s.paymentScannedHeight);
+    const fromHeight = !newFunding && Number.isFinite(scannedTo) ? Math.max(quoteFloor, scannedTo - 1) : quoteFloor;
+    const paid = await this._l1PaymentVerificationDetail(bitcoin, txid, s.paymentAddress, s.amountSats, { fromHeight });
+    if (!newFunding || paid.verified) s.paymentScannedHeight = tip;
+    if (!paid.verified) {
+      return _htlcResult({
+        status: 'error',
+        message: 'Transaction does not pay the HTLC address for at least the invoice amount (or tx not visible).'
       });
-      if (!paid.verified) {
-        return _htlcResult({
-          status: 'error',
-          message: 'Transaction does not pay the HTLC address for at least the invoice amount (or tx not visible).'
-        });
-      }
+    }
+    if (newFunding) {
       s.status = 'FUNDED_PENDING_SEND';
       s.fundedTxid = txid;
       // A pruned node without txindex can't fetch the funding tx once it confirms; keep it for the claim.
@@ -7502,6 +7619,21 @@ class Hub extends Service {
       try {
         this._mergePersistedTxLabel(txid, 'inventory_htlc', { documentId: s.documentId, settlementId, phase: 'fund' });
       } catch (_) {}
+    }
+
+    const required = this._documentMinPaymentConfirmations();
+    const confirmations = Number(paid.confirmations) || 0;
+    if (confirmations < required) {
+      return _htlcResult({
+        status: 'pending',
+        message: `Payment seen; delivering after ${required} confirmation${required === 1 ? '' : 's'}.`,
+        confirmations,
+        required,
+        settlementId,
+        documentId: s.documentId,
+        txid,
+        retryWithSameTxid: true
+      });
     }
 
     let addr = null;
@@ -7535,9 +7667,20 @@ class Hub extends Service {
       });
     }
 
-    const sendRes = await this._sendDocumentToPeerAddress(addr, s.documentId, fileRelayMeta, {
-      preimage32: Buffer.from(s.preimageHex, 'hex')
-    });
+    // The block hook and a buyer's own confirm can arrive together; send once.
+    if (!this._inventoryHtlcSending) this._inventoryHtlcSending = new Set();
+    if (this._inventoryHtlcSending.has(settlementId)) {
+      return _htlcResult({ status: 'pending', message: 'Delivery already in progress.', confirmations, required, settlementId, documentId: s.documentId, txid, retryWithSameTxid: true });
+    }
+    this._inventoryHtlcSending.add(settlementId);
+    let sendRes;
+    try {
+      sendRes = await this._sendDocumentToPeerAddress(addr, s.documentId, fileRelayMeta, {
+        preimage32: Buffer.from(s.preimageHex, 'hex')
+      });
+    } finally {
+      this._inventoryHtlcSending.delete(settlementId);
+    }
     if (!sendRes || sendRes.status !== 'success') {
       return _htlcResult({
         status: 'error',
@@ -7619,6 +7762,38 @@ class Hub extends Service {
     const token = body.adminToken || body.token;
     if (!this.setup.verifyAdminToken(token)) return deny('Admin token required.');
     return this._claimInventoryHtlcSettlement(body);
+  }
+
+  /**
+   * Deliver sales whose payment was seen before it had the confirmations it needs
+   * (`documents.minPaymentConfirmations`). Runs on each new block; a sale whose buyer
+   * isn't connected waits for the next one, and one too close to its refund lock
+   * stays undelivered so the buyer refunds.
+   * @returns {Promise<Object[]>} the confirm result per settlement tried
+   */
+  async _deliverConfirmedHtlcPayments () {
+    if (this._inventoryHtlcDelivering) return [];
+    this._inventoryHtlcDelivering = true;
+    const results = [];
+    try {
+      this._loadInventoryHtlcSettlements();
+      for (const s of [...this._inventoryHtlcById.values()]) {
+        if (!s || s.status !== 'FUNDED_PENDING_SEND' || !s.fundedTxid) continue;
+        let r;
+        try {
+          r = await this._confirmInventoryHtlcPayment({ settlementId: s.settlementId, txid: s.fundedTxid });
+        } catch (e) {
+          r = { status: 'error', settlementId: s.settlementId, message: e && e.message ? e.message : String(e) };
+        }
+        results.push(r);
+        if (r && r.status === 'success') {
+          console.debug('[HUB] INVENTORY HTLC delivered after confirmation:', s.settlementId, s.documentId);
+        }
+      }
+    } finally {
+      this._inventoryHtlcDelivering = false;
+    }
+    return results;
   }
 
   /**
@@ -8210,6 +8385,18 @@ class Hub extends Service {
    * Registered as an explicit route so `POST /services/rpc` is not handled by the SPA `POST /*`
    * resource path (which would return 500 for unknown POST /services/...).
    */
+  /**
+   * Whether an HTTP JSON-RPC call gets loopback privileges (such as `CreateDocument` `filePath`
+   * ingest). A page on another site that reaches 127.0.0.1 (CORS is `*`) is a loopback socket
+   * too, so only same-origin or non-browser callers count.
+   * @param {Object} req Express request
+   * @returns {boolean}
+   */
+  _isLocalRpcRequest (req) {
+    return isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts || [] }) &&
+      !isCrossOriginRead(req);
+  }
+
   async _handleHttpJsonRpcRequest (req, res) {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const method = typeof body.method === 'string' ? body.method : '';
@@ -8230,7 +8417,7 @@ class Hub extends Service {
       return res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
     }
 
-    const isLocal = isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts });
+    const isLocal = this._isLocalRpcRequest(req);
     try {
       const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, paramArray)));
       res.setHeader('Content-Type', 'application/json');
@@ -8602,6 +8789,10 @@ class Hub extends Service {
           console.warn('[HUB:MARKET] channel block hook:', marketErr && marketErr.message ? marketErr.message : marketErr);
         }
       }
+
+      this._deliverConfirmedHtlcPayments().catch((deliverErr) => {
+        console.warn('[HUB] INVENTORY HTLC block delivery:', deliverErr && deliverErr.message ? deliverErr.message : deliverErr);
+      });
 
       if (this.beacon && this.beacon.state && this.beacon.state.status === 'RUNNING') {
         try {
@@ -12807,7 +12998,7 @@ class Hub extends Service {
     // Bitcoind-compatible JSON-RPC 2.0 (params array) — passthrough + local verifymessage.
     if (body.jsonrpc === '2.0' && typeof body.method === 'string') {
       return Promise.resolve()
-        .then(() => this._hubBitcoindJsonRpc(body, res))
+        .then(() => this._hubBitcoindJsonRpc(body, res, { isAdmin: this._isSetupAdminRequest(req) }))
         .catch((error) => {
           const id = Object.prototype.hasOwnProperty.call(body, 'id') ? body.id : null;
           res.setHeader('Content-Type', 'application/json');
@@ -12837,12 +13028,28 @@ class Hub extends Service {
   /**
    * POST /services/bitcoin with body { jsonrpc: '2.0', method, params: [], id }.
    * - verifymessage: implemented locally (no bitcoind) using tiny-secp256k1 + bitcoinjs-lib.
-   * - other methods: forwarded to Fabric Bitcoin service RPC when available (passthrough to bitcoind).
+   * - other methods: forwarded to Fabric Bitcoin service RPC when available (passthrough to bitcoind),
+   *   subject to {@link bitcoindRpcAccess}: read-only methods are public, the rest need the admin token.
+   * @param {Object} body JSON-RPC request body
+   * @param {Object} res Express response
+   * @param {Object} [opts]
+   * @param {boolean} [opts.isAdmin] caller presented a valid admin token
    */
-  async _hubBitcoindJsonRpc (body, res) {
+  async _hubBitcoindJsonRpc (body, res, opts = {}) {
     const method = String(body.method || '').trim();
     const params = Array.isArray(body.params) ? body.params : [];
     const id = Object.prototype.hasOwnProperty.call(body, 'id') ? body.id : null;
+    if (method !== 'verifymessage') {
+      const access = bitcoindRpcAccess(method, { isAdmin: opts.isAdmin === true });
+      if (!access.allowed) {
+        res.setHeader('Content-Type', 'application/json');
+        return res.status(access.status).json({
+          jsonrpc: '2.0',
+          error: { code: -32600, message: access.message },
+          id
+        });
+      }
+    }
     const reply = (err, result) => {
       res.setHeader('Content-Type', 'application/json');
       if (err) {
@@ -14320,18 +14527,21 @@ class Hub extends Service {
         this.http._registerBitcoin(this.bitcoin || null);
       }
 
-      this.http._registerMethod('getUnusedAddress', async () => {
+      this.http._registerMethod('getUnusedAddress', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) throw new Error('Bitcoin service is unavailable.');
         const address = await bitcoin.getUnusedAddress();
         return { address, network: bitcoin.network };
       });
 
-      this.http._registerMethod('GetBitcoinStatus', async () => {
-        return this._collectBitcoinStatus({ force: true });
+      this.http._registerMethod('GetBitcoinStatus', async (...params) => {
+        const status = await this._collectBitcoinStatus({ force: true });
+        return this._rpcCallerIsOperator(params) ? status : this._redactBitcoinStatusForNonAdmin(status);
       });
 
       this.http._registerMethod('GetAddressBalance', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) throw new Error('Bitcoin service is unavailable.');
         const body = params[0] || {};
@@ -14466,6 +14676,7 @@ class Hub extends Service {
       hubCollaboration.registerRpc(this);
 
       this.http._registerMethod('CreatePayjoinDeposit', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const payjoin = this._getPayjoinService();
         const bitcoin = this._getBitcoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
@@ -14577,6 +14788,7 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('AddPeer', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const peer = params[0];
         try {
           const normalized = this._connectPeer(peer);
@@ -14589,6 +14801,7 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('RemovePeer', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         if (!idOrAddress) return { status: 'error', message: 'id or address required' };
         const ok = this._disconnectPeer(idOrAddress);
@@ -15577,10 +15790,12 @@ class Hub extends Service {
           return { status: 'error', message: 'Purchase invoice required. Call CreatePurchaseInvoice first, pay, then pass txid with the claimToken it returned.', documentId };
         }
 
-        const verified = await this._verifyL1Payment(bitcoin, txid, pending.address, pending.amountSats);
-        if (!verified) {
+        const paid = await this._l1PaymentVerificationDetail(bitcoin, txid, pending.address, pending.amountSats);
+        if (!paid.verified) {
           return { status: 'error', message: 'Payment verification failed. Ensure the transaction pays to the invoice address with at least the required amount.', documentId };
         }
+        const pendingClaim = this._purchaseClaimPending(paid, documentId, txid);
+        if (pendingClaim) return Object.assign({ type: 'ClaimPurchaseResult' }, pendingClaim);
 
         try {
           this._mergePersistedTxLabel(txid, 'document_purchase', { documentId });
@@ -17015,6 +17230,9 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('DrainContractMessageQueue', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) {
+          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'adminToken required' };
+        }
         const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
         const address = p.address || p.peerId || p.peer || params[0];
         if (!address || typeof address === 'object') {
@@ -17058,6 +17276,9 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('GetNodeWealthSummary', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) {
+          return { type: 'GetNodeWealthSummaryResult', status: 'error', message: 'adminToken required' };
+        }
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
         const btc = this._state && this._state.content && this._state.content.services && this._state.content.services.bitcoin
           ? this._state.content.services.bitcoin.status || {}
@@ -17078,6 +17299,7 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('ListWorkerQueue', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
         const offset = Math.max(0, Number(req.offset || 0) || 0);
         const limit = Math.max(1, Math.min(200, Number(req.limit || 50) || 50));
@@ -17245,16 +17467,29 @@ class Hub extends Service {
       // Periodic Fabric peering offer (when below max peers, even if connections don't change)
       this._fabricPeeringOfferIntervalId = setInterval(maybeBroadcastFabricPeeringOffer, FABRIC_PEERING_OFFER_INTERVAL_MS);
 
-      // Keep configured peers (e.g. the playnet seed) connected; `peerRedialMs: 0` turns it off.
+      // Keep configured peers (e.g. the playnet seed) and `redialPeers` connected; `peerRedialMs: 0` turns it off.
+      // The first tick lands at a random point in the interval so a fleet of instances
+      // started together doesn't handshake with a public Hub all at once.
       const peerRedialMs = this.settings.peerRedialMs == null ? 60000 : Number(this.settings.peerRedialMs);
       if (Number.isFinite(peerRedialMs) && peerRedialMs > 0) {
-        this._configuredPeerRedialTimer = setInterval(() => this._redialConfiguredPeers(), peerRedialMs);
+        const redialTick = () => this._refreshPeerHostAddresses()
+          .catch(() => {})
+          .then(() => this._redialConfiguredPeers());
+        this._configuredPeerRedialTimer = setTimeout(() => {
+          redialTick();
+          this._configuredPeerRedialTimer = setInterval(redialTick, peerRedialMs);
+          if (typeof this._configuredPeerRedialTimer.unref === 'function') this._configuredPeerRedialTimer.unref();
+        }, Math.floor(Math.random() * peerRedialMs));
         if (typeof this._configuredPeerRedialTimer.unref === 'function') this._configuredPeerRedialTimer.unref();
       }
 
       // Collect delivered sales: once the buyer holds the key, an unclaimed HTLC only waits for their refund.
+      // Also delivers confirmed sales the block hook missed (no ZMQ, or the buyer reconnected).
       this._inventoryHtlcClaimTimer = setInterval(() => {
-        this._claimDeliveredInventoryHtlcs().catch(() => {});
+        this._deliverConfirmedHtlcPayments()
+          .catch(() => {})
+          .then(() => this._claimDeliveredInventoryHtlcs())
+          .catch(() => {});
       }, INVENTORY_HTLC_CLAIM_INTERVAL_MS);
       if (typeof this._inventoryHtlcClaimTimer.unref === 'function') this._inventoryHtlcClaimTimer.unref();
 
@@ -17262,6 +17497,7 @@ class Hub extends Service {
       // When the target is this hub's own identity, also broadcast P2P_PEER_ALIAS (UTF-8 nickname).
       // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
       this.http._registerMethod('SetPeerNickname', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         const nickname = params[1] != null ? params[1] : (params[0] && params[0].nickname);
         if (!idOrAddress) return { status: 'error', message: 'id or address required' };
@@ -17880,10 +18116,14 @@ class Hub extends Service {
             }
             if (status !== 'complete' || !Buffer.isBuffer(buffer)) return;
             const sealedParts = sealedPart ? this._incomingSealedParts.take(transferKey) : undefined;
-            await persistIncomingDocument(
-              documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex, sealedParts),
-              origin
-            );
+            const received = documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex, sealedParts);
+            // A per-blob copy without every blob's wrap could never open, and it would
+            // replace a sealed copy still waiting for its key reveal.
+            if (documentFileShare.isPerBlobHeader(received.htlcFileV1) && !(received.sealedBatch && Array.isArray(received.parts))) {
+              console.warn('[HUB] Dropping per-blob file without sealed parts:', received.id);
+              return;
+            }
+            await persistIncomingDocument(received, origin);
             return;
           }
 
@@ -18306,6 +18546,7 @@ class Hub extends Service {
         } catch (e) {}
       }
       if (this._configuredPeerRedialTimer) {
+        // Either the jittered first-tick timeout or the interval; clearInterval clears both.
         clearInterval(this._configuredPeerRedialTimer);
         this._configuredPeerRedialTimer = null;
       }

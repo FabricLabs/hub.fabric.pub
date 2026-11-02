@@ -173,9 +173,13 @@ describe('Hub document access', function () {
     let n = 0;
     const paid = {};
     const getBitcoin = hub._getBitcoinService;
-    const verify = hub._verifyL1Payment;
+    const verify = hub._l1PaymentVerificationDetail;
     hub._getBitcoinService = () => ({ network: 'regtest', getUnusedAddress: async () => `bcrt1qinvoice${n++}` });
-    hub._verifyL1Payment = async (_b, txid, address, amountSats) => !!paid[txid] && paid[txid].address === address && paid[txid].sats >= amountSats;
+    hub._l1PaymentVerificationDetail = async (_b, txid, address, amountSats) => {
+      const p = paid[txid];
+      const verified = !!p && p.address === address && p.sats >= amountSats;
+      return { verified, confirmations: verified ? p.confirmations : 0 };
+    };
     try {
       const cheap = await methods.CreatePurchaseInvoice({ documentId: id, amountSats: 1 });
       assert.strictEqual(cheap.amountSats, 1200, 'a buyer cannot name a lower price');
@@ -185,12 +189,18 @@ describe('Hub document access', function () {
       const first = await methods.CreatePurchaseInvoice({ documentId: id });
       const second = await methods.CreatePurchaseInvoice({ documentId: id });
       assert.notStrictEqual(first.address, second.address);
-      paid.tx1 = { address: first.address, sats: 1200 };
+      paid.tx1 = { address: first.address, sats: 1200, confirmations: 0 };
 
       const stranger = await methods.ClaimPurchase({ documentId: id, txid: 'tx1' });
       assert.strictEqual(stranger.status, 'error', 'the public txid alone claims nothing');
       const wrong = await methods.ClaimPurchase({ documentId: id, txid: 'tx1', claimToken: second.claimToken });
       assert.strictEqual(wrong.status, 'error', 'another invoice\'s token does not cover this payment');
+
+      const early = await methods.ClaimPurchase({ documentId: id, txid: 'tx1', claimToken: first.claimToken });
+      assert.strictEqual(early.status, 'pending', 'an unconfirmed payment opens nothing yet');
+      assert.strictEqual(early.required, 1);
+      assert.ok(!early.document);
+      paid.tx1.confirmations = 1;
 
       const claimed = await methods.ClaimPurchase({ documentId: id, txid: 'tx1', claimToken: first.claimToken });
       assert.strictEqual(claimed.type, 'ClaimPurchaseResult', 'a later invoice does not orphan the first');
@@ -202,7 +212,7 @@ describe('Hub document access', function () {
       assert.ok(!JSON.stringify(saved).includes(first.claimToken), 'only a hash of the token is kept');
     } finally {
       hub._getBitcoinService = getBitcoin;
-      hub._verifyL1Payment = verify;
+      hub._l1PaymentVerificationDetail = verify;
     }
   });
 

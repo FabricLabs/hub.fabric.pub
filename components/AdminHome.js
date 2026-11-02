@@ -65,15 +65,17 @@ function AdminHome (props) {
   const [selfDestructOk, setSelfDestructOk] = React.useState(null);
 
   const rpcCall = React.useCallback(async (method, params = {}) => {
+    // Worker queue and wealth summary are operator-only over JSON-RPC.
+    const token = readHubAdminTokenFromBrowser(adminTokenProp);
     const res = await fetch('/services/rpc', {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params: token ? { ...params, adminToken: token } : params })
     });
     const json = await res.json().catch(() => ({}));
     if (json && json.error) throw new Error(json.error.message || t.common.errors.network);
     return json && Object.prototype.hasOwnProperty.call(json, 'result') ? json.result : json;
-  }, []);
+  }, [adminTokenProp]);
 
   const refreshWorkerPanel = React.useCallback(async () => {
     setWorkerLoading(true);
