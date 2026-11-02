@@ -5,6 +5,8 @@ const Key = require('@fabric/core/types/key');
 const Message = require('@fabric/core/types/message');
 const contractMessageQueue = require('../functions/contractMessageQueue');
 
+const mailbox = contractMessageQueue.mailboxKey;
+
 function signContractMessage (key, contractId, type, object) {
   const body = JSON.stringify({
     contract: contractId,
@@ -260,14 +262,14 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
     const enq = contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
     assert.strictEqual(enq.accepted, true);
     const hexBefore = enq.entry.hex;
-    const peer = 'peer-a';
+    const peer = mailbox('peer-a');
 
     assert.strictEqual(contractMessageQueue.pendingForDelivery(store, contractId, peer).length, 1);
     const marked = contractMessageQueue.markDelivered(store, contractId, enq.entry.hash, peer);
     assert.strictEqual(marked.ok, true);
     assert.strictEqual(contractMessageQueue.pendingForDelivery(store, contractId, peer).length, 0);
     assert.strictEqual(
-      contractMessageQueue.pendingForDelivery(store, contractId, 'peer-b').length,
+      contractMessageQueue.pendingForDelivery(store, contractId, mailbox('peer-b')).length,
       1
     );
 
@@ -285,7 +287,7 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
     const enq = contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
     assert.strictEqual(enq.accepted, true);
 
-    const peer = 'tcp://127.0.0.1:7777';
+    const peer = mailbox('drain-peer');
     const result = drainQueueToMockPeer(store, peer, { limitPerContract: 8 });
     assert.strictEqual(result.delivered, 1);
     assert.strictEqual(result.contracts, 1);
@@ -301,7 +303,7 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
     const again = drainQueueToMockPeer(store, peer);
     assert.strictEqual(again.delivered, 0);
     assert.strictEqual(
-      contractMessageQueue.pendingForDelivery(store, contractId, 'other-peer').length,
+      contractMessageQueue.pendingForDelivery(store, contractId, mailbox('other-peer')).length,
       1
     );
   });
@@ -320,11 +322,112 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
       assert.strictEqual(r.accepted, true);
       hashes.push(r.entry.hash);
       if (i < 2) {
-        contractMessageQueue.markDelivered(store, contractId, r.entry.hash, 'early-peer');
+        contractMessageQueue.markDelivered(store, contractId, r.entry.hash, mailbox('early-peer'));
       }
     }
     const rows = contractMessageQueue.listQueuedMessages(store, contractId, { includeDelivered: true });
     assert.ok(rows.length <= 3);
     assert.ok(rows.length >= 1);
+  });
+
+  it('keeps a contract under its byte budget, dropping delivered rows first', function () {
+    const fs = memoryFs();
+    const store = contractMessageQueue.createFilesystemStore(fs, { maxBytes: 4000 });
+    const author = new Key();
+    const hashes = [];
+    for (let i = 0; i < 8; i++) {
+      const msg = signContractMessage(author, contractId, 'GroupChat', { body: 'z'.repeat(400), i });
+      const r = contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
+      assert.strictEqual(r.accepted, true);
+      hashes.push(r.entry.hash);
+      if (i === 1) contractMessageQueue.markDelivered(store, contractId, r.entry.hash, mailbox('peer'));
+    }
+    const rows = contractMessageQueue.listQueuedMessages(store, contractId, { includeDelivered: true });
+    const bytes = rows.reduce((n, e) => n + e.hex.length, 0);
+    assert.ok(bytes <= 4000);
+    assert.ok(rows.length >= 1);
+    assert.ok(!rows.some((e) => e.hash === hashes[1]), 'delivered row went first');
+    assert.strictEqual(rows[rows.length - 1].hash, hashes[7]);
+  });
+
+  it('shrinks an oversized queue file on first read', function () {
+    const fs = memoryFs();
+    const author = new Key();
+    const writer = contractMessageQueue.createFilesystemStore(fs);
+    for (let i = 0; i < 6; i++) {
+      const msg = signContractMessage(author, contractId, 'GroupChat', { body: 'q'.repeat(400), i });
+      contractMessageQueue.enqueue(writer, contractId, msg.toBuffer());
+    }
+    const reader = contractMessageQueue.createFilesystemStore(fs, { maxBytes: 2000 });
+    const rows = contractMessageQueue.listQueuedMessages(reader, contractId, { includeDelivered: true });
+    assert.ok(rows.reduce((n, e) => n + e.hex.length, 0) <= 2000);
+    const onDisk = fs.readFile(`contract-message-queue/${contractId}.json`);
+    assert.strictEqual(onDisk.entries.length, rows.length);
+  });
+
+  it('keeps only the newest mailbox marks per row', function () {
+    const fs = memoryFs();
+    const store = contractMessageQueue.createFilesystemStore(fs, { maxDeliveredPeers: 3 });
+    const author = new Key();
+    const msg = signContractMessage(author, contractId, 'GroupChat', { body: 'many peers' });
+    const enq = contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
+    for (let i = 0; i < 6; i++) {
+      contractMessageQueue.markDelivered(store, contractId, enq.entry.hash, mailbox(`id${i}`), `2026-11-02T00:00:0${i}.000Z`);
+    }
+    const [row] = contractMessageQueue.listQueuedMessages(store, contractId, { includeDelivered: true });
+    assert.deepStrictEqual(Object.keys(row.deliveredTo).sort(), ['fabric:id3', 'fabric:id4', 'fabric:id5']);
+  });
+
+  it('mailboxKey names a Fabric id, lowercased, once', function () {
+    assert.strictEqual(mailbox('ID1ABC'), 'fabric:id1abc');
+    assert.strictEqual(mailbox('fabric:id1abc'), 'fabric:id1abc');
+    assert.strictEqual(mailbox(' '), null);
+    assert.strictEqual(mailbox(null), null);
+  });
+
+  it('drops connection-address marks from before mailboxes on load', function () {
+    const fs = memoryFs();
+    const author = new Key();
+    const writer = contractMessageQueue.createFilesystemStore(fs);
+    const msg = signContractMessage(author, contractId, 'GroupChat', { body: 'legacy' });
+    const enq = contractMessageQueue.enqueue(writer, contractId, msg.toBuffer());
+    const path = `contract-message-queue/${contractId}.json`;
+    const legacy = JSON.parse(JSON.stringify(fs.readFile(path)));
+    legacy.entries[0].deliveredTo = {
+      '10.0.0.1:50000': '2026-11-01T00:00:00.000Z',
+      '127.0.0.1:7777': '2026-11-01T00:00:01.000Z',
+      [mailbox('kept')]: '2026-11-01T00:00:02.000Z'
+    };
+    fs.publish(path, legacy);
+    const reader = contractMessageQueue.createFilesystemStore(fs);
+    const [row] = contractMessageQueue.listQueuedMessages(reader, contractId, { includeDelivered: true });
+    assert.strictEqual(row.hash, enq.entry.hash);
+    assert.deepStrictEqual(Object.keys(row.deliveredTo), ['fabric:kept']);
+    assert.deepStrictEqual(Object.keys(fs.readFile(path).entries[0].deliveredTo), ['fabric:kept']);
+  });
+
+  it('coalesces a drain into one compact write per contract with flushMs', function () {
+    const fs = memoryFs();
+    const writes = [];
+    fs.writeFile = (p, content) => {
+      writes.push(p);
+      fs._files[p] = content;
+      return true;
+    };
+    const store = contractMessageQueue.createFilesystemStore(fs, { flushMs: 60000 });
+    const author = new Key();
+    for (let i = 0; i < 10; i++) {
+      const msg = signContractMessage(author, contractId, 'GroupChat', { body: `d${i}` });
+      contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
+    }
+    const result = drainQueueToMockPeer(store, mailbox('peer-a'));
+    assert.strictEqual(result.delivered, 10);
+    assert.strictEqual(writes.length, 0, 'nothing written before the flush');
+    store.flush();
+    assert.deepStrictEqual(writes, [`contract-message-queue/${contractId}.json`]);
+    const saved = JSON.parse(fs._files[`contract-message-queue/${contractId}.json`]);
+    assert.strictEqual(saved.entries.length, 10);
+    assert.ok(saved.entries.every((e) => e.deliveredTo['fabric:peer-a']));
+    assert.ok(!fs._files[`contract-message-queue/${contractId}.json`].includes('\n'), 'compact JSON');
   });
 });

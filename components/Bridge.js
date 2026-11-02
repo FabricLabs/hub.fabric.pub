@@ -1500,6 +1500,7 @@ class Bridge extends React.Component {
         mime: doc.mime,
         size: doc.size,
         sha256: doc.sha256,
+        merkleRootHex: doc.merkleRootHex,
         created: doc.created,
         target: doc.target,
         htlcSettlement: doc.htlcSettlement,

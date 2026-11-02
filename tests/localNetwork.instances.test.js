@@ -76,4 +76,33 @@ describe('local network instances', function () {
     assert.strictEqual(ctx.additive, true);
     assert.strictEqual(ctx.remotes.length, 2);
   });
+
+  it('re-signs a saved admin token only when the identity key no longer verifies it', function () {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const Key = require('@fabric/core/types/key');
+    const Token = require('@fabric/core/types/token');
+    const { hubServerKeys } = require('../functions/hubAccount');
+    const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fabric-localnet-token-'));
+    try {
+      const key = net.ensureInstanceKey(dir);
+      const { identity } = hubServerKeys({ _rootKey: new Key({ xprv: key.xprv }), settings: { network: 'regtest' } });
+      const tokenFile = path.join(dir, 'admin-token.txt');
+      assert.strictEqual(net.refreshAdminToken(key, tokenFile, 'regtest'), null, 'no saved token');
+
+      const stale = new Token({ capability: 'OP_IDENTITY', issuer: new Key(), subject: 'admin' }).toSignedString();
+      fs.writeFileSync(tokenFile, stale + '\n');
+      const fresh = net.refreshAdminToken(key, tokenFile, 'regtest');
+      assert.ok(fresh && fresh !== stale);
+      assert.ok(isOperatorAdminToken(fresh, [identity]));
+      assert.strictEqual(fs.readFileSync(tokenFile, 'utf8').trim(), fresh);
+      assert.strictEqual(fs.statSync(tokenFile).mode & 0o777, 0o600);
+
+      assert.strictEqual(net.refreshAdminToken(key, tokenFile, 'regtest'), null, 'a valid token is kept');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

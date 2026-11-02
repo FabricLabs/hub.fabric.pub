@@ -76,7 +76,9 @@ class SignerRules extends EventEmitter {
   /** @private */
   _unreserve (reservation) {
     const index = this._state.reserved.findIndex((r) => r.rule === reservation.rule && r.at === reservation.at && r.amountSats === reservation.amountSats);
-    if (index !== -1) this._state.reserved.splice(index, 1);
+    if (index === -1) return false;
+    this._state.reserved.splice(index, 1);
+    return true;
   }
 
   /** @private */
@@ -120,6 +122,7 @@ class SignerRules extends EventEmitter {
     this._check();
     const ids = new Set(this._state.rules.map((r) => String((r && r.id) || '').trim().toLowerCase()).filter(Boolean));
     for (const id of Object.keys(this._state.usage)) if (!ids.has(id)) delete this._state.usage[id];
+    this._state.reserved = this._state.reserved.filter((r) => ids.has(r.rule));
     this._save();
     return this.list();
   }
@@ -152,15 +155,14 @@ class SignerRules extends EventEmitter {
   reserve (decision, facts) {
     if (!decision || decision.action !== 'sign' || !decision.rule) return null;
     const at = this._now();
-    const before = this._state.usage[decision.rule];
+    const usage = Object.assign({}, this._state.usage);
     const reservation = { rule: decision.rule, at, amountSats: facts.amountSats || 0 };
-    this._state.usage[decision.rule] = countUse(before, facts, at);
+    this._state.usage[decision.rule] = countUse(usage[decision.rule], facts, at);
     this._state.reserved.push(reservation);
     try {
       this._save();
     } catch (err) {
-      if (before === undefined) delete this._state.usage[decision.rule];
-      else this._state.usage[decision.rule] = before;
+      this._state.usage = usage;
       this._unreserve(reservation);
       throw err;
     }
@@ -172,8 +174,7 @@ class SignerRules extends EventEmitter {
    * @param {Object|null} reservation From {@link SignerRules#reserve}.
    */
   release (reservation) {
-    if (!reservation) return;
-    this._unreserve(reservation);
+    if (!reservation || !this._unreserve(reservation)) return;
     if (this._state.usage[reservation.rule]) {
       this._state.usage[reservation.rule] = uncountUse(this._state.usage[reservation.rule], reservation);
     }

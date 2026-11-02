@@ -144,6 +144,15 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     assert.strictEqual(svc.ingestContractMessage({ type: 'FraudProof', kind: 'wrong-leaf', artifacts: {} }).ok, false);
   });
 
+  it('uses only commitments made to this Hub as publisher', function () {
+    const { svc, provider, hashes, root, publisherPubkey } = fixture(9);
+    const stranger = Buffer.from(schnorr.getPublicKey(crypto.randomBytes(32))).toString('hex');
+    assert.strictEqual(svc.ingestContractMessage(Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: 500, providerPrivateKey: provider.priv, publisherPubkey: stranger })).ok, true);
+    assert.strictEqual(svc.commitmentFor(root, provider.xOnly), null);
+    svc.ingestContractMessage(Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: 100, providerPrivateKey: provider.priv, publisherPubkey: `02${publisherPubkey}` }));
+    assert.strictEqual(svc.commitmentFor(root, provider.xOnly).untilEpoch, 100);
+  });
+
   it('epoch-only silence is late but never a proof (nothing on-chain anchors it)', async function () {
     const { svc, hub, provider, doc, hashes, root, publisherPubkey } = fixture(20);
     const commitment = Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: 100, providerPrivateKey: provider.priv, publisherPubkey });

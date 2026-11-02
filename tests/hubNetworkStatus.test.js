@@ -76,6 +76,28 @@ describe('hubNetworkStatus', function () {
       Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
     });
 
+    it('still fits when the remaining fields are over the cap (424 KB status)', function () {
+      const peers = Array.from({ length: 2000 }, (_, i) => ({ id: `peer-${i}`, address: `10.0.0.${i % 255}:7777`, note: 'x'.repeat(150) }));
+      const status = {
+        clock: 1,
+        contract: 'c',
+        fabricPeerId: 'f',
+        network: { address: 'a' },
+        peers,
+        chain: { blocks: 'y'.repeat(60000) },
+        bitcoin: { height: 1 },
+        fabricMessages: big(10)
+      };
+      const fitted = fitHubNetworkStatus(status, MAX_MESSAGE_SIZE - 1024);
+      assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= MAX_MESSAGE_SIZE - 1024);
+      assert.strictEqual(fitted.fabricPeerId, 'f');
+      assert.deepStrictEqual(fitted.network, { address: 'a' });
+      assert.strictEqual(fitted.peersTotal, 2000);
+      assert.ok(fitted.truncated.includes('chain'));
+      assert.strictEqual(status.peers.length, 2000, 'input is not mutated');
+      Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
+    });
+
     it('client keeps its previous copy of truncated fields', function () {
       const previous = { peers: [], messages: { a: 1 }, fabricMessages: { b: 2 } };
       const next = { peers: [{ id: 'p' }], truncated: ['messages'] };

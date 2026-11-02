@@ -13,6 +13,8 @@ const REDACTIONS = [
   [/\b([xtyzuv]prv)[1-9A-HJ-NP-Za-km-z]{20,}/g, '$1…[redacted]'],
   [/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'],
   [/("(?:adminToken|token|password|passphrase|mnemonic|seed|xprv|secret|appSecret)"\s*:\s*")[^"]*(")/gi, '$1[redacted]$2'],
+  // util.inspect form, as util.format and console.log print objects: `{ adminToken: 'abc' }`
+  [/(\b(?:adminToken|token|password|passphrase|mnemonic|seed|xprv|secret|appSecret)'?\s*:\s*)(['"])(?:(?!\2)[^\\]|\\.)*\2/gi, '$1$2[redacted]$2'],
   [/([?&](?:token|adminToken|secret|password)=)[^&\s"']+/gi, '$1[redacted]'],
   [/\b((?:FABRIC_(?:XPRV|SEED|MNEMONIC|PASSWORD|PASSPHRASE|HUB_ADMIN_TOKEN)|BITCOIN_RPC_PASSWORD)=)\S+/g, '$1[redacted]']
 ];

@@ -537,6 +537,9 @@ async function start (ctx) {
       prune: ctx.profile.prune || 0
     });
     if (token) console.log(`[deploy] ${instance.name}: admin token → ${instance.tokenFile}`);
+    else if (net.refreshAdminToken(net.ensureInstanceKey(instance.dir), instance.tokenFile, ctx.profile.name)) {
+      console.log(`[deploy] ${instance.name}: admin token re-signed for its current identity key → ${instance.tokenFile}`);
+    }
     await net.waitBitcoinOnline(instance.ports.http, 240000);
   }
 

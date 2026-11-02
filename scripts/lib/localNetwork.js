@@ -339,6 +339,31 @@ async function bootstrapAdmin (port, nodeName, tokenFile, opts = {}) {
   throw new Error(`POST /settings on ${port} failed: ${r.status} ${r.raw}`);
 }
 
+/**
+ * Re-sign an instance's saved admin token when it no longer verifies against
+ * the identity key its `key.json` derives to (a core with another identity
+ * path). Setup won't issue a second token once the Hub is configured.
+ * @param {{ xprv: string }} key the instance key from {@link ensureInstanceKey}
+ * @param {string} tokenFile
+ * @param {string} network
+ * @returns {string|null} the new token, or null when the saved one still verifies (or none is saved)
+ */
+function refreshAdminToken (key, tokenFile, network) {
+  let saved = '';
+  try { saved = fs.readFileSync(tokenFile, 'utf8').trim(); } catch (_) { return null; }
+  if (!saved || !key || !key.xprv) return null;
+  const Key = require('@fabric/core/types/key');
+  const Token = require('@fabric/core/types/token');
+  const { hubServerKeys } = require(path.join(REPO, 'functions', 'hubAccount'));
+  const { isOperatorAdminToken } = require(path.join(REPO, 'functions', 'operatorAdminToken'));
+  const { identity } = hubServerKeys({ _rootKey: new Key({ xprv: key.xprv }), settings: { network } });
+  if (!identity || isOperatorAdminToken(saved, [identity])) return null;
+  const token = new Token({ capability: 'OP_IDENTITY', issuer: identity, subject: 'admin' }).toSignedString();
+  fs.writeFileSync(tokenFile, token + '\n', { mode: 0o600 });
+  fs.chmodSync(tokenFile, 0o600);
+  return token;
+}
+
 function pidAlive (pid) {
   if (!pid) return false;
   try {
@@ -422,6 +447,7 @@ module.exports = {
   waitHttp,
   waitBitcoinOnline,
   bootstrapAdmin,
+  refreshAdminToken,
   pidAlive,
   readPid,
   startDetached,

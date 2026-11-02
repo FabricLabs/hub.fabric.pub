@@ -160,6 +160,13 @@ const { paginateInventoryItems } = require('@fabric/core/types/documentBook');
 
 // JSONCall / JSONCallResult envelope (method, hash, ids) around a status body.
 const NETWORK_STATUS_MAX_BYTES = MAX_MESSAGE_SIZE - 1024;
+// Peer connects and closes come in bursts; one status push per window is plenty.
+const NETWORK_STATUS_PUSH_MS = 1000;
+// A drain marks dozens of frames delivered; coalesce them into one queue write.
+const CONTRACT_MESSAGE_QUEUE_FLUSH_MS = 1000;
+// Without core `peer:session`, how often and how long to wait for a session to name a new connection.
+const MAILBOX_IDENTITY_POLL_MS = 250;
+const MAILBOX_IDENTITY_WAIT_MS = 10000;
 // Walk the whole UTXO set; on signet and mainnet they outlast core's 15 s RPC timeout.
 const BITCOIN_SLOW_RPC_METHODS = new Set(['scantxoutset', 'gettxoutsetinfo']);
 // Core asks for `gettxoutsetinfo` on every block; one shared call per window is plenty.
@@ -4040,7 +4047,9 @@ class Hub extends Service {
       return null;
     }
     try {
-      this._contractMessageQueueStore = contractMessageQueue.createFilesystemStore(this.fs);
+      this._contractMessageQueueStore = contractMessageQueue.createFilesystemStore(this.fs, {
+        flushMs: CONTRACT_MESSAGE_QUEUE_FLUSH_MS
+      });
     } catch (err) {
       if (this.settings && this.settings.debug) {
         console.error('[HUB] contract message queue store unavailable:', err && err.message ? err.message : err);
@@ -4069,35 +4078,177 @@ class Hub extends Service {
     if (!buffer) return null;
     const body = (ev && ev.object) || {};
     const result = contractMessageQueue.enqueue(store, contract, buffer, {
-      origin: (ev.origin && (ev.origin.name || ev.origin.id)) ? 'mesh' : 'mesh',
+      origin: 'mesh',
       type: body.type || body['@type'] || null,
       author: ev.signer || null
     });
     if (result && result.accepted) {
       this._contractNamespaces = this._contractNamespaces || new Set();
       this._contractNamespaces.add(contract);
+      const senderAddress = ev.origin && ev.origin.name ? String(ev.origin.name) : null;
+      const senderMailbox = contractMessageQueue.mailboxKey(this._fabricIdForConnection(senderAddress));
+      if (senderMailbox && result.entry) {
+        contractMessageQueue.markDelivered(store, contract, result.entry.hash, senderMailbox);
+      }
     }
     return result;
   }
 
   /**
-   * Later-relay: write pending opaque frames to a newly opened peer connection.
-   * @param {string} addressInput
-   * @param {{ limitPerContract: (number|undefined)}} [opts]
-   * @returns {{ delivered: number, contracts: number }}
+   * Fabric id the session handshake bound to a live connection.
+   * @param {string} address connection `host:port`
+   * @returns {string|null}
    */
-  _drainContractMessageQueueToPeer (addressInput, opts = {}) {
-    const address = this._resolvePeerAddress(addressInput) || String(addressInput || '').trim();
-    if (!address || !this.agent || !this.agent.connections || !this.agent.connections[address]) {
-      return { delivered: 0, contracts: 0 };
+  _fabricIdForConnection (address) {
+    if (!address || !this.agent) return null;
+    const key = String(address);
+    const mapped = this.agent._addressToId && this.agent._addressToId[key];
+    if (mapped) return String(mapped);
+    const peer = this.agent.peers && this.agent.peers[key];
+    return peer && peer.id ? String(peer.id) : null;
+  }
+
+  /**
+   * Live connections bound to one Fabric id, connections this Hub dialed first.
+   * @param {string} fabricId
+   * @returns {string[]}
+   */
+  _connectionsForFabricId (fabricId) {
+    if (!fabricId || !this.agent || !this.agent.connections) return [];
+    const want = String(fabricId);
+    const dialed = this.agent._outboundDialTargets;
+    const isDialed = (addr) => (dialed && typeof dialed.has === 'function' && dialed.has(addr) ? 1 : 0);
+    return Object.keys(this.agent.connections)
+      .filter((addr) => this._fabricIdForConnection(addr) === want)
+      .sort((a, b) => isDialed(b) - isDialed(a));
+  }
+
+  /**
+   * Drain a connection's mailbox once its session has named the peer.
+   * @param {string} address
+   * @returns {object|null} the drain result, or null when skipped
+   */
+  _drainMailboxForConnection (address) {
+    if (!address) return null;
+    const key = String(address);
+    this._mailboxDrainedConnections = this._mailboxDrainedConnections || new Set();
+    if (this._mailboxDrainedConnections.has(key) || !this._fabricIdForConnection(key)) return null;
+    this._mailboxDrainedConnections.add(key);
+    this._stopConnectionIdentityWatch(key);
+    try {
+      const drain = this._drainContractMessageQueueToPeer(key);
+      if (drain && drain.delivered && this.settings && this.settings.debug) {
+        console.debug('[HUB:QUEUE] drained', drain.delivered, 'frames across', drain.contracts, 'contracts →', drain.peerId, 'via', key);
+      }
+      return drain;
+    } catch (err) {
+      if (this.settings && this.settings.debug) {
+        console.error('[HUB:QUEUE] drain on session failed:', err && err.message ? err.message : err);
+      }
+      return null;
     }
+  }
+
+  /**
+   * Fallback for a core Peer without `peer:session`: wait for the handshake to
+   * bind the connection's identity, then drain its mailbox.
+   * @param {string} address
+   */
+  _watchConnectionIdentity (address) {
+    if (!address) return;
+    const key = String(address);
+    this._connectionIdentityWatches = this._connectionIdentityWatches || new Map();
+    if (this._connectionIdentityWatches.has(key)) return;
+    this._drainMailboxForConnection(key);
+    if (this._mailboxDrainedConnections && this._mailboxDrainedConnections.has(key)) return;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const open = this.agent && this.agent.connections && this.agent.connections[key];
+      if (!open || Date.now() - startedAt >= MAILBOX_IDENTITY_WAIT_MS) {
+        this._stopConnectionIdentityWatch(key);
+        return;
+      }
+      this._drainMailboxForConnection(key);
+    }, MAILBOX_IDENTITY_POLL_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    this._connectionIdentityWatches.set(key, timer);
+  }
+
+  /**
+   * Drain each peer's mailbox once its session names it (`peer:session`, or the
+   * identity watch on cores without that event).
+   */
+  _bindContractMailboxEvents () {
+    if (this._contractMailboxListeners || !this.agent || typeof this.agent.on !== 'function') return;
+    const listeners = {
+      'connections:open': (ev) => this._watchConnectionIdentity(ev && (ev.address || ev.id)),
+      'peer:session': (ev) => this._drainMailboxForConnection(ev && ev.address),
+      'connections:close': (ev) => this._forgetMailboxConnection(ev && (ev.address || ev.name))
+    };
+    for (const [event, listener] of Object.entries(listeners)) this.agent.on(event, listener);
+    this._contractMailboxListeners = listeners;
+  }
+
+  _unbindContractMailboxEvents () {
+    const listeners = this._contractMailboxListeners;
+    if (listeners && this.agent && typeof this.agent.removeListener === 'function') {
+      for (const [event, listener] of Object.entries(listeners)) this.agent.removeListener(event, listener);
+    }
+    this._contractMailboxListeners = null;
+    if (this._connectionIdentityWatches) {
+      for (const timer of this._connectionIdentityWatches.values()) clearInterval(timer);
+      this._connectionIdentityWatches.clear();
+    }
+  }
+
+  _stopConnectionIdentityWatch (address) {
+    const watches = this._connectionIdentityWatches;
+    if (!watches || !watches.has(address)) return;
+    clearInterval(watches.get(address));
+    watches.delete(address);
+  }
+
+  _forgetMailboxConnection (address) {
+    if (!address) return;
+    const key = String(address);
+    this._stopConnectionIdentityWatch(key);
+    if (this._mailboxDrainedConnections) this._mailboxDrainedConnections.delete(key);
+  }
+
+  /**
+   * Later-relay: write pending opaque frames to a peer's mailbox over one of
+   * its connections. Delivery is tracked per Fabric id; a connection whose
+   * session hasn't named the peer gets nothing.
+   * @param {string} input connection `host:port` or Fabric id
+   * @param {{ limitPerContract: (number|undefined)}} [opts]
+   * @returns {{ delivered: number, contracts: number, peerId: (string|undefined), unidentified: (boolean|undefined) }}
+   */
+  _drainContractMessageQueueToPeer (input, opts = {}) {
+    const none = { delivered: 0, contracts: 0 };
+    if (!input || !this.agent || !this.agent.connections) return none;
+    const value = String(input).trim();
+    let address = this.agent.connections[value] ? value : null;
+    let fabricId = address ? this._fabricIdForConnection(address) : null;
+    if (!address) {
+      const byId = this._connectionsForFabricId(value);
+      if (byId.length) {
+        address = byId[0];
+        fabricId = value;
+      } else {
+        const resolved = this._resolvePeerAddress(value);
+        if (resolved && this.agent.connections[resolved]) {
+          address = resolved;
+          fabricId = this._fabricIdForConnection(resolved);
+        }
+      }
+    }
+    if (!address) return none;
+    const peerKey = contractMessageQueue.mailboxKey(fabricId);
+    if (!peerKey) return Object.assign(none, { unidentified: true });
     const sock = this.agent.connections[address];
-    if (!sock || typeof sock._writeFabric !== 'function') {
-      return { delivered: 0, contracts: 0 };
-    }
+    if (!sock || typeof sock._writeFabric !== 'function') return none;
     const store = this._ensureContractMessageQueueStore();
-    if (!store) return { delivered: 0, contracts: 0 };
-    const peerKey = String(address).toLowerCase();
+    if (!store) return none;
     const limitPer = Number(opts.limitPerContract) > 0 ? Number(opts.limitPerContract) : 64;
     const contractIds = typeof store.listContractIds === 'function'
       ? store.listContractIds()
@@ -4123,7 +4274,7 @@ class Hub extends Service {
         }
       }
     }
-    return { delivered, contracts };
+    return { delivered, contracts, peerId: fabricId };
   }
 
   /**
@@ -6523,10 +6674,7 @@ class Hub extends Service {
    * @returns {Buffer}
    */
   _openPerBlobDocument (parsed, secret, documentId) {
-    const raw = this.fs.readFile(`documents/${documentId}.batches`);
-    if (!raw) throw new Error('sealed document missing batch wraps');
-    const stored = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw));
-    const batch = stored && stored.batches && stored.batches[0];
+    const batch = this._readBlobBatch(documentId);
     if (!batch) throw new Error('sealed document missing batch wraps');
     const { openBlobBatch, openCiphertext } = require('@fabric/core/functions/documentSealedExchange');
     const body = Buffer.from(parsed.contentBase64, 'base64');
@@ -6544,26 +6692,58 @@ class Hub extends Service {
   }
 
   /**
-   * Wraps for a buyer-targeted reveal. Absent from public document JSON.
+   * The private batch of blob-key wraps for a per-blob sealed document, sealed
+   * here or delivered with a bought copy. Absent from public document JSON.
    * @private
    * @param {string} documentId
-   * @returns {Array|null}
+   * @returns {Object|null} core `DocumentBlobBatch`
    */
-  _buyerBatchWraps (documentId) {
+  _readBlobBatch (documentId) {
     try {
       const raw = this.fs.readFile(`documents/${documentId}.batches`);
       if (!raw) return null;
       const stored = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw));
       const batch = stored && stored.batches && stored.batches[0];
-      if (!batch || !Array.isArray(batch.blobs)) return null;
-      return batch.blobs.map((b) => ({
-        blobIndex: b.blobIndex,
-        wrappedKeyHex: b.wrappedKeyHex,
-        keyHashHex: b.keyHashHex
-      }));
+      return batch && Array.isArray(batch.blobs) ? batch : null;
     } catch (_) {
       return null;
     }
+  }
+
+  /**
+   * Header and per-blob entries for selling a per-blob sealed document: the
+   * stored ciphertext goes as-is, each frame carrying its blob's IV and the
+   * blob key wrapped under the batch preimage `S`.
+   * @private
+   * @param {Object} doc - documents/{id}.json body with `encryption.perBlob`
+   * @param {Buffer} preimageBuf - `S`
+   * @returns {{ header: Object, sealedParts: Array<Object> }|{ error: string }}
+   */
+  _perBlobShareMeta (doc, preimageBuf) {
+    const batch = this._readBlobBatch(doc.id);
+    if (!batch) return { error: 'sealed document missing batch wraps' };
+    const paymentHashHex = documentContentKey.paymentHashHexFromKey(preimageBuf);
+    if (String(batch.paymentHashHex).toLowerCase() !== paymentHashHex || String(batch.documentId) !== String(doc.id)) {
+      return { error: 'HTLC preimage does not open this document\'s blob keys' };
+    }
+    const wraps = new Map(batch.blobs.map((b) => [Number(b.blobIndex), b]));
+    const parts = Array.isArray(doc.parts) ? doc.parts : [];
+    const sealedParts = parts.map((p, i) => {
+      const w = Number(p.index) === i ? wraps.get(i) : null;
+      return w ? { iv: p.iv, keyHashHex: p.keyHashHex, wrappedKeyHex: w.wrappedKeyHex, size: Number(p.size) } : null;
+    });
+    if (!sealedParts.length || sealedParts.some((p) => !p)) return { error: 'sealed document missing batch wraps' };
+    return {
+      header: {
+        v: 2,
+        scheme: doc.encryption.scheme,
+        perBlob: true,
+        merkleRootHex: String(batch.merkleRootHex || doc.encryption.merkleRootHex),
+        blobTotal: sealedParts.length,
+        paymentHashHex
+      },
+      sealedParts
+    };
   }
 
   /**
@@ -6584,10 +6764,6 @@ class Hub extends Service {
       paymentHashHex: payload.paymentHashHex || null,
       created: Date.now()
     };
-    if (Array.isArray(payload.wraps) && payload.wraps.length) {
-      body.wraps = payload.wraps;
-      if (Buffer.byteLength(JSON.stringify(body)) > 30000) delete body.wraps;
-    }
     if (relayMeta && relayMeta.deliveryFabricId) {
       let ttl = Number(relayMeta.fileRelayTtl);
       if (!Number.isFinite(ttl) || ttl <= 0) ttl = INVENTORY_FILE_RELAY_TTL;
@@ -6630,7 +6806,21 @@ class Hub extends Service {
     const want = String(doc.htlcFileV1.paymentHashHex || '').toLowerCase();
     if (documentContentKey.paymentHashHexFromKey(keyHex) !== want) return false;
     await documentContentKey.writeContentKey(this.fs, documentId, Buffer.from(keyHex, 'hex'));
-    if (!documentContentKey.isSealedDocument(doc)) {
+    if (documentFileShare.isPerBlobHeader(doc.htlcFileV1)) {
+      // Same shape the seller keeps (`parts` here, wraps in the private batch file), so a resale sends it as-is.
+      if (!documentContentKey.isSealedDocument(doc) && Array.isArray(doc.parts) && this._readBlobBatch(documentId)) {
+        const header = doc.htlcFileV1;
+        await this.fs.publish(`documents/${documentId}.json`, {
+          ...doc,
+          encryption: {
+            scheme: documentContentKey.SEALED_SCHEMES.includes(header.scheme) ? header.scheme : documentContentKey.CONVERGENT_SCHEME,
+            perBlob: true,
+            merkleRootHex: String(header.merkleRootHex).toLowerCase(),
+            blobTotal: Number(header.blobTotal)
+          }
+        });
+      }
+    } else if (!documentContentKey.isSealedDocument(doc)) {
       // Same ciphertext and IV as the seller's: a resale sends it as-is instead of sealing it again.
       await this.fs.publish(`documents/${documentId}.json`, {
         ...doc,
@@ -6707,13 +6897,24 @@ class Hub extends Service {
     if (body.preimageHex) await this._acceptHtlcKeyReveal({ documentId, preimageHex: body.preimageHex });
     const key = documentContentKey.readContentKey(this.fs, documentId);
     if (!key) return deny('no content key yet: wait for the seller\'s reveal, or pass preimageHex from its claim');
-    const opened = documentContentKey.openWithClaimPreimage({
-      ciphertext: Buffer.from(doc.contentBase64, 'base64'),
-      preimageHex: key.toString('hex'),
-      paymentHashHex: doc.htlcFileV1.paymentHashHex,
-      iv: doc.htlcFileV1.iv
-    });
-    if (!opened.ok) return deny(opened.error || 'decrypt failed');
+    let plaintext;
+    if (documentFileShare.isPerBlobHeader(doc.htlcFileV1)) {
+      if (!Array.isArray(doc.parts)) return deny('delivery is missing its per-blob parts');
+      try {
+        plaintext = this._openPerBlobDocument(doc, key, documentId);
+      } catch (err) {
+        return deny(err && err.message ? err.message : 'decrypt failed');
+      }
+    } else {
+      const opened = documentContentKey.openWithClaimPreimage({
+        ciphertext: Buffer.from(doc.contentBase64, 'base64'),
+        preimageHex: key.toString('hex'),
+        paymentHashHex: doc.htlcFileV1.paymentHashHex,
+        iv: doc.htlcFileV1.iv
+      });
+      if (!opened.ok) return deny(opened.error || 'decrypt failed');
+      plaintext = opened.plaintext;
+    }
     return {
       type: 'OpenPurchasedDocumentResult',
       status: 'success',
@@ -6721,9 +6922,9 @@ class Hub extends Service {
         id: documentId,
         name: doc.name,
         mime: doc.mime || 'application/octet-stream',
-        size: opened.plaintext.length,
-        sha256: crypto.createHash('sha256').update(opened.plaintext).digest('hex'),
-        contentBase64: opened.plaintext.toString('base64')
+        size: plaintext.length,
+        sha256: crypto.createHash('sha256').update(plaintext).digest('hex'),
+        contentBase64: plaintext.toString('base64')
       }
     };
   }
@@ -6990,8 +7191,9 @@ class Hub extends Service {
     const sizeErr = this._validateDocumentSize(buf);
     if (sizeErr) return sizeErr;
 
-    /** @type {{ v:number, iv:string, paymentHashHex:string }|null} */
+    /** @type {Object|null} `htlcFileV1` (see documentFileShare.buildFileShareFrames) */
     let htlcFileV1Header = null;
+    let sealedParts = null;
     if (htlcEncrypt && htlcEncrypt.preimage32) {
       const preimageBuf = Buffer.isBuffer(htlcEncrypt.preimage32)
         ? htlcEncrypt.preimage32
@@ -6999,8 +7201,13 @@ class Hub extends Service {
       if (preimageBuf.length !== 32) {
         return { status: 'error', message: 'HTLC preimage must be 32 bytes.' };
       }
-      // Sealed-at-rest: content is already AES-GCM(K); send as-is with seal IV (do not double-encrypt).
-      if (documentContentKey.isSealedDocument(doc) && doc.encryption && doc.encryption.iv) {
+      // Sealed-at-rest: content is already AES-GCM ciphertext; send as-is (do not double-encrypt).
+      if (documentContentKey.isSealedDocument(doc) && doc.encryption.perBlob) {
+        const meta = this._perBlobShareMeta(doc, preimageBuf);
+        if (meta.error) return { status: 'error', message: meta.error };
+        htlcFileV1Header = meta.header;
+        sealedParts = meta.sealedParts;
+      } else if (documentContentKey.isSealedDocument(doc) && doc.encryption.iv) {
         htlcFileV1Header = {
           v: 1,
           iv: String(doc.encryption.iv),
@@ -7042,6 +7249,7 @@ class Hub extends Service {
         sha256: doc.sha256 || doc.id,
         created: doc.created || new Date().toISOString(),
         htlcFileV1: htlcFileV1Header,
+        sealedParts,
         relay: relayExtras
       });
     } catch (e) {
@@ -7346,8 +7554,7 @@ class Hub extends Service {
         settlementId,
         documentId: s.documentId,
         preimageHex: s.preimageHex,
-        paymentHashHex: s.paymentHashHex,
-        wraps: this._buyerBatchWraps(s.documentId)
+        paymentHashHex: s.paymentHashHex
       }, fileRelayMeta);
     } catch (revealErr) {
       console.warn('[HUB] HTLC_KEY_REVEAL send failed:', revealErr && revealErr.message ? revealErr.message : revealErr);
@@ -10580,6 +10787,20 @@ class Hub extends Service {
    * @param {object} req
    * @returns {string}
    */
+  /** A JSON body field (POST keeps the wallet out of URLs and logs), else the query. */
+  _bitcoinXpubBodyOrQuery (req, name) {
+    const body = req && req.body && typeof req.body === 'object' ? req.body : null;
+    if (body && body[name] != null) return body[name];
+    return req && req.query ? req.query[name] : undefined;
+  }
+
+  /** Watched addresses as a comma list, from a JSON body (string or array) or `?addresses=`. */
+  _bitcoinXpubAddressesFromRequest (req) {
+    const raw = this._bitcoinXpubBodyOrQuery(req, 'addresses');
+    if (Array.isArray(raw)) return raw.map((a) => String(a).trim()).filter(Boolean).join(',');
+    return raw != null ? String(raw).trim() : '';
+  }
+
   _bitcoinXpubFromRequest (req) {
     const h = (req && req.headers) || {};
     const headerRaw = h['x-fabric-xpub'] || h['x-fabric-xpub-key'] || '';
@@ -10609,7 +10830,7 @@ class Hub extends Service {
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
       try {
-        const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+        const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
         const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
@@ -10661,9 +10882,9 @@ class Hub extends Service {
         });
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
-      const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+      const limit = Math.max(1, Math.min(100, Number(this._bitcoinXpubBodyOrQuery(req, 'limit') || 50)));
       try {
-        const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+        const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
         const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
@@ -10729,7 +10950,7 @@ class Hub extends Service {
       if (isClientWallet) {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+          const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
           const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
@@ -10949,12 +11170,12 @@ class Hub extends Service {
       const xpub = this._bitcoinXpubFromRequest(req);
       const isHubWallet = walletId && String(walletId) === String(bitcoin.walletName);
       const isClientWallet = !isHubWallet && xpub;
-      const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+      const limit = Math.max(1, Math.min(100, Number(this._bitcoinXpubBodyOrQuery(req, 'limit') || 50)));
 
       if (isClientWallet) {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+          const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
           const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
@@ -11194,7 +11415,7 @@ class Hub extends Service {
         return res.json(payments.filter(Boolean));
       }
 
-      const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+      const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
       const watchAddrs = new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean));
       const filtered = await this._filterMempoolPaymentSummariesForAddresses(bitcoin, watchAddrs, limit);
       return res.json(filtered);
@@ -11586,6 +11807,7 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const market = this._getMarketService();
       if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to read the market budget.' });
       return res.json(market.agentStatus());
     });
   }
@@ -11744,6 +11966,7 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const market = this._getMarketService();
       if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to read payment channels.' });
       return res.json(market.channelsStatus());
     });
   }
@@ -15684,7 +15907,16 @@ class Hub extends Service {
           if (!ch) return fail('Challenge service required for bounty bonds.');
           try {
             const epochs = Math.max(1, Math.floor(Number(config.epochs) || 1));
-            const tip = Number(bitcoin && bitcoin.height) || 0;
+            let refundAfterHeight = Number(config.refundAfterHeight) || 0;
+            if (!refundAfterHeight) {
+              let tip = Number(bitcoin && bitcoin.height) || 0;
+              if (!(tip > 0) && bitcoin && typeof bitcoin._makeRPCRequest === 'function') {
+                tip = Number(await bitcoin._makeRPCRequest('getblockcount', [])) || 0;
+              }
+              // A refund height counted from 0 would let the publisher take the bounty back at once.
+              if (!(tip > 0)) return fail('bond: the chain tip is unknown; pass refundAfterHeight or wait for Bitcoin to sync.');
+              refundAfterHeight = tip + Math.max(144, epochs * 144);
+            }
             bondRecord = ch.createBounty({
               contractId: `pending:${documentId}`,
               merkleRootHex: config.merkleRootHex || null,
@@ -15692,7 +15924,7 @@ class Hub extends Service {
               amountSats,
               epochs,
               startEpoch: config.startEpoch,
-              refundAfterHeight: Number(config.refundAfterHeight) || (tip + Math.max(144, epochs * 144)),
+              refundAfterHeight,
               network: (bitcoin && bitcoin.network) || this.settings.network || 'regtest'
             });
           } catch (e) {
@@ -16743,10 +16975,13 @@ class Hub extends Service {
         }
         const contractId = p.contractId != null ? String(p.contractId).trim() : '';
         if (contractId) {
+          const peerInput = p.peerKey != null ? String(p.peerKey).trim() : '';
           const rows = contractMessageQueue.listQueuedMessages(store, contractId, {
             limit: p.limit,
             includeDelivered: p.includeDelivered === true,
-            peerKey: p.peerKey || null,
+            peerKey: peerInput
+              ? contractMessageQueue.mailboxKey(this._fabricIdForConnection(peerInput) || peerInput)
+              : null,
             recipient: p.recipient || null,
             ref: p.ref || null,
             slot: p.slot || null
@@ -16781,9 +17016,9 @@ class Hub extends Service {
 
       this.http._registerMethod('DrainContractMessageQueue', (...params) => {
         const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
-        const address = p.address || p.peer || params[0];
+        const address = p.address || p.peerId || p.peer || params[0];
         if (!address || typeof address === 'object') {
-          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'address required' };
+          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'address or peerId required' };
         }
         const result = this._drainContractMessageQueueToPeer(String(address), {
           limitPerContract: p.limitPerContract
@@ -16968,7 +17203,8 @@ class Hub extends Service {
       };
 
       // Push network status to all WebSocket clients when peer connections change
-      const pushNetworkStatus = () => {
+      const sendNetworkStatus = () => {
+        this._pushNetworkStatusTimer = null;
         try {
           const status = fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
@@ -16984,6 +17220,11 @@ class Hub extends Service {
           console.error('[HUB] pushNetworkStatus error:', err);
         }
       };
+      const pushNetworkStatus = () => {
+        if (this._pushNetworkStatusTimer) return;
+        this._pushNetworkStatusTimer = setTimeout(sendNetworkStatus, NETWORK_STATUS_PUSH_MS);
+        if (typeof this._pushNetworkStatusTimer.unref === 'function') this._pushNetworkStatusTimer.unref();
+      };
       // Expose for lifecycle cleanup.
       this._pushNetworkStatus = pushNetworkStatus;
 
@@ -16993,19 +17234,9 @@ class Hub extends Service {
         const addr = ev && (ev.address || ev.id);
         this._requestMainchainInventoryFromPeer(addr, 'connection-open').catch(() => {});
         try { this._requestDocumentInventoryFromPeer(addr, 'connection-open'); } catch (_) {}
-        // Opaque CONTRACT_MESSAGE later-relay (hub-blind; does not open seals).
-        try {
-          const drain = this._drainContractMessageQueueToPeer(addr);
-          if (drain && drain.delivered && this.settings && this.settings.debug) {
-            console.debug('[HUB:QUEUE] drained', drain.delivered, 'frames across', drain.contracts, 'contracts →', addr);
-          }
-        } catch (err) {
-          if (this.settings && this.settings.debug) {
-            console.error('[HUB:QUEUE] drain on connect failed:', err && err.message ? err.message : err);
-          }
-        }
       });
       this.agent.on('connections:close', pushNetworkStatus);
+      this._bindContractMailboxEvents();
 
       // Push network status when WebRTC peers connect/disconnect
       this.http.on('webrtc:connection', pushNetworkStatus);
@@ -17306,9 +17537,17 @@ class Hub extends Service {
           created: doc.created || new Date().toISOString(),
           receivedFrom: origin && origin.name,
           ...(doc.merkleRootHex ? { merkleRootHex: doc.merkleRootHex } : {}),
-          ...(doc.htlcFileV1 ? { htlcFileV1: doc.htlcFileV1 } : {})
+          ...(doc.htlcFileV1 ? { htlcFileV1: doc.htlcFileV1 } : {}),
+          ...(doc.sealedBatch && Array.isArray(doc.parts) ? { parts: doc.parts } : {})
         };
 
+        if (normalized.parts) {
+          await this.fs.publish(`documents/${normalized.id}.batches`, {
+            type: 'DocumentBlobBatch',
+            documentId: normalized.id,
+            batches: [doc.sealedBatch]
+          });
+        }
         await this.fs.publish(`documents/${normalized.id}.json`, normalized);
         const waiting = this._pendingHtlcReveals && this._pendingHtlcReveals.get(normalized.id);
         if (waiting && normalized.htlcFileV1 && Date.now() - waiting.at < 10 * 60 * 1000) {
@@ -17633,9 +17872,16 @@ class Hub extends Service {
               console.warn('[HUB] Dropping P2P_FILE_SEND blob:', obj.name, error);
               return;
             }
+            const transferKey = documentFileShare.sealedTransferKey(origin && origin.name, obj);
+            const sealedPart = documentFileShare.fileShareSealedPart(obj);
+            if (sealedPart) {
+              if (!this._incomingSealedParts) this._incomingSealedParts = documentFileShare.createSealedPartCollector();
+              this._incomingSealedParts.note(transferKey, sealedPart);
+            }
             if (status !== 'complete' || !Buffer.isBuffer(buffer)) return;
+            const sealedParts = sealedPart ? this._incomingSealedParts.take(transferKey) : undefined;
             await persistIncomingDocument(
-              documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex),
+              documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex, sealedParts),
               origin
             );
             return;
@@ -18074,6 +18320,18 @@ class Hub extends Service {
         } catch (e) {}
       }
       this._stopHeapTelemetry();
+      if (this._pushNetworkStatusTimer) {
+        clearTimeout(this._pushNetworkStatusTimer);
+        this._pushNetworkStatusTimer = null;
+      }
+      this._unbindContractMailboxEvents();
+      if (this._contractMessageQueueStore && typeof this._contractMessageQueueStore.flush === 'function') {
+        try {
+          this._contractMessageQueueStore.flush();
+        } catch (e) {
+          console.warn('[HUB] contract message queue flush failed:', e && e.message ? e.message : e);
+        }
+      }
       if (this._pushNetworkStatus) {
         try {
           this.agent.removeListener('connections:open', this._pushNetworkStatus);
@@ -18113,6 +18371,14 @@ class Hub extends Service {
           await this.beacon.stop();
         } catch (err) {
           console.warn('[HUB] Failed to stop Beacon cleanly:', err && err.message ? err.message : err);
+        }
+      }
+
+      if (this.market && typeof this.market.stop === 'function') {
+        try {
+          await this.market.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Market service cleanly:', err && err.message ? err.message : err);
         }
       }
 

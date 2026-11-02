@@ -146,12 +146,51 @@ describe('SignerRules service', function () {
     rules.set([spend({ maxPerHour: 1 })]);
     const facts = withdrawal();
     const decision = rules.decide(facts, ctx());
+    const before = JSON.parse(JSON.stringify(rules._state.usage));
     const save = rules._save;
     rules._save = () => { throw new Error('disk full'); };
     assert.throws(() => rules.reserve(decision, facts), /disk full/);
     rules._save = save;
+    assert.deepStrictEqual(rules._state.usage, before);
     assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 0, hourCount: 0 });
     assert.strictEqual(rules.decide(withdrawal(), ctx()).action, 'sign');
+  });
+
+  it('keeps a rule’s earlier uses when a reservation cannot be saved', function () {
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    const rules = new SignerRules({ dir, now: () => now }).load();
+    rules.set([spend({ maxPerHour: 2 })]);
+    const facts = withdrawal();
+    const decision = rules.decide(facts, ctx());
+    rules.record(decision, facts, {}, rules.reserve(decision, facts));
+    const before = JSON.parse(JSON.stringify(rules._state.usage));
+    const save = rules._save;
+    rules._save = () => { throw new Error('disk full'); };
+    assert.throws(() => rules.reserve(rules.decide(facts, ctx()), facts), /disk full/);
+    rules._save = save;
+    assert.deepStrictEqual(rules._state.usage, before);
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 5000, hourCount: 1 });
+    assert.strictEqual(rules.decide(withdrawal(), ctx()).action, 'sign');
+  });
+
+  it('gives a reservation back once, and never after its rule is removed', function () {
+    const now = Date.parse('2026-10-30T12:00:00Z');
+    const rules = new SignerRules({ dir, now: () => now }).load();
+    rules.set([spend({ maxPerHour: 3 })]);
+    const facts = withdrawal();
+    const decision = rules.decide(facts, ctx());
+    rules.record(decision, facts, {}, rules.reserve(decision, facts));
+    const held = rules.reserve(decision, facts);
+    rules.release(held);
+    rules.release(held);
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 5000, hourCount: 1 }, 'the recorded sign still counts');
+
+    const stale = rules.reserve(decision, facts);
+    rules.set([]);
+    rules.set([spend({ maxPerHour: 3 })]);
+    rules.record(decision, facts, {}, rules.reserve(decision, facts));
+    rules.release(stale);
+    assert.deepStrictEqual(rules.list().valid[0].usage, { daySats: 5000, hourCount: 1 });
   });
 
   it('gives back reservations left open by a restart', function () {

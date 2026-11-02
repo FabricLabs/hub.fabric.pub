@@ -62,11 +62,26 @@ const NETWORK_STATUS_HEAVY_FIELDS = Object.freeze([
   'webrtcPeers'
 ]);
 
+/** Status fields never dropped: who the Hub is and whether it is set up. */
+const NETWORK_STATUS_KEPT_FIELDS = Object.freeze([
+  'clock',
+  'contract',
+  'fabricPeerId',
+  'fabricIdentityId',
+  'setup',
+  'network',
+  'pubkey',
+  'truncated',
+  'peersTotal'
+]);
+
 /**
  * Fit a {@link GetNetworkStatus} payload into `maxBytes` of JSON by dropping
  * {@link NETWORK_STATUS_HEAVY_FIELDS} in order. Dropped names are listed in
  * `truncated`, so clients keep their last copy of those fields
  * ({@link mergeTruncatedNetworkStatus}) and fetch them with their own calls.
+ * Still too large, it keeps the first `peers` (with `peersTotal`), then drops
+ * the largest remaining fields outside {@link NETWORK_STATUS_KEPT_FIELDS}.
  * @param {object} status
  * @param {number} maxBytes JSON byte budget (frame body minus the JSONCall envelope)
  * @returns {object} `status` itself when it fits, else a trimmed copy
@@ -76,12 +91,32 @@ function fitHubNetworkStatus (status, maxBytes) {
   if (!status || typeof status !== 'object' || size(status) <= maxBytes) return status;
   const out = Object.assign({}, status);
   const truncated = [];
-  for (const field of NETWORK_STATUS_HEAVY_FIELDS) {
-    if (!(field in out)) continue;
+  const drop = (field) => {
     delete out[field];
     truncated.push(field);
     out.truncated = truncated.slice();
-    if (size(out) <= maxBytes) break;
+  };
+  for (const field of NETWORK_STATUS_HEAVY_FIELDS) {
+    if (!(field in out)) continue;
+    drop(field);
+    if (size(out) <= maxBytes) return out;
+  }
+  if (Array.isArray(status.peers) && status.peers.length) {
+    out.peersTotal = status.peers.length;
+    let keep = status.peers.length;
+    while (keep > 0 && size(out) > maxBytes) {
+      keep = Math.floor(keep / 2);
+      out.peers = status.peers.slice(0, keep);
+    }
+    if (size(out) <= maxBytes) return out;
+  }
+  const rest = Object.keys(out)
+    .filter((field) => !NETWORK_STATUS_KEPT_FIELDS.includes(field))
+    .map((field) => ({ field, bytes: out[field] === undefined ? 0 : size(out[field]) }))
+    .sort((a, b) => b.bytes - a.bytes);
+  for (const { field } of rest) {
+    drop(field);
+    if (size(out) <= maxBytes) return out;
   }
   return out;
 }

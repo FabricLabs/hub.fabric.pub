@@ -48,7 +48,7 @@ Electron ≥42 has no install script: the binary downloads the first time `elect
 ## Recommendations
 
 1. After dependency edits: **`npm ci`** (or `npm i`) then **`npm audit`** and **`npm run ci`** (`build` + `test:unit`).
-2. Keep core/http on `feature/rsi` during RSI, then re-pin releases to lockfile SHAs; use **`npm run link:fabric`** for local monorepo work. **`npm run report:install` removes `package-lock.json`** then `npm i --allow-git=all` — bump tips with `npm install FabricLabs/fabric#feature/rsi FabricLabs/fabric-http#feature/rsi --allow-git=all` when upstream moves.
+2. Keep core/http on `feature/passport` until the release, then re-pin releases to lockfile SHAs; use **`npm run link:fabric`** for local monorepo work. **`npm run report:install` removes `package-lock.json`** then `npm i --allow-git=all` — bump tips with `npm install FabricLabs/fabric#feature/passport FabricLabs/fabric-http#feature/passport --allow-git=all` when upstream moves.
 3. Do not run **`npm audit fix --force`** casually — it has proposed Electron, jsdoc-to-markdown, electron-builder and React Router downgrades that fight the chosen pins.
 4. Revisit React Router when a release fixes GHSA-qwww without regressing open-redirect advisories.
 5. Webpack must keep **`conditionNames`** without bare **`import`**, plus CJS aliases for **`react-router$` / `react-router-dom$` / `react-router/dom$`** — otherwise RR7’s `.mjs` exports break the SPA bundle at runtime.

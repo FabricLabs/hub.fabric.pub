@@ -1009,7 +1009,9 @@ async function answerFabricSignRequest (child, msg) {
 }
 
 function onHubExit (child, code) {
-  if (hubProcess === child) hubProcess = null;
+  // A child killed after a stop timeout exits late; by then it is not the current Hub.
+  if (hubProcess !== child) return;
+  hubProcess = null;
   if (hubStopPromise || isQuitting) {
     setHubStatus('stopped');
     return;
@@ -1085,6 +1087,10 @@ function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
       try {
         child.kill();
       } catch (_) {}
+      if (hubProcess === child) {
+        hubProcess = null;
+        setHubStatus('stopped');
+      }
       resolve();
     }, timeoutMs);
     child.once('exit', () => {

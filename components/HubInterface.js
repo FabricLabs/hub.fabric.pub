@@ -1357,7 +1357,13 @@ class HubInterface extends React.Component {
       const upstream = loadUpstreamSettings();
       const summary = await fetchWalletSummaryWithCache(upstream, wallet, { bypassCache: forceRefresh, network });
       if (!isCurrent()) return;
-      const balanceSats = Number(summary.balanceSats ?? summary.balance ?? 0);
+      const reported = summary ? (summary.balanceSats ?? summary.balance) : undefined;
+      if (reported === undefined || reported === null) {
+        // A failed fetch with no cached row: keep the last balance rather than announcing zero.
+        this.setState((prev) => ({ clientBalance: prev.clientBalance, clientBalanceLoading: false }));
+        return;
+      }
+      const balanceSats = Number(reported);
       if (Number.isFinite(balanceSats)) {
         const confirmedSats = Number(summary.confirmedSats ?? balanceSats);
         const unconfirmedSats = Number(summary.unconfirmedSats ?? 0);

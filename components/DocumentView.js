@@ -101,6 +101,7 @@ function DocumentDetail (props) {
 
   const [doc, setDoc] = React.useState(null);
   const [agentNotice, setAgentNotice] = React.useState(null);
+  React.useEffect(() => { setAgentNotice(null); }, [id]);
   const [decryptedContent, setDecryptedContent] = React.useState(null);
   const [unlocked, setUnlocked] = React.useState(false);
   const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);

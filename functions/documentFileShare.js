@@ -7,10 +7,13 @@
  * `contentSha256` before the Hub sees the document.
  */
 
+const crypto = require('crypto');
 const constants = require('@fabric/core/constants');
 const Document = require('@fabric/core/types/document');
+const { BLOB_BATCH_TYPE } = require('@fabric/core/functions/documentSealedExchange');
 
 const { MAX_MESSAGE_SIZE } = constants;
+const HEX64 = /^[0-9a-f]{64}$/;
 const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SEALED_BLOB_PARTS;
 
 /** Bytes of each frame body kept for JSON keys and document metadata around the base64 blob. */
@@ -69,7 +72,10 @@ function inputByteLength (buffer) {
  * @param {number} [meta.size] plaintext size
  * @param {string} [meta.sha256] plaintext SHA-256 hex
  * @param {string} [meta.created]
- * @param {Object} [meta.htlcFileV1] `{ v, iv, paymentHashHex }` when sealed
+ * @param {Object} [meta.htlcFileV1] `{ v: 1, iv, paymentHashHex }` for one sealed ciphertext, or
+ *   `{ v: 2, scheme, perBlob: true, merkleRootHex, blobTotal, paymentHashHex }` for a per-blob sealed document
+ * @param {Array<Object>} [meta.sealedParts] per-blob sealed document only: `{ iv, keyHashHex, wrappedKeyHex, size }`
+ *   for each sealed blob, in order. Sealed blobs are exactly as large as share blobs, so blob `i`'s entry rides on frame `i`.
  * @param {Object} [meta.relay] `{ deliveryFabricId, fileRelayTtl }`
  * @returns {{ frames: string[], merkleRootHex: string, contentSha256: string, blobTotal: number, chunkBytes: number }}
  */
@@ -83,6 +89,11 @@ function buildFileShareFrames (buffer, meta = {}) {
   if (!documentId) throw new TypeError('documentId required');
 
   const split = Document.split(buf, FILE_SHARE_BLOB_BYTES, documentId);
+  const sealedParts = Array.isArray(meta.sealedParts) ? meta.sealedParts : null;
+  if (sealedParts && (sealedParts.length !== split.blobs.length ||
+    split.blobs.some((blob, i) => Number(sealedParts[i] && sealedParts[i].size) !== blob.bytes.length))) {
+    throw new RangeError('sealed parts do not line up with file-share blobs');
+  }
   const relay = meta.relay && meta.relay.deliveryFabricId
     ? { deliveryFabricId: String(meta.relay.deliveryFabricId).trim(), fileRelayTtl: meta.relay.fileRelayTtl }
     : {};
@@ -109,6 +120,13 @@ function buildFileShareFrames (buffer, meta = {}) {
         blobIndex: blob.index,
         blobTotal: blob.total,
         blobHashHex: blob.blobHashHex,
+        sealedPart: sealedParts
+          ? {
+              iv: String(sealedParts[blob.index].iv),
+              keyHashHex: String(sealedParts[blob.index].keyHashHex),
+              wrappedKeyHex: String(sealedParts[blob.index].wrappedKeyHex)
+            }
+          : undefined,
         body: blob.bytes.toString('base64')
       }
     });
@@ -137,24 +155,143 @@ function isFileShareFrame (obj) {
 }
 
 /**
+ * @param {*} header `htlcFileV1` from a frame
+ * @returns {boolean} true for a per-blob sealed document header (v2)
+ */
+function isPerBlobHeader (header) {
+  return !!(header && typeof header === 'object' && Number(header.v) === 2 && header.perBlob === true &&
+    HEX64.test(String(header.merkleRootHex || '').toLowerCase()) &&
+    HEX64.test(String(header.paymentHashHex || '').toLowerCase()) &&
+    Number.isSafeInteger(Number(header.blobTotal)) && Number(header.blobTotal) > 0);
+}
+
+/**
+ * The sealed-blob entry a per-blob frame carries, tied to the blob the core Peer verified.
+ * @param {Object} obj `P2P_FILE_SEND` object
+ * @returns {{ index: number, blobHashHex: string, iv: string, keyHashHex: string, wrappedKeyHex: string }|null}
+ */
+function fileShareSealedPart (obj) {
+  if (!obj || !isPerBlobHeader(obj.htlcFileV1)) return null;
+  const part = obj.sealedPart;
+  const index = Number(obj.blobIndex);
+  if (!part || typeof part !== 'object' || !Number.isSafeInteger(index) || index < 0) return null;
+  const iv = String(part.iv || '');
+  const keyHashHex = String(part.keyHashHex || '').toLowerCase();
+  const wrappedKeyHex = String(part.wrappedKeyHex || '').toLowerCase();
+  if (!iv || iv.length > 64 || !HEX64.test(keyHashHex) || !HEX64.test(wrappedKeyHex)) return null;
+  return { index, blobHashHex: String(obj.blobHashHex || '').toLowerCase(), iv, keyHashHex, wrappedKeyHex };
+}
+
+/**
+ * Key for one incoming transfer: sending connection, document, and share root.
+ * @param {string} originName
+ * @param {Object} obj `P2P_FILE_SEND` object
+ * @returns {string}
+ */
+function sealedTransferKey (originName, obj) {
+  return `${String(originName || '')}|${String((obj && obj.name) || '')}|${String((obj && obj.merkleRootHex) || '')}`;
+}
+
+/**
+ * Holds the sealed-blob entries of transfers still arriving. Few transfers,
+ * briefly: the oldest is dropped past `maxTransfers`, any past `maxAgeMs`.
+ * @param {Object} [opts]
+ * @param {number} [opts.maxTransfers]
+ * @param {number} [opts.maxAgeMs]
+ * @returns {{ note: function(string, Object): void, take: function(string): Array<Object> }}
+ */
+function createSealedPartCollector (opts = {}) {
+  const maxTransfers = Math.max(1, Number(opts.maxTransfers) || 8);
+  const maxAgeMs = Math.max(1000, Number(opts.maxAgeMs) || 15 * 60 * 1000);
+  const transfers = new Map();
+  const sweep = (now) => {
+    for (const [key, t] of transfers) if (now - t.at > maxAgeMs) transfers.delete(key);
+  };
+  return {
+    note (key, part) {
+      const now = Date.now();
+      sweep(now);
+      let t = transfers.get(key);
+      if (!t) {
+        t = { at: now, parts: new Map() };
+        transfers.set(key, t);
+        while (transfers.size > maxTransfers) transfers.delete(transfers.keys().next().value);
+      }
+      t.parts.set(part.index, part);
+    },
+    take (key) {
+      const t = transfers.get(key);
+      transfers.delete(key);
+      return t ? [...t.parts.values()].sort((a, b) => a.index - b.index) : [];
+    }
+  };
+}
+
+/**
  * Hub document record for a transfer the core Peer reassembled and verified.
+ * A per-blob sealed transfer with every blob's entry also gets `parts` (as the
+ * seller keeps them) and `sealedBatch`, the wraps as a core `DocumentBlobBatch`
+ * for the Hub to keep privately; both open only with the batch preimage.
  * @param {Object} obj `P2P_FILE_SEND` object of any frame in the transfer
  * @param {Buffer} buffer reassembled bytes
  * @param {string} [merkleRootHex]
+ * @param {Array<Object>} [sealedParts] from {@link fileShareSealedPart}, one per blob
  * @returns {Object}
  */
-function receivedFileShareDocument (obj, buffer, merkleRootHex) {
+function receivedFileShareDocument (obj, buffer, merkleRootHex, sealedParts) {
   const id = String(obj.name || '').trim();
+  const sealed = perBlobRecord(id, obj, buffer, sealedParts);
   return {
     id,
     name: clip(obj.fileName, FILE_NAME_MAX_CHARS) || 'received',
     mime: clip(obj.mime, MIME_MAX_CHARS) || 'application/octet-stream',
     size: obj.size != null ? obj.size : buffer.length,
-    sha256: obj.sha256 || id,
+    sha256: obj.sha256 || (obj.htlcFileV1 ? undefined : crypto.createHash('sha256').update(buffer).digest('hex')),
     created: obj.created,
     contentBase64: buffer.toString('base64'),
     merkleRootHex: merkleRootHex || obj.merkleRootHex || undefined,
-    htlcFileV1: obj.htlcFileV1 || undefined
+    htlcFileV1: obj.htlcFileV1 || undefined,
+    ...(sealed || {})
+  };
+}
+
+/**
+ * @private
+ * @returns {{ parts: Array<Object>, sealedBatch: Object }|null}
+ */
+function perBlobRecord (documentId, obj, buffer, sealedParts) {
+  const header = obj.htlcFileV1;
+  if (!isPerBlobHeader(header) || !Array.isArray(sealedParts)) return null;
+  const total = Number(header.blobTotal);
+  const chunkBytes = Number(obj.chunkBytes);
+  if (Number(obj.blobTotal) !== total || sealedParts.length !== total || !(chunkBytes > 0)) return null;
+  if (sealedParts.some((p, i) => p.index !== i)) return null;
+  const parts = sealedParts.map((p, i) => ({
+    index: i,
+    blobHashHex: p.blobHashHex,
+    keyHashHex: p.keyHashHex,
+    iv: p.iv,
+    size: Math.min(chunkBytes, buffer.length - i * chunkBytes)
+  }));
+  if (parts.some((p) => !(p.size > 0))) return null;
+  return {
+    parts,
+    sealedBatch: {
+      type: BLOB_BATCH_TYPE,
+      documentId,
+      merkleRootHex: String(header.merkleRootHex).toLowerCase(),
+      start: 0,
+      end: total - 1,
+      paymentHashHex: String(header.paymentHashHex).toLowerCase(),
+      amountSats: 0,
+      expiresAt: null,
+      blobs: sealedParts.map((p) => ({
+        blobIndex: p.index,
+        blobHashHex: p.blobHashHex,
+        keyHashHex: p.keyHashHex,
+        wrappedKeyHex: p.wrappedKeyHex
+      }))
+    }
   };
 }
 
@@ -165,5 +302,9 @@ module.exports = {
   MAX_DOCUMENT_BLOBS,
   buildFileShareFrames,
   isFileShareFrame,
+  isPerBlobHeader,
+  fileShareSealedPart,
+  sealedTransferKey,
+  createSealedPartCollector,
   receivedFileShareDocument
 };

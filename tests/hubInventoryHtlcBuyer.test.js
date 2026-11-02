@@ -5,7 +5,11 @@ const crypto = require('crypto');
 const bitcoinjs = require('bitcoinjs-lib');
 const Hub = require('../services/hub');
 const Htlc = require('@fabric/core/types/htlc');
+const Key = require('@fabric/core/types/key');
+const Message = require('@fabric/core/types/message');
+const Peer = require('@fabric/core/types/peer');
 const documentContentKey = require('../functions/documentContentKey');
+const documentFileShare = require('../functions/documentFileShare');
 
 function memoryFs () {
   const files = new Map();
@@ -265,6 +269,100 @@ describe('Inventory HTLC buyer and seller records', function () {
     assert.strictEqual(await hub._acceptHtlcKeyReveal({ documentId: 'doc1', preimageHex: keyHex }), true);
     const listed = bareHub(fs)._listInventoryPurchases({ adminToken: 'admin' }).purchases;
     assert.deepStrictEqual(listed.map((p) => [p.settlementId, p.status]), [['s1', 'DELIVERED'], ['s0', 'PAID']]);
+  });
+
+  describe('per-blob sealed documents', function () {
+    function sender (fs) {
+      const hub = bareHub(fs);
+      const frames = [];
+      hub._state = { documents: {} };
+      hub.agent = { connections: { 'buyer:7777': {} }, identity: { id: 'ab'.repeat(32) } };
+      hub._sendVectorToPeer = (address, vector) => frames.push(vector[1]);
+      hub.recordActivity = () => {};
+      return { hub, frames };
+    }
+
+    // What the Hub's P2P_FILE_SEND handler does with a transfer the core Peer verified.
+    async function deliver (fs, frames) {
+      const peer = new Peer({ listen: false, peers: [] });
+      const collector = documentFileShare.createSealedPartCollector();
+      let doc = null;
+      for (const frame of frames) {
+        const parsed = Message.tryParseMessageBody(Message.fromBuffer(
+          Message.fromVector(['P2P_FILE_SEND', frame]).signWithKey(new Key()).toBuffer()
+        ));
+        const obj = parsed.value.object;
+        const out = peer._ingestP2pFileSend({ type: 'P2P_FILE_SEND', object: obj }, { name: 'seller:7777' });
+        assert.notStrictEqual(out.status, 'reject', out.error);
+        const key = documentFileShare.sealedTransferKey('seller:7777', obj);
+        const part = documentFileShare.fileShareSealedPart(obj);
+        if (part) collector.note(key, part);
+        if (out.status === 'complete') {
+          doc = documentFileShare.receivedFileShareDocument(obj, out.buffer, out.merkleRootHex, collector.take(key));
+        }
+      }
+      assert.ok(doc && doc.sealedBatch, 'transfer completes with its sealed parts');
+      const { sealedBatch, ...stored } = doc;
+      await fs.publish(`documents/${doc.id}.batches`, { type: 'DocumentBlobBatch', documentId: doc.id, batches: [sealedBatch] });
+      await fs.publish(`documents/${doc.id}.json`, stored);
+      return stored;
+    }
+
+    it('delivers the stored ciphertext with each blob\'s wrapped key, and opens with the batch preimage', async function () {
+      const plain = crypto.randomBytes(2 * 23040 + 999);
+      const sellerFs = memoryFs();
+      const seller = sender(sellerFs);
+      await sellerFs.publish('documents/big.json', { id: 'big', name: 'big.bin', mime: 'application/octet-stream', contentBase64: plain.toString('base64') });
+      const { parsed, key } = await seller.hub._sealDocumentForPricedPublish('big', sellerFs.files.get('documents/big.json'));
+      assert.strictEqual(parsed.encryption.perBlob, true);
+      assert.strictEqual(parsed.parts.length, 3);
+
+      assert.strictEqual((await seller.hub._sendDocumentToPeerAddress('buyer:7777', 'big', null, { preimage32: crypto.randomBytes(32) })).status, 'error', 'only S opens the blob keys');
+      const sent = await seller.hub._sendDocumentToPeerAddress('buyer:7777', 'big', null, { preimage32: key });
+      assert.strictEqual(sent.status, 'success', sent.message);
+      const wire = Buffer.concat(seller.frames.map((f) => Buffer.from(JSON.parse(f).object.body, 'base64')));
+      assert.ok(wire.equals(Buffer.from(parsed.contentBase64, 'base64')), 'sent as stored, not encrypted again');
+
+      const buyerFs = memoryFs();
+      const buyer = bareHub(buyerFs);
+      const doc = await deliver(buyerFs, seller.frames);
+      assert.strictEqual(doc.htlcFileV1.paymentHashHex, documentContentKey.paymentHashHexFromKey(key));
+      assert.deepStrictEqual(doc.parts, parsed.parts);
+      assert.strictEqual((await buyer._openPurchasedDocument({ id: 'big', adminToken: 'admin' })).status, 'error');
+
+      assert.strictEqual(await buyer._acceptHtlcKeyReveal({ documentId: 'big', preimageHex: key.toString('hex') }), true);
+      assert.deepStrictEqual(buyerFs.files.get('documents/big.json').encryption, parsed.encryption);
+      const opened = await buyer._openPurchasedDocument({ id: 'big', adminToken: 'admin' });
+      assert.strictEqual(opened.status, 'success', opened.message);
+      assert.ok(Buffer.from(opened.document.contentBase64, 'base64').equals(plain));
+
+      // A resale of the bought copy sends the same bytes and wraps.
+      const resale = sender(buyerFs);
+      assert.strictEqual((await resale.hub._sendDocumentToPeerAddress('buyer:7777', 'big', null, { preimage32: key })).status, 'success');
+      assert.deepStrictEqual(resale.frames.map((f) => JSON.parse(f).object.sealedPart), seller.frames.map((f) => JSON.parse(f).object.sealedPart));
+      assert.deepStrictEqual(resale.frames.map((f) => JSON.parse(f).object.body), seller.frames.map((f) => JSON.parse(f).object.body));
+    });
+
+    it('opens with a claim preimage when no reveal came, and refuses a delivery without its parts', async function () {
+      const sellerFs = memoryFs();
+      const seller = sender(sellerFs);
+      await sellerFs.publish('documents/one.json', { id: 'one', name: 'one.txt', mime: 'text/plain', contentBase64: Buffer.from('one blob').toString('base64') });
+      const { key } = await seller.hub._sealDocumentForPricedPublish('one', sellerFs.files.get('documents/one.json'));
+      await seller.hub._sendDocumentToPeerAddress('buyer:7777', 'one', null, { preimage32: key });
+
+      const buyerFs = memoryFs();
+      await deliver(buyerFs, seller.frames);
+      const opened = await bareHub(buyerFs)._openPurchasedDocument({ id: 'one', adminToken: 'admin', preimageHex: key.toString('hex') });
+      assert.strictEqual(Buffer.from(opened.document.contentBase64, 'base64').toString(), 'one blob');
+
+      const { parts, ...partless } = await deliver(memoryFs(), seller.frames);
+      assert.ok(parts);
+      const bareFs = memoryFs();
+      await bareFs.publish('documents/one.json', partless);
+      const refused = await bareHub(bareFs)._openPurchasedDocument({ id: 'one', adminToken: 'admin', preimageHex: key.toString('hex') });
+      assert.strictEqual(refused.status, 'error');
+      assert.match(refused.message, /per-blob parts/);
+    });
   });
 
   describe('buyer payment and refund', function () {

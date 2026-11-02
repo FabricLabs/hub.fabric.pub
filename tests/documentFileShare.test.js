@@ -12,8 +12,12 @@ const {
   FILE_SHARE_MAX_BYTES,
   MAX_DOCUMENT_BLOBS,
   buildFileShareFrames,
+  createSealedPartCollector,
+  fileShareSealedPart,
   isFileShareFrame,
-  receivedFileShareDocument
+  isPerBlobHeader,
+  receivedFileShareDocument,
+  sealedTransferKey
 } = require('../functions/documentFileShare');
 
 const signer = new Key();
@@ -87,6 +91,7 @@ describe('documentFileShare', function () {
     assert.strictEqual(doc.mime, 'video/mp4');
     assert.strictEqual(doc.size, data.length);
     assert.strictEqual(doc.merkleRootHex, share.merkleRootHex);
+    assert.strictEqual(doc.sha256, crypto.createHash('sha256').update(data).digest('hex'), 'a hash, never the document id');
     assert.ok(Buffer.from(doc.contentBase64, 'base64').equals(data));
   });
 
@@ -121,6 +126,70 @@ describe('documentFileShare', function () {
       const name = JSON.parse(frame).object.fileName;
       assert.ok(Buffer.byteLength(JSON.stringify(name)) - 2 <= 255);
     }
+  });
+
+  it('carries one sealed-blob entry per frame, and only for blobs that line up', function () {
+    const data = crypto.randomBytes(2 * FILE_SHARE_BLOB_BYTES + 5);
+    const sizes = [FILE_SHARE_BLOB_BYTES, FILE_SHARE_BLOB_BYTES, 5];
+    const sealedParts = sizes.map((size) => ({
+      iv: crypto.randomBytes(12).toString('base64'),
+      keyHashHex: crypto.randomBytes(32).toString('hex'),
+      wrappedKeyHex: crypto.randomBytes(32).toString('hex'),
+      size
+    }));
+    const header = { v: 2, scheme: 'aes-256-gcm-convergent', perBlob: true, merkleRootHex: 'aa'.repeat(32), blobTotal: 3, paymentHashHex: 'bb'.repeat(32) };
+    const share = buildFileShareFrames(data, {
+      documentId: 'cc'.repeat(32),
+      actorId: 'ab'.repeat(32),
+      fileName: '"'.repeat(1000),
+      mime: '"'.repeat(1000),
+      size: data.length,
+      sha256: 'dd'.repeat(32),
+      created: new Date().toISOString(),
+      htlcFileV1: header,
+      sealedParts,
+      relay: { deliveryFabricId: 'ef'.repeat(32), fileRelayTtl: 16 }
+    });
+    const peer = new Peer({ listen: false, peers: [] });
+    const collector = createSealedPartCollector();
+    let last = null;
+    let obj = null;
+    for (const frame of share.frames) {
+      assert.ok(Buffer.byteLength(frame) <= MAX_MESSAGE_SIZE);
+      obj = JSON.parse(frame).object;
+      assert.strictEqual(isPerBlobHeader(obj.htlcFileV1), true);
+      collector.note(sealedTransferKey('s:1', obj), fileShareSealedPart(obj));
+      last = ingest(peer, frame);
+    }
+    assert.strictEqual(last.status, 'complete');
+    const doc = receivedFileShareDocument(obj, last.buffer, last.merkleRootHex, collector.take(sealedTransferKey('s:1', obj)));
+    assert.deepStrictEqual(doc.parts.map((p) => [p.iv, p.keyHashHex, p.size]), sealedParts.map((p) => [p.iv, p.keyHashHex, p.size]));
+    assert.strictEqual(doc.sealedBatch.paymentHashHex, header.paymentHashHex);
+    assert.strictEqual(doc.sealedBatch.merkleRootHex, header.merkleRootHex);
+    assert.deepStrictEqual(doc.sealedBatch.blobs.map((b) => b.wrappedKeyHex), sealedParts.map((p) => p.wrappedKeyHex));
+    assert.strictEqual(require('@fabric/core/functions/documentSealedExchange').isWellFormedBlobBatch(doc.sealedBatch), true);
+
+    const missing = createSealedPartCollector();
+    missing.note('k', fileShareSealedPart(JSON.parse(share.frames[0]).object));
+    assert.strictEqual(receivedFileShareDocument(obj, last.buffer, last.merkleRootHex, missing.take('k')).parts, undefined);
+    assert.deepStrictEqual(missing.take('k'), [], 'taken once');
+
+    assert.throws(() => buildFileShareFrames(data, { documentId: 'x', sealedParts: sealedParts.slice(0, 2) }), RangeError);
+    assert.throws(() => buildFileShareFrames(data, { documentId: 'x', sealedParts: sealedParts.map((p) => ({ ...p, size: 7 })) }), RangeError);
+    assert.strictEqual(fileShareSealedPart({ ...obj, sealedPart: { ...obj.sealedPart, wrappedKeyHex: 'zz' } }), null);
+    assert.strictEqual(fileShareSealedPart({ ...obj, htlcFileV1: { v: 1, iv: 'x', paymentHashHex: 'bb'.repeat(32) } }), null);
+  });
+
+  it('keeps sealed-blob entries for a few transfers, briefly', function () {
+    const collector = createSealedPartCollector({ maxTransfers: 2 });
+    const part = (index) => ({ index, blobHashHex: '', iv: 'i', keyHashHex: 'aa'.repeat(32), wrappedKeyHex: 'bb'.repeat(32) });
+    collector.note('a', part(0));
+    collector.note('b', part(0));
+    collector.note('c', part(1));
+    collector.note('c', part(0));
+    assert.deepStrictEqual(collector.take('a'), []);
+    assert.deepStrictEqual(collector.take('c').map((p) => p.index), [0, 1]);
+    assert.strictEqual(collector.take('b').length, 1);
   });
 
   it('leaves legacy whole-file frames to the legacy path', function () {
