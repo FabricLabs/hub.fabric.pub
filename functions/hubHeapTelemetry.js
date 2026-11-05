@@ -358,20 +358,26 @@ function resolveHeapSnapshotSettings (settings, env) {
   };
 }
 
+/** File-name labels a snapshot may carry; any other reason is written as `snapshot`. */
+const SNAPSHOT_LABELS = Object.freeze({ signal: 'signal', threshold: 'threshold' });
+
 /**
- * Write one snapshot under `dir`.
- * @param {string} dir
- * @param {string} reason Short label in the file name (`signal`, `threshold`)
+ * Write one snapshot under `dir`. The file name is built only from fixed
+ * parts (pid, time, a {@link SNAPSHOT_LABELS} label), never from input.
+ * @param {string} dir Absolute directory (the Hub resolves `<store>/heap` once)
+ * @param {string} reason `signal` or `threshold`
  * @returns {string|null} file path, or null on failure
  */
 function writeHeapSnapshot (dir, reason) {
+  const label = Object.prototype.hasOwnProperty.call(SNAPSHOT_LABELS, reason) ? SNAPSHOT_LABELS[reason] : 'snapshot';
   try {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw new Error('snapshot directory must be an absolute path');
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = path.join(dir, `hub-${process.pid}-${stamp}-${reason}.heapsnapshot`);
+    const file = `${dir.replace(/[\\/]+$/, '')}${path.sep}hub-${process.pid}-${stamp}-${label}.heapsnapshot`;
     const started = Date.now();
     v8.writeHeapSnapshot(file);
-    console.log(LOG_PREFIX, `snapshot (${reason}) written in ${Date.now() - started} ms: ${file}`);
+    console.log(LOG_PREFIX, `snapshot (${label}) written in ${Date.now() - started} ms: ${file}`);
     return file;
   } catch (err) {
     console.warn(LOG_PREFIX, 'snapshot failed:', err && err.message ? err.message : err);

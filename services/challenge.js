@@ -764,7 +764,7 @@ class ChallengeService extends Service {
       const Message = require('@fabric/core/types/message');
       const pubkey = this.publisherPubkey();
       const body = { contract: this.settings.contract, type, actor: pubkey ? { publicKey: pubkey, id: pubkey } : undefined, object };
-      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+      const msg = Message.fromLegacyBody('CONTRACT_MESSAGE', body);
       if (this.key && this.key.private) msg.signWithKey(this.key);
       hub.agent.relayFrom('_hub', msg).catch(() => {});
       return true;

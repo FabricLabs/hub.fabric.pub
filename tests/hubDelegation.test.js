@@ -52,7 +52,7 @@ function withdrawalFrame (extra = {}) {
     contract: FED,
     type: 'FederationWithdrawalRequest',
     federationId: FED,
-    requestId: 'r1',
+    requestId: 'bb'.repeat(32),
     destinationAddress: ADDRESS,
     amountSats: 5000,
     feeSats: 200
@@ -209,11 +209,11 @@ describe('Hub delegation (HubDelegation)', function () {
     const out = await send(origin, 'POST', '/services/delegation/requests', { frame: req.uri });
     assert.strictEqual(out.body.status, 'signed', out.body.error);
     assert.strictEqual(federations.answered.length, 1);
-    assert.strictEqual(federations.answered[0].body.requestId, 'r1');
+    assert.strictEqual(federations.answered[0].body.requestId, 'bb'.repeat(32));
     const got = await passport.receive(out.body.result);
     assert.strictEqual(got.ok, true, got.error);
 
-    const big = await passport.request({ target: HUB.identity.pubkey, request: withdrawalFrame({ requestId: 'r2', amountSats: 20000 }) });
+    const big = await passport.request({ target: HUB.identity.pubkey, request: withdrawalFrame({ requestId: 'cc'.repeat(32), amountSats: 20000 }) });
     assert.strictEqual((await send(origin, 'POST', '/services/delegation/requests', { frame: big.uri })).status, 202, 'over the rule: asks');
     assert.strictEqual(federations.answered.length, 1);
   });

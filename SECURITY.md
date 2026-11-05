@@ -24,6 +24,9 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - HTTP JSON-RPC loopback privileges (`CreateDocument { filePath }`) need a loopback socket, a rebind-safe Host, no proxy headers, **and** no cross-origin browser request (`Hub#_isLocalRpcRequest`). CORS stays `*` for CDN builds, so never grant anything else on the strength of the socket address alone.
 - Operator-only JSON-RPC methods check `Hub#_rpcCallerIsOperator` (admin token, or the local HTTP call above). New methods that spend, dial, or reveal wallet/peer state should use it.
 - Loopback WebSocket upgrades are origin-checked (`createWebSocketOriginCheck`; extra origins via `FABRIC_HUB_WS_ORIGINS`).
+- Network status pushed to every WebSocket client, and `GetNetworkStatus` / `ListPeers` for non-operators, keep only mesh fields of browser-reported WebRTC metadata (`redactNetworkStatusForPublic`). Payjoin session lists (RPC and `GET /services/payjoin/sessions`) need the operator; a payer reads its own session by id.
+- WebRTC signals (`SendWebRTCSignal`) go only to the WebSocket that registered `toPeerId`, and only from the one that registered `fromPeerId`; never broadcast (SDP / ICE carry client IPs).
+- Federation mailbox reads need an `X-Fabric-Mailbox` proof (`DELEGATION_MAILBOX_FETCH` signed by the member key, nonce once); `?pubkey=` alone is refused.
 - **Fabric hallmarks** (`bitcoin.hallmarks` / `FABRIC_HALLMARKS`) spend wallet UTXOs when enabled (regtest); off by default. Commitment digests are public on L1 by design — never enable on mainnet until fee/policy review.
 
 ## Outstanding (PR #16 / RSI follow-ups)

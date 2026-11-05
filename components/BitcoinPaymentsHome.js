@@ -354,7 +354,7 @@ class BitcoinPaymentsHome extends React.Component {
         nextState.to = qBitcoinUri;
         nextState.lightningInvoice = '';
         nextState.decodedInvoice = null;
-        const pj = parseBitcoinUriForPayjoin(qBitcoinUri);
+        const pj = parseBitcoinUriForPayjoin(qBitcoinUri, { networkName: (this.props.bitcoin && this.props.bitcoin.network) || 'regtest' });
         if (pj && pj.amountSats != null && Number(pj.amountSats) > 0) {
           nextState.amountSats = String(Math.round(Number(pj.amountSats)));
         } else {
@@ -599,7 +599,7 @@ class BitcoinPaymentsHome extends React.Component {
       });
       return;
     }
-    const parsed = parseBitcoinUriForPayjoin(this.state.to);
+    const parsed = parseBitcoinUriForPayjoin(this.state.to, { networkName: (this.props.bitcoin && this.props.bitcoin.network) || 'regtest' });
     if (!parsed || !parsed.pjUrl) {
       this.setState({ localPayjoinResult: { error: L.errors.noPayjoinLink } });
       return;
@@ -755,6 +755,8 @@ class BitcoinPaymentsHome extends React.Component {
       : Math.round(Number(hubBitcoin && hubBitcoin.balance != null ? hubBitcoin.balance : 0) * SATS_PER_BTC));
     const sharedSessionSats = Number(lnManaged.confirmed || 0) + Number(lnManaged.unconfirmed || 0) + Number(lnManaged.immature || 0);
     const payjoinSessions = Array.isArray(this.state.payjoinSessions) ? this.state.payjoinSessions : [];
+    const payjoinInternal = this.state.payjoinCapabilities && this.state.payjoinCapabilities.internal;
+    const payjoinInternalOps = payjoinInternal && Array.isArray(payjoinInternal.operations) ? payjoinInternal.operations : [];
     const payjoinOpenCount = payjoinSessions.filter((s) => {
       const status = String((s && s.status) || '').toLowerCase();
       return status !== 'expired' && status !== 'success';
@@ -983,6 +985,15 @@ class BitcoinPaymentsHome extends React.Component {
                   <Table.Cell>{L.openCount(payjoinOpenCount)}</Table.Cell>
                   <Table.Cell style={{ color: '#666' }}>{L.totalSessions(payjoinSessions.length)}</Table.Cell>
                 </Table.Row>
+                {payjoinInternal ? (
+                  <Table.Row>
+                    <Table.Cell><strong>{L.internalPayjoin}</strong></Table.Cell>
+                    <Table.Cell>{payjoinInternal.enable ? L.internalPayjoinOn : L.internalPayjoinOff}</Table.Cell>
+                    <Table.Cell style={{ color: '#666' }}>
+                      {L.internalPayjoinOperations(payjoinInternalOps.filter((op) => op.enabled).map((op) => op.id), payjoinInternalOps.filter((op) => op.status === 'stub').length)}
+                    </Table.Cell>
+                  </Table.Row>
+                ) : null}
               </Table.Body>
             </Table>
             <div style={{ display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>

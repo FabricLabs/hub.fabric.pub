@@ -10,10 +10,22 @@
  * `payjoin.publicOrigin`, each origin in `FABRIC_HUB_PASSPORT_ORIGINS` (comma
  * list, e.g. a second public name), and each `FABRIC_HUB_ALLOWED_HOSTS` name
  * on the Hub port. The `Host` header never adds one.
+ *
+ * Peer sessions (Passport v3, {@link mountHubPassportPeer}) pin nothing: the
+ * user signs in to this Hub by its identity key, from any page, over the Hub
+ * WebSocket or HTTP (`@fabric/http` `docs/PASSPORT_PEER.md`). The pinned
+ * origins become the Hub's signed `homes`, which only soften Passport's "new
+ * site" warning. {@link hubRequestSession} reads either kind of session for
+ * a route.
+ *
+ * This is the reference integration: apps built on the Hub (Sensemaker,
+ * GoonCitizen) call these same functions rather than mounting their own.
  */
 
 const { createPassportRelyingParty } = require('@fabric/http/functions/passportRelyingParty');
 const { createPassportHttp } = require('@fabric/http/functions/passportHttp');
+const { createPassportPeer } = require('@fabric/http/functions/passportPeer');
+const { PASSPORT_MAX_HOMES } = require('@fabric/core/functions/passport');
 const { signAssertion } = require('@fabric/core/functions/passport');
 const { serveSpaShellIfHtmlNavigation } = require('./httpSpaShell');
 const { hubAccount, hubNetwork } = require('./hubAccount');
@@ -107,8 +119,86 @@ function mountHubPassport (hub, opts = {}) {
   return hub._passport;
 }
 
+/**
+ * Answer Passport peer sign-ins (v3) on the Hub: a user signs in to this Hub
+ * by its identity key, from any origin.
+ * - WebSocket: calls signed with the session key reach methods registered
+ *   `withContext` as `context.passport` (`GetPassportSession` answers it).
+ * - HTTP: `GET /sessions/peer` (the key and network a page names to
+ *   Passport), `POST /sessions/peer` (the handshake), and any request with an
+ *   `X-Fabric-Request` signed by the session key gets `req.passportSession`.
+ * @param {object} hub A Hub, or an app built on one (`http`, `settings`, `_rootKey`).
+ * @param {Object} [opts]
+ * @param {object} [opts.env]
+ * @param {function(object, object): Promise<(object|void)>} [opts.onSession] Extra
+ *   session fields for a verified sign-in (an app's member id), or throw to refuse.
+ * @returns {object|null} The Passport peer, or null when the Hub has no identity key yet.
+ */
+function mountHubPassportPeer (hub, opts = {}) {
+  const env = opts.env || process.env;
+  const network = hubNetwork(hub);
+  const account = hubAccount(hub, { network });
+  if (!account || !hub.http || typeof hub.http.attachPassportPeer !== 'function') return null;
+  const peer = createPassportPeer({
+    key: account.identity.key,
+    network,
+    purpose: `Sign in to ${(hub.settings && hub.settings.alias) || 'Fabric Hub'}`,
+    homes: () => hubPinnedOrigins(hub, env).slice(0, PASSPORT_MAX_HOMES),
+    onSession: opts.onSession
+  });
+  hub.http.attachPassportPeer(peer, { routes: false });
+  for (const route of hub.http._passportPeerHttp.routes) {
+    const handler = route.method === 'GET'
+      ? (req, res) => (serveSpaShellIfHtmlNavigation(hub, req, res) ? undefined : route.handler(req, res))
+      : route.handler;
+    hub.http._addRoute(route.method, route.path, handler);
+  }
+  hub.http._registerMethod('GetPassportSession', (context) => (context && context.passport) || null, { withContext: true });
+  hub._passportPeer = peer;
+  return peer;
+}
+
+/**
+ * The Passport session a request carries: a peer session (`X-Fabric-Request`,
+ * already checked by the HTTP server) or a v2 cookie / Bearer session, as one
+ * shape `{ kind, identityId, pubkey, network, signer, origin, session }`.
+ * Null when there is none.
+ * @param {object} hub
+ * @param {import('http').IncomingMessage} req
+ * @returns {Promise<(object|null)>}
+ */
+async function hubRequestSession (hub, req) {
+  const peer = req && req.passportSession;
+  if (peer && peer.identity) {
+    return {
+      kind: 'peer',
+      identityId: peer.identity.id,
+      pubkey: peer.identity.pubkey,
+      network: peer.network || null,
+      signer: peer.signer || null,
+      origin: peer.origin || null,
+      session: peer
+    };
+  }
+  const http = hub && hub._passport && hub._passport.http;
+  if (!http || typeof http.readRequestSession !== 'function') return null;
+  const site = await http.readRequestSession(req).catch(() => null);
+  if (!site || !site.pubkey) return null;
+  return {
+    kind: 'site',
+    identityId: site.identityId,
+    pubkey: site.pubkey,
+    network: site.network || null,
+    signer: site.signer || null,
+    origin: site.origin || null,
+    session: site
+  };
+}
+
 module.exports = {
   hubLoopbackOrigins,
   hubPinnedOrigins,
-  mountHubPassport
+  mountHubPassport,
+  mountHubPassportPeer,
+  hubRequestSession
 };

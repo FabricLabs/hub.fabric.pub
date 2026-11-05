@@ -1039,6 +1039,12 @@ function onHubExit (child, code) {
 async function restartHub () {
   if (usesExternalHub || isQuitting) return;
   if (hubProcess) await stopHub();
+  // A Hub that survived SIGKILL still holds the port and data dir: do not fork another.
+  if (hubProcess) {
+    console.error('[DESKTOP] Hub did not exit; not starting a second one');
+    setHubStatus('error');
+    return;
+  }
   spawnHub();
   try {
     await waitForHub();
@@ -1071,7 +1077,7 @@ async function promptHubCrashed (code) {
 
 /**
  * Ask the Hub to shut down (it stops Bitcoin / Lightning / LevelDB cleanly), then kill it if it
- * has not exited within `timeoutMs`.
+ * has not exited within `timeoutMs`. `hubProcess` stays set while the child has not exited.
  * @returns {Promise<void>}
  */
 function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
@@ -1102,7 +1108,8 @@ function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
         } catch (_) {}
         await within(HUB_KILL_GRACE_MS);
       }
-      if (hubProcess === child) {
+      // Cleared only once it exited (`onHubExit` clears it too), so a restart sees one that did not.
+      if (exited && hubProcess === child) {
         hubProcess = null;
         setHubStatus('stopped');
       }

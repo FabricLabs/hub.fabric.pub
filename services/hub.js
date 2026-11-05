@@ -52,6 +52,7 @@ function timingSafeSha256Utf8Match (provided, expected) {
 }
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
 const { bitcoindRpcAccess } = require('../functions/bitcoindRpcPolicy');
+const delegationFrames = require('@fabric/core/types/delegation');
 const bitcoinFaucetCapability = require('../functions/bitcoinFaucetCapability');
 const { SATS_PER_BTC, FEATURE_FLAGS, publicFeatureFlags } = require('../constants');
 const {
@@ -126,6 +127,7 @@ const Bitcoin = require('@fabric/core/services/bitcoin');
 const Lightning = require('@fabric/core/services/lightning');
 const Beacon = require('../contracts/beacon');
 const PayjoinService = require('../services/payjoin');
+const { parseBitcoinUri: parseBip21Uri } = require('@fabric/core/functions/bip21');
 const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
@@ -158,7 +160,7 @@ const {
   HTLC_MINIMUM_SATS = 716,
   INVENTORY_RESPONSE_PAGE_BYTES = MAX_MESSAGE_SIZE - 2048
 } = require('@fabric/core/constants');
-const { fitHubNetworkStatus } = require('../functions/hubNetworkStatus');
+const { fitHubNetworkStatus, redactNetworkStatusForPublic } = require('../functions/hubNetworkStatus');
 const { paginateInventoryItems } = require('@fabric/core/types/documentBook');
 
 // JSONCall / JSONCallResult envelope (method, hash, ids) around a status body.
@@ -283,6 +285,7 @@ const {
 } = require('../functions/hubBitcoinSetup');
 const { seedHubStoresAfterSetup } = require('../functions/hubSetupStores');
 const payjoinReceiverContribution = require('../functions/payjoinReceiverContribution');
+const payjoinInternalOperations = require('../functions/payjoinInternalOperations');
 const hubNetworkJoin = require('../functions/hubNetworkJoin');
 
 /** `receiverContribution` (or legacy `autoAcpBoost`) from a request body; undefined = service default. */
@@ -290,7 +293,7 @@ function payjoinContributionFlag (body = {}) {
   const value = body.receiverContribution != null ? body.receiverContribution : body.autoAcpBoost;
   return value != null ? !!value : undefined;
 }
-const { mountHubPassport } = require('../functions/hubPassport');
+const { mountHubPassport, mountHubPassportPeer, hubRequestSession } = require('../functions/hubPassport');
 const { mountFabricDelegateHub, passportExtensionIds } = require('../functions/fabricDelegateHub');
 // const Queue = require('../types/queue');
 
@@ -414,7 +417,17 @@ class Hub extends Service {
           ? ['1', 'true'].includes(String(process.env.FABRIC_PAYJOIN_RECEIVER_CONTRIBUTION || process.env.FABRIC_PAYJOIN_AUTO_ACP))
           : null,
         bip77MailboxExperimental: process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== '0' &&
-          process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== 'false'
+          process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== 'false',
+        requireOwnedReceiveAddress: true,
+        maxProposalsPerSession: 3,
+        internal: {
+          enable: ['1', 'true'].includes(String(process.env.FABRIC_PAYJOIN_INTERNAL || '').toLowerCase()),
+          operations: {},
+          timeoutMs: Number(process.env.FABRIC_PAYJOIN_SEND_TIMEOUT_MS || 30000),
+          maxAdditionalFeeContributionSats: Number(process.env.FABRIC_PAYJOIN_MAX_FEE_CONTRIBUTION_SATS || 1000),
+          maxResponseBytes: 100000,
+          allowInsecureEndpoints: null
+        }
       },
       email: {
         enable: process.env.FABRIC_EMAIL_ENABLE === 'true' || process.env.FABRIC_EMAIL_ENABLE === '1',
@@ -580,15 +593,13 @@ class Hub extends Service {
     // Root Key — exclusive identity (xprv > seed > mnemonic). Mixed bags
     // from settings/local.js would otherwise follow Key's mnemonic-first path
     // and diverge from playnet / FABRIC_XPRV.
-    try {
-      const { exclusiveOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
-      const exclusive = exclusiveOperatorKeySettings(this.settings.key);
-      if (exclusive) {
-        this.settings.key = Object.assign({}, {
-          passphrase: this.settings.key && this.settings.key.passphrase
-        }, exclusive);
-      }
-    } catch (_) { /* older @fabric/core pin */ }
+    const { exclusiveOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+    const exclusive = exclusiveOperatorKeySettings(this.settings.key);
+    if (exclusive) {
+      this.settings.key = Object.assign({}, {
+        passphrase: this.settings.key && this.settings.key.passphrase
+      }, exclusive);
+    }
 
     // The root only derives. The identity key signs Fabric messages and admin
     // tokens; the cosigner key is the Hub's federation / Beacon validator.
@@ -1281,14 +1292,22 @@ class Hub extends Service {
    * Vector is `[type, JSON.stringify(payload)]`.
    */
   _sendVectorToPeer (addressInput, vector) {
+    this._sendMessageToPeer(addressInput, Message.fromVector(vector));
+  }
+
+  /**
+   * Sign a built Message with the agent key and write it to one peer connection.
+   * @param {string} addressInput
+   * @param {Message} msg
+   */
+  _sendMessageToPeer (addressInput, msg) {
     const address = this._resolvePeerAddress(addressInput);
     if (!address) throw new Error('peer not connected');
     const sock = this.agent && this.agent.connections && this.agent.connections[address];
     if (!sock || typeof sock._writeFabric !== 'function') {
       throw new Error('peer not connected');
     }
-
-    const msg = Message.fromVector(vector).signWithKey(this.agent.key);
+    msg.signWithKey(this.agent.key);
     sock._writeFabric(msg.toBuffer());
   }
 
@@ -1313,8 +1332,10 @@ class Hub extends Service {
     }
     const jsonType = parsed && typeof parsed === 'object' ? parsed.type : null;
     const wireType = firstClassInventoryWireType(jsonType) || 'GenericMessage';
-    const body = typeof envelope === 'string' ? envelope : JSON.stringify(envelope);
-    const msg = Message.fromVector([wireType, body]).signWithKey(this.agent.key);
+    // Inventory opcodes have keyed field layouts (every key kept); others stay JSON.
+    const msg = (wireType !== 'GenericMessage' && parsed && typeof parsed === 'object')
+      ? Message.fromLegacyBody(wireType, parsed).signWithKey(this.agent.key)
+      : Message.fromVector([wireType, typeof envelope === 'string' ? envelope : JSON.stringify(envelope)]).signWithKey(this.agent.key);
     sock._writeFabric(msg.toBuffer());
   }
 
@@ -2228,7 +2249,7 @@ class Hub extends Service {
     for (let i = 0; i < blocks.length; i++) {
       await new Promise((r) => setTimeout(r, delayMs));
       try {
-        this._sendVectorToPeer(originConn, ['BitcoinBlock', JSON.stringify(blocks[i].payload)]);
+        this._sendMessageToPeer(originConn, Message.fromLegacyBody('BitcoinBlock', blocks[i].payload));
       } catch (sendErr) {
         console.warn('[HUB] Fabric resync BitcoinBlock send failed:', sendErr && sendErr.message ? sendErr.message : sendErr);
         break;
@@ -3290,6 +3311,121 @@ class Hub extends Service {
     if (!this.payjoin) return null;
     if (this.settings && this.settings.payjoin && this.settings.payjoin.enable === false) return null;
     return this.payjoin;
+  }
+
+  /**
+   * Does the Hub wallet own `address`? Used before the Hub contributes a coin
+   * to a Payjoin output paying it. Throws when the wallet cannot answer
+   * (callers fail closed).
+   * @param {string} address
+   * @returns {Promise<boolean>}
+   */
+  async _hubWalletOwnsAddress (address) {
+    const info = await this._hubWalletRpc('getaddressinfo', [String(address || '').trim()]);
+    if (!info || typeof info !== 'object' || info.error) throw new Error('getaddressinfo failed');
+    return info.ismine === true;
+  }
+
+  /**
+   * RPC against the Hub's named wallet (Payjoin sender and ownership checks).
+   * @param {string} method
+   * @param {Array} [params]
+   * @returns {Promise<*>}
+   */
+  async _hubWalletRpc (method, params = []) {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) throw new Error('Bitcoin service unavailable');
+    if (typeof bitcoin._makeWalletRequest === 'function' && bitcoin.walletName) {
+      if (typeof bitcoin._loadWallet === 'function') await bitcoin._loadWallet(bitcoin.walletName);
+      return bitcoin._makeWalletRequest(method, params, bitcoin.walletName);
+    }
+    return bitcoin._makeRPCRequest(method, params);
+  }
+
+  /** @private WebSocket `GenericMessage` `{ type: 'PayjoinUpdate', object: { kind, id, status } }` */
+  _broadcastPayjoinUpdate (kind, view) {
+    try {
+      if (!view || !this.http || typeof this.http.broadcast !== 'function') return;
+      const body = JSON.stringify({ type: 'PayjoinUpdate', object: { kind, id: view.id, status: view.status, updatedAt: view.updatedAt } });
+      const msg = Message.fromVector(['GenericMessage', body]);
+      if (this._fabricKey) msg.signWithKey(this._fabricKey);
+      this.http.broadcast(msg);
+    } catch (_) {}
+  }
+
+  /** @private admin token on an HTTP request (no response sent) */
+  _httpCallerIsOperator (req) {
+    if (!this.setup || typeof this.setup.verifyAdminToken !== 'function') return false;
+    return !!this.setup.verifyAdminToken(this._extractOptionalAdminTokenFromRequest(req));
+  }
+
+  /**
+   * Payjoin hook for a Hub operation ({@link module:payjoinInternalOperations}).
+   * Stub and not-applicable operations answer `{ payjoin: false, reason }`.
+   * @param {string} opId
+   * @returns {{ payjoin: boolean, reason: (string|undefined), service: (Object|undefined) }}
+   */
+  _payjoinHook (opId) {
+    const payjoin = this._getPayjoinService();
+    const op = payjoinInternalOperations.getOperation(opId);
+    if (!op) return { payjoin: false, reason: 'unknown-operation' };
+    if (op.status !== payjoinInternalOperations.STATUS.IMPLEMENTED) return { payjoin: false, reason: op.status };
+    if (!payjoin || !payjoin.operationEnabled(opId)) return { payjoin: false, reason: 'disabled' };
+    return { payjoin: true, service: payjoin };
+  }
+
+  /**
+   * Split a payment destination into an address and, when it is a BIP21 URI
+   * with `pj=`, that URI.
+   * @param {Object} body `{ bip21?, to?, address? }`
+   * @returns {{ address: string, bip21: string, amountSats: (number|null) }}
+   */
+  _paymentDestination (body = {}) {
+    const raw = String(body.bip21 || body.to || body.address || '').trim();
+    if (!/^bitcoin:/i.test(raw)) return { address: raw, bip21: '', amountSats: null };
+    try {
+      const parsed = parseBip21Uri(raw);
+      const amount = parsed.amount != null ? Math.round(Number(parsed.amount) * 1e8) : null;
+      return {
+        address: String(parsed.address || ''),
+        bip21: parsed.extras && parsed.extras.pj ? raw : '',
+        amountSats: Number.isSafeInteger(amount) && amount > 0 ? amount : null
+      };
+    } catch (_) {
+      return { address: '', bip21: '', amountSats: null };
+    }
+  }
+
+  /**
+   * Pay through Payjoin when `walletSend` is enabled and the destination has `pj=`.
+   * Returns null when Payjoin does not apply (pay the plain address);
+   * throws when it applies and fails (nothing was broadcast).
+   * @param {Object} body payment request
+   * @param {number} amountSats
+   * @returns {Promise<(Object|null)>} send view
+   */
+  async _maybePayjoinSend (body, amountSats) {
+    const dest = this._paymentDestination(body);
+    if (!dest.bip21) return null;
+    const hook = this._payjoinHook('walletSend');
+    if (!hook.payjoin) return null;
+    if (dest.amountSats != null && Number(amountSats) > 0 && dest.amountSats !== Math.round(Number(amountSats))) {
+      throw new Error('amountSats does not match the BIP21 amount.');
+    }
+    const send = await hook.service.createSend({
+      bip21: dest.bip21,
+      feeRateSatVb: Number(body.feeRateSatVb) > 0 ? Number(body.feeRateSatVb) : undefined,
+      operation: 'walletSend'
+    });
+    if (send.status !== 'broadcast') {
+      const err = new Error(`Payjoin send ${send.status}: ${(send.error && send.error.message) || 'no transaction'}`);
+      err.payjoinSend = send;
+      throw err;
+    }
+    try {
+      this._mergePersistedTxLabel(String(send.txid), 'payjoin_send', { sendId: send.id, destination: send.address });
+    } catch (_) {}
+    return send;
   }
 
   _getPeeringService () {
@@ -7546,9 +7682,10 @@ class Hub extends Service {
   }
 
   async _confirmInventoryHtlcPayment (body = {}) {
-    const _htlcResult = (obj) => Object.assign({ type: 'ConfirmInventoryHtlcPaymentResult' }, obj);
-
     const settlementId = String(body.settlementId || '').trim();
+    // Every result names the settlement it answers, so a page shows only its own.
+    const _htlcResult = (obj) => Object.assign({ type: 'ConfirmInventoryHtlcPaymentResult' }, settlementId ? { settlementId } : {}, obj);
+
     const txid = String(body.txid || '').trim();
     if (!settlementId || !txid) {
       return _htlcResult({ status: 'error', message: 'settlementId and txid are required.' });
@@ -8418,8 +8555,13 @@ class Hub extends Service {
     }
 
     const isLocal = this._isLocalRpcRequest(req);
+    // Same calling convention as @fabric/http `_handleCall`: `withContext` methods get the context first.
+    const options = (this.http._methodOptions && this.http._methodOptions[method]) || {};
+    const args = options.withContext
+      ? [{ passport: req.passportSession || null, transportAuthorized: false, connection: null }].concat(paramArray)
+      : paramArray;
     try {
-      const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, paramArray)));
+      const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, args)));
       res.setHeader('Content-Type', 'application/json');
       if (body.jsonrpc === '2.0') {
         return res.status(200).json({ jsonrpc: '2.0', result, id });
@@ -8454,6 +8596,56 @@ class Hub extends Service {
    * @param {object} full
    * @returns {object}
    */
+  /**
+   * Remember which WebSocket registered a WebRTC peer id, for signal routing.
+   * An id held by another live connection is refused. With an older
+   * `@fabric/http` that passes no `connection` in the context, nothing is bound.
+   * @param {string} peerId
+   * @param {Object|null} connection
+   * @returns {{ ok: boolean, message?: string }}
+   */
+  _bindWebRtcSignalConnection (peerId, connection) {
+    if (!connection) return { ok: true };
+    if (!this._webrtcSignalConnections) this._webrtcSignalConnections = new Map();
+    const held = this._webrtcSignalConnections.get(peerId);
+    if (held && held !== connection && held.readyState === 1) {
+      return { ok: false, message: 'peerId is registered by another connection' };
+    }
+    if (held !== connection) {
+      this._webrtcSignalConnections.set(peerId, connection);
+      if (typeof connection.once === 'function') {
+        connection.once('close', () => {
+          if (this._webrtcSignalConnections.get(peerId) === connection) this._webrtcSignalConnections.delete(peerId);
+        });
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Deliver a WebRTC signal to the connection that registered `toPeerId`.
+   * @param {Object} context `withContext` call context
+   * @param {string} fromPeerId
+   * @param {string} toPeerId
+   * @param {Message} msg
+   * @returns {{ status: string, message?: string }}
+   */
+  _relayWebRtcSignal (context, fromPeerId, toPeerId, msg) {
+    if (!context || !('connection' in context)) {
+      // Older @fabric/http: no caller connection to route by; Bridges filter on toPeerId.
+      if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
+      return { status: 'success' };
+    }
+    const connections = this._webrtcSignalConnections || new Map();
+    if (!context.connection || connections.get(fromPeerId) !== context.connection) {
+      return { status: 'error', message: 'fromPeerId is not registered on this connection' };
+    }
+    const target = connections.get(toPeerId);
+    if (!target || target.readyState !== 1) return { status: 'error', message: 'toPeerId is not connected to this Hub' };
+    target.send(msg.toBuffer());
+    return { status: 'success' };
+  }
+
   _redactBitcoinStatusForNonAdmin (full) {
     if (!full || typeof full !== 'object') return full;
     const out = { ...full };
@@ -8714,7 +8906,7 @@ class Hub extends Service {
       if (!this.agent.key || !this.agent.key.private) return;
       const tip = String(payload.tip || '').trim();
       if (!tip) return;
-      const p2pMsg = Message.fromVector(['BitcoinBlock', JSON.stringify(payload)]).signWithKey(this.agent.key);
+      const p2pMsg = Message.fromLegacyBody('BitcoinBlock', payload).signWithKey(this.agent.key);
       this.agent.relayFrom('_hub', p2pMsg);
     } catch (err) {
       console.error('[HUB] _broadcastBitcoinBlockToFabricPeers error:', err && err.message ? err.message : err);
@@ -11430,14 +11622,32 @@ class Hub extends Service {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
-      const to = String(body.to || body.address || '').trim();
-      const amountSats = Number(body.amountSats || 0);
+      // `to` may be a BIP21 URI; with pj= and internal Payjoin on, the payment goes through Payjoin.
+      const dest = this._paymentDestination(body);
+      const to = dest.address;
+      const amountSats = Number(body.amountSats || dest.amountSats || 0);
       const amountBTC = Number((amountSats / 100000000).toFixed(8));
       const memo = String(body.memo || '');
 
       if (!to) return res.status(400).json({ status: 'error', message: 'Destination address is required.' });
       if (!Number.isFinite(amountSats) || amountSats <= 0) {
         return res.status(400).json({ status: 'error', message: 'amountSats must be a positive integer.' });
+      }
+
+      if (dest.bip21) {
+        let send;
+        try {
+          send = await this._maybePayjoinSend(body, amountSats);
+        } catch (err) {
+          return res.status(400).json({ status: 'error', message: err && err.message ? err.message : String(err), payjoin: err && err.payjoinSend });
+        }
+        if (send) {
+          return res.json({
+            walletId: String((req.params && req.params.walletId) || body.walletId || bitcoin.walletName),
+            network: bitcoin.network,
+            payment: { txid: send.txid, destination: send.address, amountSats: send.amountSats, amountBTC, payjoin: true, payjoinSendId: send.id }
+          });
+        }
       }
 
       // Regtest / signet have no fee estimates: send with an explicit fee_rate there,
@@ -11625,7 +11835,8 @@ class Hub extends Service {
         });
       }
 
-      const capabilities = payjoin.getCapabilities();
+      // Recent sessions (addresses, amounts) only for the operator.
+      const capabilities = payjoin.getCapabilities({ operator: this._httpCallerIsOperator(req) });
       this._state.content.services.payjoin = {
         available: !!capabilities.available,
         sessions: Number(capabilities.counts && capabilities.counts.sessions ? capabilities.counts.sessions : 0)
@@ -11708,7 +11919,7 @@ class Hub extends Service {
     if (!this.agent || typeof this.agent.relayFrom !== 'function') return null;
     if (!key || !key.private) return null;
     try {
-      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+      const msg = Message.fromLegacyBody('CONTRACT_MESSAGE', body);
       msg.signWithKey(key);
       // Peer#relayFrom writes synchronously and returns nothing.
       this.agent.relayFrom('_hub', msg);
@@ -11843,6 +12054,10 @@ class Hub extends Service {
     if (!Number.isSafeInteger(amountSats) || amountSats <= 0) throw new Error('amountSats must be a positive integer');
     const feeRate = Number(opts.feeRateSatVb);
     if (!(feeRate > 0)) throw new Error('feeRateSatVb must be positive');
+    if (opts.bip21) {
+      const send = await this._maybePayjoinSend({ bip21: opts.bip21, feeRateSatVb: feeRate }, amountSats);
+      if (send) return send.txid;
+    }
     await bitcoin._loadWallet(bitcoin.walletName);
     // sendtoaddress address amount comment comment_to subtractfee replaceable conf_target estimate_mode avoid_reuse fee_rate
     const txid = await bitcoin._makeWalletRequest('sendtoaddress', [
@@ -11934,6 +12149,32 @@ class Hub extends Service {
    * @returns {Function}
    * @private
    */
+  /**
+   * `GET /services/federations/messages`: frames for the member whose key
+   * signed the `X-Fabric-Mailbox` proof (a core `DELEGATION_MAILBOX_FETCH`,
+   * which names the pubkey and `since`; each nonce works once). A bare
+   * `?pubkey=` is refused, so nobody can list another member's federations.
+   * @param {Object} federations
+   * @param {Object} req
+   * @returns {Object}
+   */
+  _readFederationMailbox (federations, req) {
+    const fail = (statusCode, message) => Object.assign(new Error(message), { statusCode });
+    const proof = String((req.headers && req.headers['x-fabric-mailbox']) || '').trim();
+    if (!proof) throw fail(401, 'X-Fabric-Mailbox required: a DELEGATION_MAILBOX_FETCH signed by the member key');
+    const read = delegationFrames.readMailboxFetch(proof, { now: Date.now() });
+    if (!read.ok) throw fail(401, read.error);
+    if (!this._federationMailboxNonces) this._federationMailboxNonces = new Map();
+    const spent = this._federationMailboxNonces;
+    const now = Date.now();
+    for (const [nonce, expiresAt] of spent) if (expiresAt <= now) spent.delete(nonce);
+    if (spent.has(read.nonce)) throw fail(409, 'mailbox proof already used');
+    if (spent.size >= 100000) throw fail(503, 'too many mailbox reads in flight; retry shortly');
+    spent.set(read.nonce, read.expiresAt);
+    const q = req.query || {};
+    return Object.assign({ type: 'FederationMessages' }, federations.framesFor(read.pubkey, { since: read.since, limit: q.limit }));
+  }
+
   _federationRoute (fn, opts = {}) {
     const limit = Number(opts.limit) || 30;
     const hits = new Map();
@@ -11956,7 +12197,8 @@ class Hub extends Service {
           return res.json(await fn(federations, req));
         } catch (err) {
           const message = err && err.message ? err.message : String(err);
-          return res.status(/^unknown federation/.test(message) ? 404 : 400).json({ status: 'error', message });
+          const status = err && Number.isInteger(err.statusCode) ? err.statusCode : (/^unknown federation/.test(message) ? 404 : 400);
+          return res.status(status).json({ status: 'error', message });
         }
       };
       if (String(req.method || 'GET').toUpperCase() === 'GET') return this.http.jsonOrShell(req, res, run);
@@ -12136,11 +12378,8 @@ class Hub extends Service {
       if (!appointment) return res.status(400).json({ error: 'WatchtowerAppointment required' });
       let sessionPubkey = null;
       try {
-        const http = this._passport && this._passport.http;
-        if (http && typeof http.readRequestSession === 'function') {
-          const session = await http.readRequestSession(req);
-          if (session && session.pubkey) sessionPubkey = session.pubkey;
-        }
+        const session = await hubRequestSession(this, req);
+        if (session) sessionPubkey = session.pubkey;
       } catch (_) { sessionPubkey = null; }
       try {
         const filed = tower.file(appointment, { sessionPubkey });
@@ -12291,6 +12530,7 @@ class Hub extends Service {
       const receiveTemplate = String(body.receiveTemplate || '').trim();
       const federationXOnlyHex = String(body.federationXOnlyHex || '').trim();
       let address = String(body.address || '').trim();
+      const operator = this._httpCallerIsOperator(req);
       if (!receiveTemplate && !address) {
         if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to allocate a Hub wallet address for Payjoin.')) {
           return;
@@ -12310,7 +12550,8 @@ class Hub extends Service {
         address,
         receiveTemplate,
         federationXOnlyHex: federationXOnlyHex || undefined,
-        receiverContribution: payjoinContributionFlag(body)
+        // Anyone may open a session to receive a plain payment; only the operator's sessions get a Hub coin.
+        receiverContribution: operator ? payjoinContributionFlag(body) : false
       });
 
       this._state.content.services.payjoin = this._state.content.services.payjoin || {};
@@ -12331,6 +12572,8 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      // The list shows every payer's amounts, addresses and proposal txids; a payer reads its own session by id.
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to list Payjoin sessions.')) return;
       const limit = Math.max(1, Math.min(200, Number(req.query.limit || 25)));
       const includeExpired = String(req.query.includeExpired || '').toLowerCase() !== 'false';
       const sessions = payjoin.listSessions({ limit, includeExpired }).map((session) => payjoin.getSession(session.id, {
@@ -12350,7 +12593,9 @@ class Hub extends Service {
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
       if (!sessionId) return res.status(400).json({ status: 'error', message: 'sessionId is required.' });
-      const session = payjoin.getSession(sessionId, { includeProposals: true });
+      // Payers see what they need to pay; proposals and the Hub's contributed coins are the operator's.
+      const operator = this._httpCallerIsOperator(req);
+      const session = payjoin.getSession(sessionId, operator ? { includeProposals: true } : { view: 'payer' });
       if (!session) return res.status(404).json({ status: 'error', message: 'Payjoin session not found.' });
       return res.json({
         service: 'payjoin',
@@ -12414,7 +12659,7 @@ class Hub extends Service {
         });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
-        if (bip78Wire) return res.status(400).json({ errorCode: 'original-psbt-rejected', message: msg });
+        if (bip78Wire) return res.status(400).json({ errorCode: (e && e.bip78ErrorCode) || 'original-psbt-rejected', message: msg });
         return res.status(400).json({ status: 'error', message: msg });
       }
 
@@ -12438,6 +12683,17 @@ class Hub extends Service {
         res.status(200);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.send(out);
+      }
+      if (!this._httpCallerIsOperator(req)) {
+        // The payer gets its answer, not the session's other proposals or the Hub's coin details.
+        return res.json({
+          status: result.status,
+          sessionId: result.sessionId,
+          proposalId: result.proposal && result.proposal.id,
+          bip78Psbt: result.bip78Psbt,
+          bip78Error: result.bip78Error,
+          session: payjoin.getSession(result.sessionId, { view: 'payer' })
+        });
       }
       return res.json(result);
     };
@@ -12508,6 +12764,8 @@ class Hub extends Service {
       if (!mailbox) {
         return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
       }
+      // Mailbox ids are capabilities; listing them is for the operator only.
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to list Payjoin mailboxes.')) return;
       const includeExpired = String((req.query && req.query.includeExpired) || '') === '1' ||
         String((req.query && req.query.includeExpired) || '').toLowerCase() === 'true';
       const limit = Number((req.query && req.query.limit) || 25);
@@ -12540,8 +12798,117 @@ class Hub extends Service {
           note: 'Opaque enqueue/poll only. markDelivered ≠ Payjoin settled.'
         });
       } catch (e) {
+        const status = e && e.code === 'MAILBOX_LIMIT' ? 429 : 400;
+        return res.status(status).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  /** POST /services/payjoin/sessions/:sessionId/cancel — admin (SatoshiPortal `cancelReceive`). */
+  _handlePayjoinSessionCancelRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to cancel a Payjoin session.')) return;
+      try {
+        const session = await payjoin.cancelSession(req.params && req.params.sessionId);
+        return res.json({ service: 'payjoin', session });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return res.status(/not found/i.test(msg) ? 404 : 409).json({ status: 'error', message: msg });
+      }
+    });
+  }
+
+  /** GET /services/payjoin/sends — admin. */
+  _handlePayjoinSendsListRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to list Payjoin sends.')) return;
+      return res.json({ service: 'payjoin', sends: payjoin.listSends({ limit: req.query && req.query.limit }) });
+    });
+  }
+
+  /**
+   * POST /services/payjoin/sends — admin (SatoshiPortal `send`): pay `{ bip21, feeRateSatVb?, maxAdditionalFeeContributionSats?, dryRun? }`
+   * from the Hub wallet through BIP78. Needs `walletSend` enabled (`FABRIC_PAYJOIN_INTERNAL=1`). Nothing is broadcast when the receiver fails.
+   */
+  _handlePayjoinSendCreateRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to pay from the Hub wallet.')) return;
+      if (!payjoin.operationEnabled('walletSend')) {
+        return res.status(403).json({ status: 'error', message: 'Internal Payjoin is off on this Hub (payjoin.internal.enable / FABRIC_PAYJOIN_INTERNAL=1).' });
+      }
+      const body = (req.body && typeof req.body === 'object') ? req.body : {};
+      try {
+        const send = await payjoin.createSend({
+          bip21: body.bip21 || body.uri,
+          feeRateSatVb: body.feeRateSatVb,
+          maxAdditionalFeeContributionSats: body.maxAdditionalFeeContributionSats,
+          dryRun: body.dryRun === true,
+          operation: 'walletSend'
+        });
+        if (send.txid) {
+          try { this._mergePersistedTxLabel(String(send.txid), 'payjoin_send', { sendId: send.id, destination: send.address }); } catch (_) {}
+        }
+        return res.status(send.status === 'failed' ? 400 : 200).json({ service: 'payjoin', send });
+      } catch (e) {
         return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
       }
+    });
+  }
+
+  /** GET /services/payjoin/sends/:sendId — admin. */
+  _handlePayjoinSendViewRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to view a Payjoin send.')) return;
+      const send = payjoin.getSend(req.params && req.params.sendId);
+      if (!send) return res.status(404).json({ status: 'error', message: 'Payjoin send not found.' });
+      return res.json({ service: 'payjoin', send });
+    });
+  }
+
+  /** POST /services/payjoin/sends/:sendId/cancel — admin (SatoshiPortal `cancelSend`). */
+  _handlePayjoinSendCancelRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to cancel a Payjoin send.')) return;
+      try {
+        const send = await payjoin.cancelSend(req.params && req.params.sendId);
+        return res.json({ service: 'payjoin', send });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return res.status(/not found/i.test(msg) ? 404 : 409).json({ status: 'error', message: msg });
+      }
+    });
+  }
+
+  /** GET /services/payjoin/operations — which Hub operations settle through Payjoin here. */
+  _handlePayjoinOperationsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      const settings = payjoin ? payjoin._operationSettings() : { enable: false };
+      return res.json({
+        service: 'payjoin',
+        internal: !!(settings.internal && settings.internal.enable === true),
+        operations: payjoinInternalOperations.listOperations(settings)
+      });
+    });
+  }
+
+  /** /services/payjoin/v2[/…] — BIP77 OHTTP directory stub. */
+  _handlePayjoinV2StubRequest (req, res) {
+    return res.status(501).json({
+      status: 'error',
+      code: 'not_implemented',
+      feature: 'bip77-ohttp',
+      message: 'BIP77 (OHTTP relay + Payjoin directory) is not implemented on this Hub; use BIP78 pj= or the experimental /services/payjoin/mailboxes.'
     });
   }
 
@@ -12882,8 +13249,9 @@ class Hub extends Service {
         if (!this.setup.verifyAdminToken(rpcToken)) {
           return { status: 'error', message: 'Admin token required to spend from the Hub wallet (bridge payment).' };
         }
-        const to = String(params.to || params.address || '').trim();
-        const amountSats = Number(params.amountSats || 0);
+        const dest = this._paymentDestination(params);
+        const to = dest.address;
+        const amountSats = Number(params.amountSats || dest.amountSats || 0);
         const amountBTC = Number((amountSats / 100000000).toFixed(8));
         const memo = String(params.memo || '');
         const walletId = String(params.walletId || bitcoin.walletName || '');
@@ -12891,6 +13259,22 @@ class Hub extends Service {
         if (!to) return { status: 'error', message: 'Destination address is required.' };
         if (!Number.isFinite(amountSats) || amountSats <= 0) {
           return { status: 'error', message: 'amountSats must be a positive integer.' };
+        }
+
+        if (dest.bip21) {
+          let send;
+          try {
+            send = await this._maybePayjoinSend(params, amountSats);
+          } catch (err) {
+            return { status: 'error', message: err && err.message ? err.message : String(err), payjoin: err && err.payjoinSend };
+          }
+          if (send) {
+            return {
+              walletId,
+              network: bitcoin.network,
+              payment: { txid: send.txid, destination: send.address, amountSats: send.amountSats, amountBTC, payjoin: true, payjoinSendId: send.id }
+            };
+          }
         }
 
         const txid = await bitcoin._processSpendMessage({
@@ -14015,8 +14399,13 @@ class Hub extends Service {
         this.payjoin.attach({
           fs: this.fs,
           bitcoin: this._getBitcoinService(),
-          key: this._rootKey
+          key: this._rootKey,
+          isOwnedAddress: (address) => this._hubWalletOwnsAddress(address),
+          walletRpc: this._getBitcoinService() ? (method, params) => this._hubWalletRpc(method, params) : null
         });
+        // Ids and statuses only: session and send details stay behind the admin token.
+        this.payjoin.on('session', (view) => this._broadcastPayjoinUpdate('session', view));
+        this.payjoin.on('send', (view) => this._broadcastPayjoinUpdate('send', view));
         await this.payjoin.start();
       }
 
@@ -14386,6 +14775,16 @@ class Hub extends Service {
         ['POST', '/services/payjoin/sessions/:sessionId/proposals', this._handlePayjoinProposalSubmitRequest.bind(this)],
         ['POST', '/services/payjoin/sessions/:sessionId/contribute', this._handlePayjoinContributeRequest.bind(this)],
         ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinContributeRequest.bind(this)],
+        ['POST', '/services/payjoin/sessions/:sessionId/cancel', this._handlePayjoinSessionCancelRequest.bind(this)],
+        ['GET', '/services/payjoin/sends', this._handlePayjoinSendsListRequest.bind(this)],
+        ['POST', '/services/payjoin/sends', this._handlePayjoinSendCreateRequest.bind(this)],
+        ['GET', '/services/payjoin/sends/:sendId', this._handlePayjoinSendViewRequest.bind(this)],
+        ['POST', '/services/payjoin/sends/:sendId/cancel', this._handlePayjoinSendCancelRequest.bind(this)],
+        ['GET', '/services/payjoin/operations', this._handlePayjoinOperationsRequest.bind(this)],
+        ['GET', '/services/payjoin/v2', this._handlePayjoinV2StubRequest.bind(this)],
+        ['POST', '/services/payjoin/v2', this._handlePayjoinV2StubRequest.bind(this)],
+        ['GET', '/services/payjoin/v2/:resource', this._handlePayjoinV2StubRequest.bind(this)],
+        ['POST', '/services/payjoin/v2/:resource', this._handlePayjoinV2StubRequest.bind(this)],
         ['GET', '/services/payjoin/mailboxes', this._handlePayjoinMailboxesListRequest.bind(this)],
         ['POST', '/services/payjoin/mailboxes', this._handlePayjoinMailboxCreateRequest.bind(this)],
         ['GET', '/services/payjoin/mailboxes/:mailboxId', this._handlePayjoinMailboxPollRequest.bind(this)],
@@ -14451,10 +14850,10 @@ class Hub extends Service {
         network: f.settings.network,
         pubkey: f.pubkey
       }), { limit: 120 }));
-      this.http._addRoute('GET', '/services/federations/messages', this._federationRoute((f, req) => {
-        const q = req.query || {};
-        return Object.assign({ type: 'FederationMessages' }, f.framesFor(q.pubkey, { since: q.since, limit: q.limit }));
-      }, { limit: 120 }));
+      this.http._addRoute('GET', '/services/federations/messages', this._federationRoute(
+        (f, req) => this._readFederationMailbox(f, req),
+        { limit: 120 }
+      ));
       this.http._addRoute('POST', '/services/federations/messages', this._federationRoute(async (f, req) => (
         Object.assign({ type: 'FederationMessageAccepted' }, await f.submitFrame(federationBody(req).fabric))
       ), { limit: 30 }));
@@ -14509,6 +14908,7 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/binaries/check', this._handleManagedBinariesCheckRequest.bind(this));
 
       mountHubPassport(this);
+      if (!mountHubPassportPeer(this)) console.warn('[FABRIC:HUB]', 'Passport peer sign-in is off: this Hub has no identity key yet.');
       mountFabricDelegateHub(this, {
         dir: resolveStorePath((this.settings && this.settings.fs && this.settings.fs.path) || 'stores/hub')
       });
@@ -14645,10 +15045,79 @@ class Hub extends Service {
         return this._rpcBroadcastSignedTransaction(body);
       });
 
-      this.http._registerMethod('GetPayjoinStatus', async () => {
+      this.http._registerMethod('GetPayjoinStatus', async (...params) => {
         const payjoin = this._getPayjoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
-        return payjoin.getCapabilities();
+        return payjoin.getCapabilities({ operator: this._rpcCallerIsOperator(params) });
+      });
+
+      this.http._registerMethod('ListPayjoinOperations', async () => {
+        const payjoin = this._getPayjoinService();
+        const settings = payjoin ? payjoin._operationSettings() : { enable: false };
+        return { type: 'PayjoinOperations', operations: payjoinInternalOperations.listOperations(settings) };
+      });
+
+      this.http._registerMethod('CancelPayjoinSession', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        try {
+          return await payjoin.cancelSession(String(body.sessionId || body.id || '').trim());
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+      });
+
+      this.http._registerMethod('CreatePayjoinSend', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        if (!payjoin.operationEnabled('walletSend')) return { status: 'error', message: 'Internal Payjoin is off on this Hub (FABRIC_PAYJOIN_INTERNAL=1).' };
+        const body = params[0] || {};
+        try {
+          const send = await payjoin.createSend({
+            bip21: body.bip21 || body.uri,
+            feeRateSatVb: body.feeRateSatVb,
+            maxAdditionalFeeContributionSats: body.maxAdditionalFeeContributionSats,
+            dryRun: body.dryRun === true,
+            operation: 'walletSend'
+          });
+          if (send.txid) {
+            try { this._mergePersistedTxLabel(String(send.txid), 'payjoin_send', { sendId: send.id, destination: send.address }); } catch (_) {}
+          }
+          return send;
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+      });
+
+      this.http._registerMethod('GetPayjoinSend', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        return payjoin.getSend(String(body.sendId || body.id || '').trim()) || { status: 'error', message: 'Payjoin send not found' };
+      });
+
+      this.http._registerMethod('ListPayjoinSends', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        return payjoin.listSends({ limit: body.limit });
+      });
+
+      this.http._registerMethod('CancelPayjoinSend', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        try {
+          return await payjoin.cancelSend(String(body.sendId || body.id || '').trim());
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
       });
 
       this.http._registerMethod('GetPeeringStatus', async () => {
@@ -14705,6 +15174,7 @@ class Hub extends Service {
       this.http._registerMethod('ListPayjoinSessions', (...params) => {
         const payjoin = this._getPayjoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const body = params[0] || {};
         const limit = Math.max(1, Math.min(200, Number(body.limit || 25)));
         const includeExpired = body.includeExpired !== false;
@@ -14720,7 +15190,7 @@ class Hub extends Service {
         const body = params[0] || {};
         const sessionId = String(body.sessionId || body.id || body || '').trim();
         if (!sessionId) return { status: 'error', message: 'sessionId is required' };
-        const session = payjoin.getSession(sessionId, { includeProposals: true });
+        const session = payjoin.getSession(sessionId, this._rpcCallerIsOperator(params) ? { includeProposals: true } : { view: 'payer' });
         if (!session) return { status: 'error', message: 'Payjoin session not found' };
         return session;
       });
@@ -14742,6 +15212,16 @@ class Hub extends Service {
             this._mergePersistedTxLabel(tid, 'payjoin', { sessionId, proposalId: prop.id });
           }
         } catch (_) {}
+        if (!this._rpcCallerIsOperator(params)) {
+          return {
+            status: result.status,
+            sessionId: result.sessionId,
+            proposalId: result.proposal && result.proposal.id,
+            bip78Psbt: result.bip78Psbt,
+            bip78Error: result.bip78Error,
+            session: payjoin.getSession(result.sessionId, { view: 'payer' })
+          };
+        }
         return result;
       });
 
@@ -14765,7 +15245,8 @@ class Hub extends Service {
           const msg = Message.fromVector(['ContractProposal', json]);
           if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
-          const p2pMsg = Message.fromVector(['ContractProposal', json]).signWithKey(this.agent.key);
+          // Browsers get JSON over WebSocket; Fabric peers require the field body.
+          const p2pMsg = Message.fromLegacyBody('CONTRACT_PROPOSAL', payload).signWithKey(this.agent.key);
           this.agent.relayFrom('_client', p2pMsg);
         } catch (err) {
           console.error('[HUB] SubmitContractProposal relay error:', err);
@@ -15413,11 +15894,30 @@ class Hub extends Service {
 
         this._distributeRequests[documentId] = { address, amountSats, config: distributeConfig, createdAt: now };
 
+        // Internal Payjoin: the invoice address gets a BIP78 session (the payer must still pay amountSats itself).
+        let payjoinSession = null;
+        const hook = this._payjoinHook('distributeInvoice');
+        if (hook.payjoin) {
+          try {
+            payjoinSession = await hook.service.createDepositSession({
+              walletId: bitcoin.walletName,
+              address,
+              amountSats: Math.round(amountSats),
+              label: `distribute ${documentId.slice(0, 12)}`,
+              operation: 'distributeInvoice'
+            });
+          } catch (err) {
+            console.warn('[HUB] distribute invoice Payjoin session failed:', err && err.message ? err.message : err);
+          }
+        }
+
         return {
           type: 'CreateDistributeInvoiceResult',
           documentId,
           address,
           amountSats,
+          bip21Uri: payjoinSession ? payjoinSession.bip21Uri : undefined,
+          payjoinSessionId: payjoinSession ? payjoinSession.id : undefined,
           config: distributeConfig,
           network: bitcoin.network || 'regtest',
           expiresAt: now
@@ -17157,7 +17657,8 @@ class Hub extends Service {
 
       this.http._registerMethod('GetNetworkStatus', async (...params) => {
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
+        const status = buildNetworkStatus();
+        return fitHubNetworkStatus(this._rpcCallerIsOperator(params) ? status : redactNetworkStatusForPublic(status), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetSetupStatus', (...params) => {
@@ -17248,7 +17749,8 @@ class Hub extends Service {
         // For the UI we return the same shape as GetNetworkStatus
         // so the bridge/networkStatus wiring can remain consistent.
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
+        const status = buildNetworkStatus();
+        return fitHubNetworkStatus(this._rpcCallerIsOperator(params) ? status : redactNetworkStatusForPublic(status), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetWorkerStatus', (...params) => {
@@ -17417,7 +17919,7 @@ class Hub extends Service {
             actor: { id: this.agent.identity.id },
             object: { slots: maxPeers - connCount, transport: 'fabric', host, port }
           };
-          const p2pMsg = Message.fromVector([P2P_PEERING_OFFER, JSON.stringify(payload)]).signWithKey(this.agent.key);
+          const p2pMsg = Message.fromLegacyBody(P2P_PEERING_OFFER, payload).signWithKey(this.agent.key);
           this.agent.relayFrom('_hub', p2pMsg);
         } catch (err) {
           console.error('[HUB] maybeBroadcastFabricPeeringOffer error:', err);
@@ -17428,7 +17930,8 @@ class Hub extends Service {
       const sendNetworkStatus = () => {
         this._pushNetworkStatusTimer = null;
         try {
-          const status = fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
+          // Pushed to every WebSocket client, so always the public view.
+          const status = fitHubNetworkStatus(redactNetworkStatusForPublic(buildNetworkStatus()), NETWORK_STATUS_MAX_BYTES);
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
             method: 'JSONCallResult',
             params: [null, status]
@@ -17617,7 +18120,11 @@ class Hub extends Service {
       });
 
       // Relay native WebRTC signaling messages between browser clients.
-      this.http._registerMethod('SendWebRTCSignal', (...params) => {
+      // Relay native WebRTC signaling between browser clients: only to the
+      // connection that registered the target id, and only from the connection
+      // that registered the sender id, so SDP and ICE candidates (client IPs)
+      // never reach other clients.
+      this.http._registerMethod('SendWebRTCSignal', (context, ...params) => {
         const options = params[0] || {};
         const fromPeerId = options.fromPeerId;
         const toPeerId = options.toPeerId;
@@ -17628,31 +18135,16 @@ class Hub extends Service {
         }
 
         try {
-          // Use webrtcPeers map as a registry of known browser peers; actual
-          // WebSocket connections are managed by HTTPServer. We broadcast the
-          // signal and let Bridge instances filter on toPeerId.
-          const payload = {
-            type: 'WebRTCSignal',
-            fromPeerId,
-            toPeerId,
-            signal
-          };
-
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
             method: 'JSONCallResult',
-            params: [null, payload]
+            params: [null, { type: 'WebRTCSignal', fromPeerId, toPeerId, signal }]
           })]);
-
-          if (typeof this.http.broadcast === 'function') {
-            this.http.broadcast(msg);
-          }
-
-          return { status: 'success' };
+          return this._relayWebRtcSignal(context, String(fromPeerId), String(toPeerId), msg);
         } catch (err) {
           console.error('[HUB]', 'Error relaying WebRTC signal:', err);
           return { status: 'error', message: err.message || String(err) };
         }
-      });
+      }, { withContext: true });
 
       // Relay messages received via WebRTC data channel to WebSocket clients (and Fabric P2P).
       // Two P2P_RELAY body layouts (intentional):
@@ -18023,17 +18515,9 @@ class Hub extends Service {
       });
 
       // BitcoinBlock gossip is relayed peer-to-peer in @fabric/core Peer; no WebSocket fan-out unless we add a subscription later.
-      this.agent.on('bitcoinBlock', ({ message, origin }) => {
+      this.agent.on('bitcoinBlock', ({ message, origin, object }) => {
         const from = origin && origin.name ? origin.name : '';
-        let parsed = null;
-        try {
-          const raw = message && message.data != null
-            ? (typeof message.data === 'string' ? message.data : String(message.data))
-            : '';
-          parsed = raw ? JSON.parse(raw) : null;
-        } catch (e) {
-          parsed = null;
-        }
+        const parsed = object && typeof object === 'object' ? object : null;
         if (this.settings && this.settings.debug) {
           console.debug('[HUB:P2P] BitcoinBlock from', from || '?', parsed || (message && message.data));
         }
@@ -18234,22 +18718,15 @@ class Hub extends Service {
 
             if (originAddress && this.agent.connections[originAddress]) {
               this._sendGenericFabricEnvelopeToPeer(originAddress, responsePayload);
-            } else if (typeof this.agent.relay === 'function') {
-              // Fallback: relay to all peers (for older Peer implementations that support relay)
-              const reply = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key);
-              this.agent.relay(reply);
             } else {
-              // As a last resort, iterate connections and write directly.
+              // The requester is not a direct peer: write the reply to every peer.
               try {
-                const reply = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key);
-                const buf = reply.toBuffer();
+                const buf = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key).toBuffer();
                 for (const sock of Object.values(this.agent.connections || {})) {
-                  if (sock && typeof sock._writeFabric === 'function') {
-                    sock._writeFabric(buf);
-                  }
+                  if (sock && typeof sock._writeFabric === 'function') sock._writeFabric(buf);
                 }
               } catch (e) {
-                console.warn('[HUB] Could not broadcast inventory reply via fallback:', e);
+                console.warn('[HUB] Could not broadcast inventory reply:', e);
               }
             }
 
@@ -18393,10 +18870,12 @@ class Hub extends Service {
   async _startPhase_runtime () {
       // @fabric/http `start()` registers default RegisterWebRTCPeer / ListWebRTCPeers (JSON-RPC).
       // Re-bind Hub's mesh registry + candidate logic so POST /services/rpc does not use the stock handlers.
-      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
+      this.http._registerMethod('RegisterWebRTCPeer', (context, ...params) => {
         const info = params[0] || {};
         const peerId = info.peerId;
         if (!peerId) return { status: 'error', message: 'peerId required' };
+        const bound = this._bindWebRtcSignalConnection(String(peerId), context && context.connection);
+        if (!bound.ok) return { status: 'error', message: bound.message };
 
         console.debug('[HUB] RegisterWebRTCPeer:', peerId);
 
@@ -18430,7 +18909,7 @@ class Hub extends Service {
           this._pushNetworkStatus();
         }
         return { status: 'success', peerId };
-      });
+      }, { withContext: true });
 
       this.http._registerMethod('ListWebRTCPeers', (...params) => {
         const options = params[0] || {};

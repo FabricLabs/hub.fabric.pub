@@ -94,9 +94,10 @@ describe('hubNetworkStatus', function () {
       assert.deepStrictEqual(fitted.network, { address: 'a' });
       assert.strictEqual(fitted.peersTotal, 2000);
       assert.ok(fitted.truncated.includes('chain'));
-      assert.ok(fitted.truncated.includes('peers'), 'a halved peer list is marked so clients keep theirs');
-      const merged = mergeTruncatedNetworkStatus(fitted, { peers: status.peers });
-      assert.strictEqual(merged.peers.length, 2000);
+      assert.ok(!fitted.truncated.includes('peers'), 'a halved peer list is current, not truncated');
+      assert.strictEqual(fitted.peersPartial, true);
+      const merged = mergeTruncatedNetworkStatus(fitted, { peers: [{ id: 'gone' }] });
+      assert.deepStrictEqual(merged.peers, fitted.peers, 'peer changes reach the client');
       assert.strictEqual(status.peers.length, 2000, 'input is not mutated');
       Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
     });
@@ -109,6 +110,23 @@ describe('hubNetworkStatus', function () {
       assert.strictEqual(merged.fabricMessages, undefined);
       assert.deepStrictEqual(merged.peers, [{ id: 'p' }]);
       assert.strictEqual(mergeTruncatedNetworkStatus({ peers: [] }, previous).messages, undefined);
+    });
+  });
+  describe('redactNetworkStatusForPublic', function () {
+    const { redactNetworkStatusForPublic } = require('../functions/hubNetworkStatus');
+    it('keeps only mesh fields of browser-reported metadata', function () {
+      const meta = { userAgent: 'UA', publicKeyHex: '02ab', fabricPeerId: 'f1', capabilities: ['data-channel'], transport: 'webrtc', webrtcSignalingId: 'w1', meshSessionCount: 1 };
+      const status = {
+        clock: 3,
+        peers: [{ id: 'tcp', address: '10.0.0.2:7777' }, { id: 'f1', address: 'webrtc:w1', metadata: meta }],
+        webrtcPeers: [{ id: 'w1', metadata: meta }]
+      };
+      const out = redactNetworkStatusForPublic(status);
+      assert.deepStrictEqual(out.peers[1].metadata, { fabricPeerId: 'f1', capabilities: ['data-channel'], transport: 'webrtc', webrtcSignalingId: 'w1', meshSessionCount: 1 });
+      assert.strictEqual(out.webrtcPeers[0].metadata.userAgent, undefined);
+      assert.strictEqual(out.peers[0].address, '10.0.0.2:7777');
+      assert.strictEqual(out.clock, 3);
+      assert.strictEqual(status.peers[1].metadata.userAgent, 'UA', 'input untouched');
     });
   });
 });

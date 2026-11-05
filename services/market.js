@@ -141,7 +141,7 @@ class MarketService extends Service {
     if (!hub || !hub.agent || typeof hub.agent.relayFrom !== 'function') return false;
     try {
       const pubkey = this.key.public.encodeCompressed('hex');
-      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify({ contract: this.contractId, type: body.type, actor: { publicKey: pubkey, id: pubkey }, object: body })]);
+      const msg = Message.fromLegacyBody('CONTRACT_MESSAGE', { contract: this.contractId, type: body.type, actor: { publicKey: pubkey, id: pubkey }, object: body });
       msg.signWithKey(this.key);
       hub.agent.relayFrom('_hub', msg).catch(() => {});
       this._schedulePersist();

@@ -1008,16 +1008,14 @@ describe('@fabric/hub', function () {
       });
 
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {
-        // Requires @fabric/http with HTTP JSON-RPC (`jsonRpc` + `POST /services/rpc`). Older pins only expose WebSocket JSONCall.
         const probe = await makeRequest('POST', '/services/rpc', {
           jsonrpc: '2.0',
           id: 1,
           method: 'GetSetupStatus',
           params: []
         }, { Accept: 'application/json' });
-        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
-          return this.skip();
-        }
+        assert.strictEqual(probe.status, 200, 'HTTP JSON-RPC is mounted');
+        assert.ok(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result);
 
         const createBody = {
           name: 'activity-log-test.txt',

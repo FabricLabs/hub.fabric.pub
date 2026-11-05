@@ -132,13 +132,21 @@ function createFilesystemStore (fs, opts = {}) {
   }
 
   function hashesOf (value) {
-    return new Set(((value && value.entries) || []).map((e) => e && e.hash).filter(Boolean));
+    const entries = value && Array.isArray(value.entries) ? value.entries : [];
+    return new Set(entries.map((e) => e && e.hash).filter(Boolean));
   }
 
+  /** Write one document; a failed write (`writeFile` returns false) stays dirty for the next put or flush. */
   function writeDoc (key, value) {
-    if (typeof fs.writeFile === 'function') fs.writeFile(docPath(key), JSON.stringify(value));
+    let ok = true;
+    if (typeof fs.writeFile === 'function') ok = fs.writeFile(docPath(key), JSON.stringify(value)) !== false;
     else publish(docPath(key), value);
+    if (!ok) {
+      dirty.add(key);
+      return false;
+    }
     stored.set(key, hashesOf(value));
+    return true;
   }
 
   function flush () {
@@ -146,17 +154,18 @@ function createFilesystemStore (fs, opts = {}) {
       clearTimeout(timer);
       timer = null;
     }
-    for (const key of dirty) {
+    const keys = Array.from(dirty);
+    dirty.clear();
+    for (const key of keys) {
       const value = cache.get(key);
       if (value) writeDoc(key, value);
     }
-    dirty.clear();
   }
 
   function markDirty (key) {
     const value = cache.get(key);
     const known = stored.get(key);
-    const added = !known || ((value && value.entries) || []).some((e) => e && e.hash && !known.has(e.hash));
+    const added = !known || (value && Array.isArray(value.entries) ? value.entries : []).some((e) => e && e.hash && !known.has(e.hash));
     if (!flushMs || added) {
       dirty.delete(key);
       writeDoc(key, value);

@@ -33,6 +33,14 @@ describe('fabricProtocolUrl', function () {
     assert.ok(out.summary.byteLength >= 208);
   });
 
+  it('previews a field-encoded CONTRACT_MESSAGE as its JSON object', function () {
+    const body = { contract: 'ab'.repeat(32), type: 'Example', object: { n: 1 } };
+    const hex = Message.fromLegacyBody('CONTRACT_MESSAGE', body).toBuffer().toString('hex');
+    const out = fabricMessageSummaryFromHex(hex);
+    assert.strictEqual(out.ok, true);
+    assert.deepStrictEqual(JSON.parse(out.summary.bodyPreview), body);
+  });
+
   it('parseOpaqueFabricMessageHex reads fabric:deadbeef…', function () {
     const m = new Message({ type: 'GenericMessage', data: { x: 1 } });
     const hex = m.toBuffer().toString('hex');

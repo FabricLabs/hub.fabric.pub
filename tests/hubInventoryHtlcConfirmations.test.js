@@ -64,6 +64,10 @@ describe('Inventory HTLC delivery waits for confirmations', function () {
     assert.strictEqual(r.confirmations, 0);
     assert.strictEqual(r.required, 1);
     assert.strictEqual(r.retryWithSameTxid, true);
+    assert.strictEqual(r.settlementId, 's1', 'every result names its settlement');
+    const unknown = await hub._confirmInventoryHtlcPayment({ settlementId: 'nope', txid: TXID });
+    assert.strictEqual(unknown.status, 'error');
+    assert.strictEqual(unknown.settlementId, 'nope');
     assert.strictEqual(hub.sent.length, 0);
     assert.strictEqual(hub.reveals.length, 0);
     const s = hub._inventoryHtlcById.get('s1');

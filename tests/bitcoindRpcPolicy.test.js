@@ -49,7 +49,7 @@ describe('functions/bitcoindRpcPolicy', function () {
   });
 
   it('refuses host-file and shutdown methods even for admin', function () {
-    for (const m of ['dumpwallet', 'dumpprivkey', 'backupwallet', 'importwallet', 'loadwallet', 'stop', 'dumptxoutset']) {
+    for (const m of ['dumpwallet', 'dumpprivkey', 'backupwallet', 'importwallet', 'loadwallet', 'stop', 'dumptxoutset', 'migratewallet']) {
       assert.strictEqual(bitcoindRpcAccess(m, { isAdmin: true }).allowed, false, m);
     }
   });

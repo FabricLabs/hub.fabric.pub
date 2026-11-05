@@ -91,3 +91,33 @@ describe('Hub#_rpcCallerIsOperator', function () {
     assert.strictEqual(await viaHttp([{ adminToken: GOOD }], false), true);
   });
 });
+
+describe('Payjoin session lists (gap 3)', function () {
+  function fakeHub (calls) {
+    return {
+      http: { jsonOrShell: (req, res, fn) => fn() },
+      setup: { verifyAdminToken: (t) => t === 'good' },
+      _extractOptionalAdminTokenFromRequest: Hub.prototype._extractOptionalAdminTokenFromRequest,
+      _requireAdminTokenForHubWalletHttp: Hub.prototype._requireAdminTokenForHubWalletHttp,
+      _getPayjoinService: () => ({
+        listSessions () { calls.push('list'); return [{ id: 's1' }]; },
+        getSession (id) { return { id, amountSats: 1000 }; }
+      })
+    };
+  }
+  function res () {
+    return { statusCode: 200, body: null, setHeader () {}, status (c) { this.statusCode = c; return this; }, json (b) { this.body = b; return this; } };
+  }
+
+  it('GET /services/payjoin/sessions needs the admin token', async function () {
+    const calls = [];
+    const r = res();
+    await Hub.prototype._handlePayjoinSessionsListRequest.call(fakeHub(calls), { headers: {}, query: {} }, r);
+    assert.strictEqual(r.statusCode, 403);
+    assert.strictEqual(calls.length, 0);
+    const ok = res();
+    await Hub.prototype._handlePayjoinSessionsListRequest.call(fakeHub(calls), { headers: { authorization: 'Bearer good' }, query: {} }, ok);
+    assert.strictEqual(ok.statusCode, 200);
+    assert.strictEqual(ok.body.sessions[0].id, 's1');
+  });
+});

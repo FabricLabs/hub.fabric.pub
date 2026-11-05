@@ -685,7 +685,10 @@ function DocumentDetail (props) {
     setHtlcUnlockBusy(true);
     setHtlcUnlockError(null);
     try {
-      const r = await props.onUnlockHtlcDocument(id, viaHub === true ? '' : htlcPreimageHex.trim());
+      // The prop token first, so a Hub-open works when browser storage holds none.
+      const r = viaHub === true
+        ? await props.onUnlockHtlcDocument(id, '', { adminToken: readHubAdminTokenFromBrowser(props.adminToken) })
+        : await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim());
       if (!r || !r.ok) {
         setHtlcUnlockError((r && r.error) || dv.keyUnlock.failed);
       } else {
@@ -698,7 +701,7 @@ function DocumentDetail (props) {
     } finally {
       setHtlcUnlockBusy(false);
     }
-  }, [doc, id, htlcPreimageHex, props.onUnlockHtlcDocument]);
+  }, [doc, id, htlcPreimageHex, props.onUnlockHtlcDocument, props.adminToken]);
 
   const isEncrypted = !!(doc && doc.contentEncrypted);
   const isHtlcPendingDecrypt = !!(doc && doc.htlcPendingDecrypt);

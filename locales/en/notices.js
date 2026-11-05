@@ -17,7 +17,8 @@ module.exports = {
     wrongPreimage: 'That unlock key does not match this purchase.',
     badCiphertext: 'The stored encrypted copy is damaged. Request the document again.',
     decryptFailed: 'Could not decrypt the document. The key is wrong or the encrypted copy is damaged.',
-    openOnBuyingHub: 'This copy opens on the Hub that bought it. Sign in to that Hub as its operator (admin token), then open it there.'
+    openOnBuyingHub: 'This copy opens on the Hub that bought it. Sign in to that Hub as its operator (admin token), then open it there.',
+    unlockIdentity: 'Unlock your identity first, so the opened copy is stored encrypted.'
   },
   wallet: {
     header: 'Wallet',

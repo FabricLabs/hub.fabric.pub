@@ -48,6 +48,7 @@ const FORBIDDEN_BITCOIND_RPC_METHODS = Object.freeze(new Set([
   'importwallet',
   'loadtxoutset',
   'loadwallet',
+  'migratewallet',
   'restorewallet',
   'savemempool',
   'stop',

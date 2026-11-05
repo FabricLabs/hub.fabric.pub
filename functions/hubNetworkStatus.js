@@ -80,8 +80,9 @@ const NETWORK_STATUS_KEPT_FIELDS = Object.freeze([
  * {@link NETWORK_STATUS_HEAVY_FIELDS} in order. Dropped names are listed in
  * `truncated`, so clients keep their last copy of those fields
  * ({@link mergeTruncatedNetworkStatus}) and fetch them with their own calls.
- * Still too large, it keeps the first `peers` (with `peersTotal`, and `peers`
- * listed in `truncated`), then drops
+ * Still too large, it keeps the first `peers`, fresh, with `peersTotal` and
+ * `peersPartial: true` (not in `truncated`: an old full list would hide every
+ * change), then drops
  * the largest remaining fields outside {@link NETWORK_STATUS_KEPT_FIELDS}.
  * @param {object} status
  * @param {number} maxBytes JSON byte budget (frame body minus the JSONCall envelope)
@@ -109,11 +110,8 @@ function fitHubNetworkStatus (status, maxBytes) {
       keep = Math.floor(keep / 2);
       out.peers = status.peers.slice(0, keep);
     }
-    // A partial list is listed as truncated so a client keeps the full one it has.
-    if (keep < status.peers.length) {
-      truncated.push('peers');
-      out.truncated = truncated.slice();
-    }
+    // A partial list is still current, so clients take it as is; `peersPartial` says it is partial.
+    if (keep < status.peers.length) out.peersPartial = true;
     if (size(out) <= maxBytes) return out;
   }
   const rest = Object.keys(out)
@@ -142,7 +140,40 @@ function mergeTruncatedNetworkStatus (next, previous) {
   return merged;
 }
 
+/** WebRTC registry metadata the public network status keeps (the UI and mesh read only these). */
+const PUBLIC_WEBRTC_METADATA_FIELDS = Object.freeze(['fabricPeerId', 'capabilities', 'transport', 'webrtcSignalingId', 'meshSessionCount']);
+
+/** @private */
+function publicWebRtcMetadata (meta) {
+  if (!meta || typeof meta !== 'object') return meta;
+  const out = {};
+  for (const k of PUBLIC_WEBRTC_METADATA_FIELDS) if (meta[k] !== undefined) out[k] = meta[k];
+  return out;
+}
+
+/**
+ * The {@link GetNetworkStatus} view for anyone but the operator (and for the
+ * status pushed to every WebSocket client): browser-reported WebRTC metadata
+ * (user agent, refund pubkey, …) is cut to {@link PUBLIC_WEBRTC_METADATA_FIELDS}.
+ * Fabric TCP peer addresses stay: peering offers already gossip them.
+ * @param {object} status
+ * @returns {object}
+ */
+function redactNetworkStatusForPublic (status) {
+  if (!status || typeof status !== 'object') return status;
+  const out = Object.assign({}, status);
+  if (Array.isArray(status.peers)) {
+    out.peers = status.peers.map((p) => (p && p.metadata ? Object.assign({}, p, { metadata: publicWebRtcMetadata(p.metadata) }) : p));
+  }
+  if (Array.isArray(status.webrtcPeers)) {
+    out.webrtcPeers = status.webrtcPeers.map((w) => (w && w.metadata ? Object.assign({}, w, { metadata: publicWebRtcMetadata(w.metadata) }) : w));
+  }
+  return out;
+}
+
 module.exports = {
+  PUBLIC_WEBRTC_METADATA_FIELDS,
+  redactNetworkStatusForPublic,
   NETWORK_STATUS_HEAVY_FIELDS,
   isHubNetworkStatusShape,
   bridgeConnectionPhase,

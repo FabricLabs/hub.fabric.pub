@@ -434,4 +434,29 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
     assert.ok(saved.entries.every((e) => e.deliveredTo['fabric:peer-a']));
     assert.ok(!fs._files[`contract-message-queue/${contractId}.json`].includes('\n'), 'compact JSON');
   });
+
+  it('keeps a frame whose write failed for the next put or flush', function () {
+    const fs = memoryFs();
+    let fail = true;
+    fs.writeFile = (p, content) => {
+      if (fail) return false;
+      fs._files[p] = content;
+      return true;
+    };
+    const store = contractMessageQueue.createFilesystemStore(fs, { flushMs: 60000 });
+    const msg = signContractMessage(new Key(), contractId, 'GroupChat', { body: 'kept' });
+    contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
+    assert.strictEqual(fs._files[`contract-message-queue/${contractId}.json`], undefined);
+    fail = false;
+    store.flush();
+    assert.strictEqual(JSON.parse(fs._files[`contract-message-queue/${contractId}.json`]).entries.length, 1, 'the flush retried the write');
+  });
+
+  it('reads a stored document whose entries are not a list', function () {
+    const fs = memoryFs();
+    fs.writeFile = (p, content) => { fs._files[p] = content; return true; };
+    fs._files[`contract-message-queue/${contractId}.json`] = JSON.stringify({ entries: {} });
+    const store = contractMessageQueue.createFilesystemStore(fs);
+    assert.doesNotThrow(() => store.get(contractMessageQueue.COLLECTION || 'contractMessageQueue', contractId));
+  });
 });

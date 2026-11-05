@@ -22,7 +22,10 @@ const Stability = Object.freeze({
 const PayloadEncoding = Object.freeze({
   utf8Json: 'utf8-json',
   utf8Text: 'utf8-text',
-  structuredBinary: 'structured-binary'
+  structuredBinary: 'structured-binary',
+  // Typed field body mapped from the legacy JSON object (`Message.fromLegacyBody`);
+  // Fabric peers drop a JSON body of these types.
+  fieldsLegacyJson: 'fields-legacy-json'
 });
 
 /**
@@ -41,23 +44,23 @@ const OUTER_WIRE_TYPES = [
   { name: 'JSONPatch', opcodeDec: 1024, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'State patch to clients.' },
   { name: 'ChatMessage', opcodeDec: 103, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Chat broadcast (0x67); legacy re-signed relay path.' },
   { name: 'P2P_CHAT_MESSAGE', opcodeDec: 104, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'First-class peer chat frame (0x68). Body = raw UTF-8 text; author is the AMP signature. Hub SPA may still cache a JSON ChatMessage (0x67) on WebSocket.' },
-  { name: 'Ping', opcodeDec: 18, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PING keepalive.' },
-  { name: 'Pong', opcodeDec: 19, stability: Stability.stable, encoding: PayloadEncoding.utf8Text, notes: 'P2P_PONG response.' },
+  { name: 'Ping', opcodeDec: 18, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'P2P_PING keepalive.' },
+  { name: 'Pong', opcodeDec: 19, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'P2P_PONG response.' },
   { name: 'P2P_RELAY', opcodeDec: 67, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Peer mesh flood: body = raw inner Message bytes. Hub↔browser WS may still use JSON { original, originalType, hops }. Not IP-hiding — use P2P_FORWARD.' },
   { name: 'P2P_MESSAGE_RECEIPT', opcodeDec: 68, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Server ack after handling inbound frame.' },
   { name: 'P2P_FORWARD', opcodeDec: 69, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Directed onion hop (0x45): fields nextPeer (bytes32 x-only), ttl (u8), inner (nested Message). TCP Peer / Hub SendOnion only — do not WS-flood.' },
   { name: 'JSONBlob', opcodeDec: 15104, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'GENERIC+1; JSON payload, prefer named type when available.' },
   { name: 'GenericMessage', opcodeDec: 15103, stability: Stability.transitional, encoding: PayloadEncoding.utf8Json, notes: 'Registered in @fabric/core as GENERIC_MESSAGE (15103); prefer dedicated opcodes when stable.' },
   { name: 'PeerMessage', opcodeDec: 49, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'P2P_BASE_MESSAGE; generic peer payload carrier.' },
-  { name: 'DocumentPublish', opcodeDec: 998, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Document publish.' },
-  { name: 'DocumentRequest', opcodeDec: 999, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Document request.' },
-  { name: 'ContractProposal', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Batched messages + chain Merkle root + JSON Patch (+ optional PSBT); optional `contractId` namespace; see @fabric/core docs/CONTRACT_PROPOSAL.md.' },
-  { name: 'CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Publishes a contract definition; registers under a deterministic Actor id (contract namespace). Emits contract:publish (0x5f). Alias: P2P_CONTRACT_PUBLISH. See @fabric/core docs/APPLICATION_NAMESPACES.md.' },
-  { name: 'CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Namespaced contract event; body carries `contract: <id>`. Dispatch routes by namespace (contract:message). State ops apply only to locally registered contracts (0x60). Alias: P2P_CONTRACT_MESSAGE.' },
+  { name: 'DocumentPublish', opcodeDec: 998, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Document publish.' },
+  { name: 'DocumentRequest', opcodeDec: 999, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Document request.' },
+  { name: 'ContractProposal', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Batched messages + chain Merkle root + JSON Patch (+ optional PSBT); optional `contractId` namespace; see @fabric/core docs/CONTRACT_PROPOSAL.md.' },
+  { name: 'CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Publishes a contract definition; registers under a deterministic Actor id (contract namespace). Emits contract:publish (0x5f). Alias: P2P_CONTRACT_PUBLISH. See @fabric/core docs/APPLICATION_NAMESPACES.md.' },
+  { name: 'CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Namespaced contract event; body carries `contract: <id>`. Dispatch routes by namespace (contract:message). State ops apply only to locally registered contracts (0x60). Alias: P2P_CONTRACT_MESSAGE.' },
   // Encode aliases (same opcodes) — Message.fromVector accepts these names.
-  { name: 'P2P_CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_PUBLISH (0x5f).' },
-  { name: 'P2P_CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of CONTRACT_MESSAGE (0x60).' },
-  { name: 'P2P_CONTRACT_PROPOSAL', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.utf8Json, notes: 'Alias of ContractProposal / CONTRACT_PROPOSAL (0x8a).' },
+  { name: 'P2P_CONTRACT_PUBLISH', opcodeDec: 95, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Alias of CONTRACT_PUBLISH (0x5f).' },
+  { name: 'P2P_CONTRACT_MESSAGE', opcodeDec: 96, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Alias of CONTRACT_MESSAGE (0x60).' },
+  { name: 'P2P_CONTRACT_PROPOSAL', opcodeDec: 138, stability: Stability.stable, encoding: PayloadEncoding.fieldsLegacyJson, notes: 'Alias of ContractProposal / CONTRACT_PROPOSAL (0x8a).' },
   { name: 'P2P_MUSIG_START', opcodeDec: 16928, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Directed BIP-327 session open (0x4220). Not mesh-flooded; AMP signer must be a listed pubkey.' },
   { name: 'P2P_MUSIG_ACCEPT', opcodeDec: 16929, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'First co-signer pubnonce (0x4221).' },
   { name: 'P2P_MUSIG_RECEIVE_COUNTER', opcodeDec: 16930, stability: Stability.stable, encoding: PayloadEncoding.structuredBinary, notes: 'Additional signer pubnonce (0x4222).' },

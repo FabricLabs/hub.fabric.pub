@@ -77,8 +77,10 @@ const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChat
  * @returns {boolean}
  */
 function isPerBlobHtlcHeader (header) {
+  const hex64 = (value) => /^[0-9a-f]{64}$/.test(String(value || '').toLowerCase());
   return !!(header && typeof header === 'object' && Number(header.v) === 2 && header.perBlob === true &&
-    /^[0-9a-f]{64}$/.test(String(header.paymentHashHex || '').toLowerCase()));
+    hex64(header.merkleRootHex) && hex64(header.paymentHashHex) &&
+    Number.isSafeInteger(Number(header.blobTotal)) && Number(header.blobTotal) > 0);
 }
 
 /** Ping/pong keep genesis parent on browser-originated durable frames. */
@@ -1520,11 +1522,17 @@ class Bridge extends React.Component {
       };
       if (doc.htlcFileV1 && Number(doc.htlcFileV1.v) === 1 && doc.htlcFileV1.iv && doc.htlcFileV1.paymentHashHex) {
         state.htlcFileV1 = doc.htlcFileV1;
-      } else if (isPerBlobHtlcHeader(doc.htlcFileV1)) {
+      } else if (doc.htlcFileV1 && Number(doc.htlcFileV1.v) === 2) {
         // v2: each blob has its own key, wrapped under K. Only the Hub that bought it holds the wraps.
+        // A malformed header or a delivery without its parts could never be opened: drop it.
+        if (!isPerBlobHtlcHeader(doc.htlcFileV1) || !Array.isArray(doc.parts)) {
+          this._p2pFileReceivers.delete(transferId);
+          console.warn('[BRIDGE] Dropping a per-blob delivery with a malformed header or no parts');
+          return;
+        }
         state.htlcFileV1 = doc.htlcFileV1;
         state.meta.htlcFileV1 = doc.htlcFileV1;
-        if (Array.isArray(doc.parts)) state.meta.parts = doc.parts;
+        state.meta.parts = doc.parts;
       }
     }
     state.chunks[index] = doc.contentBase64;
@@ -1592,14 +1600,14 @@ class Bridge extends React.Component {
    * @param {string} preimageHex - 64 hex chars
    * @returns {Promise<{ ok: boolean, error?: string }>}
    */
-  async unlockHtlcEncryptedDocument (documentId, preimageHex) {
+  async unlockHtlcEncryptedDocument (documentId, preimageHex, options = {}) {
     const id = documentId;
     const doc = this.globalState.documents && this.globalState.documents[id];
     if (!doc || !doc.htlcPendingDecrypt) {
       return { ok: false, error: notices.htlc.notPending };
     }
     // Per-blob keys are wrapped on the Hub that bought the copy; the browser never sees them.
-    if (doc.htlcPerBlob) return this.openPurchasedDocumentViaHub(id, preimageHex);
+    if (doc.htlcPerBlob) return this.openPurchasedDocumentViaHub(id, preimageHex, options);
     if (typeof crypto === 'undefined' || !crypto.subtle) {
       return { ok: false, error: notices.htlc.noWebCrypto };
     }
@@ -1654,14 +1662,18 @@ class Bridge extends React.Component {
    * @param {string} [preimageHex] the key from the seller's claim, when no reveal arrived
    * @returns {Promise<{ ok: boolean, error?: string }>}
    */
-  async openPurchasedDocumentViaHub (documentId, preimageHex) {
+  async openPurchasedDocumentViaHub (documentId, preimageHex, options = {}) {
     const id = documentId;
     const doc = this.globalState.documents && this.globalState.documents[id];
     if (!doc || !doc.htlcPendingDecrypt) return { ok: false, error: notices.htlc.notPending };
-    const adminToken = this._hubIsPageOrigin() ? readHubAdminTokenFromBrowser() : '';
+    const adminToken = this._hubIsPageOrigin()
+      ? readHubAdminTokenFromBrowser(options && options.adminToken)
+      : '';
     if (!adminToken) return { ok: false, error: notices.htlc.openOnBuyingHub };
     const origin = typeof window !== 'undefined' && window.location && window.location.origin ? window.location.origin : '';
     if (!origin || typeof fetch !== 'function') return { ok: false, error: notices.htlc.openOnBuyingHub };
+    // The plaintext is stored only under the document key, so it never outlives a lock.
+    if (!this._getDocumentKey()) return { ok: false, error: notices.htlc.unlockIdentity };
     const params = [{
       id: doc.htlcHubDocumentId || doc.sha256 || id,
       adminToken,
@@ -1682,6 +1694,8 @@ class Bridge extends React.Component {
     if (!result || result.status !== 'success' || !result.document || !result.document.contentBase64) {
       return { ok: false, error: (result && result.message) || notices.htlc.decryptFailed };
     }
+    // The identity may have locked while the Hub answered: keep the copy pending to retry after unlock.
+    if (!this._getDocumentKey()) return { ok: false, error: notices.htlc.unlockIdentity };
     const cleaned = { ...doc };
     for (const k of Object.keys(cleaned)) {
       if (k.startsWith('htlc')) delete cleaned[k];
@@ -4836,7 +4850,7 @@ class Bridge extends React.Component {
    * Send network status request (backward compatibility)
    */
   sendNetworkStatusRequest () {
-    const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [] })]);
+    const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [this._operatorRpcAuth()] })]);
     const buffer = message.toBuffer();
     if (this.settings.debug) {
       console.debug('[BRIDGE]', 'Sending network status request, bytes:', buffer && buffer.length);

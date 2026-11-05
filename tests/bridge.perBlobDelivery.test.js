@@ -60,6 +60,13 @@ describe('Bridge per-blob (v2) purchase deliveries', function () {
     };
   }
 
+  /** A document key that marks what it sealed, so a test can tell sealed from plain. */
+  function withDocumentKey (bridge) {
+    const key = { encrypt: (b64) => `sealed:${b64}`, decrypt: (v) => String(v).replace(/^sealed:/, '') };
+    bridge._getDocumentKey = () => key;
+    return bridge;
+  }
+
   function deliver (bridge, doc) {
     bridge._handleP2pFileChunk(doc, { transferId: `${doc.id}:${doc.merkleRootHex || 'whole'}`, index: 0, total: 1 });
   }
@@ -98,7 +105,7 @@ describe('Bridge per-blob (v2) purchase deliveries', function () {
   });
 
   it('opens a v2 copy through the Hub with the admin token', async function () {
-    const bridge = new Bridge({ responseCapture: () => {} });
+    const bridge = withDocumentKey(new Bridge({ responseCapture: () => {} }));
     deliver(bridge, perBlobDelivery());
     writeStorageString('fabric.hub.adminToken', 'admin-token');
     const plaintext = Buffer.from('the readable paper').toString('base64');
@@ -118,14 +125,13 @@ describe('Bridge per-blob (v2) purchase deliveries', function () {
     const stored = bridge.globalState.documents['doc-v2'];
     assert.ok(!Object.keys(stored).some((k) => k.startsWith('htlc')), 'htlc fields cleared');
     assert.strictEqual(stored.parts, undefined);
-    const content = stored.contentBase64 != null ? stored.contentBase64 : null;
-    if (content != null) assert.strictEqual(content, plaintext);
-    else assert.ok(stored.contentEncrypted, 'content kept (encrypted at rest)');
+    assert.strictEqual(stored.contentBase64, undefined, 'no plaintext at rest');
+    assert.strictEqual(stored.contentEncrypted, `sealed:${plaintext}`);
     assert.ok(events.some((ev) => ev.type === 'globalStateUpdate' && ev.detail.operation.path === '/documents/doc-v2'));
   });
 
   it('passes a hand-entered claim key to the Hub', async function () {
-    const bridge = new Bridge({ responseCapture: () => {} });
+    const bridge = withDocumentKey(new Bridge({ responseCapture: () => {} }));
     deliver(bridge, perBlobDelivery());
     writeStorageString('fabric.hub.adminToken', 'admin-token');
     stubOpenPurchasedDocument({ status: 'error', message: 'no content key yet' });
@@ -135,6 +141,49 @@ describe('Bridge per-blob (v2) purchase deliveries', function () {
     assert.strictEqual(r.error, 'no content key yet');
     assert.strictEqual(rpcCalls[0].body.params[0].preimageHex, key);
     assert.strictEqual(bridge.globalState.documents['doc-v2'].htlcPendingDecrypt, true, 'still pending');
+  });
+
+  it('uses the admin token it is handed when the browser stores none', async function () {
+    const bridge = withDocumentKey(new Bridge({ responseCapture: () => {} }));
+    deliver(bridge, perBlobDelivery());
+    stubOpenPurchasedDocument({ status: 'error', message: 'later' });
+    await bridge.unlockHtlcEncryptedDocument('doc-v2', '', { adminToken: 'prop-token' });
+    assert.strictEqual(rpcCalls[0].body.params[0].adminToken, 'prop-token');
+  });
+
+  it('does not open a copy while the identity is locked, nor store one that came back after a lock', async function () {
+    const bridge = new Bridge({ responseCapture: () => {} });
+    deliver(bridge, perBlobDelivery());
+    writeStorageString('fabric.hub.adminToken', 'admin-token');
+    stubOpenPurchasedDocument({ status: 'success', document: { contentBase64: 'cGxhaW4=' } });
+    const locked = await bridge.unlockHtlcEncryptedDocument('doc-v2', '');
+    assert.strictEqual(locked.ok, false);
+    assert.match(locked.error, /Unlock your identity/);
+    assert.strictEqual(rpcCalls.length, 0, 'no request while locked');
+
+    withDocumentKey(bridge);
+    const fetchOpen = global.fetch;
+    global.fetch = async (url, init) => {
+      bridge._getDocumentKey = () => null; // locks while the Hub answers
+      return fetchOpen(url, init);
+    };
+    const late = await bridge.unlockHtlcEncryptedDocument('doc-v2', '');
+    assert.strictEqual(late.ok, false);
+    const stored = bridge.globalState.documents['doc-v2'];
+    assert.strictEqual(stored.htlcPendingDecrypt, true, 'kept pending to retry after unlock');
+    assert.strictEqual(stored.contentBase64, undefined);
+  });
+
+  it('drops a per-blob delivery with a malformed header or no parts', function () {
+    const bridge = new Bridge({ responseCapture: () => {} });
+    const noRoot = perBlobDelivery();
+    delete noRoot.htlcFileV1.merkleRootHex;
+    deliver(bridge, noRoot);
+    const noParts = Object.assign(perBlobDelivery(), { id: 'doc-v2b', sha256: 'doc-v2b' });
+    delete noParts.parts;
+    deliver(bridge, noParts);
+    assert.strictEqual(bridge.globalState.documents['doc-v2'], undefined);
+    assert.strictEqual(bridge.globalState.documents['doc-v2b'], undefined);
   });
 
   it('says where to open it when this page has no admin token', async function () {

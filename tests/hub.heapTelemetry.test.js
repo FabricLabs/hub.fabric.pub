@@ -124,6 +124,39 @@ describe('Hub heap snapshots', function () {
   });
 });
 
+describe('Hub heap snapshot files', function () {
+  const v8 = require('v8');
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+  let written;
+  let original;
+  beforeEach(function () {
+    written = [];
+    original = v8.writeHeapSnapshot;
+    v8.writeHeapSnapshot = (file) => { written.push(file); return file; };
+  });
+  afterEach(function () {
+    v8.writeHeapSnapshot = original;
+  });
+
+  it('names the file from fixed parts only', function () {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-heap-'));
+    const file = hubHeapTelemetry.writeHeapSnapshot(dir, 'threshold');
+    assert.strictEqual(path.dirname(file), dir);
+    assert.match(path.basename(file), /^hub-\d+-[0-9TZ-]+-threshold\.heapsnapshot$/);
+    const other = hubHeapTelemetry.writeHeapSnapshot(dir + path.sep, '../../escape');
+    assert.strictEqual(path.dirname(other), dir);
+    assert.match(path.basename(other), /-snapshot\.heapsnapshot$/);
+    assert.deepStrictEqual(written, [file, other]);
+  });
+
+  it('refuses a relative directory', function () {
+    assert.strictEqual(hubHeapTelemetry.writeHeapSnapshot('stores/hub/heap', 'signal'), null);
+    assert.deepStrictEqual(written, []);
+  });
+});
+
 describe('hubHeapTelemetry leak fields', function () {
   it('reports growth since the previous snapshot', function () {
     const previous = {

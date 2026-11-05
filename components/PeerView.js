@@ -126,6 +126,8 @@ function PeerDetail (props) {
   const [inventoryDocs, setInventoryDocs] = React.useState([]);
   const [htlcTxids, setHtlcTxids] = React.useState({});
   const [htlcConfirmFeedback, setHtlcConfirmFeedback] = React.useState(null);
+  // The settlement this panel last asked to confirm; other results are not this panel's.
+  const confirmSettlementRef = React.useRef(null);
   const [htlcFundingQrBySettlement, setHtlcFundingQrBySettlement] = React.useState({});
   const [htlcFundingCopied, setHtlcFundingCopied] = React.useState(null);
   const [inventoryRelayTarget, setInventoryRelayTarget] = React.useState('');
@@ -162,6 +164,7 @@ function PeerDetail (props) {
     const onConfirm = (ev) => {
       const r = ev && ev.detail;
       if (!r || typeof r !== 'object') return;
+      if (!r.settlementId || r.settlementId !== confirmSettlementRef.current) return;
       setHtlcConfirmFeedback({
         status: r.status === 'success' || r.status === 'pending' ? r.status : 'error',
         message: r.status === 'pending' ? pv.htlc.pending(r.confirmations, r.required) : r.message,
@@ -173,6 +176,10 @@ function PeerDetail (props) {
     window.addEventListener('inventoryHtlcConfirmResult', onConfirm);
     return () => window.removeEventListener('inventoryHtlcConfirmResult', onConfirm);
   }, []);
+  React.useEffect(() => {
+    confirmSettlementRef.current = null;
+    setHtlcConfirmFeedback(null);
+  }, [id]);
   React.useEffect(() => {
     const onInv = (ev) => {
       const d = ev && ev.detail;
@@ -1228,7 +1235,9 @@ function PeerDetail (props) {
                     ) : (
                       <code title={net.explorerOff}>{htlcConfirmFeedback.txid}</code>
                     )}
-                    <span style={{ color: '#666' }}> ({pv.htlc.unconfirmed})</span>
+                    {htlcConfirmFeedback.status === 'pending' && (
+                      <span style={{ color: '#666' }}> ({pv.htlc.unconfirmed})</span>
+                    )}
                   </p>
                 )}
               </Message>
@@ -1375,6 +1384,8 @@ function PeerDetail (props) {
                               onClick={() => {
                                 const tx = (htlcTxids[doc.htlc.settlementId] || '').trim();
                                 if (bridgeRef && bridgeRef.current && tx) {
+                                  confirmSettlementRef.current = String(doc.htlc.settlementId || '').trim();
+                                  setHtlcConfirmFeedback(null);
                                   bridgeRef.current.sendConfirmInventoryHtlcPayment(doc.htlc.settlementId, tx);
                                 }
                               }}

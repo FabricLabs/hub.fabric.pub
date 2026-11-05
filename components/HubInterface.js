@@ -2751,7 +2751,7 @@ class HubInterface extends React.Component {
                             ? bridgeInstance.getDecryptedDocumentContent(id)
                             : null;
                         }}
-                        onUnlockHtlcDocument={async (docId, preimageHex) => {
+                        onUnlockHtlcDocument={async (docId, preimageHex, unlockOptions) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) {
                             return { ok: false, error: t.shell.bridgeErrors.notReady };
                           }
@@ -2759,7 +2759,7 @@ class HubInterface extends React.Component {
                           if (typeof bridgeInstance.unlockHtlcEncryptedDocument !== 'function') {
                             return { ok: false, error: t.shell.bridgeErrors.htlcUnavailable };
                           }
-                          return bridgeInstance.unlockHtlcEncryptedDocument(docId, preimageHex);
+                          return bridgeInstance.unlockHtlcEncryptedDocument(docId, preimageHex, unlockOptions);
                         }}
                         onPublishDocument={(id, opts) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;

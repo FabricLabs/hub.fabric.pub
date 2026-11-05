@@ -20,6 +20,12 @@
  * - Originals that pay no fee, or less than `minFeeRateSatVb`, are refused:
  *   the Hub will not be the one paying the miner. Signed originals are
  *   checked with `testmempoolaccept` before the Hub reveals a coin.
+ * - Originals whose signatures do not commit to every input and output
+ *   (anything but `SIGHASH_ALL`, or Taproot default), that spend a Hub
+ *   wallet coin, or that exceed the input / output / value limits are
+ *   refused before any Hub coin is chosen.
+ * - Coins created by an earlier Hub payjoin (`excludeParentTxids`) are never
+ *   contributed, so receiver coins do not snowball into a chain.
  */
 
 const bitcoin = require('bitcoinjs-lib');
@@ -40,6 +46,13 @@ const INPUT_VBYTES = Object.freeze({
   p2pkh: 148
 });
 const CONTRIBUTABLE = new Set(['p2tr', 'p2wpkh']);
+/** Consensus money supply cap, in sats. */
+const MAX_MONEY_SATS = 2100000000000000n;
+/** Largest original the Hub will look at. */
+const MAX_ORIGINAL_INPUTS = 100;
+const MAX_ORIGINAL_OUTPUTS = 100;
+const SIGHASH_DEFAULT = 0x00;
+const SIGHASH_ALL = 0x01;
 
 /** @private */
 function fail (message) {
@@ -138,6 +151,111 @@ function isFinalized (data) {
   return !!(data.finalScriptWitness || data.finalScriptSig);
 }
 
+/** @private txid of a non-witness serialization */
+function txidOfUnsigned (buf) {
+  return Buffer.from(bitcoin.crypto.hash256(Buffer.from(buf))).reverse().toString('hex');
+}
+
+/** @private */
+function readVarInt (buf, offset) {
+  const first = buf[offset];
+  if (first < 0xfd) return { value: first, size: 1 };
+  if (first === 0xfd) return { value: buf.readUInt16LE(offset + 1), size: 3 };
+  if (first === 0xfe) return { value: buf.readUInt32LE(offset + 1), size: 5 };
+  return { value: Number(buf.readBigUInt64LE(offset + 1)), size: 9 };
+}
+
+/**
+ * Items of a serialized witness stack.
+ * @param {Uint8Array} witness
+ * @returns {Buffer[]}
+ */
+function decodeWitnessStack (witness) {
+  const buf = Buffer.from(witness || []);
+  if (!buf.length) return [];
+  const items = [];
+  const count = readVarInt(buf, 0);
+  let offset = count.size;
+  for (let i = 0; i < count.value; i++) {
+    const len = readVarInt(buf, offset);
+    offset += len.size;
+    if (offset + len.value > buf.length) throw new Error('witness stack is truncated');
+    items.push(buf.subarray(offset, offset + len.value));
+    offset += len.value;
+  }
+  return items;
+}
+
+/** @private DER signature with its sighash byte appended. */
+function isDerSignature (item) {
+  return item.length >= 9 && item.length <= 73 && item[0] === 0x30 && item[1] === item.length - 3;
+}
+
+/**
+ * Sighash types used by the signatures on one input (partial or final).
+ * Taproot 64-byte signatures report `SIGHASH_DEFAULT`.
+ * @param {Object} data PSBT input
+ * @param {string} type script type of the spent output
+ * @returns {number[]}
+ */
+function inputSighashTypes (data, type) {
+  const found = [];
+  if (data.sighashType != null) found.push(Number(data.sighashType));
+  for (const ps of data.partialSig || []) {
+    const sig = Buffer.from(ps.signature || []);
+    if (sig.length) found.push(sig[sig.length - 1]);
+  }
+  if (data.tapKeySig) {
+    const sig = Buffer.from(data.tapKeySig);
+    found.push(sig.length === 65 ? sig[64] : SIGHASH_DEFAULT);
+  }
+  for (const ts of data.tapScriptSig || []) {
+    const sig = Buffer.from(ts.signature || []);
+    found.push(sig.length === 65 ? sig[64] : SIGHASH_DEFAULT);
+  }
+  if (data.finalScriptWitness) {
+    const items = decodeWitnessStack(data.finalScriptWitness);
+    if (type === 'p2tr') {
+      // Key path: one signature (an optional annex starts with 0x50).
+      const stack = items.length > 1 && items[items.length - 1][0] === 0x50 ? items.slice(0, -1) : items;
+      if (stack.length === 1 && (stack[0].length === 64 || stack[0].length === 65)) {
+        found.push(stack[0].length === 65 ? stack[0][64] : SIGHASH_DEFAULT);
+      } else {
+        for (const item of stack) if (item.length === 64 || item.length === 65) found.push(item.length === 65 ? item[64] : SIGHASH_DEFAULT);
+      }
+    } else {
+      for (const item of items) if (isDerSignature(item)) found.push(item[item.length - 1]);
+    }
+  }
+  if (data.finalScriptSig) {
+    const chunks = bitcoin.script.decompile(Buffer.from(data.finalScriptSig)) || [];
+    for (const chunk of chunks) {
+      if (chunk instanceof Uint8Array && isDerSignature(Buffer.from(chunk))) found.push(chunk[chunk.length - 1]);
+    }
+  }
+  return found;
+}
+
+/**
+ * Throws unless every signature on the input commits to all inputs and outputs
+ * (rust-payjoin 1.0.0-rc.8: ECDSA `SIGHASH_ALL`, Taproot default or `SIGHASH_ALL`).
+ * @param {Object} data PSBT input
+ * @param {string} type script type
+ * @param {number} index
+ */
+function assertCommittingSighash (data, type, index) {
+  let types;
+  try {
+    types = inputSighashTypes(data, type);
+  } catch (err) {
+    fail(`sender input ${index} has an unreadable witness: ${err.message}`);
+  }
+  for (const t of types) {
+    const ok = t === SIGHASH_ALL || (type === 'p2tr' && t === SIGHASH_DEFAULT);
+    if (!ok) fail(`sender input ${index} is signed with sighash 0x${t.toString(16)}; only SIGHASH_ALL is accepted`);
+  }
+}
+
 /**
  * Check the sender's original PSBT and find the receiver's output.
  * @param {Object} opts
@@ -155,6 +273,8 @@ function analyzeOriginal (opts = {}) {
     fail(`original PSBT does not parse: ${err.message}`);
   }
   if (!psbt.txInputs.length) fail('original PSBT has no inputs');
+  if (psbt.txInputs.length > MAX_ORIGINAL_INPUTS) fail(`original PSBT has more than ${MAX_ORIGINAL_INPUTS} inputs`);
+  if (psbt.txOutputs.length > MAX_ORIGINAL_OUTPUTS) fail(`original PSBT has more than ${MAX_ORIGINAL_OUTPUTS} outputs`);
   const receiverScript = Buffer.from(opts.receiverScript);
   const outputs = psbt.txOutputs.map((o) => ({ script: Buffer.from(o.script), value: BigInt(o.value) }));
   const receiverIndexes = outputs.map((o, i) => (o.script.equals(receiverScript) ? i : -1)).filter((i) => i >= 0);
@@ -165,18 +285,23 @@ function analyzeOriginal (opts = {}) {
     const data = psbt.data.inputs[i];
     const signed = isFinalized(data) || (data.partialSig && data.partialSig.length > 0) || !!data.tapKeySig;
     if (!signed) fail(`sender input ${i} is not signed`);
+    if (utxo.value < 0n || utxo.value > MAX_MONEY_SATS) fail(`sender input ${i} value is out of range`);
+    const type = scriptTypeOf(utxo.script);
+    assertCommittingSighash(data, type, i);
     return {
       outpoint: outpointOf(txInput),
       sequence: txInput.sequence,
-      type: scriptTypeOf(utxo.script),
+      type,
       script: utxo.script,
       value: utxo.value
     };
   });
   const sequences = new Set(inputs.map((i) => i.sequence));
   if (sequences.size !== 1) fail('sender inputs must share one nSequence');
+  if (outputs.some((o) => o.value < 0n || o.value > MAX_MONEY_SATS)) fail('original PSBT has an output value out of range');
   const totalIn = inputs.reduce((t, i) => t + i.value, 0n);
   const totalOut = outputs.reduce((t, o) => t + o.value, 0n);
+  if (totalIn > MAX_MONEY_SATS || totalOut > MAX_MONEY_SATS) fail('original PSBT moves more than MAX_MONEY');
   const feeSats = Number(totalIn - totalOut);
   if (!(feeSats > 0)) fail('original PSBT pays no fee; the Hub will not pay the miner for the sender');
   const vsize = estimateVsize(inputs.map((i) => i.type), outputs.map((o) => o.script));
@@ -205,6 +330,48 @@ function rpcOf (svc, wallet) {
     : svc._makeRPCRequest(method, params));
 }
 
+/**
+ * Finalize a signed original and return its transaction hex (the BIP78 fallback).
+ * @param {string} psbtBase64
+ * @param {string} [networkName]
+ * @returns {{ hex: string, txid: string }}
+ */
+function finalizeOriginal (psbtBase64, networkName) {
+  const psbt = bitcoin.Psbt.fromBase64(String(psbtBase64 || '').trim(), { network: networkForFabricName(networkName) });
+  psbt.data.inputs.forEach((data, i) => {
+    if (!isFinalized(data)) psbt.finalizeInput(i);
+  });
+  const tx = psbt.extractTransaction(true);
+  return { hex: tx.toHex(), txid: tx.getId() };
+}
+
+/**
+ * Throws when any original input pays from the Hub wallet: the sender must not
+ * be spending our coins (BIP78 receiver check; rust-payjoin `check_inputs_not_owned`).
+ * Fails closed when the wallet cannot answer.
+ * @private
+ */
+async function checkInputsNotOwned (analysis, rpc, network) {
+  for (const [i, input] of analysis.inputs.entries()) {
+    let address;
+    try {
+      address = bitcoin.address.fromOutputScript(input.script, network);
+    } catch (_) {
+      continue; // bare / non-standard scripts have no wallet address
+    }
+    let info;
+    try {
+      info = await rpc('getaddressinfo', [address]);
+    } catch (err) {
+      throw Object.assign(new Error(`could not check sender input ${i} ownership: ${err.message}`), { code: 'unavailable' });
+    }
+    if (!info || typeof info !== 'object') {
+      throw Object.assign(new Error(`could not check sender input ${i} ownership`), { code: 'unavailable' });
+    }
+    if (info.ismine === true) fail(`sender input ${i} spends a Hub wallet coin`);
+  }
+}
+
 /** @private */
 async function checkBroadcastable (analysis, rpc) {
   const clone = bitcoin.Psbt.fromBase64(analysis.psbt.toBase64(), { network: analysis.psbt.opts.network });
@@ -228,6 +395,7 @@ async function checkBroadcastable (analysis, rpc) {
  * @param {Set<string>} opts.exclude outpoints in the original
  * @param {number} opts.paymentSats
  * @param {(string|null)} opts.senderType
+ * @param {Set<string>} [opts.excludeParentTxids] txids of earlier Hub payjoins (no snowballing)
  * @returns {(Object|null)} `{ txid, vout, valueSats, script, type }`
  */
 function chooseContribution (unspent, opts = {}) {
@@ -244,6 +412,7 @@ function chooseContribution (unspent, opts = {}) {
       };
     })
     .filter((u) => /^[0-9a-f]{64}$/.test(u.txid) && Number.isSafeInteger(u.vout) && u.valueSats > 0)
+    .filter((u) => !(opts.excludeParentTxids && opts.excludeParentTxids.has(u.txid)))
     .filter((u) => CONTRIBUTABLE.has(u.type) && !(opts.exclude && opts.exclude.has(`${u.txid}:${u.vout}`)))
     .filter((u) => !opts.senderType || u.type === opts.senderType);
   if (!rows.length) return null;
@@ -265,6 +434,9 @@ function chooseContribution (unspent, opts = {}) {
  * @param {number} [opts.minFeeRateSatVb=1] lowest original fee rate accepted
  * @param {boolean} [opts.checkBroadcastable=true] `testmempoolaccept` the original first
  * @param {boolean} [opts.lock=true] lock the contributed coin in the wallet
+ * @param {Set<string>} [opts.excludeParentTxids] txids of earlier Hub payjoins (never contribute their outputs)
+ * @param {number} [opts.minPaymentSats] the original must pay the session at least this much itself
+ *   (otherwise the Hub's coin would make an underpayment look paid)
  * @param {Function} [opts.random] `() => [0, 1)` for the insert position (tests)
  * @returns {Promise<Object>} `{ psbtBase64, contributedOutpoint, contributedValueSats, inputIndex, receiverOutputIndex, receiverOutputBeforeSats, receiverOutputAfterSats, additionalFeeSats, senderFeeContributionSats, originalFeeSats, proposalFeeSats, feeRateSatVb }`
  */
@@ -289,13 +461,18 @@ async function contributeReceiverInput (opts = {}) {
     network,
     minFeeRateSatVb: opts.minFeeRateSatVb
   });
+  await checkInputsNotOwned(analysis, rpc, network);
   if (opts.checkBroadcastable !== false) await checkBroadcastable(analysis, rpc);
 
   const paymentSats = Number(analysis.outputs[analysis.receiverIndex].value);
+  if (Number(opts.minPaymentSats) > 0 && paymentSats < Number(opts.minPaymentSats)) {
+    fail(`original pays the session ${paymentSats} sats, less than the ${Number(opts.minPaymentSats)} requested`);
+  }
   const coin = chooseContribution(await rpc('listunspent', [1, 9999999, [], false]), {
     exclude: new Set(analysis.inputs.map((i) => i.outpoint)),
     paymentSats,
-    senderType: analysis.senderType
+    senderType: analysis.senderType,
+    excludeParentTxids: opts.excludeParentTxids
   });
   if (!coin) {
     throw new Error(analysis.senderType && !CONTRIBUTABLE.has(analysis.senderType)
@@ -371,6 +548,9 @@ async function contributeReceiverInput (opts = {}) {
 
   return {
     psbtBase64: signed.toBase64(),
+    // Unsigned transactions carry no witness, so these are the final txids.
+    proposalTxid: txidOfUnsigned(Buffer.from(unsignedHex, 'hex')),
+    originalTxid: txidOfUnsigned(analysis.psbt.data.globalMap.unsignedTx.toBuffer()),
     contributedOutpoint: `${coin.txid}:${coin.vout}`,
     contributedValueSats: coin.valueSats,
     inputIndex,
@@ -388,6 +568,12 @@ async function contributeReceiverInput (opts = {}) {
 module.exports = {
   DUST_SATS,
   INPUT_VBYTES,
+  MAX_MONEY_SATS,
+  MAX_ORIGINAL_INPUTS,
+  MAX_ORIGINAL_OUTPUTS,
+  decodeWitnessStack,
+  inputSighashTypes,
+  finalizeOriginal,
   networkForFabricName,
   scriptTypeOf,
   estimateVsize,

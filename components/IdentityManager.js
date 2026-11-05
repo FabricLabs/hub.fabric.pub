@@ -52,7 +52,9 @@ const {
 const { useHubHttpAvailable } = require('./hubUiRuntime');
 const {
   probePassport,
-  loginWithPassport
+  probePassportPeer,
+  loginWithPassport,
+  loginWithPassportPeer
 } = require('../functions/passportSiteLogin');
 const t = require('../locales/en');
 
@@ -514,9 +516,11 @@ function IdentityManager (props) {
   }, []);
 
   /**
-   * Sign in with Fabric Passport (v2): the Hub issues a challenge, Passport
-   * (or a desktop app it is linked to) signs it over a private port, and the
-   * Hub sets an HttpOnly session cookie. `wallet` asks to share wallet xpubs.
+   * Sign in with Fabric Passport. A Passport that opens peer sessions (v3)
+   * signs in to this Hub by its identity key over the Hub WebSocket and keeps
+   * the session itself; otherwise (v2) the Hub issues a challenge for this
+   * origin, Passport signs it over a private port, and the Hub sets an
+   * HttpOnly session cookie. `wallet` asks to share wallet xpubs.
    */
   const runPassportLogin = React.useCallback(async ({ wallet = false } = {}) => {
     if (typeof window === 'undefined') return;
@@ -535,12 +539,15 @@ function IdentityManager (props) {
     }
     setBusy(true);
     try {
-      const result = await loginWithPassport({
-        window,
-        wallet,
-        purpose: copy.login.passportPurpose,
-        onPending: ({ cancel }) => { passportWaitRef.current = cancel; }
-      });
+      const peerCapable = await probePassportPeer(window).catch(() => false);
+      const result = peerCapable
+        ? await loginWithPassportPeer({ window, wallet, purpose: copy.login.passportPurpose })
+        : await loginWithPassport({
+          window,
+          wallet,
+          purpose: copy.login.passportPurpose,
+          onPending: ({ cancel }) => { passportWaitRef.current = cancel; }
+        });
       passportWaitRef.current = null;
       if (!result.ok) {
         if (result.error === 'cancelled') return;
