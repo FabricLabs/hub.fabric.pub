@@ -5,7 +5,7 @@
  *
  * - Public callers get read-only chain and mempool methods only.
  * - The admin token unlocks every other method (wallet, network, mining).
- * - Methods that read or write files on the Hub host, or stop the node, are never forwarded.
+ * - Methods that read or write files on the Hub host, export private keys, or stop the node, are never forwarded.
  */
 
 /** Read-only methods anyone may call (no wallet, no host paths, no peer addresses). */
@@ -38,14 +38,17 @@ const PUBLIC_BITCOIND_RPC_METHODS = Object.freeze(new Set([
   'verifytxoutproof'
 ]));
 
-/** Methods refused even with the admin token: host file access or node shutdown. */
+/** Methods refused even with the admin token: host file access, private key export, or node shutdown. */
 const FORBIDDEN_BITCOIND_RPC_METHODS = Object.freeze(new Set([
   'backupwallet',
   'createwallet',
   'dumpprivkey',
   'dumptxoutset',
   'dumpwallet',
+  'gethdkeys',
+  'importmempool',
   'importwallet',
+  'listdescriptors',
   'loadtxoutset',
   'loadwallet',
   'migratewallet',

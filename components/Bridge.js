@@ -1413,6 +1413,12 @@ class Bridge extends React.Component {
     if (encrypted != null) {
       toStore.contentEncrypted = encrypted;
       delete toStore.contentBase64;
+    } else if (hasContent && this._getDocumentKey()) {
+      // Encryption failed with a key present: plaintext would outlive the lock
+      // (clearDecryptedDocuments only strips records that carry contentEncrypted).
+      console.warn('[BRIDGE]', 'Not storing document content that could not be encrypted:', targetId);
+      delete toStore.contentBase64;
+      if (existing.contentEncrypted != null) toStore.contentEncrypted = existing.contentEncrypted;
     } else if (!hasContent && merged.contentEncrypted != null) {
       toStore.contentEncrypted = merged.contentEncrypted;
       delete toStore.contentBase64;

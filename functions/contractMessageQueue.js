@@ -99,7 +99,8 @@ function _parseMaybe (raw) {
  * re-read the file. With `flushMs` > 0, delivery marks are coalesced: every
  * such `put` within the window lands in one compact write per contract (call
  * `flush()` on stop). A `put` that adds a frame is written at once, so a crash
- * can lose a delivery mark (the frame is sent again) but never a frame.
+ * can lose a delivery mark (the frame is sent again) but never a frame. The
+ * stored INDEX lists a contract only after its document is written.
  * @param {{ readFile: Function, publish: Function, writeFile: (Function|undefined) }} fs
  * @param {{ root: (string|undefined), flushMs: (number|undefined), maxBytes: (number|undefined), maxDeliveredPeers: (number|undefined) }} [opts]
  * @returns {{ get: Function, put: Function, listContractIds: Function, flush: Function }}
@@ -115,6 +116,8 @@ function createFilesystemStore (fs, opts = {}) {
   const dirty = new Set();
   // Frame hashes each contract's document held when it was last read or written.
   const stored = new Map();
+  // Contracts listed in memory whose document is not written yet; the stored INDEX leaves them out.
+  const unindexed = new Set();
   let index = null;
   let timer = null;
 
@@ -136,16 +139,28 @@ function createFilesystemStore (fs, opts = {}) {
     return new Set(entries.map((e) => e && e.hash).filter(Boolean));
   }
 
-  /** Write one document; a failed write (`writeFile` returns false) stays dirty for the next put or flush. */
+  function schedule () {
+    if (!flushMs || timer) return;
+    timer = setTimeout(flush, flushMs);
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+
+  /**
+   * Write one document, then list its contract in the stored INDEX. A failed
+   * write (`writeFile` returns false) stays dirty and is retried by the next
+   * flush (scheduled after `flushMs` when set).
+   */
   function writeDoc (key, value) {
     let ok = true;
     if (typeof fs.writeFile === 'function') ok = fs.writeFile(docPath(key), JSON.stringify(value)) !== false;
     else publish(docPath(key), value);
     if (!ok) {
       dirty.add(key);
+      schedule();
       return false;
     }
     stored.set(key, hashesOf(value));
+    if (unindexed.delete(key)) publishIndex();
     return true;
   }
 
@@ -172,9 +187,7 @@ function createFilesystemStore (fs, opts = {}) {
       return;
     }
     dirty.add(key);
-    if (timer) return;
-    timer = setTimeout(flush, flushMs);
-    if (typeof timer.unref === 'function') timer.unref();
+    schedule();
   }
 
   function readIndex () {
@@ -186,15 +199,18 @@ function createFilesystemStore (fs, opts = {}) {
     return { contracts: index.slice() };
   }
 
-  function writeIndex (contracts) {
-    const list = Array.from(new Set((contracts || []).map((c) => String(c).toLowerCase()))).sort();
+  function publishIndex () {
     publish(indexPath(), {
       version: 1,
-      contracts: list,
+      contracts: readIndex().contracts.filter((c) => !unindexed.has(c)),
       updatedAt: new Date().toISOString()
     });
-    index = list;
-    return list;
+  }
+
+  function writeIndex (contracts) {
+    index = Array.from(new Set((contracts || []).map((c) => String(c).toLowerCase()))).sort();
+    publishIndex();
+    return index.slice();
   }
 
   return {
@@ -214,11 +230,12 @@ function createFilesystemStore (fs, opts = {}) {
       const key = String(id).toLowerCase();
       fitQueueDoc(value, limits);
       cache.set(key, value);
-      markDirty(key);
       const idx = readIndex();
       if (!idx.contracts.includes(key)) {
-        writeIndex(idx.contracts.concat([key]));
+        index = idx.contracts.concat([key]).sort();
+        unindexed.add(key);
       }
+      markDirty(key);
       return value;
     },
     listContractIds () {

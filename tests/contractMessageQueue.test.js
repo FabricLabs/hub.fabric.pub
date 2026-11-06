@@ -452,6 +452,56 @@ describe('Hub contractMessageQueue (Filesystem)', function () {
     assert.strictEqual(JSON.parse(fs._files[`contract-message-queue/${contractId}.json`]).entries.length, 1, 'the flush retried the write');
   });
 
+  it('lists a contract in the stored INDEX only once its document is written', function () {
+    const fs = memoryFs();
+    const order = [];
+    let fail = true;
+    fs.writeFile = (p, content) => {
+      if (fail) return false;
+      order.push(p);
+      fs._files[p] = content;
+      return true;
+    };
+    const publish = fs.publish;
+    fs.publish = (p, value) => {
+      order.push(p);
+      return publish(p, value);
+    };
+    const docPath = `contract-message-queue/${contractId}.json`;
+    const store = contractMessageQueue.createFilesystemStore(fs, { flushMs: 60000 });
+    const msg = signContractMessage(new Key(), contractId, 'GroupChat', { body: 'indexed' });
+    assert.strictEqual(contractMessageQueue.enqueue(store, contractId, msg.toBuffer()).accepted, true);
+    assert.strictEqual(fs._files[contractMessageQueue.INDEX_PATH], undefined, 'no INDEX entry while the frame is not stored');
+    assert.deepStrictEqual(store.listContractIds(), [contractId], 'still delivered from memory');
+    assert.deepStrictEqual(contractMessageQueue.createFilesystemStore(fs).listContractIds(), [], 'a restart finds no dangling entry');
+
+    fail = false;
+    store.flush();
+    assert.deepStrictEqual(order, [docPath, contractMessageQueue.INDEX_PATH], 'document first, then INDEX');
+    const reopened = contractMessageQueue.createFilesystemStore(fs);
+    assert.deepStrictEqual(reopened.listContractIds(), [contractId]);
+    assert.strictEqual(contractMessageQueue.listQueuedMessages(reopened, contractId, { includeDelivered: true }).length, 1);
+  });
+
+  it('retries a failed frame write on its own with flushMs', function (done) {
+    const fs = memoryFs();
+    let fail = true;
+    fs.writeFile = (p, content) => {
+      if (fail) return false;
+      fs._files[p] = content;
+      return true;
+    };
+    const store = contractMessageQueue.createFilesystemStore(fs, { flushMs: 5 });
+    const msg = signContractMessage(new Key(), contractId, 'GroupChat', { body: 'retry' });
+    contractMessageQueue.enqueue(store, contractId, msg.toBuffer());
+    fail = false;
+    setTimeout(() => {
+      assert.ok(fs._files[`contract-message-queue/${contractId}.json`], 'the retry wrote the frame');
+      assert.deepStrictEqual(fs._files[contractMessageQueue.INDEX_PATH].contracts, [contractId]);
+      done();
+    }, 30);
+  });
+
   it('reads a stored document whose entries are not a list', function () {
     const fs = memoryFs();
     fs.writeFile = (p, content) => { fs._files[p] = content; return true; };

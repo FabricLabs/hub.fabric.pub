@@ -686,9 +686,10 @@ function DocumentDetail (props) {
     setHtlcUnlockError(null);
     try {
       // The prop token first, so a Hub-open works when browser storage holds none.
+      const unlockOptions = { adminToken: readHubAdminTokenFromBrowser(props.adminToken) };
       const r = viaHub === true
-        ? await props.onUnlockHtlcDocument(id, '', { adminToken: readHubAdminTokenFromBrowser(props.adminToken) })
-        : await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim());
+        ? await props.onUnlockHtlcDocument(id, '', unlockOptions)
+        : await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim(), unlockOptions);
       if (!r || !r.ok) {
         setHtlcUnlockError((r && r.error) || dv.keyUnlock.failed);
       } else {

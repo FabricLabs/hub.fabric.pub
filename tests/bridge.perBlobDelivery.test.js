@@ -174,6 +174,18 @@ describe('Bridge per-blob (v2) purchase deliveries', function () {
     assert.strictEqual(stored.contentBase64, undefined);
   });
 
+  it('never stores an opened copy as plaintext when sealing it fails', async function () {
+    const bridge = new Bridge({ responseCapture: () => {} });
+    bridge._getDocumentKey = () => ({ encrypt: () => { throw new Error('sealing failed'); }, decrypt: () => null });
+    deliver(bridge, perBlobDelivery());
+    writeStorageString('fabric.hub.adminToken', 'admin-token');
+    stubOpenPurchasedDocument({ status: 'success', document: { id: 'doc-v2', contentBase64: Buffer.from('the readable paper').toString('base64') } });
+    await bridge.unlockHtlcEncryptedDocument('doc-v2', '');
+    const stored = bridge.globalState.documents['doc-v2'];
+    assert.strictEqual(stored.contentBase64, undefined, 'no plaintext at rest');
+    assert.ok(!window.localStorage.getItem('fabric:documents') || !window.localStorage.getItem('fabric:documents').includes(Buffer.from('the readable paper').toString('base64')));
+  });
+
   it('drops a per-blob delivery with a malformed header or no parts', function () {
     const bridge = new Bridge({ responseCapture: () => {} });
     const noRoot = perBlobDelivery();
