@@ -238,6 +238,9 @@ describe('Hub WebRTC RPC methods', function () {
     assert.strictEqual(methods.RegisterWebRTCPeer({ connection: b }, { peerId: 'route-b' }).status, 'success');
     assert.strictEqual(methods.RegisterWebRTCPeer({ connection: bystander }, { peerId: 'route-c' }).status, 'success');
     assert.strictEqual(methods.RegisterWebRTCPeer({ connection: bystander }, { peerId: 'route-a' }).status, 'error', 'an id held by another live connection');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: null }, { peerId: 'route-a', metadata: { userAgent: 'planted' } }).status, 'error', 'nor may an HTTP caller rewrite it');
+    assert.notStrictEqual((harness.hub.http.webrtcPeers.get('route-a').metadata || {}).userAgent, 'planted');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: null }, { peerId: 'http-registry' }).status, 'success', 'HTTP registry clients still register their own ids');
 
     const signal = { type: 'offer', sdp: 'v=0' };
     assert.strictEqual(methods.SendWebRTCSignal({ connection: a }, { fromPeerId: 'route-a', toPeerId: 'route-b', signal }).status, 'success');

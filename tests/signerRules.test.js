@@ -8,6 +8,7 @@ const {
   validateRule,
   validateRules,
   requestFacts,
+  factsForRequest,
   evaluate,
   usageAt,
   countUse,
@@ -52,6 +53,21 @@ describe('signer rules (pure)', function () {
     assert.strictEqual(evaluate(rules, passportFacts(), ctx({ identityPeers: [] })).action, 'notify');
   });
 
+  it('shares a wallet or cosigner key without asking only when the rule lists it', function () {
+    assert.match(validateRule(signIn({ disclose: ['seed'] })).error, /disclose/);
+    assert.match(validateRule(spend({ disclose: ['wallet'] })).error, /passport rules/);
+    const plain = validateRules([signIn()]).rules;
+    assert.strictEqual(evaluate(plain, passportFacts({ disclose: ['wallet'] }), ctx()).action, 'notify', 'a site rule alone shares only the identity');
+    assert.strictEqual(evaluate(plain, passportFacts({ disclose: ['cosigner'] }), ctx()).action, 'notify');
+    const wallet = validateRules([signIn({ disclose: ['wallet'] })]).rules;
+    assert.strictEqual(evaluate(wallet, passportFacts({ disclose: ['wallet'] }), ctx()).action, 'sign');
+    assert.strictEqual(evaluate(wallet, passportFacts({ disclose: ['wallet', 'cosigner'] }), ctx()).action, 'notify');
+    assert.strictEqual(evaluate(wallet, passportFacts(), ctx()).action, 'sign', 'identity-only sign-ins still match');
+    const guard = validateRules([signIn({ disclose: ['wallet', 'cosigner'] }), { id: 'no-keys', action: 'decline', scope: 'passport', disclose: ['cosigner'] }]).rules;
+    assert.strictEqual(evaluate(guard, passportFacts({ disclose: ['cosigner'] }), ctx()).action, 'decline');
+    assert.strictEqual(evaluate(guard, passportFacts({ disclose: ['wallet'] }), ctx()).action, 'sign');
+  });
+
   it('lets a decline rule win, and signs nothing while a rule is broken', function () {
     const { rules } = validateRules([signIn(), { id: 'no-alice', action: 'decline', scope: 'passport', from: [ALICE] }]);
     assert.strictEqual(evaluate(rules, passportFacts(), ctx()).action, 'decline');
@@ -74,6 +90,16 @@ describe('signer rules (pure)', function () {
     const capped = validateRules([spend({ destinations: undefined })]).rules;
     assert.strictEqual(evaluate(capped, invite, ctx()).action, 'notify', 'an invite has no amount to match');
     assert.strictEqual(evaluate(capped, withdrawal(), ctx()).action, 'sign');
+  });
+
+  it('counts a withdrawal\'s fee against the rule, and asks when the fee is unreadable', function () {
+    const read = (body) => ({ scope: 'federation', request: { requester: ALICE }, inner: { network: 'regtest', body: Object.assign({ type: 'FederationWithdrawalRequest', federationId: FED, destinationAddress: ADDRESS }, body) } });
+    const { rules } = validateRules([spend()]);
+    assert.strictEqual(factsForRequest(read({ amountSats: 5000, feeSats: 300 })).amountSats, 5300);
+    assert.strictEqual(evaluate(rules, factsForRequest(read({ amountSats: 5000, feeSats: 300 })), ctx()).action, 'sign');
+    assert.strictEqual(evaluate(rules, factsForRequest(read({ amountSats: 5000, feeSats: 900000 })), ctx()).action, 'notify', 'a payout under the cap with a fee that drains the vault');
+    assert.strictEqual(evaluate(rules, factsForRequest(read({ amountSats: 5000 })), ctx()).action, 'notify');
+    assert.strictEqual(evaluate(rules, factsForRequest(read({ amountSats: 5000, feeSats: -1 })), ctx()).action, 'notify');
   });
 
   it('counts a rule\'s use by day and hour', function () {

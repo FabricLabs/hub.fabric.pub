@@ -4,8 +4,8 @@
  * @fileoverview Signer rules: what the Hub signs for its linked signers
  * without asking (pure; `services/signerRules.js` keeps them and their counters).
  *
- * A rule is `{ id, enabled, action, label, scope, from, origins, federations,
- * networks, maxAmountSats, destinations, dailyLimitSats, maxPerHour }`.
+ * A rule is `{ id, enabled, action, label, scope, from, origins, disclose,
+ * federations, networks, maxAmountSats, destinations, dailyLimitSats, maxPerHour }`.
  * `action` is `sign` or `decline`; `scope` is a delegation scope (`passport`,
  * `federation`, `message`). The other fields narrow it; an absent field does
  * not. `from` is a list of pubkeys or `identity-linked` (the participants
@@ -19,17 +19,22 @@
  *   request, a destination or an amount on an invite) does not match;
  * - a `sign` rule covers a federation withdrawal only when it sets
  *   `maxAmountSats`, and never above the Hub's own `maxWithdrawalSats`;
+ *   a withdrawal's amount counts its fee, which leaves the vault too;
+ * - a `sign` rule covers a Passport sign-in that shares more than the
+ *   identity (`wallet`, `cosigner`) only when its `disclose` lists each one;
+ *   a `decline` rule's `disclose` declines sign-ins asking for any of them;
  * - `decline` wins over `sign`; no match means the user is asked.
  */
 
 const RULE_FIELDS = Object.freeze([
-  'id', 'enabled', 'action', 'label', 'scope', 'from', 'origins', 'federations',
+  'id', 'enabled', 'action', 'label', 'scope', 'from', 'origins', 'disclose', 'federations',
   'networks', 'maxAmountSats', 'destinations', 'dailyLimitSats', 'maxPerHour'
 ]);
 const ACTIONS = Object.freeze(['sign', 'decline']);
 const SCOPES = Object.freeze(['passport', 'federation', 'message']);
 const IDENTITY_LINKED = 'identity-linked';
 const NETWORKS = Object.freeze(['mainnet', 'testnet', 'signet', 'regtest']);
+const DISCLOSURES = Object.freeze(['wallet', 'cosigner']);
 const MAX_RULES = 64;
 const MAX_LIST = 64;
 const HOUR_MS = 60 * 60 * 1000;
@@ -109,6 +114,10 @@ function validateRule (rule) {
       if (rule.scope !== 'passport') throw new Error('origins only apply to passport rules');
       out.origins = stringList(rule.origins, origin, 'origins');
     }
+    if (rule.disclose != null) {
+      if (rule.scope !== 'passport') throw new Error('disclose only applies to passport rules');
+      out.disclose = stringList(rule.disclose, (v) => (DISCLOSURES.includes(v.toLowerCase()) ? v.toLowerCase() : null), 'disclose');
+    }
     if (rule.federations != null) {
       if (rule.scope !== 'federation') throw new Error('federations only apply to federation rules');
       out.federations = stringList(rule.federations, (v) => (HEX32.test(v.toLowerCase()) ? v.toLowerCase() : null), 'federations');
@@ -159,6 +168,7 @@ function validateRules (list) {
  * @param {string} input.scope
  * @param {string} [input.from] Requester pubkey.
  * @param {string} [input.origin] Site of a Passport sign-in.
+ * @param {string[]} [input.disclose] What a Passport sign-in shares besides the identity.
  * @param {string} [input.federationId]
  * @param {string} [input.kind] `invite` | `withdrawal` for federation requests.
  * @param {string} [input.network]
@@ -171,12 +181,25 @@ function requestFacts (input = {}) {
     scope: String(input.scope || ''),
     from: xOnly(input.from),
     origin: input.origin ? origin(String(input.origin)) : null,
+    disclose: [...new Set((Array.isArray(input.disclose) ? input.disclose : []).map((v) => String(v).toLowerCase()))].sort(),
     federationId: input.federationId ? String(input.federationId).toLowerCase() : null,
     kind: input.kind || null,
     network: input.network ? String(input.network).toLowerCase() : null,
     amountSats: Number.isSafeInteger(Number(input.amountSats)) && Number(input.amountSats) > 0 ? Number(input.amountSats) : null,
     destination: input.destination ? String(input.destination).trim() : null
   };
+}
+
+/**
+ * What a withdrawal takes from the vault: the payout and its fee.
+ * @param {{ amountSats: *, feeSats: * }} body
+ * @returns {(number|null)} Null when either is unreadable.
+ */
+function withdrawalSats (body) {
+  const amount = Number(body.amountSats);
+  const fee = Number(body.feeSats);
+  if (!Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(fee) || fee < 0) return null;
+  return Number.isSafeInteger(amount + fee) ? amount + fee : null;
 }
 
 /**
@@ -189,7 +212,7 @@ function requestFacts (input = {}) {
 function factsForRequest (read, context = {}) {
   const base = { scope: read.scope, from: read.request.requester };
   if (read.scope === 'passport') {
-    return requestFacts(Object.assign(base, { origin: read.inner.challenge.origin, network: read.inner.network }));
+    return requestFacts(Object.assign(base, { origin: read.inner.challenge.origin, network: read.inner.network, disclose: read.request.disclose }));
   }
   if (read.scope === 'federation') {
     const body = read.inner.body || {};
@@ -202,7 +225,7 @@ function factsForRequest (read, context = {}) {
       federationId: body.federationId,
       kind: withdrawal ? 'withdrawal' : 'invite',
       network,
-      amountSats: withdrawal ? body.amountSats : null,
+      amountSats: withdrawal ? withdrawalSats(body) : null,
       destination: withdrawal ? body.destinationAddress : null
     }));
   }
@@ -218,6 +241,7 @@ function matches (rule, facts, context) {
     return false;
   }
   if (rule.origins && !(facts.origin && rule.origins.includes(facts.origin))) return false;
+  if (rule.disclose && rule.action === 'decline' && !(facts.disclose || []).some((d) => rule.disclose.includes(d))) return false;
   if (rule.federations && !(facts.federationId && rule.federations.includes(facts.federationId))) return false;
   if (rule.networks && !(facts.network && rule.networks.includes(facts.network))) return false;
   if (rule.destinations && !(facts.destination && rule.destinations.includes(facts.destination))) return false;
@@ -227,6 +251,7 @@ function matches (rule, facts, context) {
 
 /** @private Limits a `sign` rule must also stay within. */
 function withinLimits (rule, facts, context) {
+  if ((facts.disclose || []).some((d) => !(rule.disclose || []).includes(d))) return false;
   if (facts.kind === 'withdrawal') {
     if (rule.maxAmountSats == null || facts.amountSats == null) return false;
     if (context.maxWithdrawalSats != null && facts.amountSats > context.maxWithdrawalSats) return false;
@@ -321,6 +346,7 @@ module.exports = {
   validateRules,
   requestFacts,
   factsForRequest,
+  withdrawalSats,
   evaluate,
   usageAt,
   countUse,

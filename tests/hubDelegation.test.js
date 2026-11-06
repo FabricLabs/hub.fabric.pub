@@ -226,14 +226,18 @@ describe('Hub delegation (HubDelegation)', function () {
       { id: 'spend', action: 'sign', scope: 'federation', from: 'identity-linked', maxAmountSats: 10000, destinations: [ADDRESS] }
     ]);
     const decided = new Promise((resolve) => service.once('decided', resolve));
-    federations.emit('withdrawal', { federationId: FED, requestId: 'm1', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
+    federations.emit('withdrawal', { federationId: FED, requestId: 'm1', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, feeSats: 500, destinationAddress: ADDRESS, network: 'regtest' });
     assert.strictEqual((await decided).rule, 'spend');
     assert.deepStrictEqual(federations.approved, [{ id: FED, requestId: 'm1' }]);
 
-    federations.emit('withdrawal', { federationId: FED, requestId: 'm2', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest', delegated: true });
-    federations.emit('withdrawal', { federationId: FED, requestId: 'm3', requester: 'cd'.repeat(32), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
+    federations.emit('withdrawal', { federationId: FED, requestId: 'm2', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, feeSats: 500, destinationAddress: ADDRESS, network: 'regtest', delegated: true });
+    federations.emit('withdrawal', { federationId: FED, requestId: 'm3', requester: 'cd'.repeat(32), amountSats: 4000, feeSats: 500, destinationAddress: ADDRESS, network: 'regtest' });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.strictEqual(federations.approved.length, 1, 'delegated frames and strangers are not co-signed here');
+
+    federations.emit('withdrawal', { federationId: FED, requestId: 'm4', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, feeSats: 9000, destinationAddress: ADDRESS, network: 'regtest' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.strictEqual(federations.approved.length, 1, 'the fee counts against the rule');
   });
 
   it('takes a mesh withdrawal a rule declines out of the queue', async function () {
@@ -242,7 +246,7 @@ describe('Hub delegation (HubDelegation)', function () {
     await pair(origin, passport);
     service.rules.set([{ id: 'no-spend', action: 'decline', scope: 'federation', from: 'identity-linked' }]);
     const decided = new Promise((resolve) => service.once('decided', resolve));
-    federations.emit('withdrawal', { federationId: FED, requestId: 'm1', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
+    federations.emit('withdrawal', { federationId: FED, requestId: 'm1', requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, feeSats: 500, destinationAddress: ADDRESS, network: 'regtest' });
     assert.strictEqual((await decided).action, 'decline');
     assert.deepStrictEqual(federations.declined, [{ id: FED, requestId: 'm1' }]);
     assert.strictEqual(federations.approved.length, 0);
@@ -253,7 +257,7 @@ describe('Hub delegation (HubDelegation)', function () {
     const passport = new Delegation({ key: PASSPORT.identity.key });
     await pair(origin, passport);
     service.rules.set([{ id: 'spend', action: 'sign', scope: 'federation', from: 'identity-linked', maxAmountSats: 10000, maxPerHour: 1, destinations: [ADDRESS] }]);
-    const ev = (requestId) => ({ federationId: FED, requestId, requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, destinationAddress: ADDRESS, network: 'regtest' });
+    const ev = (requestId) => ({ federationId: FED, requestId, requester: PASSPORT.cosigner.pubkey.slice(2), amountSats: 4000, feeSats: 500, destinationAddress: ADDRESS, network: 'regtest' });
     const decided = await Promise.all([
       service._federationEvent('withdrawal', ev('m1')),
       service._federationEvent('withdrawal', ev('m2'))

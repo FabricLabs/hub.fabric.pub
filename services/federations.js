@@ -992,6 +992,7 @@ class FederationsService extends Service {
       requestId: prepared.requestId,
       requester: signer,
       amountSats: prepared.amountSats,
+      feeSats: prepared.feeSats,
       destinationAddress: String(body.destinationAddress).trim(),
       network: record.descriptor.network,
       delegated: !!opts.delegated

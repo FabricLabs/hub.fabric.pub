@@ -39,6 +39,7 @@ function nextId (rules, prefix) {
 function describeRule (rule) {
   const parts = [c.scopes[rule.scope] || rule.scope];
   if (rule.origins) parts.push(rule.origins.join(', '));
+  if (rule.disclose) parts.push(`shares ${rule.disclose.join(', ')}`);
   if (rule.maxAmountSats) parts.push(`≤ ${rule.maxAmountSats} sats`);
   if (rule.destinations) parts.push(rule.destinations.map((a) => `${a.slice(0, 10)}…`).join(', '));
   if (rule.dailyLimitSats) parts.push(`${rule.dailyLimitSats} sats/day`);

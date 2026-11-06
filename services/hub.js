@@ -6932,12 +6932,21 @@ class Hub extends Service {
     let offset = 0;
     for (const part of parsed.parts || []) {
       const size = Number(part.size);
+      if (!Number.isSafeInteger(size) || size <= 0 || offset + size > body.length) throw new Error(`blob ${part.index} is outside the delivered file`);
       const ciphertext = body.subarray(offset, offset + size);
       offset += size;
+      // GCM only proves the seller's key; the blob must also be the one the batch commits.
+      const blobHashHex = String(part.blobHashHex || '').toLowerCase();
+      const leaf = batch.blobs.find((b) => Number(b.blobIndex) === Number(part.index));
+      if (!/^[0-9a-f]{64}$/.test(blobHashHex) || !leaf || String(leaf.blobHashHex || '').toLowerCase() !== blobHashHex ||
+        crypto.createHash('sha256').update(ciphertext).digest('hex') !== blobHashHex) {
+        throw new Error(`blob ${part.index} does not match its committed hash`);
+      }
       const opened = openBlobBatch({ batch, preimageHex: secret.toString('hex'), blobIndex: part.index });
       if (!opened.ok) throw new Error(opened.error || 'batch unwrap failed');
       parts.push(openCiphertext(ciphertext, Buffer.from(opened.keyHex, 'hex'), part.iv));
     }
+    if (offset !== body.length) throw new Error('delivered file has bytes outside its blobs');
     return Buffer.concat(parts);
   }
 
@@ -8605,16 +8614,22 @@ class Hub extends Service {
    */
   /**
    * Remember which WebSocket registered a WebRTC peer id, for signal routing.
-   * An id held by another live connection is refused. With an older
-   * `@fabric/http` that passes no `connection` in the context, nothing is bound.
+   * An id held by another live connection is refused, also to a caller without one (HTTP
+   * JSON-RPC registry clients such as GoonCitizen's cluster mesh), which would otherwise
+   * rewrite a browser's listing. With an older `@fabric/http` that passes no `connection`
+   * at all, nothing is bound.
    * @param {string} peerId
-   * @param {Object|null} connection
+   * @param {Object} [context] `withContext` call context
    * @returns {{ ok: boolean, message?: string }}
    */
-  _bindWebRtcSignalConnection (peerId, connection) {
-    if (!connection) return { ok: true };
+  _bindWebRtcSignalConnection (peerId, context) {
+    const connection = context && context.connection;
     if (!this._webrtcSignalConnections) this._webrtcSignalConnections = new Map();
     const held = this._webrtcSignalConnections.get(peerId);
+    if (!connection) {
+      if (held && held.readyState === 1) return { ok: false, message: 'peerId is registered by another connection' };
+      return { ok: true };
+    }
     if (held && held !== connection && held.readyState === 1) {
       return { ok: false, message: 'peerId is registered by another connection' };
     }
@@ -19035,7 +19050,7 @@ class Hub extends Service {
         const info = params[0] || {};
         const peerId = info.peerId;
         if (!peerId) return { status: 'error', message: 'peerId required' };
-        const bound = this._bindWebRtcSignalConnection(String(peerId), context && context.connection);
+        const bound = this._bindWebRtcSignalConnection(String(peerId), context);
         if (!bound.ok) return { status: 'error', message: bound.message };
 
         console.debug('[HUB] RegisterWebRTCPeer:', peerId);

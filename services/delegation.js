@@ -29,7 +29,7 @@ const { encodeFabricUri } = require('@fabric/core/functions/fabricUri');
 const { createDelegationRendezvous, createDelegationMailbox } = require('@fabric/http/functions/fabricDelegationHttp');
 const { createFabricDelegate } = require('@fabric/http/functions/fabricDelegate');
 const SignerRules = require('./signerRules');
-const { factsForRequest, requestFacts } = require('../functions/signerRules');
+const { factsForRequest, requestFacts, withdrawalSats } = require('../functions/signerRules');
 
 const LINK_PROMPT_MS = 2 * 60 * 1000;
 const SAFE_KEY = /^[a-z0-9-]{1,64}$/;
@@ -376,7 +376,7 @@ class HubDelegation extends EventEmitter {
           from: await this._identityOf(ev.requester),
           federationId: ev.federationId,
           network: ev.network,
-          amountSats: ev.amountSats,
+          amountSats: withdrawalSats(ev),
           destination: ev.destinationAddress
         })
       : requestFacts({ scope: 'federation', kind, from: await this._identityOf(ev.inviter), federationId: ev.id, network: ev.network });

@@ -367,6 +367,31 @@ describe('Inventory HTLC buyer and seller records', function () {
       assert.strictEqual(refused.status, 'error');
       assert.match(refused.message, /per-blob parts/);
     });
+
+    it('refuses a blob that is not the one its batch commits, or bytes outside the blobs', async function () {
+      const sellerFs = memoryFs();
+      const seller = sender(sellerFs);
+      await sellerFs.publish('documents/one.json', { id: 'one', name: 'one.txt', mime: 'text/plain', contentBase64: Buffer.from('one blob').toString('base64') });
+      const { key } = await seller.hub._sealDocumentForPricedPublish('one', sellerFs.files.get('documents/one.json'));
+      await seller.hub._sendDocumentToPeerAddress('buyer:7777', 'one', null, { preimage32: key });
+      const preimageHex = key.toString('hex');
+
+      const swappedFs = memoryFs();
+      const doc = await deliver(swappedFs, seller.frames);
+      const other = crypto.createHash('sha256').update('another blob').digest('hex');
+      await swappedFs.publish('documents/one.json', { ...doc, parts: doc.parts.map((p) => ({ ...p, blobHashHex: other })) });
+      const swapped = await bareHub(swappedFs)._openPurchasedDocument({ id: 'one', adminToken: 'admin', preimageHex });
+      assert.strictEqual(swapped.status, 'error');
+      assert.match(swapped.message, /committed hash/);
+
+      const paddedFs = memoryFs();
+      const padded = await deliver(paddedFs, seller.frames);
+      const body = Buffer.concat([Buffer.from(padded.contentBase64, 'base64'), Buffer.from('extra')]);
+      await paddedFs.publish('documents/one.json', { ...padded, contentBase64: body.toString('base64') });
+      const extra = await bareHub(paddedFs)._openPurchasedDocument({ id: 'one', adminToken: 'admin', preimageHex });
+      assert.strictEqual(extra.status, 'error');
+      assert.match(extra.message, /outside its blobs/);
+    });
   });
 
   describe('buyer payment and refund', function () {
