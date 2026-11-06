@@ -16,10 +16,14 @@ const { MAX_MESSAGE_SIZE } = constants;
 const HEX64 = /^[0-9a-f]{64}$/;
 const MAX_DOCUMENT_BLOBS = constants.MAX_DOCUMENT_BLOBS || constants.PEER_MAX_SEALED_BLOB_PARTS;
 
-/** Bytes of each frame body kept for JSON keys and document metadata around the base64 blob. */
+/** Bytes of each frame body kept for field keys and document metadata beside the blob. */
 const FILE_SHARE_FRAME_RESERVE = 2048;
-/** Raw bytes per blob: base64 fills the rest of the body (23,040 B → 30,720 base64 chars). */
-const FILE_SHARE_BLOB_BYTES = Math.floor((MAX_MESSAGE_SIZE - FILE_SHARE_FRAME_RESERVE) * 3 / 4);
+/**
+ * Raw bytes per blob: core's document blob size (32 KiB), so sealed parts line
+ * up with file-share blobs. Frames are `P2P_FILE_SEND` field bodies carrying the
+ * blob as raw bytes, well inside `MAX_MESSAGE_SIZE − FILE_SHARE_FRAME_RESERVE`.
+ */
+const FILE_SHARE_BLOB_BYTES = constants.DOCUMENT_SEALED_CHUNK_BYTES;
 /**
  * Largest share, in bytes. Core's blob count covers a file of
  * `MAX_DOCUMENT_BYTES` (2^32 − 1). Multiplying that count by this share's

@@ -85,10 +85,19 @@ module.exports = Object.assign({}, defaults, {
      */
     documentTransactions: process.env.FABRIC_BITCOIN_DOCUMENT_TX === '1' || process.env.FABRIC_BITCOIN_DOCUMENT_TX === 'true',
     /**
+     * Store each full raw block (from ZMQ `rawblock`) as a purchasable Document.
+     * Off by default: it keeps a second copy of every block beside bitcoind's
+     * (hundreds of GB on mainnet). Enable with FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS=1.
+     */
+    documentRawBlocks: process.env.FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS === '1' || process.env.FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS === 'true',
+    /** Optional cap on bytes of stored raw-block documents (0 / unset = no cap). */
+    documentRawBlocksMaxBytes: Number(process.env.FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS_MAX_BYTES || 0),
+    /**
      * Listed L1 prices for inventory / Document Market (HTLC purchase flow). Set to 0 to omit `purchasePriceSats`.
      */
     documentInventoryBlockPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_BLOCK_PRICE_SATS || 1000),
     documentInventoryTransactionPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_TX_PRICE_SATS || 100),
+    documentInventoryRawBlockPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_RAW_BLOCK_PRICE_SATS || 10000),
     /**
      * When non-empty, HTTP watch-only xpub routes that call `scantxoutset` require this shared secret:
      * **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**, **`GET /services/bitcoin/xpub/transactions`**

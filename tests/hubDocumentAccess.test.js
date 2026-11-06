@@ -284,7 +284,7 @@ describe('Hub document access', function () {
 
   it('pages a catalog that outgrows one frame', async function () {
     const { MAX_FRAME_BYTES } = require('@fabric/core/constants');
-    const items = Array.from({ length: 40 }, (_, n) => ({
+    const items = Array.from({ length: 100 }, (_, n) => ({
       id: sha(Buffer.from(`listing-${n}`)),
       name: `listing-${n}.bin`,
       purchasePriceSats: 900,
@@ -334,12 +334,12 @@ describe('Hub document access', function () {
     assert.strictEqual(small[0].object.inventoryId, undefined);
     assert.strictEqual(hub._inventoryResponsePayloads('documents', [], 'buyer')[0].object.items.length, 0);
 
-    const { LEGACY_MAX_FRAME_BYTES } = require('@fabric/core/constants');
-    hub.agent.connections['10.0.0.7:7777'] = { _fabricRemoteMaxFrameBytes: LEGACY_MAX_FRAME_BYTES };
+    // A peer that advertised a 4096-byte frame cap.
+    hub.agent.connections['10.0.0.7:7777'] = { _fabricRemoteMaxFrameBytes: 4096 };
     try {
       const legacy = hub._inventoryResponsePayloads('documents', items.slice(0, 6), 'buyer', '10.0.0.7:7777');
-      assert.ok(legacy.length >= 3, 'an older peer gets smaller pages');
-      legacy.forEach((p) => assert.ok(Buffer.byteLength(JSON.stringify(p)) < LEGACY_MAX_FRAME_BYTES - 208));
+      assert.ok(legacy.length >= 3, 'a small-cap peer gets smaller pages');
+      legacy.forEach((p) => assert.ok(Buffer.byteLength(JSON.stringify(p)) < 4096 - 208));
     } finally {
       delete hub.agent.connections['10.0.0.7:7777'];
     }

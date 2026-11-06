@@ -2223,7 +2223,8 @@ class Bridge extends React.Component {
 
   _sendSubscribe (path) {
     if (!path) return;
-    const message = Message.fromVector(['SUBSCRIBE', path]);
+    // Unregistered names always went out as P2P_BASE_MESSAGE; say so explicitly.
+    const message = Message.fromVector(['P2P_BASE_MESSAGE', path]);
     const messageBuffer = message.toBuffer();
     this.sendSignedMessage(messageBuffer);
   }
@@ -3904,7 +3905,7 @@ class Bridge extends React.Component {
       return;
     }
 
-    const message = Message.fromVector(['UNSUBSCRIBE', path]);
+    const message = Message.fromVector(['P2P_BASE_MESSAGE', path]);
     const messageBuffer = message.toBuffer();
     this.sendSignedMessage(messageBuffer);
 

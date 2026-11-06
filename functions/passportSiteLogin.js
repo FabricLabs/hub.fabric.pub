@@ -22,7 +22,8 @@ const {
   askPassport,
   signInWithPassport,
   connectPeer,
-  callPeer
+  callPeer,
+  fetchAsPeer
 } = require('@fabric/http/functions/passportPage');
 const { setPassportSession, watchIdentityFromSession } = require('./passportSession');
 
@@ -83,6 +84,27 @@ async function readHubPeer (fetchImpl) {
 }
 
 /**
+ * The Hub's own view of a peer session: a `GetPassportSession` call over the
+ * socket, or for an HTTP session a signed `GET /sessions/peer/current`.
+ * @private
+ */
+async function confirmPeerSession (win, session, fetchImpl) {
+  if (session.transport === 'http') {
+    try {
+      const res = await fetchAsPeer(win, { sessionId: session.sessionId, url: `${session.base}/sessions/peer/current`, init: { headers: { Accept: 'application/json' } }, fetch: fetchImpl });
+      const json = await res.json().catch(() => null);
+      if (res.ok && json && json.session && json.session.identity) return { view: json.session };
+      return { error: (json && json.error) || `HTTP ${res.status}` };
+    } catch (err) {
+      return { error: (err && err.message) || 'request failed' };
+    }
+  }
+  const confirmed = await callPeer(win, { sessionId: session.sessionId, method: 'GetPassportSession' });
+  if (confirmed.ok && confirmed.result && confirmed.result.identity) return { view: confirmed.result };
+  return { error: confirmed.ok ? 'no session on the socket' : confirmed.error };
+}
+
+/**
  * Sign in to a Hub with a Passport peer session (v3).
  * @param {Object} params
  * @param {Window} params.window
@@ -97,9 +119,12 @@ async function loginWithPassportPeer (params = {}) {
   const win = params.window;
   const fetchImpl = params.fetch || (win && win.fetch && win.fetch.bind(win));
   if (!win) return { ok: false, error: 'unsupported' };
+  // The WebSocket first; the HTTP handshake when Passport can't open it (a
+  // loopback Hub admits only the Passport ids it was told about).
+  const origin = win.location && win.location.origin;
   const endpoints = Array.isArray(params.endpoints) && params.endpoints.length
     ? params.endpoints
-    : [hubWebSocketEndpoint(win.location && win.location.origin)].filter(Boolean);
+    : [hubWebSocketEndpoint(origin), origin].filter(Boolean);
   let peer = params.peer || null;
   if (!peer && fetchImpl && !(Array.isArray(params.endpoints) && params.endpoints.length)) {
     const found = await readHubPeer(fetchImpl);
@@ -113,10 +138,10 @@ async function loginWithPassportPeer (params = {}) {
   });
   if (!opened.ok) return { ok: false, error: opened.error || 'sign-in failed' };
   // What the Hub itself says this session is (signed for by the session key in Passport).
-  const confirmed = await callPeer(win, { sessionId: opened.session.sessionId, method: 'GetPassportSession' });
-  const hubView = confirmed.ok && confirmed.result && confirmed.result.identity ? confirmed.result : null;
+  const confirmed = await confirmPeerSession(win, opened.session, fetchImpl);
+  const hubView = confirmed.view || null;
   if (!hubView || hubView.identity.pubkey !== opened.session.identity.pubkey) {
-    return { ok: false, error: 'the Hub did not confirm the session' };
+    return { ok: false, error: `the Hub did not confirm the session (${confirmed.error || 'another identity'})` };
   }
   const view = Object.assign({}, hubView, {
     wallet: opened.session.wallet || hubView.wallet || null,

@@ -278,6 +278,8 @@ describe('Inventory HTLC buyer and seller records', function () {
       hub._state = { documents: {} };
       hub.agent = { connections: { 'buyer:7777': {} }, identity: { id: 'ab'.repeat(32) } };
       hub._sendVectorToPeer = (address, vector) => frames.push(vector[1]);
+      // File frames are field bodies now; keep collecting their JSON object form.
+      hub._sendMessageToPeer = (address, msg) => frames.push(JSON.stringify(Message.tryParseLegacyBody(msg).value));
       hub.recordActivity = () => {};
       return { hub, frames };
     }
@@ -309,7 +311,9 @@ describe('Inventory HTLC buyer and seller records', function () {
     }
 
     it('delivers the stored ciphertext with each blob\'s wrapped key, and opens with the batch preimage', async function () {
-      const plain = crypto.randomBytes(2 * 23040 + 999);
+      // Just over two sealed blobs of plaintext, so the document has three parts.
+      const { DOCUMENT_SEALED_PLAINTEXT_BYTES } = require('@fabric/core/constants');
+      const plain = crypto.randomBytes(2 * DOCUMENT_SEALED_PLAINTEXT_BYTES + 999);
       const sellerFs = memoryFs();
       const seller = sender(sellerFs);
       await sellerFs.publish('documents/big.json', { id: 'big', name: 'big.bin', mime: 'application/octet-stream', contentBase64: plain.toString('base64') });

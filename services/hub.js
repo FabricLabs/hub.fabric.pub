@@ -132,6 +132,7 @@ const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
 const MarketService = require('../services/market');
+const BlockRelay = require('../services/blockRelay');
 const CoinjoinService = require('../services/coinjoin');
 const FederationsService = require('../services/federations');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
@@ -183,6 +184,8 @@ const BITCOIN_VERBOSE_MEMPOOL_MAX_TXS = 2000;
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
 const FABRIC_BITCOIN_BLOCK_DOC_MIME = 'application/x-fabric-bitcoin-block+json';
 const FABRIC_BITCOIN_TX_DOC_MIME = 'application/x-fabric-bitcoin-transaction+json';
+/** Full raw Bitcoin block, consensus serialization (opt-in `documentRawBlocks`). */
+const FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME = 'application/x-bitcoin-block';
 /** Skip per-tx Fabric documents when a block has more than this many txs (mainnet safety). */
 const BITCOIN_TX_DOC_INDEX_MAX_TXS = 2000;
 const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SATS || 1000);
@@ -1377,14 +1380,14 @@ class Hub extends Service {
     this._fabricSeedResyncCooldown.set(key, now);
 
     const myId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
-    const body = JSON.stringify({
+    const body = {
       v: 1,
       reason: 'hub-auto-seed-fabric-resync',
       requester: myId,
       at: new Date().toISOString()
-    });
+    };
     try {
-      this._sendVectorToPeer(addr, ['ChainSyncRequest', body]);
+      this._sendMessageToPeer(addr, Message.fromLegacyBody('ChainSyncRequest', body));
       if (this.settings.debug) {
         console.debug('[HUB] ChainSyncRequest → seed peer', addr);
       }
@@ -1406,10 +1409,11 @@ class Hub extends Service {
         if (Buffer.isBuffer(buffer) && buffer.length >= HEADER_SIZE) {
           const typeCode = buffer.readUInt32BE(72);
           if (typeCode === P2P_CHAIN_SYNC_REQUEST) {
-            const raw = buffer.slice(HEADER_SIZE);
+            // Field body (Peers send no JSON ChainSyncRequest); legacy JSON still parses.
             let object = {};
             try {
-              object = raw.length ? JSON.parse(String(raw)) : {};
+              const parsed = buffer.length > HEADER_SIZE ? Message.tryParseLegacyBody(Message.fromBuffer(buffer)) : null;
+              object = parsed && parsed.ok && parsed.value ? parsed.value : {};
             } catch (_) {
               object = {};
             }
@@ -2333,7 +2337,8 @@ class Hub extends Service {
 
     let chainMessage = null;
     if (this.fs && typeof this.fs.addToChain === 'function') {
-      chainMessage = Message.fromVector(['FABRIC_MESSAGE', JSON.stringify(entry)]);
+      // Stored chain record; `FABRIC_MESSAGE` was never registered and always encoded as P2P_BASE_MESSAGE.
+      chainMessage = Message.fromVector(['P2P_BASE_MESSAGE', JSON.stringify(entry)]);
       const skip = HUB_PARENT_CHAIN_SKIP.has(String(type));
       const parent = skip
         ? Message.ZERO_PARENT
@@ -7500,8 +7505,10 @@ class Hub extends Service {
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : 'file share failed' };
     }
+    // Peers drop JSON P2P_FILE_SEND bodies; send each frame as fields.
     for (const frame of share.frames) {
-      this._sendVectorToPeer(address, ['P2P_FILE_SEND', frame]);
+      const body = typeof frame === 'string' ? JSON.parse(frame) : frame;
+      this._sendMessageToPeer(address, Message.fromLegacyBody('P2P_FILE_SEND', body));
     }
 
     this.recordActivity({
@@ -8684,7 +8691,7 @@ class Hub extends Service {
 
   /**
    * Positive sats listed on Bitcoin block/tx Fabric documents for inventory HTLC (`purchasePriceSats`).
-   * @param {'block'|'transaction'} kind
+   * @param {'block'|'transaction'|'rawBlock'} kind
    * @returns {number|undefined}
    */
   _resolveBitcoinDocumentInventoryPriceSats (kind) {
@@ -8694,6 +8701,8 @@ class Hub extends Service {
       raw = b.documentInventoryBlockPriceSats;
     } else if (kind === 'transaction') {
       raw = b.documentInventoryTransactionPriceSats;
+    } else if (kind === 'rawBlock') {
+      raw = b.documentInventoryRawBlockPriceSats;
     } else {
       return undefined;
     }
@@ -8716,7 +8725,7 @@ class Hub extends Service {
       const c = coll[id];
       const d = docs[id];
       const mime = (d && d.mime) || (c && c.mime) || '';
-      if (mime !== FABRIC_BITCOIN_BLOCK_DOC_MIME && mime !== FABRIC_BITCOIN_TX_DOC_MIME) return false;
+      if (mime !== FABRIC_BITCOIN_BLOCK_DOC_MIME && mime !== FABRIC_BITCOIN_TX_DOC_MIME && mime !== FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME) return false;
       const h = (d && d.bitcoinHeight != null) ? d.bitcoinHeight : (c && c.bitcoinHeight);
       return isDocumentHeightPruned(pruneHeight, h);
     });
@@ -8900,6 +8909,26 @@ class Hub extends Service {
    * Incoming tips are relayed by Fabric `Peer` (Bitcoin block opcode). Use the `BitcoinBlock` vector label so encoders map to the correct opcode (not all cores accept `BITCOIN_BLOCK` as the constructor label).
    * @param {object} payload Same shape as `BitcoinBlock` Fabric message log (tip, height, network, at, …)
    */
+  /**
+   * Block relay telemetry + compact block relay (`services/blockRelay.js`), created on first use.
+   * @returns {BlockRelay}
+   */
+  _getBlockRelay () {
+    if (this.blockRelay) return this.blockRelay;
+    const b = (this.settings && this.settings.bitcoin) || {};
+    const cfg = (b.blockRelay && typeof b.blockRelay === 'object') ? b.blockRelay : {};
+    this.blockRelay = new BlockRelay(Object.assign({ network: b.network, debug: !!this.settings.debug }, cfg), {
+      rpc: (method, params) => {
+        const svc = this._getBitcoinService();
+        if (!svc || typeof svc._makeRPCRequest !== 'function') return Promise.reject(new Error('bitcoin unavailable'));
+        return svc._makeRPCRequest(method, params);
+      },
+      send: (peer, body) => this._sendGenericFabricEnvelopeToPeer(peer, body),
+      peers: () => Object.keys((this.agent && this.agent.connections) || {})
+    });
+    return this.blockRelay;
+  }
+
   _broadcastBitcoinBlockToFabricPeers (payload = {}) {
     try {
       if (!this.agent || typeof this.agent.relayFrom !== 'function') return;
@@ -9083,13 +9112,116 @@ class Hub extends Service {
     }
     const id = bitcoinBlockDocumentId(block, networkName);
     const summary = buildBitcoinBlockSummary(block, networkName);
-    const now = new Date().toISOString();
     const h = String(block.hash);
     const name = `Bitcoin block ${summary.height != null && Number.isFinite(Number(summary.height)) ? summary.height : '?'} (${h.slice(0, 10)}…)`;
     const mime = FABRIC_BITCOIN_BLOCK_DOC_MIME;
     const blockPriceSats = this._resolveBitcoinDocumentInventoryPriceSats('block');
     const heightNorm = summary.height != null && Number.isFinite(Number(summary.height)) ? Number(summary.height) : null;
+    await this._publishGeneratedDocument({
+      id,
+      buffer,
+      name,
+      mime,
+      label: 'block document',
+      tag: 'bitcoin-block-document',
+      catalog: {
+        bitcoinBlockHash: h,
+        ...(heightNorm != null ? { bitcoinHeight: heightNorm } : {}),
+        ...(blockPriceSats != null ? { purchasePriceSats: blockPriceSats } : {})
+      },
+      activity: { bitcoinBlock: true }
+    });
+  }
 
+  /**
+   * Store a full raw block (consensus serialization) as a published Document
+   * other peers can buy (`bitcoin.documentRawBlocks`, off by default: it keeps a
+   * second copy of every block beside bitcoind's). The content is split into the
+   * normal 32 KiB blobs on delivery. Idempotent per block; follows the prune
+   * retention of the other Bitcoin documents via `bitcoinHeight`.
+   * @param {{ raw: string, hash: string }} payload `Bitcoin` `rawBlock` event
+   * @returns {Promise<boolean>} whether a new document was stored
+   */
+  async _ensureBitcoinRawBlockDocument (payload = {}) {
+    const hash = payload && typeof payload.hash === 'string' ? payload.hash.toLowerCase() : '';
+    const rawHex = payload && typeof payload.raw === 'string' ? payload.raw : '';
+    if (!/^[0-9a-f]{64}$/.test(hash) || !rawHex || rawHex.length % 2) return false;
+    if (!this._rawBlockDocumentHashes) this._rawBlockDocumentHashes = new Set();
+    if (this._rawBlockDocumentHashes.has(hash)) return false;
+    const buffer = Buffer.from(rawHex, 'hex');
+    const sizeErr = this._validateDocumentSize(buffer);
+    if (sizeErr) {
+      console.warn('[HUB:BITCOIN] raw block document:', sizeErr.message);
+      return false;
+    }
+    const maxBytes = Number(this.settings.bitcoin && this.settings.bitcoin.documentRawBlocksMaxBytes);
+    if (Number.isFinite(maxBytes) && maxBytes > 0 && this._rawBlockDocumentBytesTotal() + buffer.length > maxBytes) {
+      if (!this._rawBlockDocumentCapWarned) {
+        this._rawBlockDocumentCapWarned = true;
+        console.warn('[HUB:BITCOIN] raw block documents reached documentRawBlocksMaxBytes', maxBytes, '; not storing more');
+      }
+      return false;
+    }
+    let height = null;
+    try {
+      const header = this.bitcoin && typeof this.bitcoin._makeRPCRequest === 'function'
+        ? await this.bitcoin._makeRPCRequest('getblockheader', [hash, true])
+        : null;
+      if (header && Number.isFinite(Number(header.height))) height = Number(header.height);
+    } catch (_) { /* height is optional: without it the document is never pruned */ }
+    const id = crypto.createHash('sha256').update(buffer).digest('hex');
+    const priceSats = this._resolveBitcoinDocumentInventoryPriceSats('rawBlock');
+    this._rawBlockDocumentHashes.add(hash);
+    await this._publishGeneratedDocument({
+      id,
+      buffer,
+      name: `Bitcoin raw block ${height != null ? height : '?'} (${hash.slice(0, 10)}…)`,
+      mime: FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME,
+      label: 'raw block document',
+      tag: 'bitcoin-raw-block-document',
+      catalog: {
+        bitcoinBlockHash: hash,
+        ...(height != null ? { bitcoinHeight: height } : {}),
+        ...(priceSats != null ? { purchasePriceSats: priceSats } : {})
+      },
+      activity: { bitcoinRawBlock: true }
+    });
+    return true;
+  }
+
+  /**
+   * Bytes of published raw-block documents (for `documentRawBlocksMaxBytes`).
+   * @returns {number}
+   * @private
+   */
+  _rawBlockDocumentBytesTotal () {
+    const coll = (this._state.content.collections && this._state.content.collections.documents) || {};
+    let total = 0;
+    for (const row of Object.values(coll)) {
+      if (row && row.published && row.mime === FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME) total += Number(row.size) || 0;
+    }
+    return total;
+  }
+
+  /**
+   * Persist and publish a document the Hub generated itself (Bitcoin block
+   * summaries, raw blocks): write `documents/<id>.json`, add it to the published
+   * catalog with `catalog` fields, append `PublishDocument`, record an `Add`.
+   * Idempotent: an id already published is left alone.
+   * @param {Object} opts
+   * @param {string} opts.id Content id (sha256 of `buffer`)
+   * @param {Buffer} opts.buffer Document content
+   * @param {string} opts.name
+   * @param {string} opts.mime
+   * @param {string} opts.label Log label
+   * @param {string} opts.tag Chain-state refresh tag
+   * @param {Object} [opts.catalog] Extra fields on the catalog row (height, price, …)
+   * @param {Object} [opts.activity] Extra fields on the `Add` activity object
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _publishGeneratedDocument ({ id, buffer, name, mime, label, tag, catalog = {}, activity = {} }) {
+    const now = new Date().toISOString();
     this._ensureResourceCollections();
     this._state.documents = this._state.documents || {};
     this._state.content.collections = this._state.content.collections || {};
@@ -9122,18 +9254,18 @@ class Hub extends Service {
           contentBase64: buffer.toString('base64')
         });
       } catch (e) {
-        console.error('[HUB:BITCOIN] block document persist failed:', e && e.message ? e.message : e);
+        console.error(`[HUB:BITCOIN] ${label} persist failed:`, e && e.message ? e.message : e);
         return;
       }
       this._state.documents[id] = { ...meta };
-      this._refreshChainState('bitcoin-block-document');
+      this._refreshChainState(tag);
       // Single activity: `Add` to the documents collection below (avoids paired Create+Add rows).
       parsed = meta;
     } else {
       try {
         parsed = JSON.parse(existingRaw);
       } catch (e) {
-        console.error('[HUB:BITCOIN] block document corrupt:', id, e && e.message ? e.message : e);
+        console.error(`[HUB:BITCOIN] ${label} corrupt:`, id, e && e.message ? e.message : e);
         return;
       }
       if (!this._state.documents[id]) {
@@ -9169,9 +9301,7 @@ class Hub extends Service {
       revision: parsed.revision || 1,
       edited: parsed.edited || parsed.created || pubNow,
       published: pubNow,
-      bitcoinBlockHash: h,
-      ...(heightNorm != null ? { bitcoinHeight: heightNorm } : {}),
-      ...(blockPriceSats != null ? { purchasePriceSats: blockPriceSats } : {})
+      ...catalog
     };
     if (!exists) {
       this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
@@ -9186,7 +9316,7 @@ class Hub extends Service {
     } catch (e) {
       console.error('[HUB:BITCOIN] PublishDocument message failed:', e && e.message ? e.message : e);
     }
-    this._refreshChainState('publish-bitcoin-block-document');
+    this._refreshChainState(`publish-${tag}`);
     this.commit();
     if (typeof this._pushNetworkStatus === 'function') {
       try {
@@ -9204,7 +9334,7 @@ class Hub extends Service {
           size: coll[id].size,
           sha256: coll[id].sha256,
           published: pubNow,
-          bitcoinBlock: true
+          ...activity
         },
         target: { type: 'Collection', name: 'documents' }
       });
@@ -12216,6 +12346,10 @@ class Hub extends Service {
     });
   }
 
+  _handleBlockRelayRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => res.json(this._getBlockRelay().getStatus()));
+  }
+
   _handleMarketProvidersRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const market = this._getMarketService();
@@ -14368,12 +14502,27 @@ class Hub extends Service {
         this.bitcoin.on('log', (...log) => console.log('[BITCOIN]', ...log));
         this.bitcoin.on('warning', (...warning) => console.warn('[BITCOIN]', '[WARNING]', ...warning));
         // Core's payload can carry the whole block; queue only what the handler reads.
-        this.bitcoin.on('block', (payload = {}) => this._bitcoinBlockQueue.push({
-          tip: payload.tip,
-          height: payload.height,
-          supply: payload.supply
-        }));
+        this.bitcoin.on('block', (payload = {}) => {
+          // Stamp arrival before the serial queue so relay telemetry sees ZMQ time.
+          this._getBlockRelay().onLocalBlock(payload).catch((err) => {
+            console.warn('[HUB:BLOCKRELAY] local block:', err && err.message ? err.message : err);
+          });
+          this._bitcoinBlockQueue.push({
+            tip: payload.tip,
+            height: payload.height,
+            supply: payload.supply
+          });
+        });
         this.bitcoin.on('transaction', this._handleBitcoinTransactionUpdate.bind(this));
+        // Full raw blocks as purchasable documents: opt-in, multiplies mainnet storage.
+        const rawBlocksCfg = this.settings.bitcoin && this.settings.bitcoin.documentRawBlocks;
+        if (rawBlocksCfg === true || rawBlocksCfg === 1 || rawBlocksCfg === '1' || rawBlocksCfg === 'true') {
+          this.bitcoin.on('rawBlock', (payload) => {
+            this._ensureBitcoinRawBlockDocument(payload).catch((err) => {
+              console.warn('[HUB:BITCOIN] raw block document failed:', err && err.message ? err.message : err);
+            });
+          });
+        }
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
         this._repairManagedRegtestSettingsJsonIfCorrupt();
@@ -14865,6 +15014,7 @@ class Hub extends Service {
       ), { limit: 10 }));
       /* Document Market: ranked chunk index + local provider telemetry (services/market.js) */
       this.http._addRoute('GET', '/services/market', this._handleMarketServiceRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/blocks', this._handleBlockRelayRequest.bind(this));
       this.http._addRoute('GET', '/services/market/providers', this._handleMarketProvidersRequest.bind(this));
       this.http._addRoute('GET', '/services/market/chunks', this._handleMarketChunksRequest.bind(this));
       this.http._addRoute('GET', '/services/market/agent', this._handleMarketAgentRequest.bind(this));
@@ -15120,6 +15270,8 @@ class Hub extends Service {
         }
       });
 
+      this.http._registerMethod('GetBlockRelayStatus', async () => this._getBlockRelay().getStatus());
+
       this.http._registerMethod('GetPeeringStatus', async () => {
         const peering = this._getPeeringService();
         if (!peering) return { status: 'error', message: 'Peering service unavailable' };
@@ -15299,14 +15451,14 @@ class Hub extends Service {
           return { status: 'error', message: 'peer not connected' };
         }
         const myId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
-        const body = JSON.stringify({
+        const body = {
           v: 1,
           reason: 'hub-request-fabric-resync',
           requester: myId,
           at: new Date().toISOString()
-        });
+        };
         try {
-          this._sendVectorToPeer(address, ['ChainSyncRequest', body]);
+          this._sendMessageToPeer(address, Message.fromLegacyBody('ChainSyncRequest', body));
           return { status: 'success', address };
         } catch (err) {
           console.error('[HUB] RequestFabricPeerResync error:', err);
@@ -18292,7 +18444,8 @@ class Hub extends Service {
         };
         if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
         const payload = JSON.stringify({ type: 'P2P_FILE_SEND', object: normalized });
-        const msg = Message.fromVector(['FileMessage', payload]);
+        // Browser broadcast; `FileMessage` was never registered (always P2P_BASE_MESSAGE).
+        const msg = Message.fromVector(['P2P_BASE_MESSAGE', payload]);
         if (this._fabricKey) msg.signWithKey(this._fabricKey);
         if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
         this.recordActivity({
@@ -18522,8 +18675,16 @@ class Hub extends Service {
           console.debug('[HUB:P2P] BitcoinBlock from', from || '?', parsed || (message && message.data));
         }
         if (parsed && typeof parsed === 'object' && parsed.tip) {
+          this._getBlockRelay().onGossip(parsed, from);
           this._ingestP2pBitcoinBlockForFabricLog(parsed, from).catch(() => {});
         }
+      });
+
+      // Point-to-point compact block relay bodies (never mesh-flooded by core Peer).
+      this.agent.on('generic', ({ type, body, origin }) => {
+        const relay = this._getBlockRelay();
+        if (!relay.owns(type) || !origin || !origin.name) return;
+        relay.handleMessage(body, origin.name).catch(() => {});
       });
 
       // Fabric P2P ChainSyncRequest: inventory exchange + replay BitcoinBlock messages from this hub's log.
@@ -18577,7 +18738,7 @@ class Hub extends Service {
               try {
                 const fwdObj = { ...obj, fileRelayTtl: nextTtl };
                 const fwd = { type: 'P2P_FILE_SEND', actor: message.actor, object: fwdObj };
-                this._sendVectorToPeer(nextAddr, ['P2P_FILE_SEND', JSON.stringify(fwd)]);
+                this._sendMessageToPeer(nextAddr, Message.fromLegacyBody('P2P_FILE_SEND', fwd));
               } catch (relayErr) {
                 console.warn('[HUB] P2P_FILE_SEND relay failed:', relayErr && relayErr.message ? relayErr.message : relayErr);
               }
@@ -19016,6 +19177,7 @@ class Hub extends Service {
 
     const stopWork = async () => {
       this._state.status = 'STOPPING';
+      if (this.blockRelay) this.blockRelay.stop();
 
       // Detach network-status listeners and peering offer timer before stopping subsystems.
       if (this._fabricPeeringOfferIntervalId) {

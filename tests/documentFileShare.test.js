@@ -36,7 +36,8 @@ describe('documentFileShare', function () {
   it('caps a share at the core document byte limit', function () {
     const { MAX_DOCUMENT_BLOBS: coreBlobs } = require('@fabric/core/constants');
     assert.strictEqual(MAX_DOCUMENT_BLOBS, coreBlobs);
-    assert.strictEqual(FILE_SHARE_BLOB_BYTES, Math.floor((MAX_MESSAGE_SIZE - 2048) * 3 / 4));
+    assert.strictEqual(FILE_SHARE_BLOB_BYTES, 32 * 1024);
+    assert.ok(FILE_SHARE_BLOB_BYTES <= MAX_MESSAGE_SIZE - 2048);
     assert.strictEqual(FILE_SHARE_MAX_BYTES, Math.min(MAX_DOCUMENT_BLOBS * FILE_SHARE_BLOB_BYTES, MAX_DOCUMENT_BYTES));
     assert.throws(
       () => buildFileShareFrames({ length: FILE_SHARE_MAX_BYTES + 1 }, { documentId: 'd' }),

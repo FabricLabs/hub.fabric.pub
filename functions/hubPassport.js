@@ -125,8 +125,10 @@ function mountHubPassport (hub, opts = {}) {
  * - WebSocket: calls signed with the session key reach methods registered
  *   `withContext` as `context.passport` (`GetPassportSession` answers it).
  * - HTTP: `GET /sessions/peer` (the key and network a page names to
- *   Passport), `POST /sessions/peer` (the handshake), and any request with an
- *   `X-Fabric-Request` signed by the session key gets `req.passportSession`.
+ *   Passport), `POST /sessions/peer` (the handshake), `GET
+ *   /sessions/peer/current` (the session a signed request speaks for), and
+ *   any request with an `X-Fabric-Request` signed by the session key gets
+ *   `req.passportSession`.
  * @param {object} hub A Hub, or an app built on one (`http`, `settings`, `_rootKey`).
  * @param {Object} [opts]
  * @param {object} [opts.env]
@@ -153,6 +155,15 @@ function mountHubPassportPeer (hub, opts = {}) {
       : route.handler;
     hub.http._addRoute(route.method, route.path, handler);
   }
+  hub.http._addRoute('GET', '/sessions/peer/current', (req, res) => {
+    if (serveSpaShellIfHtmlNavigation(hub, req, res)) return undefined;
+    const session = req.passportSession || null;
+    res.statusCode = session ? 200 : 401;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(JSON.stringify(session ? { session } : { error: 'not signed in' }));
+    return undefined;
+  });
   hub.http._registerMethod('GetPassportSession', (context) => (context && context.passport) || null, { withContext: true });
   hub._passportPeer = peer;
   return peer;

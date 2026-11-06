@@ -596,6 +596,10 @@ describe('Hub WebRTC RPC methods', function () {
     hub._sendVectorToPeer = (target, vector) => {
       sentVectors.push({ target, vector });
     };
+    // File frames go out as field bodies; record them as the [type, JSON] vector they replace.
+    hub._sendMessageToPeer = (target, msg) => {
+      sentVectors.push({ target, vector: ['P2P_FILE_SEND', JSON.stringify(Message.tryParseLegacyBody(msg).value)] });
+    };
 
     const oneMB = 1024 * 1024;
     const source = Buffer.alloc((2 * oneMB) + 123, 0x41);

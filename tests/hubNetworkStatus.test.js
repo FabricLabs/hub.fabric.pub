@@ -63,8 +63,8 @@ describe('hubNetworkStatus', function () {
       const status = {
         peers: [{ id: 'p' }],
         network: { address: 'a' },
-        fabricMessages: big(150),
-        messages: big(150),
+        fabricMessages: big(300),
+        messages: big(300),
         publishedDocuments: { d: { id: 'd' } }
       };
       assert.throws(() => Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, status] })]).toBuffer(), RangeError);
@@ -84,7 +84,7 @@ describe('hubNetworkStatus', function () {
         fabricPeerId: 'f',
         network: { address: 'a' },
         peers,
-        chain: { blocks: 'y'.repeat(60000) },
+        chain: { blocks: 'y'.repeat(120000) },
         bitcoin: { height: 1 },
         fabricMessages: big(10)
       };

@@ -56,20 +56,40 @@ function pageWindow (origin) {
       setImmediate(async () => {
         try {
           if (data.type === 'PASSPORT_PEER_CONNECT') {
-            const ws = await openWebSocket(data.endpoints[0], WebSocket);
+            // Like the extension: try each endpoint in order; an http(s) one is the HTTP handshake.
+            let transport = null;
+            let base = null;
+            for (const endpoint of data.endpoints) {
+              if (/^https?:/.test(endpoint)) {
+                base = new URL(endpoint).origin;
+                transport = httpTransport(base);
+                break;
+              }
+              try {
+                transport = webSocketTransport(await openWebSocket(endpoint, WebSocket, 2000));
+                base = new URL(endpoint.replace(/^ws/, 'http')).origin;
+                break;
+              } catch (_) {}
+            }
             const session = await openPeerSession({
-              transport: webSocketTransport(ws),
+              transport,
               peer: data.peer,
               origin,
               request: data.request,
               sign: signWithKey(USER.identity.key, { disclose: data.request, wallet: USER.wallet, origin })
             });
-            sessions.set(session.sessionId, { session, origin });
+            const kind = /^https?:/.test(data.endpoints.find((e) => /^https?:/.test(e) && base === new URL(e).origin) || '') && transport.base ? 'http' : 'ws';
+            sessions.set(session.sessionId, { session, origin, base, kind });
             port.postMessage({
               type: 'PASSPORT_PEER_SESSION',
               ok: true,
-              session: { sessionId: session.sessionId, peer: session.peer, identity: session.identity, expiresAt: session.expiresAt }
+              session: { sessionId: session.sessionId, peer: session.peer, identity: session.identity, expiresAt: session.expiresAt, transport: kind, base }
             });
+          } else if (data.type === 'PASSPORT_PEER_AUTHORIZE') {
+            const held = sessions.get(data.sessionId);
+            const url = new URL(data.url);
+            if (!held || held.origin !== origin || url.origin !== held.base) port.postMessage({ ok: false, error: 'not_your_session' });
+            else port.postMessage({ type: 'PASSPORT_PEER_AUTHORIZATION', ok: true, header: held.session.authorize({ method: data.method, target: `${url.pathname}${url.search}`, body: data.body }) });
           } else if (data.type === 'PASSPORT_PEER_CALL') {
             const held = sessions.get(data.sessionId);
             if (!held || held.origin !== origin) port.postMessage({ ok: false, error: 'not_your_session' });
@@ -183,6 +203,20 @@ describe('Hub Passport peer sessions', function () {
     assert.strictEqual(json.session.signer, 'gooncitizen');
     const anonymous = await (await fetch(`${base}/services/whoami`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })).json();
     assert.strictEqual(anonymous.session, null);
+  });
+
+  it('a page whose Passport cannot open the socket signs in over HTTP instead', async function () {
+    const { win } = pageWindow('http://localhost:3000');
+    const base = `http://127.0.0.1:${port}`;
+    const result = await loginWithPassportPeer({
+      window: win,
+      fetch: (url, init) => fetch(url, init),
+      endpoints: ['ws://127.0.0.1:1/', base],
+      peer: hub._passportPeer.peer
+    });
+    assert.strictEqual(result.ok, true, result.error);
+    assert.strictEqual(result.identity.pubkey, USER.identity.pubkey);
+    setPassportSession(null);
   });
 
   it('maps a page origin to its Hub WebSocket', function () {

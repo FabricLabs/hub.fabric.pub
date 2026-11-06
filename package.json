@@ -200,6 +200,7 @@
     "graphviz-wasm": "=3.0.2",
     "html5-qrcode": "=2.3.8",
     "isomorphic-ws": "=4.0.1",
+    "jayson": "=5.0.0",
     "jquery": "=3.7.1",
     "jsdom": "=30.1.3",
     "lodash.merge": "=4.6.2",
