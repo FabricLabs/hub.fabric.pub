@@ -21,8 +21,7 @@ const BITCOIND_ARGS = [
   `-rpcport=${rpcport}`,
   '-server',
   '-txindex',
-  '-fallbackfee=1.0',
-  '-maxtxfee=1.1',
+  '-fallbackfee=0.00001',
   '-dnsseed=0'
 ];
 

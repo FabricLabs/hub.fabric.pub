@@ -3,6 +3,7 @@
 const assert = require('assert');
 const BIP32Factory = require('bip32').default;
 const ecc = require('@fabric/core/types/ecc');
+const accountKeys = require('@fabric/core/functions/accountKeys');
 const bitcoin = require('bitcoinjs-lib');
 const vaultLib = require('../functions/hubAccountVault');
 const {
@@ -47,7 +48,9 @@ describe('bitcoinClient account wallet context', function () {
     assert.strictEqual(w.account, 2);
     assert.strictEqual(w.hasPrivateKey, true);
     const root = new BIP32Factory(ecc).fromBase58(w.xprv, bitcoin.networks.testnet);
-    assert.strictEqual(root.neutered().toBase58(), w.xpub, 'xprv matches the SegWit account');
+    // Account xpubs are shared with depth, parent fingerprint, and child number zeroed.
+    const shared = accountKeys.shareableAccountXpub(root.neutered().toBase58(), 'regtest');
+    assert.strictEqual(shared, w.xpub, 'xprv matches the SegWit account');
     assert.ok(w.standardXprv);
   });
 

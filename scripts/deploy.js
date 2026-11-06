@@ -507,10 +507,12 @@ async function start (ctx) {
     fs.mkdirSync(instance.dir, { recursive: true });
     const key = net.ensureInstanceKey(instance.dir);
     // Only the seed dials remotes at boot; `redialRemotes` brings the others in one handshake at a time.
+    // The others keep them as `redialPeers` so the Hub restores a dropped session on its own.
+    const isSeed = instance.name === 'seed';
     const fabricPeers = ctx.instances
       .filter((o) => o.name !== instance.name)
       .map((o) => `127.0.0.1:${o.ports.fabric}`)
-      .concat(instance.name === 'seed' ? remoteDials : []);
+      .concat(isSeed ? remoteDials : []);
     const fragment = net.buildFragment({
       network: ctx.profile.name,
       instance,
@@ -518,10 +520,11 @@ async function start (ctx) {
       key,
       seedPort: seed ? seed.ports.btcP2p : null,
       fabricPeers,
+      redialPeers: isSeed ? [] : remoteDials,
       // Never mine onto a public chain.
       mine: ownChain,
       // The others sync from the seed.
-      bitcoinPeers: instance.name === 'seed' ? remoteBitcoin : []
+      bitcoinPeers: isSeed ? remoteBitcoin : []
     });
     net.writeJson(instance.fragmentFile, fragment, 0o600);
   }
@@ -537,6 +540,9 @@ async function start (ctx) {
       prune: ctx.profile.prune || 0
     });
     if (token) console.log(`[deploy] ${instance.name}: admin token → ${instance.tokenFile}`);
+    else if (net.refreshAdminToken(net.ensureInstanceKey(instance.dir), instance.tokenFile, ctx.profile.name)) {
+      console.log(`[deploy] ${instance.name}: admin token re-signed for its current identity key → ${instance.tokenFile}`);
+    }
     await net.waitBitcoinOnline(instance.ports.http, 240000);
   }
 

@@ -108,7 +108,6 @@ or additional auth layer in front of it.
     * [._inventoryHtlcById](#Hub+_inventoryHtlcById) : <code>Map.&lt;string, Object&gt;</code>
     * [._crowdfundingCampaigns](#Hub+_crowdfundingCampaigns) : <code>Map.&lt;string, Object&gt;</code>
     * [._desktopAuthSessions](#Hub+_desktopAuthSessions) : <code>Map.&lt;string, Object&gt;</code>
-    * [._deviceLinkSessions](#Hub+_deviceLinkSessions) : <code>Map.&lt;string, Object&gt;</code>
     * [._delegationRegistry](#Hub+_delegationRegistry) : <code>Map.&lt;string, Object&gt;</code>
     * [._delegationSignatureMessages](#Hub+_delegationSignatureMessages) : <code>Map.&lt;string, Object&gt;</code>
     * [._outboundMessageTip](#Hub+_outboundMessageTip)
@@ -312,10 +311,6 @@ UTF-8 byte length of last `commit()` STATE body (telemetry; avoids re-stringify)
 <a name="Hub+_desktopAuthSessions"></a>
 
 ### hub.\_desktopAuthSessions : <code>Map.&lt;string, Object&gt;</code>
-**Kind**: instance property of [<code>Hub</code>](#Hub)  
-<a name="Hub+_deviceLinkSessions"></a>
-
-### hub.\_deviceLinkSessions : <code>Map.&lt;string, Object&gt;</code>
 **Kind**: instance property of [<code>Hub</code>](#Hub)  
 <a name="Hub+_delegationRegistry"></a>
 

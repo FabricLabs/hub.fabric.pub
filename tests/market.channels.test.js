@@ -4,6 +4,7 @@ const assert = require('assert');
 const crypto = require('crypto');
 const bitcoin = require(require.resolve('bitcoinjs-lib', { paths: [require.resolve('@fabric/core/types/channel')] }));
 const Key = require('@fabric/core/types/key');
+const Message = require('@fabric/core/types/message');
 const MarketService = require('../services/market');
 
 const NET = bitcoin.networks.regtest;
@@ -42,7 +43,7 @@ describe('Hub MarketService payment channels (Phase 4)', function () {
     const keyB = new Key();
     const relayed = { a: [], b: [] };
     const chain = { network: 'regtest', height: 0, getTransactionInfo: async () => ({ confirmations: 6 }) };
-    const hubFor = (sink) => ({ agent: { relayFrom: async (_from, msg) => { sink.push(JSON.parse(msg.body).object); } }, bitcoin: chain, settings: { bitcoin: { network: 'regtest' } } });
+    const hubFor = (sink) => ({ agent: { relayFrom: async (_from, msg) => { sink.push(Message.tryParseLegacyBody(msg).value.object); } }, bitcoin: chain, settings: { bitcoin: { network: 'regtest' } } });
     const A = new MarketService({ channels: { enable: true } }).attach({ hub: hubFor(relayed.a), fs: fsA, key: keyA });
     const B = new MarketService({ channels: { enable: true } }).attach({ hub: hubFor(relayed.b), fs: fsB, key: keyB });
     const pubB = keyB.public.encodeCompressed('hex');

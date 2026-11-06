@@ -78,23 +78,27 @@ Origins are pinned: loopback on the Hub port (`127.0.0.1`, `localhost`, `[::1]`)
 
 There is no `fabric://login` link and no QR login: the desktop app can't tell which page launched a link, so a phishing page could have used one to get a login for another site. The Hub never signs for another site's session and never gives a browser access to its own key.
 
-### The desktop Hub as a Passport signer
-Passport can ask this Hub to answer a sign-in with the Hub's identity instead of a key held in the extension. The Hub must first be paired with that Passport:
+### The desktop Hub as a linked signer (delegation)
+Passport can pair with this Hub and then ask it to sign: a site sign-in with the Hub's identity, or a shared-wallet (federation) invite or withdrawal as the Hub's cosigner. Everything is a Fabric Message (`@fabric/core` `docs/DELEGATION.md`); the Hub keeps its own key and its own message store (`stores/hub/delegation/`).
 
-1. In Passport, add the desktop Hub as a device. Passport makes a device-link offer on the Hub's loopback `/device-links`.
-2. The Hub shows a native dialog with a six-digit code; Passport shows the same code. Approve only if they match.
-3. From then on, a sign-in in the browser can be answered by the Hub: Passport sends a `PASSPORT_SIGN_REQUEST`, the Hub shows a native dialog naming the site, the account, and exactly what is shared, and on approval returns a `PASSPORT_ASSERTION` signed by its identity key (account 0 on the challenge's network, `signer: 'hub'`).
+1. In Passport, open **Linked signers → Pair with a Hub** on the machine where the Hub runs. Passport sends a `DELEGATION_LINK_OFFER` to the Hub's loopback delegate.
+2. The Hub shows a native dialog with a six-digit code; Passport shows the same code. Approve only if they match. Both sides then exchange `DELEGATION_GRANT`s: the Hub's covers `identity`, `passport`, and `federation` and discloses its cosigner key.
+3. From then on Passport sends a `DELEGATION_REQUEST` (loopback, or through the Hub's mailbox). The Hub's **signing rules** decide it, or it waits for the operator: a native dialog on the desktop (with a notification when the window is away), and Sign / Decline under **Notifications** in the web UI. The answer is a `DELEGATION_RESULT`.
 
-Routes (`functions/fabricLocalSignerHub.js` on `@fabric/http` `fabricLocalSigner`): `GET /services/fabric/identity`, `POST /services/fabric/sign`, `POST /services/fabric/link { sessionId }`. They answer only a direct loopback socket naming a loopback `Host` whose `Origin` is Passport: a Chrome build listed in `FABRIC_PASSPORT_EXTENSION_IDS` / `settings.passport.extensionIds`, or any Firefox build (`moz-extension://`). Sign requests must come from a device in the Hub's identity cluster; each nonce works once; requests from before the Hub started are refused. Link and sign prompts are separate, link prompts come at most every 30 seconds, and a dialog closes when its request expires. A CLI Hub has no dialog and serves none of these routes.
+**Signing rules** (`/settings/signing`, `functions/signerRules.js`, kept in `stores/hub/signer-rules.json`, mode 0600): sign or decline by scope, requester (`identity-linked` = signers that granted this Hub their identity), sites, federations, networks, amount per spend, destinations, sats per day, and requests per hour. They fail closed: a decline rule wins; while any rule is broken nothing is signed on its own; a withdrawal is co-signed only by a rule that sets `maxAmountSats`, never above the Hub's `maxWithdrawalSats`; a constraint a request can't answer doesn't match. Federation frames that reach the Hub from the mesh go through the same rules. Every decision is logged (`GET /services/delegation/decisions`).
+
+Routes (`functions/fabricDelegateHub.js`, `services/delegation.js`):
+- `/delegations…` pairing rendezvous and `/services/delegation/mailbox` (`@fabric/http`), public;
+- `GET /services/delegation`, `POST /services/delegation/links`, `POST /services/delegation/requests`, `GET /services/delegation/requests/:hash` — a direct loopback socket naming a loopback `Host` whose `Origin` is Passport (a Chrome build in `FABRIC_PASSPORT_EXTENSION_IDS` / `settings.passport.extensionIds`, or any `moz-extension://`), and only Passports holding a grant here;
+- with the admin Bearer: `GET /services/delegation/requests`, `POST /services/delegation/requests/:hash/sign|decline`, `GET|PUT /services/delegation/rules`, `GET /services/delegation/decisions`, `GET /services/delegation/signers`, `POST /services/delegation/grants/:hash/revoke`.
+
+A CLI Hub has no dialog, so it pairs with nobody; it still answers signers paired before, by rule or through the admin routes. The old `/services/fabric/sign|link|identity`, `/device-links`, and `IdentityCrossSign` are gone.
 
 ### `fabric:` links
 The Hub registers the **`fabric:`** scheme on every launch and on **macOS activate**, and declares it via **electron-builder** (`package.json` → `build.protocols`). It opens:
 
 - **`fabric:<frame>`** (opaque, no `//`) and legacy **`fabric://message?hex=…`** — shown read-only in **`FabricMessagePrompt`** with the author or "Not signed". Nothing is signed from it. Parsed in **`functions/fabricProtocolUrl.js`**; envelope JSON **`docs/FABRIC_MESSAGE_ENVELOPE.md`**.
-- **`fabric://link?…`** — handed to the Identity device-link UI.
-
-### Mutual device-link
-Separate seeds per app (Passport / Hub browser / downstream applications). Hub Identity → **Create link offer** → `POST /device-links`. The responder approves (Passport **Approve with Passport**, or the app that owns the offer), then the initiator countersigns. Strings are `fabric:device-link:3:offer:…` and `fabric:device-link:3:link:…`, naming the session, nonce, ids, label, and origin. Routes: `POST|GET /device-links`, `POST /device-links/:id/signatures`. See `functions/fabricDeviceLink.js`.
+- **`fabric://link?…`** — retired; the Hub logs a pointer to Passport's Linked signers.
 
 ## BIP21 `bitcoin:` (payments)
 The desktop app registers the **`bitcoin:`** scheme (alongside **`fabric:`**) on launch and on macOS **activate**, and declares it in **electron-builder** (`package.json` → `build.protocols`). Opening a **`bitcoin:`** link (OS default handler, second instance, or **`open` on macOS**) loads **Bitcoin Payments → Make Payment** with fields prefilled:

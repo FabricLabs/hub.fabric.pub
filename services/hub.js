@@ -51,6 +51,8 @@ function timingSafeSha256Utf8Match (provided, expected) {
   }
 }
 const bitcoinCoreMessage = require('../functions/bitcoinCoreMessage');
+const { bitcoindRpcAccess } = require('../functions/bitcoindRpcPolicy');
+const delegationFrames = require('@fabric/core/types/delegation');
 const bitcoinFaucetCapability = require('../functions/bitcoinFaucetCapability');
 const { SATS_PER_BTC, FEATURE_FLAGS, publicFeatureFlags } = require('../constants');
 const {
@@ -63,7 +65,10 @@ const {
   buildContentSecurityPolicy,
   createBrowserSecretsGuard,
   createLoopbackHostGuard,
-  isTrustedLoopbackRequest
+  createWebSocketOriginCheck,
+  isTrustedLoopbackRequest,
+  isCrossOriginRead,
+  webSocketOriginsFromEnv
 } = require('../functions/hubHttpLocalTrust');
 const documentContentKey = require('../functions/documentContentKey');
 const documentInventoryMarket = require('../functions/documentInventoryMarket');
@@ -74,6 +79,7 @@ const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
 const { hubServerKeys } = require('../functions/hubAccount');
 const hubHeapBounds = require('../functions/hubHeapBounds');
 const hubHeapTelemetry = require('../functions/hubHeapTelemetry');
+const { createSerialQueue, createSingleFlight } = require('../functions/hubWorkQueues');
 const {
   installFilesystemPublishHeapGuard
 } = require('../functions/hubFilesystemPersist');
@@ -100,6 +106,7 @@ const Collection = require('@fabric/core/types/collection');
 const Contract = require('@fabric/core/types/contract');
 const Filesystem = require('@fabric/core/types/filesystem');
 const Key = require('@fabric/core/types/key'); // fabric keys
+const Watchtower = require('@fabric/core/services/watchtower');
 const Logger = require('@fabric/core/types/logger');
 const Message = require('@fabric/core/types/message');
 /** Ping/pong keep genesis parent. Durable Hub log frames (including GENESIS_MESSAGE) chain AMP `parent`. */
@@ -120,10 +127,12 @@ const Bitcoin = require('@fabric/core/services/bitcoin');
 const Lightning = require('@fabric/core/services/lightning');
 const Beacon = require('../contracts/beacon');
 const PayjoinService = require('../services/payjoin');
+const { parseBitcoinUri: parseBip21Uri } = require('@fabric/core/functions/bip21');
 const EmailService = require('../services/email');
 const PeeringService = require('../services/peering');
 const ChallengeService = require('../services/challenge');
 const MarketService = require('../services/market');
+const BlockRelay = require('../services/blockRelay');
 const CoinjoinService = require('../services/coinjoin');
 const FederationsService = require('../services/federations');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
@@ -146,19 +155,37 @@ const {
   MAX_PEERS,
   HEADER_SIZE,
   MAX_MESSAGE_SIZE,
-  P2P_CHAIN_SYNC_REQUEST
+  P2P_CHAIN_SYNC_REQUEST,
+  BITCOIN_DUST_SATS = 546,
+  HTLC_CLAIM_VBYTES = 170,
+  HTLC_MINIMUM_SATS = 716,
+  INVENTORY_RESPONSE_PAGE_BYTES = MAX_MESSAGE_SIZE - 2048
 } = require('@fabric/core/constants');
-const { fitHubNetworkStatus } = require('../functions/hubNetworkStatus');
+const { fitHubNetworkStatus, redactNetworkStatusForPublic } = require('../functions/hubNetworkStatus');
+const { paginateInventoryItems } = require('@fabric/core/types/documentBook');
 
 // JSONCall / JSONCallResult envelope (method, hash, ids) around a status body.
 const NETWORK_STATUS_MAX_BYTES = MAX_MESSAGE_SIZE - 1024;
+// Peer connects and closes come in bursts; one status push per window is plenty.
+const NETWORK_STATUS_PUSH_MS = 1000;
+// A drain marks dozens of frames delivered; coalesce them into one queue write.
+const CONTRACT_MESSAGE_QUEUE_FLUSH_MS = 1000;
+// Without core `peer:session`, how often and how long to wait for a session to name a new connection.
+const MAILBOX_IDENTITY_POLL_MS = 250;
+const MAILBOX_IDENTITY_WAIT_MS = 10000;
 // Walk the whole UTXO set; on signet and mainnet they outlast core's 15 s RPC timeout.
 const BITCOIN_SLOW_RPC_METHODS = new Set(['scantxoutset', 'gettxoutsetinfo']);
+// Core asks for `gettxoutsetinfo` on every block; one shared call per window is plenty.
+const BITCOIN_TXOUTSET_CACHE_MS = 30000;
+// Above this many transactions, `getrawmempool true` is too large to fetch per status.
+const BITCOIN_VERBOSE_MEMPOOL_MAX_TXS = 2000;
 
 // Hard limits and validation patterns
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
 const FABRIC_BITCOIN_BLOCK_DOC_MIME = 'application/x-fabric-bitcoin-block+json';
 const FABRIC_BITCOIN_TX_DOC_MIME = 'application/x-fabric-bitcoin-transaction+json';
+/** Full raw Bitcoin block, consensus serialization (opt-in `documentRawBlocks`). */
+const FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME = 'application/x-bitcoin-block';
 /** Skip per-tx Fabric documents when a block has more than this many txs (mainnet safety). */
 const BITCOIN_TX_DOC_INDEX_MAX_TXS = 2000;
 const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SATS || 1000);
@@ -169,9 +196,31 @@ const DEFAULT_DISTRIBUTE_FEE_SATS = Number(process.env.FABRIC_DISTRIBUTE_FEE_SAT
 const HUB_SELF_DESTRUCT_CONFIRM_PHRASE = 'DELETE ALL HUB DATA';
 const MAX_ADDRESS_LENGTH = 256;
 const PEER_ADDRESS_RE = /^[^:]+:\d+$/;
+// How long a redial peer's resolved addresses are trusted before looking the name up again.
+const PEER_HOST_LOOKUP_TTL_MS = 5 * 60 * 1000;
 const FABRIC_PEERING_OFFER_INTERVAL_MS = Number(process.env.FABRIC_PEERING_OFFER_INTERVAL_MS || 30000);
+/** Document ids are content hashes or actor ids: no dots or separators. */
+const SAFE_DOCUMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const INVENTORY_HTLC_MAX_SETTLEMENTS = 2000;
+const INVENTORY_HTLC_MAX_PER_REQUESTER = 512;
+const INVENTORY_HTLC_CLAIM_INTERVAL_MS = 60 * 1000;
+const INVENTORY_HTLC_CLAIM_ATTEMPTS = 20;
+// An unconfirmed claim this close to the refund lock is replaced with a higher fee, once a block.
+const INVENTORY_HTLC_CLAIM_BUMP_BLOCKS = 12;
+const PURCHASE_INVOICE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const PURCHASE_INVOICE_MAX = 5000;
+const PURCHASE_INVOICE_PER_MINUTE = 60;
+const PURCHASE_INVOICE_UNPAID_MS = 60 * 60 * 1000;
+const INCOMING_FILE_WINDOW_MS = 60 * 60 * 1000;
+const INCOMING_FILE_BYTES_PER_HOST = 64 * 1024 * 1024;
+const INCOMING_FILE_BYTES_TOTAL = 256 * 1024 * 1024;
 const INVENTORY_HTLC_TTL_MS = 48 * 3600 * 1000;
+/** Blocks a seller needs before the refund lock to get its claim confirmed; no delivery inside them. */
+const INVENTORY_HTLC_CLAIM_MARGIN_BLOCKS = 6;
+/** A buyer pays a quote only while this many blocks remain before its refund lock. */
+const INVENTORY_HTLC_MIN_PAY_BLOCKS = 2 * INVENTORY_HTLC_CLAIM_MARGIN_BLOCKS;
+/** Most blocks walked back to find a mined payment on a node without txindex (the longest HTLC lock). */
+const L1_TX_BLOCK_SEARCH_MAX = 10000;
 /** Max Fabric hops for relayed P2P_FILE_SEND chunks (per chunk, decremented each forward). */
 const INVENTORY_FILE_RELAY_TTL = 8;
 /** Max WebRTC→Fabric relay hops (envelope.hops length) before refusing to fan out. */
@@ -239,6 +288,7 @@ const {
 } = require('../functions/hubBitcoinSetup');
 const { seedHubStoresAfterSetup } = require('../functions/hubSetupStores');
 const payjoinReceiverContribution = require('../functions/payjoinReceiverContribution');
+const payjoinInternalOperations = require('../functions/payjoinInternalOperations');
 const hubNetworkJoin = require('../functions/hubNetworkJoin');
 
 /** `receiverContribution` (or legacy `autoAcpBoost`) from a request body; undefined = service default. */
@@ -246,8 +296,8 @@ function payjoinContributionFlag (body = {}) {
   const value = body.receiverContribution != null ? body.receiverContribution : body.autoAcpBoost;
   return value != null ? !!value : undefined;
 }
-const { mountHubPassport } = require('../functions/hubPassport');
-const { mountFabricDeviceLinkHttp } = require('../functions/fabricDeviceLink');
+const { mountHubPassport, mountHubPassportPeer, hubRequestSession } = require('../functions/hubPassport');
+const { mountFabricDelegateHub, passportExtensionIds } = require('../functions/fabricDelegateHub');
 // const Queue = require('../types/queue');
 
 // Routes (Request Handlers)
@@ -370,7 +420,17 @@ class Hub extends Service {
           ? ['1', 'true'].includes(String(process.env.FABRIC_PAYJOIN_RECEIVER_CONTRIBUTION || process.env.FABRIC_PAYJOIN_AUTO_ACP))
           : null,
         bip77MailboxExperimental: process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== '0' &&
-          process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== 'false'
+          process.env.FABRIC_PAYJOIN_BIP77_MAILBOX !== 'false',
+        requireOwnedReceiveAddress: true,
+        maxProposalsPerSession: 3,
+        internal: {
+          enable: ['1', 'true'].includes(String(process.env.FABRIC_PAYJOIN_INTERNAL || '').toLowerCase()),
+          operations: {},
+          timeoutMs: Number(process.env.FABRIC_PAYJOIN_SEND_TIMEOUT_MS || 30000),
+          maxAdditionalFeeContributionSats: Number(process.env.FABRIC_PAYJOIN_MAX_FEE_CONTRIBUTION_SATS || 1000),
+          maxResponseBytes: 100000,
+          allowInsecureEndpoints: null
+        }
       },
       email: {
         enable: process.env.FABRIC_EMAIL_ENABLE === 'true' || process.env.FABRIC_EMAIL_ENABLE === '1',
@@ -407,7 +467,11 @@ class Hub extends Service {
           markupBps: Number(process.env.FABRIC_DOCUMENT_MARKET_MARKUP_BPS || 1000),
           markupSats: Number(process.env.FABRIC_DOCUMENT_MARKET_MARKUP_SATS || 0),
           minPriceSats: Number(process.env.FABRIC_DOCUMENT_MARKET_MIN_PRICE_SATS || 0)
-        }
+        },
+        // A sale delivers once its payment has this many confirmations; 0 delivers from the mempool.
+        minPaymentConfirmations: process.env.FABRIC_DOCUMENT_MIN_CONFIRMATIONS != null && process.env.FABRIC_DOCUMENT_MIN_CONFIRMATIONS !== ''
+          ? Number(process.env.FABRIC_DOCUMENT_MIN_CONFIRMATIONS)
+          : 1
       },
       distributed: {
         enable: process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE ? process.env.FABRIC_DISTRIBUTED_HTTP_ENABLE !== 'false' : true,
@@ -482,10 +546,12 @@ class Hub extends Service {
       const raw = Array.isArray(this.settings.peers) ? this.settings.peers : [];
       // `merge({}, settings/local.js, { http: … })` keeps production seed hosts.
       // Dialing them from mocha on a deploy host is wrong; keep only explicit extras.
-      this.settings.peers = raw.filter((p) => {
+      const notSeed = (p) => {
         const s = String(p || '').replace(/^[^@]+@/, '').trim();
         return s && !/^(hub\.fabric\.pub|relay\.goon\.vc|sensemaker\.io)(?::\d+)?$/i.test(s);
-      });
+      };
+      this.settings.peers = raw.filter(notSeed);
+      if (Array.isArray(this.settings.redialPeers)) this.settings.redialPeers = this.settings.redialPeers.filter(notSeed);
     }
     if (runningUnderTests && process.env.FABRIC_TEST_ALLOW_HOST_HTTP_BIND !== '1') {
       // `settings/local.js` copies FABRIC_HUB_INTERFACE / INTERFACE / FABRIC_INTERFACE
@@ -530,15 +596,13 @@ class Hub extends Service {
     // Root Key — exclusive identity (xprv > seed > mnemonic). Mixed bags
     // from settings/local.js would otherwise follow Key's mnemonic-first path
     // and diverge from playnet / FABRIC_XPRV.
-    try {
-      const { exclusiveOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
-      const exclusive = exclusiveOperatorKeySettings(this.settings.key);
-      if (exclusive) {
-        this.settings.key = Object.assign({}, {
-          passphrase: this.settings.key && this.settings.key.passphrase
-        }, exclusive);
-      }
-    } catch (_) { /* older @fabric/core pin */ }
+    const { exclusiveOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
+    const exclusive = exclusiveOperatorKeySettings(this.settings.key);
+    if (exclusive) {
+      this.settings.key = Object.assign({}, {
+        passphrase: this.settings.key && this.settings.key.passphrase
+      }, exclusive);
+    }
 
     // The root only derives. The identity key signs Fabric messages and admin
     // tokens; the cosigner key is the Hub's federation / Beacon validator.
@@ -583,6 +647,11 @@ class Hub extends Service {
     this._bitcoinCacheTTL = 15000;
     /** Dedupe concurrent scantxoutset scans by descriptor set. */
     this._bitcoinScanInflight = new Map();
+    this._bitcoinTxOutSet = createSingleFlight({ ttlMs: BITCOIN_TXOUTSET_CACHE_MS });
+    this._bitcoinSlowRPCInflight = 0;
+    this._bitcoinBlockQueue = createSerialQueue((payload) => this._handleBitcoinBlockUpdate(payload), {
+      onError: (err) => console.error('[HUB] block update failed:', err && err.message ? err.message : err)
+    });
     /** Dedupe Activity stream + P2P BitcoinBlock gossip when the same tip is signaled more than once. */
     this._lastBitcoinBlockActivityTip = null;
     /** Bounded recent BitcoinBlock tips so P2P ingest does not scan the full message log. */
@@ -813,9 +882,6 @@ class Hub extends Service {
     /** @type {Map<string, Object>} */
     this._crowdfundingCampaigns = new Map();
     this._crowdfundingLoaded = false;
-    /** Mutual device-link sessions (see functions/fabricDeviceLink.js). */
-    /** @type {Map<string, Object>} */
-    this._deviceLinkSessions = new Map();
     /** Previous signed AMP `Message.id` for `_appendFabricMessage` (D-020). */
     this._outboundMessageTip = null;
     this.changes = new Logger({
@@ -875,7 +941,13 @@ class Hub extends Service {
       jsonBodyLimit: (this.settings.http && this.settings.http.jsonBodyLimit) ||
         process.env.FABRIC_HTTP_JSON_LIMIT ||
         '12mb',
-      websocket: this.settings.websocket || {},
+      websocket: Object.assign({}, this.settings.websocket || {}, {
+        verifyOrigin: createWebSocketOriginCheck({
+          allowedHosts: this._loopbackAllowedHosts,
+          allowedOrigins: webSocketOriginsFromEnv(),
+          passportExtensionIds: passportExtensionIds(this)
+        })
+      }),
       middlewares: {
         loopbackHostGuard: createLoopbackHostGuard({ allowedHosts: this._loopbackAllowedHosts }),
         securityHeaders: (req, res, next) => {
@@ -1015,6 +1087,39 @@ class Hub extends Service {
   }
 
   /**
+   * Whether `documents/` still has room for `bytes` more under the operator's
+   * `DISK_ALLOCATION_MB` (no setting = no limit). The directory is measured at
+   * most once a minute; each admitted write is added to the total meanwhile.
+   * @param {number} bytes - raw document bytes (stored as base64 JSON)
+   * @returns {boolean}
+   */
+  _documentStoreHasRoom (bytes) {
+    const mb = Number(this.setup && typeof this.setup.getSetting === 'function' ? this.setup.getSetting('DISK_ALLOCATION_MB') : 0);
+    if (!(mb > 0)) return true;
+    const now = Date.now();
+    if (!this._documentBytes || now - this._documentBytes.at > 60 * 1000) {
+      let used = 0;
+      if (this.fs && typeof this.fs.path === 'string') {
+        const dir = path.join(this.fs.path, 'documents');
+        let names = [];
+        try {
+          names = fs.readdirSync(dir);
+        } catch (_) { /* no documents yet */ }
+        for (const name of names) {
+          try {
+            used += fs.statSync(path.join(dir, path.basename(String(name)))).size;
+          } catch (_) { /* removed meanwhile */ }
+        }
+      }
+      this._documentBytes = { at: now, used };
+    }
+    const needed = Math.ceil(Number(bytes) * 4 / 3) + 1024;
+    if (this._documentBytes.used + needed > mb * 1024 * 1024) return false;
+    this._documentBytes.used += needed;
+    return true;
+  }
+
+  /**
    * Normalize and validate an incoming peer address or id-style input.
    * Returns `{ idOrAddress, address }` where `address` may be `null` if
    * resolution is deferred to the Peer implementation.
@@ -1098,21 +1203,66 @@ class Hub extends Service {
   }
 
   /**
-   * Dial each configured `settings.peers` entry that is neither connected nor
-   * being dialed. Core dials configured peers once at start and never again, so a
-   * failed first dial (or a dropped session) would otherwise last until restart.
+   * `host:port` for each `settings.peers` and `settings.redialPeers` entry (pubkey pin dropped).
+   * @returns {string[]}
+   */
+  _configuredRedialAddresses () {
+    const entries = [].concat(
+      Array.isArray(this.settings.peers) ? this.settings.peers : [],
+      Array.isArray(this.settings.redialPeers) ? this.settings.redialPeers : []
+    );
+    const out = [];
+    for (const entry of entries) {
+      const raw = String(entry || '').replace(/^[^@]+@/, '').trim().toLowerCase();
+      if (!raw) continue;
+      const address = /:\d+$/.test(raw) ? raw : `${raw}:7777`;
+      if (!out.includes(address)) out.push(address);
+    }
+    return out;
+  }
+
+  /**
+   * Resolve the hostnames among the redial addresses, so a session core keyed by IP
+   * counts as connected. Each name is looked up again after `PEER_HOST_LOOKUP_TTL_MS`.
+   * @returns {Promise<void>}
+   */
+  async _refreshPeerHostAddresses () {
+    if (!this._peerHostAddresses) this._peerHostAddresses = new Map();
+    const now = Date.now();
+    await Promise.all(this._configuredRedialAddresses().map(async (address) => {
+      const host = address.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+      if (net.isIP(host)) return;
+      const cached = this._peerHostAddresses.get(host);
+      if (cached && now - cached.at < PEER_HOST_LOOKUP_TTL_MS) return;
+      try {
+        const found = await dns.lookup(host, { all: true });
+        this._peerHostAddresses.set(host, { at: now, ips: found.map((a) => a.address) });
+      } catch (_) {
+        // Keep what we had; an unresolvable name is simply dialed (and fails) as before.
+        if (cached) cached.at = now;
+      }
+    }));
+  }
+
+  /**
+   * Dial each configured `settings.peers` and `settings.redialPeers` entry that is
+   * neither connected nor being dialed. Core dials `peers` once at start and never
+   * again, so a failed first dial (or a dropped session) would otherwise last until
+   * restart. `redialPeers` are never dialed at boot, only here.
    * @returns {string[]} addresses dialed
    */
   _redialConfiguredPeers () {
     if (!this.agent || typeof this.agent._connect !== 'function') return [];
     const connections = this.agent.connections || {};
     const dialing = this.agent._outboundDialTargets;
+    const live = (a) => !!(connections[a] || (dialing && dialing.has(a)));
     const dialed = [];
-    for (const entry of Array.isArray(this.settings.peers) ? this.settings.peers : []) {
-      const raw = String(entry || '').replace(/^[^@]+@/, '').trim().toLowerCase();
-      if (!raw) continue;
-      const address = raw.includes(':') ? raw : `${raw}:7777`;
-      if (connections[address] || (dialing && dialing.has(address))) continue;
+    for (const address of this._configuredRedialAddresses()) {
+      if (live(address)) continue;
+      const port = address.slice(address.lastIndexOf(':') + 1);
+      const host = address.slice(0, address.lastIndexOf(':')).replace(/^\[|\]$/g, '');
+      const resolved = this._peerHostAddresses && this._peerHostAddresses.get(host);
+      if (resolved && resolved.ips.some((ip) => live(`${ip}:${port}`) || live(`[${ip}]:${port}`))) continue;
       try {
         this._connectPeer(address);
         dialed.push(address);
@@ -1145,14 +1295,22 @@ class Hub extends Service {
    * Vector is `[type, JSON.stringify(payload)]`.
    */
   _sendVectorToPeer (addressInput, vector) {
+    this._sendMessageToPeer(addressInput, Message.fromVector(vector));
+  }
+
+  /**
+   * Sign a built Message with the agent key and write it to one peer connection.
+   * @param {string} addressInput
+   * @param {Message} msg
+   */
+  _sendMessageToPeer (addressInput, msg) {
     const address = this._resolvePeerAddress(addressInput);
     if (!address) throw new Error('peer not connected');
     const sock = this.agent && this.agent.connections && this.agent.connections[address];
     if (!sock || typeof sock._writeFabric !== 'function') {
       throw new Error('peer not connected');
     }
-
-    const msg = Message.fromVector(vector).signWithKey(this.agent.key);
+    msg.signWithKey(this.agent.key);
     sock._writeFabric(msg.toBuffer());
   }
 
@@ -1177,8 +1335,10 @@ class Hub extends Service {
     }
     const jsonType = parsed && typeof parsed === 'object' ? parsed.type : null;
     const wireType = firstClassInventoryWireType(jsonType) || 'GenericMessage';
-    const body = typeof envelope === 'string' ? envelope : JSON.stringify(envelope);
-    const msg = Message.fromVector([wireType, body]).signWithKey(this.agent.key);
+    // Inventory opcodes have keyed field layouts (every key kept); others stay JSON.
+    const msg = (wireType !== 'GenericMessage' && parsed && typeof parsed === 'object')
+      ? Message.fromLegacyBody(wireType, parsed).signWithKey(this.agent.key)
+      : Message.fromVector([wireType, typeof envelope === 'string' ? envelope : JSON.stringify(envelope)]).signWithKey(this.agent.key);
     sock._writeFabric(msg.toBuffer());
   }
 
@@ -1220,14 +1380,14 @@ class Hub extends Service {
     this._fabricSeedResyncCooldown.set(key, now);
 
     const myId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
-    const body = JSON.stringify({
+    const body = {
       v: 1,
       reason: 'hub-auto-seed-fabric-resync',
       requester: myId,
       at: new Date().toISOString()
-    });
+    };
     try {
-      this._sendVectorToPeer(addr, ['ChainSyncRequest', body]);
+      this._sendMessageToPeer(addr, Message.fromLegacyBody('ChainSyncRequest', body));
       if (this.settings.debug) {
         console.debug('[HUB] ChainSyncRequest → seed peer', addr);
       }
@@ -1249,10 +1409,11 @@ class Hub extends Service {
         if (Buffer.isBuffer(buffer) && buffer.length >= HEADER_SIZE) {
           const typeCode = buffer.readUInt32BE(72);
           if (typeCode === P2P_CHAIN_SYNC_REQUEST) {
-            const raw = buffer.slice(HEADER_SIZE);
+            // Field body (Peers send no JSON ChainSyncRequest); legacy JSON still parses.
             let object = {};
             try {
-              object = raw.length ? JSON.parse(String(raw)) : {};
+              const parsed = buffer.length > HEADER_SIZE ? Message.tryParseLegacyBody(Message.fromBuffer(buffer)) : null;
+              object = parsed && parsed.ok && parsed.value ? parsed.value : {};
             } catch (_) {
               object = {};
             }
@@ -1326,7 +1487,9 @@ class Hub extends Service {
   _normalizeDocumentId (idRef) {
     const token = idRef != null ? String(idRef) : '';
     if (!token) return token;
-    return token.replace(/^documents\//, '');
+    const id = token.replace(/^documents\//, '');
+    // Ids become `documents/<id>.json` paths; anything else could leave that directory.
+    return SAFE_DOCUMENT_ID.test(id) ? id : '';
   }
 
   _getFabricMessages () {
@@ -1438,7 +1601,8 @@ class Hub extends Service {
   }
 
   /**
-   * Local document rows for {@link INVENTORY_RESPONSE} / Fabric resync (no HTLC enrichment).
+   * Local document rows for {@link INVENTORY_RESPONSE} / Fabric resync (no HTLC enrichment):
+   * published documents whose blob this Hub holds.
    * @returns {object[]}
    */
   _collectLocalDocumentInventoryItems () {
@@ -1449,6 +1613,8 @@ class Hub extends Service {
       const id = meta.id;
       const c = collections[id];
       const published = !!(c && c.published);
+      // Any peer may ask; an unpublished file (private, bought, or unlisted) is nobody's business.
+      if (!published) return null;
       const purchasePriceSats = c && Number(c.purchasePriceSats) > 0
         ? Math.round(Number(c.purchasePriceSats))
         : undefined;
@@ -1496,6 +1662,8 @@ class Hub extends Service {
       const id = this._normalizeDocumentId(it.id);
       if (!id) continue;
       const existed = !!coll[id];
+      // A copy held here keeps this Hub's own listing (a resold copy keeps its own price).
+      if (existed && this._hasLocalDocumentBlob(id)) continue;
       const pubVal = typeof it.published === 'string' ? it.published : now;
       if (!this._state.documents[id]) {
         this._state.documents[id] = {
@@ -1556,6 +1724,37 @@ class Hub extends Service {
     return documentInventoryMarket.normalizeMarketPolicy(this.settings);
   }
 
+  /**
+   * Confirmations a sale's payment needs before the document is handed over
+   * (`documents.minPaymentConfirmations`). An unconfirmed payment can be replaced.
+   * @returns {number}
+   */
+  _documentMinPaymentConfirmations () {
+    const raw = this.settings && this.settings.documents ? this.settings.documents.minPaymentConfirmations : undefined;
+    const n = Number(raw);
+    return raw != null && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
+  }
+
+  /**
+   * A purchase claim whose payment is still short of the confirmations a sale needs.
+   * @param {{ confirmations: number }} paid result of `_l1PaymentVerificationDetail`
+   * @returns {Object|null} the pending result, or null once the payment may be redeemed
+   */
+  _purchaseClaimPending (paid, documentId, txid) {
+    const required = this._documentMinPaymentConfirmations();
+    const confirmations = Number(paid && paid.confirmations) || 0;
+    if (confirmations >= required) return null;
+    return {
+      status: 'pending',
+      message: `Payment seen; the document opens after ${required} confirmation${required === 1 ? '' : 's'}.`,
+      confirmations,
+      required,
+      documentId,
+      txid,
+      retryWithSameTxid: true
+    };
+  }
+
   _documentOffersMap () {
     this._ensureResourceCollections();
     return this._getCollectionMap(documentInventoryMarket.COLLECTION);
@@ -1585,6 +1784,47 @@ class Hub extends Service {
     } catch (_) {
       return false;
     }
+  }
+
+  /**
+   * Inventory reply payloads for one request. A seller's whole catalog (with an
+   * HTLC quote per priced document) outgrows one frame, so documents go out as
+   * pages that share an `inventoryId`, each sized to the frame cap the requesting
+   * connection advertised; an item too large for any frame is left out.
+   * @param {string} kind
+   * @param {object[]} items
+   * @param {string} [targetId] requester Fabric id
+   * @param {string} [originName] connection the request came in on
+   * @returns {object[]}
+   */
+  _inventoryResponsePayloads (kind, items, targetId, originName) {
+    const created = Date.now();
+    let pages = [items];
+    if (kind === 'documents' && items.length) {
+      const conn = originName && this.agent && this.agent.connections ? this.agent.connections[originName] : null;
+      const remoteCap = conn && Number.isInteger(conn._fabricRemoteMaxFrameBytes)
+        ? conn._fabricRemoteMaxFrameBytes
+        : HEADER_SIZE + MAX_MESSAGE_SIZE;
+      // 512 bytes leaves room for the GenericMessage envelope around the page.
+      const pageBytes = Math.max(512, Math.min(INVENTORY_RESPONSE_PAGE_BYTES, remoteCap - HEADER_SIZE - 512));
+      const paged = paginateInventoryItems(items, { pageBytes });
+      for (const item of paged.skipped) {
+        console.warn('[HUB] Inventory item does not fit one frame; omitted:', String(item.id || item.documentId || '?').slice(0, 80));
+      }
+      pages = paged.pages.length ? paged.pages : [[]];
+    }
+    const inventoryId = pages.length > 1 ? crypto.randomBytes(8).toString('hex') : null;
+    return pages.map((page, p) => ({
+      type: kind === 'documents' ? FABRIC_DOCUMENT_OFFER_RESPONSE : 'INVENTORY_RESPONSE',
+      actor: { id: this.agent.identity.id },
+      object: {
+        kind,
+        items: page,
+        created,
+        ...(inventoryId ? { inventoryId, page: p + 1, pages: pages.length } : {})
+      },
+      target: targetId
+    }));
   }
 
   /**
@@ -1618,10 +1858,13 @@ class Hub extends Service {
       const registered = fabricId && this.agent._state && this.agent._state.peers && this.agent._state.peers[fabricId];
       peerPubkey = (registered && registered.publicKey) || '';
     }
+    // A relayed reply names a seller the relay could forge; only a direct one keys by that seller.
+    const direct = actorId && originAddr && this._originConnectionIsFabricPeer(originAddr, actorId);
     const items = documentInventoryMarket.itemsFromInventoryMessage(message);
     const body = (message && (message.object || message)) || {};
     const saved = documentInventoryMarket.replacePeerOffers(this._documentOffersMap(), {
       peerPubkey,
+      ...(direct ? { peerId: actorId } : {}),
       peerAddress: originAddr,
       peerAlias
     }, items, { inventoryId: body.inventoryId });
@@ -1668,6 +1911,7 @@ class Hub extends Service {
         policy
       });
       if (decision.action !== 'publish' && decision.action !== 'raise') continue;
+      if (Number(decision.purchasePriceSats) > 0 && this._documentSalesRefusal()) continue;
       if (seedable) {
         const seeded = this.agent.seedDocument(id, { rateSats: decision.purchasePriceSats });
         if (seeded && seeded.ok) {
@@ -1705,6 +1949,23 @@ class Hub extends Service {
   }
 
   /**
+   * Why a priced document sale can't start here, or null when it can. The
+   * current sale reveals a static content key as the HTLC preimage, so it never
+   * runs on mainnet; claims, refunds and opening bought documents stay open.
+   * @returns {string|null}
+   */
+  _documentSalesRefusal () {
+    if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) return 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)';
+    const bitcoin = this._getBitcoinService();
+    const network = (bitcoin && bitcoin.network) ||
+      (this.settings && this.settings.bitcoin && this.settings.bitcoin.network) || '';
+    if (/^(main|mainnet|livenet|bitcoin)$/i.test(String(network))) {
+      return 'Priced document sales are not available on mainnet yet.';
+    }
+    return null;
+  }
+
+  /**
    * Listing state of a seeded tree, from the agent Peer's sealed catalog.
    * @param {string} id
    * @returns {{ published: boolean, purchasePriceSats: (number|null) }}
@@ -1727,9 +1988,8 @@ class Hub extends Service {
     const id = this._normalizeDocumentId(documentId);
     const price = Math.max(0, Math.floor(Number(purchasePriceSats) || 0));
     if (!id) return { status: 'error', message: 'id required' };
-    if (price > 0 && !FEATURE_FLAGS.DOCUMENT_PURCHASE) {
-      return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: id };
-    }
+    const salesRefusal = price > 0 ? this._documentSalesRefusal() : null;
+    if (salesRefusal) return { status: 'error', message: salesRefusal, documentId: id };
     const raw = this.fs && typeof this.fs.readFile === 'function' ? this.fs.readFile(`documents/${id}.json`) : null;
     if (!raw) return { status: 'error', message: 'document not found', documentId: id };
     let parsed = parseFilesystemJson(raw);
@@ -1878,7 +2138,7 @@ class Hub extends Service {
    * @param {string} idRef
    * @returns {Promise<object>}
    */
-  async _getDocumentPayload (idRef) {
+  async _getDocumentPayload (idRef, opts = {}) {
     const id = this._normalizeDocumentId(idRef && (idRef.id || idRef));
     if (!id) {
       return { type: 'GetDocumentResult', document: null, documentId: null, message: 'id required' };
@@ -1930,6 +2190,13 @@ class Hub extends Service {
           break;
         }
       }
+      // A sold document's key ends up in the seller's claim witness, so its
+      // ciphertext is as good as plaintext: only the operator gets it here.
+      const sealedCopy = documentContentKey.isSealedDocument(parsed) || !!parsed.htlcFileV1;
+      if (sealedCopy && parsed.contentBase64 && !(opts && opts.admin)) {
+        delete parsed.contentBase64;
+        parsed.contentWithheld = true;
+      }
       return { type: 'GetDocumentResult', document: this._decorateDocumentWithMarketOffers(parsed), documentId: id };
     } catch (err) {
       return {
@@ -1957,23 +2224,19 @@ class Hub extends Service {
     const targetId = requesterFromBody || mapped;
 
     const items = this._collectLocalDocumentInventoryItems();
-    const responsePayload = {
-      type: FABRIC_DOCUMENT_OFFER_RESPONSE,
-      actor: { id: myId },
-      object: {
-        kind: 'documents',
-        items,
-        created: Date.now(),
-        fabricResync: true
-      },
-      ...(targetId ? { target: targetId } : {})
-    };
-    this._sendGenericFabricEnvelopeToPeer(originConn, responsePayload);
-    try {
-      const wsMsg = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]);
-      if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
-      if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
-    } catch (_) {}
+    // The same catalog that inventory requests already page. One frame here was
+    // 59,187 bytes against the 32,976 cap, and the reconnecting peer got nothing.
+    const pages = this._inventoryResponsePayloads('documents', items, targetId, originConn);
+    for (const responsePayload of pages) {
+      responsePayload.object.fabricResync = true;
+      if (!targetId) delete responsePayload.target;
+      this._sendGenericFabricEnvelopeToPeer(originConn, responsePayload);
+      try {
+        const wsMsg = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]);
+        if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
+        if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
+      } catch (_) {}
+    }
 
     const invReq = {
       type: FABRIC_DOCUMENT_OFFER,
@@ -1990,7 +2253,7 @@ class Hub extends Service {
     for (let i = 0; i < blocks.length; i++) {
       await new Promise((r) => setTimeout(r, delayMs));
       try {
-        this._sendVectorToPeer(originConn, ['BitcoinBlock', JSON.stringify(blocks[i].payload)]);
+        this._sendMessageToPeer(originConn, Message.fromLegacyBody('BitcoinBlock', blocks[i].payload));
       } catch (sendErr) {
         console.warn('[HUB] Fabric resync BitcoinBlock send failed:', sendErr && sendErr.message ? sendErr.message : sendErr);
         break;
@@ -2074,7 +2337,8 @@ class Hub extends Service {
 
     let chainMessage = null;
     if (this.fs && typeof this.fs.addToChain === 'function') {
-      chainMessage = Message.fromVector(['FABRIC_MESSAGE', JSON.stringify(entry)]);
+      // Stored chain record; `FABRIC_MESSAGE` was never registered and always encoded as P2P_BASE_MESSAGE.
+      chainMessage = Message.fromVector(['P2P_BASE_MESSAGE', JSON.stringify(entry)]);
       const skip = HUB_PARENT_CHAIN_SKIP.has(String(type));
       const parent = skip
         ? Message.ZERO_PARENT
@@ -2229,7 +2493,58 @@ class Hub extends Service {
    * @returns {object|null}
    */
   _reportHeapTelemetry () {
-    return hubHeapTelemetry.logHubHeapTelemetry(this);
+    const snap = hubHeapTelemetry.logHubHeapTelemetry(this, { previous: this._lastHeapTelemetry });
+    if (snap) {
+      this._lastHeapTelemetry = snap;
+      const heapUsed = snap.memory.heapUsed;
+      if (this._heapThreshold && this._heapThreshold.check(heapUsed) && this._writeHeapSnapshot('threshold')) {
+        this._heapThreshold.record(heapUsed);
+      }
+    }
+    return snap;
+  }
+
+  /** @private */
+  _heapSnapshotDir () {
+    const storePath = path.resolve(hubStoreRoot(), this.settings && this.settings.fs && this.settings.fs.path ? this.settings.fs.path : 'stores/hub');
+    return path.join(storePath, 'heap');
+  }
+
+  /**
+   * Write a V8 heap snapshot under `<store>/heap/`.
+   * @param {string} reason
+   * @returns {string|null}
+   */
+  _writeHeapSnapshot (reason) {
+    return hubHeapTelemetry.writeHeapSnapshot(this._heapSnapshotDir(), reason);
+  }
+
+  /**
+   * Heap snapshots on a signal (default `SIGUSR2`) and, with
+   * `FABRIC_HUB_HEAP_SNAPSHOT_MB`, when the heap first passes that size (then twice it, …).
+   * @private
+   */
+  _startHeapSnapshots () {
+    if (this._heapSnapshotSignal !== undefined) return;
+    const cfg = hubHeapTelemetry.resolveHeapSnapshotSettings(this.settings);
+    this._heapThreshold = cfg.thresholdBytes > 0 ? hubHeapTelemetry.createHeapThreshold(cfg) : null;
+    this._heapSnapshotSignal = null;
+    if (!cfg.signal) return;
+    this._heapSnapshotOnSignal = () => this._writeHeapSnapshot('signal');
+    try {
+      process.on(cfg.signal, this._heapSnapshotOnSignal);
+      this._heapSnapshotSignal = cfg.signal;
+      console.log(hubHeapTelemetry.LOG_PREFIX, `kill -${cfg.signal.replace(/^SIG/, '')} ${process.pid} writes a heap snapshot to ${this._heapSnapshotDir()}`);
+    } catch (err) {
+      console.warn(hubHeapTelemetry.LOG_PREFIX, `cannot listen for ${cfg.signal}:`, err && err.message ? err.message : err);
+    }
+  }
+
+  /** @private */
+  _stopHeapSnapshots () {
+    if (this._heapSnapshotSignal) process.removeListener(this._heapSnapshotSignal, this._heapSnapshotOnSignal);
+    this._heapSnapshotSignal = undefined;
+    this._heapThreshold = null;
   }
 
   /**
@@ -2239,6 +2554,7 @@ class Hub extends Service {
   _startHeapTelemetry () {
     if (this._heapTelemetryTimer) return;
     if (!hubHeapTelemetry.isHeapTelemetryEnabled(this.settings)) return;
+    this._startHeapSnapshots();
     const ms = hubHeapTelemetry.resolveHeapTelemetryIntervalMs(this.settings);
     this._reportHeapTelemetry();
     this._heapTelemetryTimer = setInterval(() => {
@@ -2259,6 +2575,7 @@ class Hub extends Service {
    * @returns {void}
    */
   _stopHeapTelemetry () {
+    this._stopHeapSnapshots();
     if (!this._heapTelemetryTimer) return;
     try {
       clearInterval(this._heapTelemetryTimer);
@@ -2629,8 +2946,10 @@ class Hub extends Service {
       this._bitcoinSlowClient = (bitcoin.settings && bitcoin.settings.secure) ? jayson.https(options) : jayson.http(options);
       this._bitcoinSlowClientBase = base;
     }
+    this._bitcoinSlowRPCInflight = (this._bitcoinSlowRPCInflight || 0) + 1;
     return new Promise((resolve, reject) => {
       this._bitcoinSlowClient.request(method, params, (err, response) => {
+        this._bitcoinSlowRPCInflight--;
         if (err) return reject(err);
         if (!response) return reject(new Error(`No response from RPC call ${method}`));
         if (response.error) {
@@ -2646,15 +2965,36 @@ class Hub extends Service {
 
   /**
    * Send the RPC methods that walk the whole UTXO set through
-   * `_bitcoinSlowRPC`, core's own sync (`gettxoutsetinfo`) included.
+   * `_bitcoinSlowRPC`, core's own sync (`gettxoutsetinfo`) included. A bare
+   * `gettxoutsetinfo` (core asks on every block, for height and supply) skips
+   * the UTXO set hash and shares one call per `BITCOIN_TXOUTSET_CACHE_MS`.
+   * Core's supply sync runs in the background (on a cold node the walk takes
+   * longer than the Hub waits for Bitcoin to become ready) and skips that
+   * cache, which may hold an earlier tip's supply.
    * @private
    */
   _routeSlowBitcoinRPC (bitcoin) {
     if (!bitcoin || typeof bitcoin._makeRPCRequestOnce !== 'function' || bitcoin._hubSlowRPCRouted) return;
     const once = bitcoin._makeRPCRequestOnce.bind(bitcoin);
-    bitcoin._makeRPCRequestOnce = (method, params = []) => (BITCOIN_SLOW_RPC_METHODS.has(method)
-      ? this._bitcoinSlowRPC(bitcoin, method, params, once)
-      : once(method, params));
+    bitcoin._makeRPCRequestOnce = (method, params = []) => {
+      if (!BITCOIN_SLOW_RPC_METHODS.has(method)) return once(method, params);
+      if (method === 'gettxoutsetinfo' && (!params || params.length === 0)) {
+        return this._bitcoinTxOutSet.run('none', () => this._bitcoinSlowRPC(bitcoin, method, ['none'], once));
+      }
+      return this._bitcoinSlowRPC(bitcoin, method, params, once);
+    };
+    if (typeof bitcoin._syncSupply === 'function') {
+      bitcoin._syncSupply = async () => {
+        this._bitcoinSlowRPC(bitcoin, 'gettxoutsetinfo', ['none'], once).then((supply) => {
+          if (!supply || supply.total_amount == null) return;
+          if (bitcoin._state && bitcoin._state.content) bitcoin._state.content.supply = supply.total_amount;
+          if (typeof bitcoin.commit === 'function') bitcoin.commit();
+        }).catch((error) => {
+          console.warn('[HUB] Bitcoin supply sync failed:', error && error.message ? error.message : error);
+        });
+        return bitcoin;
+      };
+    }
     bitcoin._hubSlowRPCRouted = true;
   }
 
@@ -2976,6 +3316,121 @@ class Hub extends Service {
     if (!this.payjoin) return null;
     if (this.settings && this.settings.payjoin && this.settings.payjoin.enable === false) return null;
     return this.payjoin;
+  }
+
+  /**
+   * Does the Hub wallet own `address`? Used before the Hub contributes a coin
+   * to a Payjoin output paying it. Throws when the wallet cannot answer
+   * (callers fail closed).
+   * @param {string} address
+   * @returns {Promise<boolean>}
+   */
+  async _hubWalletOwnsAddress (address) {
+    const info = await this._hubWalletRpc('getaddressinfo', [String(address || '').trim()]);
+    if (!info || typeof info !== 'object' || info.error) throw new Error('getaddressinfo failed');
+    return info.ismine === true;
+  }
+
+  /**
+   * RPC against the Hub's named wallet (Payjoin sender and ownership checks).
+   * @param {string} method
+   * @param {Array} [params]
+   * @returns {Promise<*>}
+   */
+  async _hubWalletRpc (method, params = []) {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) throw new Error('Bitcoin service unavailable');
+    if (typeof bitcoin._makeWalletRequest === 'function' && bitcoin.walletName) {
+      if (typeof bitcoin._loadWallet === 'function') await bitcoin._loadWallet(bitcoin.walletName);
+      return bitcoin._makeWalletRequest(method, params, bitcoin.walletName);
+    }
+    return bitcoin._makeRPCRequest(method, params);
+  }
+
+  /** @private WebSocket `GenericMessage` `{ type: 'PayjoinUpdate', object: { kind, id, status } }` */
+  _broadcastPayjoinUpdate (kind, view) {
+    try {
+      if (!view || !this.http || typeof this.http.broadcast !== 'function') return;
+      const body = JSON.stringify({ type: 'PayjoinUpdate', object: { kind, id: view.id, status: view.status, updatedAt: view.updatedAt } });
+      const msg = Message.fromVector(['GenericMessage', body]);
+      if (this._fabricKey) msg.signWithKey(this._fabricKey);
+      this.http.broadcast(msg);
+    } catch (_) {}
+  }
+
+  /** @private admin token on an HTTP request (no response sent) */
+  _httpCallerIsOperator (req) {
+    if (!this.setup || typeof this.setup.verifyAdminToken !== 'function') return false;
+    return !!this.setup.verifyAdminToken(this._extractOptionalAdminTokenFromRequest(req));
+  }
+
+  /**
+   * Payjoin hook for a Hub operation ({@link module:payjoinInternalOperations}).
+   * Stub and not-applicable operations answer `{ payjoin: false, reason }`.
+   * @param {string} opId
+   * @returns {{ payjoin: boolean, reason: (string|undefined), service: (Object|undefined) }}
+   */
+  _payjoinHook (opId) {
+    const payjoin = this._getPayjoinService();
+    const op = payjoinInternalOperations.getOperation(opId);
+    if (!op) return { payjoin: false, reason: 'unknown-operation' };
+    if (op.status !== payjoinInternalOperations.STATUS.IMPLEMENTED) return { payjoin: false, reason: op.status };
+    if (!payjoin || !payjoin.operationEnabled(opId)) return { payjoin: false, reason: 'disabled' };
+    return { payjoin: true, service: payjoin };
+  }
+
+  /**
+   * Split a payment destination into an address and, when it is a BIP21 URI
+   * with `pj=`, that URI.
+   * @param {Object} body `{ bip21?, to?, address? }`
+   * @returns {{ address: string, bip21: string, amountSats: (number|null) }}
+   */
+  _paymentDestination (body = {}) {
+    const raw = String(body.bip21 || body.to || body.address || '').trim();
+    if (!/^bitcoin:/i.test(raw)) return { address: raw, bip21: '', amountSats: null };
+    try {
+      const parsed = parseBip21Uri(raw);
+      const amount = parsed.amount != null ? Math.round(Number(parsed.amount) * 1e8) : null;
+      return {
+        address: String(parsed.address || ''),
+        bip21: parsed.extras && parsed.extras.pj ? raw : '',
+        amountSats: Number.isSafeInteger(amount) && amount > 0 ? amount : null
+      };
+    } catch (_) {
+      return { address: '', bip21: '', amountSats: null };
+    }
+  }
+
+  /**
+   * Pay through Payjoin when `walletSend` is enabled and the destination has `pj=`.
+   * Returns null when Payjoin does not apply (pay the plain address);
+   * throws when it applies and fails (nothing was broadcast).
+   * @param {Object} body payment request
+   * @param {number} amountSats
+   * @returns {Promise<(Object|null)>} send view
+   */
+  async _maybePayjoinSend (body, amountSats) {
+    const dest = this._paymentDestination(body);
+    if (!dest.bip21) return null;
+    const hook = this._payjoinHook('walletSend');
+    if (!hook.payjoin) return null;
+    if (dest.amountSats != null && Number(amountSats) > 0 && dest.amountSats !== Math.round(Number(amountSats))) {
+      throw new Error('amountSats does not match the BIP21 amount.');
+    }
+    const send = await hook.service.createSend({
+      bip21: dest.bip21,
+      feeRateSatVb: Number(body.feeRateSatVb) > 0 ? Number(body.feeRateSatVb) : undefined,
+      operation: 'walletSend'
+    });
+    if (send.status !== 'broadcast') {
+      const err = new Error(`Payjoin send ${send.status}: ${(send.error && send.error.message) || 'no transaction'}`);
+      err.payjoinSend = send;
+      throw err;
+    }
+    try {
+      this._mergePersistedTxLabel(String(send.txid), 'payjoin_send', { sendId: send.id, destination: send.address });
+    } catch (_) {}
+    return send;
   }
 
   _getPeeringService () {
@@ -3826,7 +4281,9 @@ class Hub extends Service {
       return null;
     }
     try {
-      this._contractMessageQueueStore = contractMessageQueue.createFilesystemStore(this.fs);
+      this._contractMessageQueueStore = contractMessageQueue.createFilesystemStore(this.fs, {
+        flushMs: CONTRACT_MESSAGE_QUEUE_FLUSH_MS
+      });
     } catch (err) {
       if (this.settings && this.settings.debug) {
         console.error('[HUB] contract message queue store unavailable:', err && err.message ? err.message : err);
@@ -3855,35 +4312,177 @@ class Hub extends Service {
     if (!buffer) return null;
     const body = (ev && ev.object) || {};
     const result = contractMessageQueue.enqueue(store, contract, buffer, {
-      origin: (ev.origin && (ev.origin.name || ev.origin.id)) ? 'mesh' : 'mesh',
+      origin: 'mesh',
       type: body.type || body['@type'] || null,
       author: ev.signer || null
     });
     if (result && result.accepted) {
       this._contractNamespaces = this._contractNamespaces || new Set();
       this._contractNamespaces.add(contract);
+      const senderAddress = ev.origin && ev.origin.name ? String(ev.origin.name) : null;
+      const senderMailbox = contractMessageQueue.mailboxKey(this._fabricIdForConnection(senderAddress));
+      if (senderMailbox && result.entry) {
+        contractMessageQueue.markDelivered(store, contract, result.entry.hash, senderMailbox);
+      }
     }
     return result;
   }
 
   /**
-   * Later-relay: write pending opaque frames to a newly opened peer connection.
-   * @param {string} addressInput
-   * @param {{ limitPerContract: (number|undefined)}} [opts]
-   * @returns {{ delivered: number, contracts: number }}
+   * Fabric id the session handshake bound to a live connection.
+   * @param {string} address connection `host:port`
+   * @returns {string|null}
    */
-  _drainContractMessageQueueToPeer (addressInput, opts = {}) {
-    const address = this._resolvePeerAddress(addressInput) || String(addressInput || '').trim();
-    if (!address || !this.agent || !this.agent.connections || !this.agent.connections[address]) {
-      return { delivered: 0, contracts: 0 };
+  _fabricIdForConnection (address) {
+    if (!address || !this.agent) return null;
+    const key = String(address);
+    const mapped = this.agent._addressToId && this.agent._addressToId[key];
+    if (mapped) return String(mapped);
+    const peer = this.agent.peers && this.agent.peers[key];
+    return peer && peer.id ? String(peer.id) : null;
+  }
+
+  /**
+   * Live connections bound to one Fabric id, connections this Hub dialed first.
+   * @param {string} fabricId
+   * @returns {string[]}
+   */
+  _connectionsForFabricId (fabricId) {
+    if (!fabricId || !this.agent || !this.agent.connections) return [];
+    const want = String(fabricId);
+    const dialed = this.agent._outboundDialTargets;
+    const isDialed = (addr) => (dialed && typeof dialed.has === 'function' && dialed.has(addr) ? 1 : 0);
+    return Object.keys(this.agent.connections)
+      .filter((addr) => this._fabricIdForConnection(addr) === want)
+      .sort((a, b) => isDialed(b) - isDialed(a));
+  }
+
+  /**
+   * Drain a connection's mailbox once its session has named the peer.
+   * @param {string} address
+   * @returns {object|null} the drain result, or null when skipped
+   */
+  _drainMailboxForConnection (address) {
+    if (!address) return null;
+    const key = String(address);
+    this._mailboxDrainedConnections = this._mailboxDrainedConnections || new Set();
+    if (this._mailboxDrainedConnections.has(key) || !this._fabricIdForConnection(key)) return null;
+    this._mailboxDrainedConnections.add(key);
+    this._stopConnectionIdentityWatch(key);
+    try {
+      const drain = this._drainContractMessageQueueToPeer(key);
+      if (drain && drain.delivered && this.settings && this.settings.debug) {
+        console.debug('[HUB:QUEUE] drained', drain.delivered, 'frames across', drain.contracts, 'contracts →', drain.peerId, 'via', key);
+      }
+      return drain;
+    } catch (err) {
+      if (this.settings && this.settings.debug) {
+        console.error('[HUB:QUEUE] drain on session failed:', err && err.message ? err.message : err);
+      }
+      return null;
     }
+  }
+
+  /**
+   * Fallback for a core Peer without `peer:session`: wait for the handshake to
+   * bind the connection's identity, then drain its mailbox.
+   * @param {string} address
+   */
+  _watchConnectionIdentity (address) {
+    if (!address) return;
+    const key = String(address);
+    this._connectionIdentityWatches = this._connectionIdentityWatches || new Map();
+    if (this._connectionIdentityWatches.has(key)) return;
+    this._drainMailboxForConnection(key);
+    if (this._mailboxDrainedConnections && this._mailboxDrainedConnections.has(key)) return;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const open = this.agent && this.agent.connections && this.agent.connections[key];
+      if (!open || Date.now() - startedAt >= MAILBOX_IDENTITY_WAIT_MS) {
+        this._stopConnectionIdentityWatch(key);
+        return;
+      }
+      this._drainMailboxForConnection(key);
+    }, MAILBOX_IDENTITY_POLL_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    this._connectionIdentityWatches.set(key, timer);
+  }
+
+  /**
+   * Drain each peer's mailbox once its session names it (`peer:session`, or the
+   * identity watch on cores without that event).
+   */
+  _bindContractMailboxEvents () {
+    if (this._contractMailboxListeners || !this.agent || typeof this.agent.on !== 'function') return;
+    const listeners = {
+      'connections:open': (ev) => this._watchConnectionIdentity(ev && (ev.address || ev.id)),
+      'peer:session': (ev) => this._drainMailboxForConnection(ev && ev.address),
+      'connections:close': (ev) => this._forgetMailboxConnection(ev && (ev.address || ev.name))
+    };
+    for (const [event, listener] of Object.entries(listeners)) this.agent.on(event, listener);
+    this._contractMailboxListeners = listeners;
+  }
+
+  _unbindContractMailboxEvents () {
+    const listeners = this._contractMailboxListeners;
+    if (listeners && this.agent && typeof this.agent.removeListener === 'function') {
+      for (const [event, listener] of Object.entries(listeners)) this.agent.removeListener(event, listener);
+    }
+    this._contractMailboxListeners = null;
+    if (this._connectionIdentityWatches) {
+      for (const timer of this._connectionIdentityWatches.values()) clearInterval(timer);
+      this._connectionIdentityWatches.clear();
+    }
+  }
+
+  _stopConnectionIdentityWatch (address) {
+    const watches = this._connectionIdentityWatches;
+    if (!watches || !watches.has(address)) return;
+    clearInterval(watches.get(address));
+    watches.delete(address);
+  }
+
+  _forgetMailboxConnection (address) {
+    if (!address) return;
+    const key = String(address);
+    this._stopConnectionIdentityWatch(key);
+    if (this._mailboxDrainedConnections) this._mailboxDrainedConnections.delete(key);
+  }
+
+  /**
+   * Later-relay: write pending opaque frames to a peer's mailbox over one of
+   * its connections. Delivery is tracked per Fabric id; a connection whose
+   * session hasn't named the peer gets nothing.
+   * @param {string} input connection `host:port` or Fabric id
+   * @param {{ limitPerContract: (number|undefined)}} [opts]
+   * @returns {{ delivered: number, contracts: number, peerId: (string|undefined), unidentified: (boolean|undefined) }}
+   */
+  _drainContractMessageQueueToPeer (input, opts = {}) {
+    const none = { delivered: 0, contracts: 0 };
+    if (!input || !this.agent || !this.agent.connections) return none;
+    const value = String(input).trim();
+    let address = this.agent.connections[value] ? value : null;
+    let fabricId = address ? this._fabricIdForConnection(address) : null;
+    if (!address) {
+      const byId = this._connectionsForFabricId(value);
+      if (byId.length) {
+        address = byId[0];
+        fabricId = value;
+      } else {
+        const resolved = this._resolvePeerAddress(value);
+        if (resolved && this.agent.connections[resolved]) {
+          address = resolved;
+          fabricId = this._fabricIdForConnection(resolved);
+        }
+      }
+    }
+    if (!address) return none;
+    const peerKey = contractMessageQueue.mailboxKey(fabricId);
+    if (!peerKey) return Object.assign(none, { unidentified: true });
     const sock = this.agent.connections[address];
-    if (!sock || typeof sock._writeFabric !== 'function') {
-      return { delivered: 0, contracts: 0 };
-    }
+    if (!sock || typeof sock._writeFabric !== 'function') return none;
     const store = this._ensureContractMessageQueueStore();
-    if (!store) return { delivered: 0, contracts: 0 };
-    const peerKey = String(address).toLowerCase();
+    if (!store) return none;
     const limitPer = Number(opts.limitPerContract) > 0 ? Number(opts.limitPerContract) : 64;
     const contractIds = typeof store.listContractIds === 'function'
       ? store.listContractIds()
@@ -3909,7 +4508,7 @@ class Hub extends Service {
         }
       }
     }
-    return { delivered, contracts };
+    return { delivered, contracts, peerId: fabricId };
   }
 
   /**
@@ -4107,6 +4706,22 @@ class Hub extends Service {
       return true;
     }
     return isOperatorAdminToken(t, [this._fabricKey]);
+  }
+
+  /**
+   * Whether a JSON-RPC caller may use operator-only methods: an admin token in any object
+   * param (`adminToken` or `token`), or a same-origin / non-browser HTTP call over loopback
+   * ({@link Hub#_isLocalRpcRequest}). WebSocket calls are never local and need the token.
+   * @param {Array} params JSON-RPC params
+   * @returns {boolean}
+   */
+  _rpcCallerIsOperator (params) {
+    const list = Array.isArray(params) ? params : [params];
+    for (const p of list) {
+      if (p && typeof p === 'object' && this._verifyOperatorAdminToken(p.adminToken || p.token)) return true;
+    }
+    const local = _rpcHttpLocalStore.getStore();
+    return !!(local && local.isLocal === true);
   }
 
   async _acceptTrackedApplicationContract (params = {}) {
@@ -5661,13 +6276,30 @@ class Hub extends Service {
    * @param {string} txid
    * @returns {Promise<Object|null>} decoded tx with `vout` and `confirmations`
    */
-  async _loadL1TxForVerification (bitcoin, txid) {
+  async _loadL1TxForVerification (bitcoin, txid, opts = {}) {
     const id = String(txid || '').trim();
     if (!bitcoin || !id) return null;
     try {
       const tx = await bitcoin._makeRPCRequest('getrawtransaction', [id, true]);
       if (tx && Array.isArray(tx.vout)) return tx;
     } catch (_) {}
+    const fromHeight = Number(opts.fromHeight);
+    if (Number.isFinite(fromHeight) && fromHeight >= 0) {
+      // Without txindex a mined tx that isn't ours is found only by naming its block.
+      try {
+        const tip = Number(await bitcoin._makeRPCRequest('getblockcount', []));
+        const floor = Math.max(fromHeight, tip - L1_TX_BLOCK_SEARCH_MAX);
+        for (let h = tip; h >= floor; h--) {
+          const hash = await bitcoin._makeRPCRequest('getblockhash', [h]);
+          const block = await bitcoin._makeRPCRequest('getblock', [hash, 1]);
+          if (block && Array.isArray(block.tx) && block.tx.includes(id)) {
+            const tx = await bitcoin._makeRPCRequest('getrawtransaction', [id, true, hash]);
+            if (tx && Array.isArray(tx.vout)) return tx;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
     let walletTx = null;
     try {
       if (bitcoin.walletName && typeof bitcoin._makeWalletRequest === 'function') {
@@ -5690,10 +6322,10 @@ class Hub extends Service {
    * Inspect whether a tx pays `address` at least `amountSats`, and return confirmation depth.
    * @returns {{ verified: boolean, confirmations: number, inMempool: boolean, matchedSats: number }}
    */
-  async _l1PaymentVerificationDetail (bitcoin, txid, address, amountSats) {
+  async _l1PaymentVerificationDetail (bitcoin, txid, address, amountSats, opts = {}) {
     const empty = { verified: false, confirmations: 0, inMempool: false, matchedSats: 0 };
     try {
-      const tx = await this._loadL1TxForVerification(bitcoin, txid);
+      const tx = await this._loadL1TxForVerification(bitcoin, txid, opts);
       if (!tx || !Array.isArray(tx.vout)) return empty;
       const amountBTC = amountSats / 100000000;
       let received = 0;
@@ -5716,7 +6348,8 @@ class Hub extends Service {
         verified,
         confirmations,
         inMempool: !!inMempool,
-        matchedSats: Math.min(Number.MAX_SAFE_INTEGER, Math.round(received * SATS_PER_BTC))
+        matchedSats: Math.min(Number.MAX_SAFE_INTEGER, Math.round(received * SATS_PER_BTC)),
+        hex: typeof tx.hex === 'string' ? tx.hex : null
       };
     } catch (err) {
       console.error('[HUB] _l1PaymentVerificationDetail error:', err);
@@ -5724,8 +6357,8 @@ class Hub extends Service {
     }
   }
 
-  async _verifyL1Payment (bitcoin, txid, address, amountSats) {
-    const d = await this._l1PaymentVerificationDetail(bitcoin, txid, address, amountSats);
+  async _verifyL1Payment (bitcoin, txid, address, amountSats, opts = {}) {
+    const d = await this._l1PaymentVerificationDetail(bitcoin, txid, address, amountSats, opts);
     return d.verified;
   }
 
@@ -5993,23 +6626,196 @@ class Hub extends Service {
     return { counts, totals };
   }
 
+  /**
+   * Seller settlements survive restarts: a funded HTLC the seller has not claimed
+   * yet is money it loses to the buyer's refund path once forgotten.
+   * @private
+   */
+  _loadInventoryHtlcSettlements () {
+    if (this._inventoryHtlcLoaded) return;
+    this._inventoryHtlcLoaded = true;
+    try {
+      if (!this.fs || typeof this.fs.readFile !== 'function') return;
+      const raw = this.fs.readFile('bitcoin/inventory-htlc.json');
+      if (!raw) return;
+      const j = JSON.parse(raw);
+      const saved = j && j.settlements && typeof j.settlements === 'object' ? j.settlements : {};
+      for (const [k, v] of Object.entries(saved)) {
+        if (v && typeof v === 'object' && !this._inventoryHtlcById.has(k)) this._inventoryHtlcById.set(k, v);
+      }
+    } catch (_) {
+      /* missing or invalid file */
+    }
+  }
+
+  /**
+   * Direct-purchase invoices by invoice id, loaded once from `bitcoin/purchase-invoices.json`.
+   * @private
+   * @returns {Object<string, object>}
+   */
+  _loadPurchaseInvoices () {
+    if (!this._purchaseInvoicesLoaded) {
+      this._purchaseInvoicesLoaded = true;
+      try {
+        const raw = this.fs && typeof this.fs.readFile === 'function'
+          ? this.fs.readFile('bitcoin/purchase-invoices.json')
+          : null;
+        const saved = raw ? JSON.parse(raw).invoices : null;
+        for (const [k, v] of Object.entries(saved || {})) {
+          if (v && typeof v === 'object' && !this._purchaseRequests[k]) this._purchaseRequests[k] = v;
+        }
+      } catch (_) {
+        /* missing or invalid file */
+      }
+    }
+    return this._purchaseRequests;
+  }
+
+  /** @private */
+  _persistPurchaseInvoices () {
+    const invoices = this._loadPurchaseInvoices();
+    const now = Date.now();
+    for (const [k, v] of Object.entries(invoices)) {
+      if (!v || now - Date.parse(v.createdAt || 0) > PURCHASE_INVOICE_TTL_MS) delete invoices[k];
+    }
+    try {
+      if (this.fs && typeof this.fs.publish === 'function') {
+        this.fs.publish('bitcoin/purchase-invoices.json', { invoices, updatedAt: now });
+      }
+    } catch (e) {
+      console.warn('[HUB] bitcoin/purchase-invoices.json persist failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /**
+   * Room for one more direct-purchase invoice, or why there is none. Anyone may ask
+   * for invoices, so a full book never drops one whose address received coins:
+   * claimed invoices go first, then unpaid ones over an hour old.
+   * @private
+   * @returns {Promise<string|null>} refusal message, or null to go ahead
+   */
+  async _makeRoomForPurchaseInvoice (bitcoin) {
+    const now = Date.now();
+    this._purchaseInvoiceTimes = (this._purchaseInvoiceTimes || []).filter((t) => now - t < 60 * 1000);
+    if (this._purchaseInvoiceTimes.length >= PURCHASE_INVOICE_PER_MINUTE) {
+      return 'Too many purchase invoices this minute; try again shortly.';
+    }
+    this._purchaseInvoiceTimes.push(now);
+    const invoices = this._loadPurchaseInvoices();
+    const count = () => Object.keys(invoices).length;
+    if (count() < PURCHASE_INVOICE_MAX) return null;
+    const age = (k) => Date.parse(invoices[k].createdAt || 0) || 0;
+    const oldest = (a, b) => age(a) - age(b);
+    for (const k of Object.keys(invoices).filter((k) => invoices[k].claimedTxid).sort(oldest)) {
+      if (count() < PURCHASE_INVOICE_MAX) return null;
+      delete invoices[k];
+    }
+    const wallet = bitcoin && typeof bitcoin._makeWalletRequest === 'function'
+      ? (method, params) => bitcoin._makeWalletRequest(method, params, bitcoin.walletName)
+      : null;
+    const stale = Object.keys(invoices)
+      .filter((k) => now - age(k) > PURCHASE_INVOICE_UNPAID_MS)
+      .sort(oldest)
+      .slice(0, 100);
+    for (const k of wallet ? stale : []) {
+      if (count() < PURCHASE_INVOICE_MAX) break;
+      try {
+        const received = await wallet('getreceivedbyaddress', [invoices[k].address, 0]);
+        if (Number(received) === 0) delete invoices[k];
+      } catch (_) {
+        break;
+      }
+    }
+    return count() < PURCHASE_INVOICE_MAX ? null : 'Too many open purchase invoices; try again later.';
+  }
+
+  /**
+   * The invoice for `documentId` that `claimToken` redeems (and `invoiceId`, when given, names).
+   * @private
+   */
+  _findPurchaseInvoice (documentId, claimToken, invoiceId) {
+    const token = typeof claimToken === 'string' ? claimToken.trim() : '';
+    if (!/^[0-9a-f]{64}$/i.test(token)) return null;
+    const hash = Buffer.from(crypto.createHash('sha256').update(token.toLowerCase()).digest('hex'));
+    for (const v of Object.values(this._loadPurchaseInvoices())) {
+      if (!v || v.documentId !== documentId || typeof v.claimTokenHash !== 'string') continue;
+      if (invoiceId && v.invoiceId !== String(invoiceId)) continue;
+      const stored = Buffer.from(v.claimTokenHash);
+      if (stored.length === hash.length && crypto.timingSafeEqual(stored, hash)) return v;
+    }
+    return null;
+  }
+
+  /** @private */
+  _persistInventoryHtlcSettlements () {
+    try {
+      if (!this.fs || typeof this.fs.publish !== 'function') return;
+      const settlements = Object.fromEntries(this._inventoryHtlcById);
+      this.fs.publish('bitcoin/inventory-htlc.json', { settlements, updatedAt: Date.now() });
+    } catch (e) {
+      console.warn('[HUB] bitcoin/inventory-htlc.json persist failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /**
+   * Funded and not yet claimed for good: no claim, or one the Hub still follows to a confirmation.
+   * @private
+   */
+  _inventoryHtlcUnclaimed (v) {
+    if (!v || !v.fundedTxid) return false;
+    if (!v.claimTxid) return true;
+    return !!(v.claimToWallet && v.claimTxHex && !v.claimConfirmed && !v.claimAbandoned);
+  }
+
   _pruneInventoryHtlcSettlements () {
+    this._loadInventoryHtlcSettlements();
     const now = Date.now();
     for (const [k, v] of this._inventoryHtlcById) {
+      if (this._inventoryHtlcUnclaimed(v)) continue;
       if (!v || now - (v.createdAt || 0) > INVENTORY_HTLC_TTL_MS) this._inventoryHtlcById.delete(k);
     }
-    while (this._inventoryHtlcById.size > INVENTORY_HTLC_MAX_SETTLEMENTS) {
-      let oldest = null;
-      let oldestKey = null;
-      for (const [key, v] of this._inventoryHtlcById) {
-        const t = v && v.createdAt ? v.createdAt : 0;
-        if (oldest == null || t < oldest) {
-          oldest = t; oldestKey = key;
-        }
+    // Evict unpaid quotes from whoever holds the most, so one peer asking over and
+    // over only pushes out its own quotes, never a quiet buyer's. Sales already
+    // claimed go only after every unpaid quote, oldest first.
+    const open = new Map();
+    const sold = [];
+    for (const [key, v] of this._inventoryHtlcById) {
+      if (this._inventoryHtlcUnclaimed(v)) continue;
+      const entry = { key, t: (v && v.createdAt) || 0 };
+      if (v && v.fundedTxid) {
+        sold.push(entry);
+        continue;
       }
-      if (oldestKey != null) this._inventoryHtlcById.delete(oldestKey);
+      const who = this._inventoryHtlcRequesterKey(v);
+      if (!open.has(who)) open.set(who, []);
+      open.get(who).push(entry);
+    }
+    for (const list of open.values()) list.sort((a, b) => a.t - b.t);
+    sold.sort((a, b) => a.t - b.t);
+    const evict = (list) => this._inventoryHtlcById.delete(list.shift().key);
+    for (const list of open.values()) {
+      while (list.length > INVENTORY_HTLC_MAX_PER_REQUESTER) evict(list);
+    }
+    while (this._inventoryHtlcById.size > INVENTORY_HTLC_MAX_SETTLEMENTS) {
+      let most = null;
+      for (const list of open.values()) {
+        if (list.length && (!most || list.length > most.length)) most = list;
+      }
+      if (most) evict(most);
+      else if (sold.length) evict(sold);
       else break;
     }
+  }
+
+  /**
+   * Who asked for a quote: the peer id its own session authenticated, else the
+   * connection it came through (a relayed request's claimed id proves nothing).
+   * @private
+   */
+  _inventoryHtlcRequesterKey (v) {
+    if (v && v.requesterConnection && v.requesterFabricId) return `id:${v.requesterFabricId}`;
+    if (v && v.relayReturnHop) return `via:${v.relayReturnHop}`;
+    return `conn:${(v && v.requesterConnection) || '?'}`;
   }
 
   _sellerHtlcPubkeyCompressed () {
@@ -6045,13 +6851,55 @@ class Hub extends Service {
     const plain = Buffer.from(String(parsed.contentBase64), 'base64');
     const sizeErr = this._validateDocumentSize(plain);
     if (sizeErr) throw new Error(sizeErr.message || 'document too large to seal');
-    const sealed = documentContentKey.sealPlaintext(plain);
-    await documentContentKey.writeContentKey(this.fs, documentId, sealed.key);
+    const Document = require('@fabric/core/types/document');
+    const { createBlobBatch, CONVERGENT_SCHEME } = require('@fabric/core/functions/documentSealedExchange');
+    const doc = Document.seal(plain, { documentId });
+    const blobs = [];
+    let ciphertext = Buffer.alloc(0);
+    for (const leaf of doc.blobs) {
+      const bytes = doc.bytesFor(leaf.index);
+      ciphertext = Buffer.concat([ciphertext, bytes]);
+      blobs.push({
+        index: leaf.index,
+        blobHashHex: leaf.blobHashHex,
+        keyHashHex: leaf.paymentHashHex,
+        iv: leaf.iv,
+        ciphertextBase64: bytes.toString('base64')
+      });
+    }
+    const { batch, secretHex } = createBlobBatch({
+      documentId,
+      merkleRootHex: doc.merkleRootHex,
+      blobs: doc.blobs.map((leaf) => ({
+        blobIndex: leaf.index,
+        blobHashHex: leaf.blobHashHex,
+        keyHex: doc.keyFor(leaf.index)
+      }))
+    });
+    const secret = Buffer.from(secretHex, 'hex');
+    await documentContentKey.writeContentKey(this.fs, documentId, secret);
+    await this.fs.publish(`documents/${documentId}.batches`, {
+      type: 'DocumentBlobBatch',
+      documentId: String(documentId),
+      batches: [batch]
+    });
     const next = {
       ...parsed,
-      contentBase64: sealed.ciphertext.toString('base64'),
-      size: sealed.ciphertext.length,
-      encryption: sealed.encryption,
+      contentBase64: ciphertext.toString('base64'),
+      size: plain.length,
+      encryption: {
+        scheme: CONVERGENT_SCHEME,
+        perBlob: true,
+        merkleRootHex: doc.merkleRootHex,
+        blobTotal: doc.blobs.length
+      },
+      parts: blobs.map((b) => ({
+        index: b.index,
+        blobHashHex: b.blobHashHex,
+        keyHashHex: b.keyHashHex,
+        iv: b.iv,
+        size: Buffer.from(b.ciphertextBase64, 'base64').length
+      })),
       sealedAt: new Date().toISOString()
     };
     await this.fs.publish(`documents/${documentId}.json`, next);
@@ -6063,7 +6911,98 @@ class Hub extends Service {
         sealedAt: next.sealedAt
       };
     }
-    return { parsed: next, key: sealed.key };
+    return { parsed: next, key: secret };
+  }
+
+  /**
+   * Open a per-blob priced document with the batch preimage `S`.
+   * Wraps live in the private batches file, not the public document.
+   * @private
+   * @param {Object} parsed
+   * @param {Buffer} secret
+   * @param {string} documentId
+   * @returns {Buffer}
+   */
+  _openPerBlobDocument (parsed, secret, documentId) {
+    const batch = this._readBlobBatch(documentId);
+    if (!batch) throw new Error('sealed document missing batch wraps');
+    const { openBlobBatch, openCiphertext } = require('@fabric/core/functions/documentSealedExchange');
+    const body = Buffer.from(parsed.contentBase64, 'base64');
+    const parts = [];
+    let offset = 0;
+    for (const part of parsed.parts || []) {
+      const size = Number(part.size);
+      if (!Number.isSafeInteger(size) || size <= 0 || offset + size > body.length) throw new Error(`blob ${part.index} is outside the delivered file`);
+      const ciphertext = body.subarray(offset, offset + size);
+      offset += size;
+      // GCM only proves the seller's key; the blob must also be the one the batch commits.
+      const blobHashHex = String(part.blobHashHex || '').toLowerCase();
+      const leaf = batch.blobs.find((b) => Number(b.blobIndex) === Number(part.index));
+      if (!/^[0-9a-f]{64}$/.test(blobHashHex) || !leaf || String(leaf.blobHashHex || '').toLowerCase() !== blobHashHex ||
+        crypto.createHash('sha256').update(ciphertext).digest('hex') !== blobHashHex) {
+        throw new Error(`blob ${part.index} does not match its committed hash`);
+      }
+      const opened = openBlobBatch({ batch, preimageHex: secret.toString('hex'), blobIndex: part.index });
+      if (!opened.ok) throw new Error(opened.error || 'batch unwrap failed');
+      parts.push(openCiphertext(ciphertext, Buffer.from(opened.keyHex, 'hex'), part.iv));
+    }
+    if (offset !== body.length) throw new Error('delivered file has bytes outside its blobs');
+    return Buffer.concat(parts);
+  }
+
+  /**
+   * The private batch of blob-key wraps for a per-blob sealed document, sealed
+   * here or delivered with a bought copy. Absent from public document JSON.
+   * @private
+   * @param {string} documentId
+   * @returns {Object|null} core `DocumentBlobBatch`
+   */
+  _readBlobBatch (documentId) {
+    try {
+      const raw = this.fs.readFile(`documents/${documentId}.batches`);
+      if (!raw) return null;
+      const stored = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw));
+      const batch = stored && stored.batches && stored.batches[0];
+      return batch && Array.isArray(batch.blobs) ? batch : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Header and per-blob entries for selling a per-blob sealed document: the
+   * stored ciphertext goes as-is, each frame carrying its blob's IV and the
+   * blob key wrapped under the batch preimage `S`.
+   * @private
+   * @param {Object} doc - documents/{id}.json body with `encryption.perBlob`
+   * @param {Buffer} preimageBuf - `S`
+   * @returns {{ header: Object, sealedParts: Array<Object> }|{ error: string }}
+   */
+  _perBlobShareMeta (doc, preimageBuf) {
+    const batch = this._readBlobBatch(doc.id);
+    if (!batch) return { error: 'sealed document missing batch wraps' };
+    const paymentHashHex = documentContentKey.paymentHashHexFromKey(preimageBuf);
+    if (String(batch.paymentHashHex).toLowerCase() !== paymentHashHex || String(batch.documentId) !== String(doc.id)) {
+      return { error: 'HTLC preimage does not open this document\'s blob keys' };
+    }
+    const wraps = new Map(batch.blobs.map((b) => [Number(b.blobIndex), b]));
+    const parts = Array.isArray(doc.parts) ? doc.parts : [];
+    const sealedParts = parts.map((p, i) => {
+      const w = Number(p.index) === i ? wraps.get(i) : null;
+      return w ? { iv: p.iv, keyHashHex: p.keyHashHex, wrappedKeyHex: w.wrappedKeyHex, size: Number(p.size) } : null;
+    });
+    if (!sealedParts.length || sealedParts.some((p) => !p)) return { error: 'sealed document missing batch wraps' };
+    return {
+      header: {
+        v: 2,
+        scheme: doc.encryption.scheme,
+        perBlob: true,
+        merkleRootHex: String(batch.merkleRootHex || doc.encryption.merkleRootHex),
+        blobTotal: sealedParts.length,
+        paymentHashHex
+      },
+      sealedParts
+    };
   }
 
   /**
@@ -6096,6 +7035,396 @@ class Hub extends Service {
     return { status: 'success' };
   }
 
+  /**
+   * Keep the content key a seller revealed to this Hub for a document it bought.
+   * The key is kept only when SHA-256(key) is the payment hash on the delivered
+   * file (`htlcFileV1`), so no peer can attach a key to another document. A
+   * reveal that arrives before the file waits (a few, briefly) for it.
+   * @param {object} reveal `HTLC_KEY_REVEAL` body
+   * @returns {Promise<boolean>} true when the key is stored
+   */
+  async _acceptHtlcKeyReveal (reveal) {
+    const documentId = this._normalizeDocumentId(reveal && reveal.documentId);
+    const keyHex = String((reveal && reveal.preimageHex) || '').trim().toLowerCase();
+    if (!documentId || /[\\/]/.test(documentId) || !/^[0-9a-f]{64}$/.test(keyHex)) return false;
+    let doc = null;
+    try {
+      const raw = this.fs.readFile(`documents/${documentId}.json`);
+      doc = raw ? JSON.parse(raw) : null;
+    } catch (_) {}
+    if (!this._pendingHtlcReveals) this._pendingHtlcReveals = new Map();
+    if (!doc || !doc.htlcFileV1) {
+      this._pendingHtlcReveals.delete(documentId);
+      this._pendingHtlcReveals.set(documentId, { reveal: { documentId, preimageHex: keyHex }, at: Date.now() });
+      while (this._pendingHtlcReveals.size > 32) {
+        this._pendingHtlcReveals.delete(this._pendingHtlcReveals.keys().next().value);
+      }
+      return false;
+    }
+    this._pendingHtlcReveals.delete(documentId);
+    const want = String(doc.htlcFileV1.paymentHashHex || '').toLowerCase();
+    if (documentContentKey.paymentHashHexFromKey(keyHex) !== want) return false;
+    await documentContentKey.writeContentKey(this.fs, documentId, Buffer.from(keyHex, 'hex'));
+    if (documentFileShare.isPerBlobHeader(doc.htlcFileV1)) {
+      // Same shape the seller keeps (`parts` here, wraps in the private batch file), so a resale sends it as-is.
+      if (!documentContentKey.isSealedDocument(doc) && Array.isArray(doc.parts) && this._readBlobBatch(documentId)) {
+        const header = doc.htlcFileV1;
+        await this.fs.publish(`documents/${documentId}.json`, {
+          ...doc,
+          encryption: {
+            scheme: documentContentKey.SEALED_SCHEMES.includes(header.scheme) ? header.scheme : documentContentKey.CONVERGENT_SCHEME,
+            perBlob: true,
+            merkleRootHex: String(header.merkleRootHex).toLowerCase(),
+            blobTotal: Number(header.blobTotal)
+          }
+        });
+      }
+    } else if (!documentContentKey.isSealedDocument(doc)) {
+      // Same ciphertext and IV as the seller's: a resale sends it as-is instead of sealing it again.
+      await this.fs.publish(`documents/${documentId}.json`, {
+        ...doc,
+        encryption: {
+          scheme: documentContentKey.SCHEME,
+          iv: doc.htlcFileV1.iv,
+          contentSha256: crypto.createHash('sha256').update(Buffer.from(doc.contentBase64, 'base64')).digest('hex')
+        }
+      });
+    }
+    this._loadInventoryPurchases();
+    let delivered = false;
+    for (const p of this._inventoryPurchases.values()) {
+      if (p.documentId === documentId && p.paymentHashHex === want && p.status === 'PAID') {
+        p.status = 'DELIVERED';
+        p.deliveredAt = Date.now();
+        delivered = true;
+      }
+    }
+    if (delivered) this._persistInventoryPurchases();
+    return true;
+  }
+
+  /**
+   * Whether to store a file a peer pushed. A file this Hub paid for always gets in;
+   * anything else counts against an hourly byte budget per sending host and in
+   * total, so peers can't fill the disk with files nobody asked for.
+   * @private
+   * @param {string} documentId
+   * @param {number} bytes
+   * @param {string} [originName] - connection key (host:port)
+   * @returns {boolean}
+   */
+  _admitIncomingFile (documentId, bytes, originName) {
+    this._loadInventoryPurchases();
+    for (const p of this._inventoryPurchases.values()) {
+      if (p && p.documentId === documentId && p.status === 'PAID') return true;
+    }
+    const now = Date.now();
+    const log = (this._incomingFileLog || []).filter((e) => now - e.at < INCOMING_FILE_WINDOW_MS);
+    this._incomingFileLog = log;
+    const name = String(originName || '');
+    const host = name.includes(':') ? name.slice(0, name.lastIndexOf(':')) : name;
+    let total = 0;
+    let fromHost = 0;
+    for (const e of log) {
+      total += e.bytes;
+      if (e.host === host) fromHost += e.bytes;
+    }
+    if (fromHost + bytes > INCOMING_FILE_BYTES_PER_HOST || total + bytes > INCOMING_FILE_BYTES_TOTAL) return false;
+    if (!this._documentStoreHasRoom(bytes)) return false;
+    log.push({ at: now, host, bytes });
+    return true;
+  }
+
+  /**
+   * Admin-only: plaintext of a document this Hub bought over an inventory HTLC.
+   * Uses the key the seller revealed, or `preimageHex` read from the seller's
+   * on-chain claim when the reveal never arrived (kept once it checks out).
+   * @param {Object} body - { id, adminToken|token, preimageHex? }
+   */
+  async _openPurchasedDocument (body = {}) {
+    const deny = (message) => ({ type: 'OpenPurchasedDocumentResult', status: 'error', message });
+    if (!this.setup.verifyAdminToken(body.adminToken || body.token)) return deny('Admin token required.');
+    const documentId = this._normalizeDocumentId(body.id || body.documentId);
+    if (!documentId || /[\\/]/.test(documentId)) return deny('id is required.');
+    let doc = null;
+    try {
+      const raw = this.fs.readFile(`documents/${documentId}.json`);
+      doc = raw ? JSON.parse(raw) : null;
+    } catch (_) {}
+    if (!doc || !doc.contentBase64) return deny('document not held here');
+    if (!doc.htlcFileV1) return deny('document was not bought over an inventory HTLC');
+    if (body.preimageHex) await this._acceptHtlcKeyReveal({ documentId, preimageHex: body.preimageHex });
+    const key = documentContentKey.readContentKey(this.fs, documentId);
+    if (!key) return deny('no content key yet: wait for the seller\'s reveal, or pass preimageHex from its claim');
+    let plaintext;
+    if (documentFileShare.isPerBlobHeader(doc.htlcFileV1)) {
+      if (!Array.isArray(doc.parts)) return deny('delivery is missing its per-blob parts');
+      try {
+        plaintext = this._openPerBlobDocument(doc, key, documentId);
+      } catch (err) {
+        return deny(err && err.message ? err.message : 'decrypt failed');
+      }
+    } else {
+      const opened = documentContentKey.openWithClaimPreimage({
+        ciphertext: Buffer.from(doc.contentBase64, 'base64'),
+        preimageHex: key.toString('hex'),
+        paymentHashHex: doc.htlcFileV1.paymentHashHex,
+        iv: doc.htlcFileV1.iv
+      });
+      if (!opened.ok) return deny(opened.error || 'decrypt failed');
+      plaintext = opened.plaintext;
+    }
+    return {
+      type: 'OpenPurchasedDocumentResult',
+      status: 'success',
+      document: {
+        id: documentId,
+        name: doc.name,
+        mime: doc.mime || 'application/octet-stream',
+        size: plaintext.length,
+        sha256: crypto.createHash('sha256').update(plaintext).digest('hex'),
+        contentBase64: plaintext.toString('base64')
+      }
+    };
+  }
+
+  /**
+   * Buyer purchases survive restarts: a funded HTLC the seller never delivered
+   * is money the buyer takes back only while it remembers the quote.
+   * @private
+   */
+  _loadInventoryPurchases () {
+    if (!this._inventoryPurchases) this._inventoryPurchases = new Map();
+    if (this._inventoryPurchasesLoaded) return;
+    this._inventoryPurchasesLoaded = true;
+    try {
+      const raw = this.fs && typeof this.fs.readFile === 'function' ? this.fs.readFile('bitcoin/inventory-purchases.json') : null;
+      if (!raw) return;
+      const j = JSON.parse(raw);
+      const saved = j && j.purchases && typeof j.purchases === 'object' ? j.purchases : {};
+      for (const [k, v] of Object.entries(saved)) {
+        if (v && typeof v === 'object' && !this._inventoryPurchases.has(k)) this._inventoryPurchases.set(k, v);
+      }
+    } catch (_) {
+      /* missing or invalid file */
+    }
+  }
+
+  /** @private */
+  _persistInventoryPurchases () {
+    try {
+      if (!this.fs || typeof this.fs.publish !== 'function') return;
+      this.fs.publish('bitcoin/inventory-purchases.json', { purchases: Object.fromEntries(this._inventoryPurchases), updatedAt: Date.now() });
+    } catch (e) {
+      console.warn('[HUB] bitcoin/inventory-purchases.json persist failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /**
+   * The Hub identity key's 32-byte private key, checked against `pubkey`.
+   * @param {Buffer} pubkey compressed key the HTLC leaf names
+   * @returns {Buffer|null}
+   * @private
+   */
+  _htlcSigningKey (pubkey) {
+    const key = this.agent && this.agent.key;
+    const priv = key && key.keypair && typeof key.keypair.getPrivate === 'function'
+      ? key.keypair.getPrivate('bytes')
+      : null;
+    if (!priv || !Buffer.isBuffer(priv) || priv.length !== 32 || !pubkey) return null;
+    const signer = Htlc.signerFromPriv32(priv);
+    return Buffer.compare(signer.publicKey, pubkey) === 0 ? priv : null;
+  }
+
+  /**
+   * Admin-only buyer payment for an inventory HTLC quote. The quote is rebuilt
+   * from the seller's key, the payment hash, the lock, and this Hub's own refund
+   * key; a seller-supplied address that doesn't match is never paid.
+   * @param {Object} body - { settlementId | documentId, adminToken, maxSats?, feeRateSatVb? }
+   */
+  async _payInventoryHtlc (body = {}) {
+    const deny = (message) => ({ type: 'PayInventoryHtlcResult', status: 'error', message });
+    if (!this.setup.verifyAdminToken(body.adminToken || body.token)) return deny('Admin token required.');
+    const salesRefusal = this._documentSalesRefusal();
+    if (salesRefusal) return deny(salesRefusal);
+    const settlementId = String(body.settlementId || '').trim();
+    const documentId = this._normalizeDocumentId(body.documentId || body.id);
+    if (!settlementId && !documentId) return deny('settlementId or documentId is required.');
+    this._loadInventoryPurchases();
+    if (settlementId && this._inventoryPurchases.has(settlementId)) {
+      return { type: 'PayInventoryHtlcResult', status: 'success', message: 'Already paid.', purchase: this._inventoryPurchases.get(settlementId) };
+    }
+    const found = documentInventoryMarket.listOffers(this._documentOffersMap())
+      .filter((o) => o && ((o.htlc && o.htlc.settlementId) || (settlementId && Array.isArray(o.earlierQuotes))) &&
+        (!documentId || this._normalizeDocumentId(o.documentId || o.sha256) === documentId))
+      .map((o) => ({
+        offer: o,
+        htlc: o.htlc && (!settlementId || o.htlc.settlementId === settlementId)
+          ? o.htlc
+          : (settlementId && Array.isArray(o.earlierQuotes) ? o.earlierQuotes : []).find((q) => q && q.settlementId === settlementId)
+      }))
+      .filter((c) => c.htlc)
+      .sort((a, b) => (Date.parse(b.offer.receivedAt) || 0) - (Date.parse(a.offer.receivedAt) || 0))[0];
+    if (!found) return deny('No HTLC quote for that document; ask the seller with RequestPeerInventory first.');
+    const offer = found.offer;
+    const h = found.htlc;
+    if (this._inventoryPurchases.has(h.settlementId)) {
+      return { type: 'PayInventoryHtlcResult', status: 'success', message: 'Already paid.', purchase: this._inventoryPurchases.get(h.settlementId) };
+    }
+    const amountSats = Math.round(Number(h.amountSats));
+    if (!Number.isSafeInteger(amountSats) || amountSats <= 0) return deny('The quote has no amount.');
+    const listed = Math.round(Number(offer.purchasePriceSats));
+    if (listed > 0 && amountSats !== listed) return deny(`The quote asks ${amountSats} sats but the listing says ${listed}.`);
+    const maxSats = Number(body.maxSats);
+    if (Number.isFinite(maxSats) && maxSats > 0 && amountSats > maxSats) return deny(`The quote asks ${amountSats} sats, over the ${maxSats} allowed.`);
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) return deny('Bitcoin service unavailable.');
+    const refundPubkey = this._sellerHtlcPubkeyCompressed();
+    if (!refundPubkey) return deny('This Hub has no key for the refund path.');
+    const check = Htlc.validateOffer({
+      network: bitcoin.network || 'regtest',
+      claimPubkey: h.sellerPublicKeyHex,
+      refundPubkey,
+      paymentHash: h.paymentHashHex,
+      refundLocktime: Number(h.refundLockHeight),
+      paymentAddress: h.paymentAddress
+    });
+    if (!check.ok) return deny(`The quote is not an HTLC this Hub can refund: ${check.error}`);
+    let tip;
+    try {
+      tip = Number(await bitcoin._makeRPCRequest('getblockcount', []));
+    } catch (e) {
+      return deny(`getblockcount failed: ${e && e.message ? e.message : e}`);
+    }
+    if (!Number.isFinite(tip) || Number(h.refundLockHeight) - tip < INVENTORY_HTLC_MIN_PAY_BLOCKS) {
+      return deny(`The quote's refund lock (block ${h.refundLockHeight}, tip ${tip}) is too close; ask the seller again.`);
+    }
+    const docId = this._normalizeDocumentId(offer.documentId || offer.sha256);
+    let txid;
+    try {
+      txid = await this._hubWalletSend({
+        address: h.paymentAddress,
+        amountSats,
+        feeRateSatVb: Number(body.feeRateSatVb) > 0 ? Number(body.feeRateSatVb) : 2,
+        label: 'inventory_htlc',
+        meta: { documentId: docId, settlementId: h.settlementId, phase: 'fund' }
+      });
+    } catch (e) {
+      return deny(e && e.message ? e.message : 'payment failed');
+    }
+    let fundedTxHex = null;
+    try {
+      const tx = await bitcoin._makeWalletRequest('gettransaction', [txid], bitcoin.walletName);
+      if (tx && typeof tx.hex === 'string') fundedTxHex = tx.hex;
+    } catch (_) {}
+    const purchase = {
+      settlementId: h.settlementId,
+      documentId: docId,
+      name: offer.name || null,
+      seller: offer.peerAlias || offer.peerAddress || offer.peerPubkey || null,
+      sellerPublicKeyHex: h.sellerPublicKeyHex,
+      paymentAddress: h.paymentAddress,
+      paymentHashHex: h.paymentHashHex,
+      refundLockHeight: Number(h.refundLockHeight),
+      amountSats,
+      fundedTxid: txid,
+      fundedTxHex,
+      paidAt: Date.now(),
+      status: 'PAID'
+    };
+    this._inventoryPurchases.set(h.settlementId, purchase);
+    this._persistInventoryPurchases();
+    return { type: 'PayInventoryHtlcResult', status: 'success', purchase };
+  }
+
+  /**
+   * Admin-only buyer refund of an unclaimed inventory HTLC after its lock height.
+   * @param {Object} body - { settlementId, adminToken, toAddress?, feeSats? }
+   */
+  async _refundInventoryHtlc (body = {}) {
+    const deny = (message) => ({ type: 'RefundInventoryHtlcResult', status: 'error', message });
+    if (!this.setup.verifyAdminToken(body.adminToken || body.token)) return deny('Admin token required.');
+    const settlementId = String(body.settlementId || '').trim();
+    if (!settlementId) return deny('settlementId is required.');
+    this._loadInventoryPurchases();
+    const p = this._inventoryPurchases.get(settlementId);
+    if (!p) return deny('No purchase with that settlementId on this Hub.');
+    if (p.refundTxid) return { type: 'RefundInventoryHtlcResult', status: 'success', message: 'Already refunded.', purchase: p };
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin) return deny('Bitcoin service unavailable.');
+    let tip;
+    try {
+      tip = Number(await bitcoin._makeRPCRequest('getblockcount', []));
+    } catch (e) {
+      return deny(`getblockcount failed: ${e && e.message ? e.message : e}`);
+    }
+    if (!Htlc.refundMature(tip, p.refundLockHeight)) {
+      return deny(`The refund path opens at block ${p.refundLockHeight}; the tip is ${tip} (${p.refundLockHeight - tip} more).`);
+    }
+    const refundPubkey = this._sellerHtlcPubkeyCompressed();
+    const priv = this._htlcSigningKey(refundPubkey);
+    if (!priv) return deny('This Hub\'s key cannot sign the refund leaf.');
+    let htlc;
+    try {
+      htlc = new Htlc({
+        network: bitcoin.network || 'regtest',
+        claimPubkey: p.sellerPublicKeyHex,
+        refundPubkey,
+        paymentHash: p.paymentHashHex,
+        refundLocktime: p.refundLockHeight
+      });
+    } catch (e) {
+      return deny(e && e.message ? e.message : 'HTLC rebuild failed');
+    }
+    if (htlc.address !== p.paymentAddress) return deny('The saved purchase does not match this Hub\'s refund key.');
+    let rawHex = p.fundedTxHex || null;
+    if (!rawHex) {
+      try {
+        rawHex = await bitcoin._makeRPCRequest('getrawtransaction', [p.fundedTxid, false]);
+      } catch (e) {
+        return deny(e && e.message ? e.message : 'getrawtransaction failed');
+      }
+    }
+    const dest = String(body.toAddress || body.destinationAddress || '').trim() || await this._inventoryHtlcPayoutAddress(bitcoin);
+    let signed;
+    try {
+      const bundle = htlc.prepareRefund({ fundedTxHex: rawHex, destinationAddress: dest, feeSats: Number(body.feeSats || 1000) });
+      signed = Htlc.signRefund(bundle, priv);
+    } catch (e) {
+      return deny(e && e.message ? e.message : 'Failed to build the refund.');
+    }
+    let refundTxid;
+    try {
+      refundTxid = await bitcoin._makeRPCRequest('sendrawtransaction', [signed.txHex]);
+    } catch (e) {
+      const message = e && e.message ? e.message : String(e);
+      if (/missingorspent|missing-inputs|inputs-missing/i.test(message)) {
+        return deny('The HTLC is already spent: the seller claimed it, so its claim transaction carries the content key (open with --preimage).');
+      }
+      return deny(message);
+    }
+    p.refundTxid = refundTxid;
+    p.refundedAt = Date.now();
+    p.status = 'REFUNDED';
+    this._persistInventoryPurchases();
+    try {
+      this._mergePersistedTxLabel(refundTxid, 'inventory_htlc_refund', { documentId: p.documentId, settlementId, phase: 'buyer_refund' });
+    } catch (_) {}
+    return { type: 'RefundInventoryHtlcResult', status: 'success', settlementId, refundTxid, toAddress: dest, purchase: p };
+  }
+
+  /** Admin-only: this Hub's inventory purchases, newest first. */
+  _listInventoryPurchases (body = {}) {
+    if (!this.setup.verifyAdminToken(body.adminToken || body.token)) {
+      return { type: 'ListInventoryPurchasesResult', status: 'error', message: 'Admin token required.' };
+    }
+    this._loadInventoryPurchases();
+    const purchases = [...this._inventoryPurchases.values()]
+      .map(({ fundedTxHex, ...rest }) => rest)
+      .sort((a, b) => (b.paidAt || 0) - (a.paidAt || 0));
+    return { type: 'ListInventoryPurchasesResult', status: 'success', purchases };
+  }
+
   async _sendDocumentToPeerAddress (address, docOrId, fileRelayMeta = null, htlcEncrypt = null) {
     if (!address || !this.agent.connections[address]) {
       return { status: 'error', message: 'peer not connected' };
@@ -6121,8 +7450,9 @@ class Hub extends Service {
     const sizeErr = this._validateDocumentSize(buf);
     if (sizeErr) return sizeErr;
 
-    /** @type {{ v:number, iv:string, paymentHashHex:string }|null} */
+    /** @type {Object|null} `htlcFileV1` (see documentFileShare.buildFileShareFrames) */
     let htlcFileV1Header = null;
+    let sealedParts = null;
     if (htlcEncrypt && htlcEncrypt.preimage32) {
       const preimageBuf = Buffer.isBuffer(htlcEncrypt.preimage32)
         ? htlcEncrypt.preimage32
@@ -6130,8 +7460,13 @@ class Hub extends Service {
       if (preimageBuf.length !== 32) {
         return { status: 'error', message: 'HTLC preimage must be 32 bytes.' };
       }
-      // Sealed-at-rest: content is already AES-GCM(K); send as-is with seal IV (do not double-encrypt).
-      if (documentContentKey.isSealedDocument(doc) && doc.encryption && doc.encryption.iv) {
+      // Sealed-at-rest: content is already AES-GCM ciphertext; send as-is (do not double-encrypt).
+      if (documentContentKey.isSealedDocument(doc) && doc.encryption.perBlob) {
+        const meta = this._perBlobShareMeta(doc, preimageBuf);
+        if (meta.error) return { status: 'error', message: meta.error };
+        htlcFileV1Header = meta.header;
+        sealedParts = meta.sealedParts;
+      } else if (documentContentKey.isSealedDocument(doc) && doc.encryption.iv) {
         htlcFileV1Header = {
           v: 1,
           iv: String(doc.encryption.iv),
@@ -6173,13 +7508,16 @@ class Hub extends Service {
         sha256: doc.sha256 || doc.id,
         created: doc.created || new Date().toISOString(),
         htlcFileV1: htlcFileV1Header,
+        sealedParts,
         relay: relayExtras
       });
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : 'file share failed' };
     }
+    // Peers drop JSON P2P_FILE_SEND bodies; send each frame as fields.
     for (const frame of share.frames) {
-      this._sendVectorToPeer(address, ['P2P_FILE_SEND', frame]);
+      const body = typeof frame === 'string' ? JSON.parse(frame) : frame;
+      this._sendMessageToPeer(address, Message.fromLegacyBody('P2P_FILE_SEND', body));
     }
 
     this.recordActivity({
@@ -6207,7 +7545,7 @@ class Hub extends Service {
 
   async _attachHtlcToInventoryItems (items, message, htlcDirectConn, requesterFabricId, relayReturnHop = null) {
     const obj = (message && message.object) || {};
-    if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) return items;
+    if (this._documentSalesRefusal()) return items;
 
     const buyerHex = String(obj.buyerRefundPublicKey || '').trim();
     if (!buyerHex || !/^[0-9a-fA-F]{66}$/.test(buyerHex)) return items;
@@ -6324,6 +7662,7 @@ class Hub extends Service {
         requesterFabricId: requesterFabricId || null,
         relayReturnHop: relayReturnHop || null,
         refundLockHeight: refundHeight,
+        quoteHeight: height,
         createdAt: Date.now(),
         status: 'AWAITING_FUNDING',
         fundedTxid: null,
@@ -6351,18 +7690,24 @@ class Hub extends Service {
         }
       };
     }));
+    if (results.some((item) => item && item.htlc)) {
+      this._pruneInventoryHtlcSettlements();
+      this._persistInventoryHtlcSettlements();
+    }
     return results;
   }
 
   async _confirmInventoryHtlcPayment (body = {}) {
-    const _htlcResult = (obj) => Object.assign({ type: 'ConfirmInventoryHtlcPaymentResult' }, obj);
-
     const settlementId = String(body.settlementId || '').trim();
+    // Every result names the settlement it answers, so a page shows only its own.
+    const _htlcResult = (obj) => Object.assign({ type: 'ConfirmInventoryHtlcPaymentResult' }, settlementId ? { settlementId } : {}, obj);
+
     const txid = String(body.txid || '').trim();
     if (!settlementId || !txid) {
       return _htlcResult({ status: 'error', message: 'settlementId and txid are required.' });
     }
 
+    this._loadInventoryHtlcSettlements();
     const s = this._inventoryHtlcById.get(settlementId);
     if (!s) return _htlcResult({ status: 'error', message: 'Unknown or expired HTLC settlement.' });
     if (s.status === 'COMPLETED') {
@@ -6371,27 +7716,77 @@ class Hub extends Service {
         message: 'Already completed.',
         documentId: s.documentId,
         settlementId,
-        txid: s.fundedTxid
+        txid: s.fundedTxid,
+        keyRevealed: true
       });
     }
 
     const bitcoin = this._getBitcoinService();
     if (!bitcoin) return _htlcResult({ status: 'error', message: 'Bitcoin service unavailable.' });
 
-    const needVerify = s.status !== 'FUNDED_PENDING_SEND' || s.fundedTxid !== txid;
-    if (needVerify) {
-      const ok = await this._verifyL1Payment(bitcoin, txid, s.paymentAddress, s.amountSats);
-      if (!ok) {
-        return _htlcResult({
-          status: 'error',
-          message: 'Transaction does not pay the HTLC address for at least the invoice amount (or tx not visible).'
-        });
+    // Delivering this late hands the buyer the file with time to refund before the claim confirms.
+    let tip;
+    try {
+      tip = Number(await bitcoin._makeRPCRequest('getblockcount', []));
+    } catch (e) {
+      return _htlcResult({ status: 'error', message: `getblockcount failed: ${e && e.message ? e.message : e}` });
+    }
+    if (!Number.isFinite(tip) || tip >= Number(s.refundLockHeight) - INVENTORY_HTLC_CLAIM_MARGIN_BLOCKS) {
+      return _htlcResult({
+        status: 'error',
+        message: `Too close to the refund lock (block ${s.refundLockHeight}, tip ${tip}) to claim in time; not delivering. The buyer can refund after the lock.`,
+        settlementId,
+        documentId: s.documentId
+      });
+    }
+
+    const newFunding = s.status !== 'FUNDED_PENDING_SEND' || s.fundedTxid !== txid;
+    if (newFunding) {
+      // Quotes for one document at one lock height share an address; one coin pays for one sale.
+      for (const other of this._inventoryHtlcById.values()) {
+        if (other && other !== s && other.fundedTxid === txid && other.paymentAddress === s.paymentAddress) {
+          return _htlcResult({ status: 'error', message: 'That payment already paid for another settlement.', settlementId, documentId: s.documentId });
+        }
       }
+    }
+    // Checked every time: a recorded payment may since have been replaced, or gained confirmations.
+    // A payment out of the mempool is looked for block by block; for one already recorded, only the
+    // blocks since the last check (each new block retries it, and a replaced one never turns up).
+    const quoteFloor = Number.isFinite(Number(s.quoteHeight)) ? Number(s.quoteHeight) : Number(s.refundLockHeight) - 144;
+    const scannedTo = Number(s.paymentScannedHeight);
+    const fromHeight = !newFunding && Number.isFinite(scannedTo) ? Math.max(quoteFloor, scannedTo - 1) : quoteFloor;
+    const paid = await this._l1PaymentVerificationDetail(bitcoin, txid, s.paymentAddress, s.amountSats, { fromHeight });
+    if (!newFunding || paid.verified) s.paymentScannedHeight = tip;
+    if (!paid.verified) {
+      return _htlcResult({
+        status: 'error',
+        message: 'Transaction does not pay the HTLC address for at least the invoice amount (or tx not visible).'
+      });
+    }
+    if (newFunding) {
       s.status = 'FUNDED_PENDING_SEND';
       s.fundedTxid = txid;
+      // A pruned node without txindex can't fetch the funding tx once it confirms; keep it for the claim.
+      if (paid.hex) s.fundedTxHex = paid.hex;
+      this._persistInventoryHtlcSettlements();
       try {
         this._mergePersistedTxLabel(txid, 'inventory_htlc', { documentId: s.documentId, settlementId, phase: 'fund' });
       } catch (_) {}
+    }
+
+    const required = this._documentMinPaymentConfirmations();
+    const confirmations = Number(paid.confirmations) || 0;
+    if (confirmations < required) {
+      return _htlcResult({
+        status: 'pending',
+        message: `Payment seen; delivering after ${required} confirmation${required === 1 ? '' : 's'}.`,
+        confirmations,
+        required,
+        settlementId,
+        documentId: s.documentId,
+        txid,
+        retryWithSameTxid: true
+      });
     }
 
     let addr = null;
@@ -6425,9 +7820,20 @@ class Hub extends Service {
       });
     }
 
-    const sendRes = await this._sendDocumentToPeerAddress(addr, s.documentId, fileRelayMeta, {
-      preimage32: Buffer.from(s.preimageHex, 'hex')
-    });
+    // The block hook and a buyer's own confirm can arrive together; send once.
+    if (!this._inventoryHtlcSending) this._inventoryHtlcSending = new Set();
+    if (this._inventoryHtlcSending.has(settlementId)) {
+      return _htlcResult({ status: 'pending', message: 'Delivery already in progress.', confirmations, required, settlementId, documentId: s.documentId, txid, retryWithSameTxid: true });
+    }
+    this._inventoryHtlcSending.add(settlementId);
+    let sendRes;
+    try {
+      sendRes = await this._sendDocumentToPeerAddress(addr, s.documentId, fileRelayMeta, {
+        preimage32: Buffer.from(s.preimageHex, 'hex')
+      });
+    } finally {
+      this._inventoryHtlcSending.delete(settlementId);
+    }
     if (!sendRes || sendRes.status !== 'success') {
       return _htlcResult({
         status: 'error',
@@ -6451,7 +7857,9 @@ class Hub extends Service {
     }
 
     s.status = 'COMPLETED';
+    this._persistInventoryHtlcSettlements();
     console.debug('[HUB] INVENTORY HTLC phase 2: sent document + key reveal', s.documentId, 'to', addr, 'txid', txid);
+    setImmediate(() => this._claimDeliveredInventoryHtlcs().catch(() => {}));
     return _htlcResult({ status: 'success', settlementId, documentId: s.documentId, txid, keyRevealed: true });
   }
 
@@ -6469,6 +7877,7 @@ class Hub extends Service {
     if (!this.setup.verifyAdminToken(token)) return deny('Admin token required.');
     const settlementId = String(body.settlementId || '').trim();
     if (!settlementId) return deny('settlementId is required.');
+    this._loadInventoryHtlcSettlements();
     const s = this._inventoryHtlcById.get(settlementId);
     if (!s) return deny('Unknown or expired HTLC settlement.');
     return {
@@ -6505,11 +7914,237 @@ class Hub extends Service {
     });
     const token = body.adminToken || body.token;
     if (!this.setup.verifyAdminToken(token)) return deny('Admin token required.');
+    return this._claimInventoryHtlcSettlement(body);
+  }
+
+  /**
+   * Deliver sales whose payment was seen before it had the confirmations it needs
+   * (`documents.minPaymentConfirmations`). Runs on each new block; a sale whose buyer
+   * isn't connected waits for the next one, and one too close to its refund lock
+   * stays undelivered so the buyer refunds.
+   * @returns {Promise<Object[]>} the confirm result per settlement tried
+   */
+  async _deliverConfirmedHtlcPayments () {
+    if (this._inventoryHtlcDelivering) return [];
+    this._inventoryHtlcDelivering = true;
+    const results = [];
+    try {
+      this._loadInventoryHtlcSettlements();
+      for (const s of [...this._inventoryHtlcById.values()]) {
+        if (!s || s.status !== 'FUNDED_PENDING_SEND' || !s.fundedTxid) continue;
+        let r;
+        try {
+          r = await this._confirmInventoryHtlcPayment({ settlementId: s.settlementId, txid: s.fundedTxid });
+        } catch (e) {
+          r = { status: 'error', settlementId: s.settlementId, message: e && e.message ? e.message : String(e) };
+        }
+        results.push(r);
+        if (r && r.status === 'success') {
+          console.debug('[HUB] INVENTORY HTLC delivered after confirmation:', s.settlementId, s.documentId);
+        }
+      }
+    } finally {
+      this._inventoryHtlcDelivering = false;
+    }
+    return results;
+  }
+
+  /**
+   * Claim every delivered sale not yet claimed. A settlement whose coin is gone
+   * (the buyer refunded) or that keeps failing is left for the operator.
+   * @returns {Promise<object[]>} claim results
+   */
+  async _claimDeliveredInventoryHtlcs () {
+    if (this._inventoryHtlcClaiming) return [];
+    this._inventoryHtlcClaiming = true;
+    const results = [];
+    try {
+      this._loadInventoryHtlcSettlements();
+      for (const s of [...this._inventoryHtlcById.values()]) {
+        if (!s || !s.claimTxid || !s.claimTxHex || !s.claimToWallet || s.claimConfirmed || s.claimAbandoned) continue;
+        try {
+          await this._recheckInventoryHtlcClaim(s);
+        } catch (e) {
+          console.warn('[HUB] INVENTORY HTLC claim recheck failed:', s.settlementId, e && e.message ? e.message : e);
+        }
+      }
+      for (const s of [...this._inventoryHtlcById.values()]) {
+        if (!s || s.status !== 'COMPLETED' || !s.fundedTxid || s.claimTxid || s.claimAbandoned) continue;
+        const r = await this._claimInventoryHtlcSettlement({ settlementId: s.settlementId });
+        results.push(r);
+        if (r.status === 'success') continue;
+        s.claimAttempts = (Number(s.claimAttempts) || 0) + 1;
+        s.claimError = String(r.message || '').slice(0, 200);
+        if (/missingorspent|already spent|no usable|does not match/i.test(s.claimError) || s.claimAttempts >= INVENTORY_HTLC_CLAIM_ATTEMPTS) {
+          s.claimAbandoned = true;
+          console.warn('[HUB] INVENTORY HTLC claim given up:', s.settlementId, s.claimError);
+        }
+        this._persistInventoryHtlcSettlements();
+      }
+    } finally {
+      this._inventoryHtlcClaiming = false;
+    }
+    return results;
+  }
+
+  /**
+   * A new wallet address for an inventory HTLC claim or refund: Taproot, else
+   * segwit, else whatever the Bitcoin service gives. Sales are often a few
+   * thousand sats, and a legacy input can cost more than that to spend.
+   * @private
+   */
+  async _inventoryHtlcPayoutAddress (bitcoin) {
+    if (bitcoin && typeof bitcoin._makeWalletRequest === 'function') {
+      if (typeof bitcoin._loadWallet === 'function') {
+        try { await bitcoin._loadWallet(bitcoin.walletName); } catch (_) {}
+      }
+      for (const type of ['bech32m', 'bech32']) {
+        try {
+          const address = await bitcoin._makeWalletRequest('getnewaddress', ['', type], bitcoin.walletName);
+          if (typeof address === 'string' && address) return address;
+        } catch (_) {}
+      }
+    }
+    return bitcoin.getUnusedAddress();
+  }
+
+  /**
+   * Fee for an inventory HTLC claim: the node's estimate for confirming well
+   * before the refund lock (a shorter target as the lock nears), at least
+   * 1 sat/vB and at most the sale less dust. Without an estimate (regtest),
+   * up to 1,000 sats.
+   * @param {object} bitcoin Bitcoin service
+   * @param {object} s settlement
+   * @param {object} [opts] `{ atLeast }` sats, for a replacement
+   * @private
+   */
+  async _inventoryHtlcClaimFeeSats (bitcoin, s, opts = {}) {
+    const amount = Number(s.amountSats) || 0;
+    const ceiling = Math.max(HTLC_CLAIM_VBYTES, amount - BITCOIN_DUST_SATS);
+    let fee = Math.min(1000, ceiling);
+    try {
+      const tip = Number(await bitcoin._makeRPCRequest('getblockcount', []));
+      const left = Number(s.refundLockHeight) - tip;
+      const target = Math.max(2, Math.min(72, Math.floor(left / 3)));
+      const estimate = await bitcoin._makeRPCRequest('estimatesmartfee', [target]);
+      const btcPerKvB = estimate && Number(estimate.feerate);
+      if (btcPerKvB > 0) fee = Math.ceil(Math.round(btcPerKvB * 1e8) * HTLC_CLAIM_VBYTES / 1000);
+    } catch (_) {}
+    if (opts.atLeast) fee = Math.max(fee, Number(opts.atLeast));
+    return Math.max(HTLC_CLAIM_VBYTES, Math.min(ceiling, fee));
+  }
+
+  /**
+   * Follow a claim paid to this Hub's wallet until it confirms: rebroadcast it
+   * when it drops out of the mempool (or build it again at today's fee when
+   * that fails), replace it with a higher fee near the refund lock, and give
+   * the sale up when the buyer's refund took the coin.
+   * @param {object} s settlement with `claimTxid` and `claimTxHex`
+   * @returns {Promise<string|null>} what happened, or null when it can't tell
+   * @private
+   */
+  async _recheckInventoryHtlcClaim (s) {
+    const bitcoin = this._getBitcoinService();
+    if (!bitcoin || typeof bitcoin._makeWalletRequest !== 'function') return null;
+    const confirmations = async (txid) => {
+      try {
+        const tx = await bitcoin._makeWalletRequest('gettransaction', [txid], bitcoin.walletName);
+        return Number(tx && tx.confirmations);
+      } catch (_) {
+        return null;
+      }
+    };
+    const save = () => this._persistInventoryHtlcSettlements();
+    const conf = await confirmations(s.claimTxid);
+    if (conf == null || !Number.isFinite(conf)) return null;
+    if (conf > 0) {
+      s.claimConfirmed = true;
+      save();
+      return 'confirmed';
+    }
+    if (conf < 0) {
+      for (const earlier of s.claimTxidsEarlier || []) {
+        if ((await confirmations(earlier)) > 0) {
+          s.claimTxidsEarlier = [s.claimTxid].concat(s.claimTxidsEarlier.filter((t) => t !== earlier));
+          s.claimTxid = earlier;
+          s.claimConfirmed = true;
+          save();
+          return 'confirmed';
+        }
+      }
+      s.claimAbandoned = true;
+      s.claimError = 'The claim conflicts with another spend of the coin (the buyer refunded).';
+      save();
+      return 'conflicted';
+    }
+    let inMempool = true;
+    try {
+      await bitcoin._makeRPCRequest('getmempoolentry', [s.claimTxid]);
+    } catch (e) {
+      if (!/not in mempool/i.test(String(e && e.message))) return null;
+      inMempool = false;
+    }
+    if (!inMempool) {
+      try {
+        await bitcoin._makeRPCRequest('sendrawtransaction', [s.claimTxHex]);
+        return 'rebroadcast';
+      } catch (_) {
+        const r = await this._claimInventoryHtlcSettlement({ settlementId: s.settlementId, replace: true });
+        if (r.status === 'success') return 'reclaimed';
+        if (/missingorspent|already spent/i.test(String(r.message || ''))) {
+          s.claimAbandoned = true;
+          s.claimError = String(r.message).slice(0, 200);
+          save();
+          return 'conflicted';
+        }
+        return null;
+      }
+    }
+    const tip = Number(await bitcoin._makeRPCRequest('getblockcount', []).catch(() => NaN));
+    if (!Number.isFinite(tip) || Number(s.refundLockHeight) - tip > INVENTORY_HTLC_CLAIM_BUMP_BLOCKS) return 'waiting';
+    if (s.claimBumpHeight === tip) return 'waiting';
+    const was = Number(s.claimFeeSats) || 0;
+    const feeSats = await this._inventoryHtlcClaimFeeSats(bitcoin, s, { atLeast: was * 2 + HTLC_CLAIM_VBYTES });
+    s.claimBumpHeight = tip;
+    save();
+    if (feeSats <= was) return 'waiting';
+    const r = await this._claimInventoryHtlcSettlement({ settlementId: s.settlementId, feeSats, replace: true });
+    return r.status === 'success' ? 'bumped' : null;
+  }
+
+  /**
+   * One claim per settlement at a time: a second caller (the operator while the
+   * Hub claims on its own) gets the result of the claim in flight.
+   * @private
+   */
+  _claimInventoryHtlcSettlement (body = {}) {
+    const settlementId = String(body.settlementId || '').trim();
+    if (!this._inventoryHtlcClaimsInFlight) this._inventoryHtlcClaimsInFlight = new Map();
+    const inFlight = this._inventoryHtlcClaimsInFlight.get(settlementId);
+    if (settlementId && inFlight) return inFlight;
+    const claim = this._claimInventoryHtlcSettlementNow(body).finally(() => {
+      this._inventoryHtlcClaimsInFlight.delete(settlementId);
+    });
+    if (settlementId) this._inventoryHtlcClaimsInFlight.set(settlementId, claim);
+    return claim;
+  }
+
+  /** @private */
+  async _claimInventoryHtlcSettlementNow (body = {}) {
+    const deny = (msg) => ({
+      type: 'ClaimInventoryHtlcOnChainResult',
+      status: 'error',
+      message: msg
+    });
     const settlementId = String(body.settlementId || '').trim();
     if (!settlementId) return deny('settlementId is required.');
+    this._loadInventoryHtlcSettlements();
     const s = this._inventoryHtlcById.get(settlementId);
     if (!s) return deny('Unknown or expired HTLC settlement.');
     if (!s.fundedTxid) return deny('No fundedTxid; verify payment with ConfirmInventoryHtlcPayment first.');
+    if (s.claimTxid && !body.replace) {
+      return { type: 'ClaimInventoryHtlcOnChainResult', status: 'success', message: 'Already claimed.', settlementId, claimTxid: s.claimTxid, fundedTxid: s.fundedTxid };
+    }
     const bitcoin = this._getBitcoinService();
     if (!bitcoin) return deny('Bitcoin service unavailable.');
     const key = this.agent && this.agent.key;
@@ -6532,14 +8167,33 @@ class Hub extends Service {
     } catch (e) {
       return deny(e && e.message ? e.message : 'Key check failed.');
     }
-    let rawHex;
-    try {
-      rawHex = await bitcoin._makeRPCRequest('getrawtransaction', [s.fundedTxid, false]);
-    } catch (e) {
-      return deny(e && e.message ? e.message : 'getrawtransaction failed.');
+    let rawHex = s.fundedTxHex || null;
+    if (!rawHex) {
+      try {
+        rawHex = await bitcoin._makeRPCRequest('getrawtransaction', [s.fundedTxid, false]);
+      } catch (e) {
+        return deny(e && e.message ? e.message : 'getrawtransaction failed.');
+      }
     }
-    const dest = String(body.toAddress || body.destinationAddress || '').trim() || await bitcoin.getUnusedAddress();
-    const feeSats = Number(body.feeSats || 1000);
+    const givenDest = String(body.toAddress || body.destinationAddress || '').trim();
+    const dest = givenDest || await this._inventoryHtlcPayoutAddress(bitcoin);
+    let tip = null;
+    let confirmations = 0;
+    try {
+      const verbose = await bitcoin._makeRPCRequest('getrawtransaction', [s.fundedTxid, true]);
+      confirmations = Number(verbose && verbose.confirmations) || 0;
+      tip = Number(await bitcoin._makeRPCRequest('getblockcount', []));
+    } catch (e) {
+      return deny(e && e.message ? e.message : 'could not read funding confirmations');
+    }
+    const HtlcGate = require('@fabric/core/types/htlc');
+    const refusal = HtlcGate.claimRefusal({
+      tipHeight: tip,
+      refundLocktime: s.refundLockHeight,
+      confirmations
+    });
+    if (refusal) return deny(refusal);
+    const feeSats = Number(body.feeSats) || await this._inventoryHtlcClaimFeeSats(bitcoin, s);
     const claimScript = Buffer.from(s.claimScriptHex, 'hex');
     const refundScript = Buffer.from(s.refundScriptHex, 'hex');
     const preimage = Buffer.from(s.preimageHex, 'hex');
@@ -6553,7 +8207,10 @@ class Hub extends Service {
         refundScript,
         preimage32: preimage,
         destinationAddress: dest,
-        feeSats
+        feeSats,
+        tipHeight: tip,
+        confirmations,
+        refundLocktimeHeight: s.refundLockHeight
       });
     } catch (e) {
       return deny(e && e.message ? e.message : 'Failed to build claim transaction.');
@@ -6570,7 +8227,14 @@ class Hub extends Service {
     } catch (e) {
       return deny(e && e.message ? e.message : 'sendrawtransaction failed.');
     }
+    if (s.claimTxid && s.claimTxid !== claimTxid) {
+      s.claimTxidsEarlier = [s.claimTxid].concat(s.claimTxidsEarlier || []).slice(0, 8);
+    }
     s.claimTxid = claimTxid;
+    s.claimTxHex = txHex;
+    s.claimFeeSats = bundle.fee;
+    s.claimToWallet = !givenDest;
+    this._persistInventoryHtlcSettlements();
     try {
       this._mergePersistedTxLabel(claimTxid, 'inventory_htlc_claim', { documentId: s.documentId, settlementId, phase: 'seller_claim' });
     } catch (_) {}
@@ -6623,6 +8287,9 @@ class Hub extends Service {
       const networkName = String(
         body.networkName || (bitcoin && bitcoin.network) || 'regtest'
       ).toLowerCase();
+      const salesRefusal = this._documentSalesRefusal() ||
+        (/^(main|mainnet|livenet|bitcoin)$/.test(networkName) ? 'Priced document sales are not available on mainnet yet.' : null);
+      if (salesRefusal) return { type: 'BuildDocumentOfferEscrowResult', status: 'error', message: salesRefusal };
       const delivererPubkeyHex = String(body.delivererPubkeyHex || '').trim();
       const initiatorRefundPubkeyHex = String(body.initiatorRefundPubkeyHex || '').trim();
       const paymentHashHex = String(body.paymentHashHex || '').trim();
@@ -6871,6 +8538,18 @@ class Hub extends Service {
    * Registered as an explicit route so `POST /services/rpc` is not handled by the SPA `POST /*`
    * resource path (which would return 500 for unknown POST /services/...).
    */
+  /**
+   * Whether an HTTP JSON-RPC call gets loopback privileges (such as `CreateDocument` `filePath`
+   * ingest). A page on another site that reaches 127.0.0.1 (CORS is `*`) is a loopback socket
+   * too, so only same-origin or non-browser callers count.
+   * @param {Object} req Express request
+   * @returns {boolean}
+   */
+  _isLocalRpcRequest (req) {
+    return isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts || [] }) &&
+      !isCrossOriginRead(req);
+  }
+
   async _handleHttpJsonRpcRequest (req, res) {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const method = typeof body.method === 'string' ? body.method : '';
@@ -6891,9 +8570,14 @@ class Hub extends Service {
       return res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: `Method not found: ${method}` }, id });
     }
 
-    const isLocal = isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts });
+    const isLocal = this._isLocalRpcRequest(req);
+    // Same calling convention as @fabric/http `_handleCall`: `withContext` methods get the context first.
+    const options = (this.http._methodOptions && this.http._methodOptions[method]) || {};
+    const args = options.withContext
+      ? [{ passport: req.passportSession || null, transportAuthorized: false, connection: null }].concat(paramArray)
+      : paramArray;
     try {
-      const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, paramArray)));
+      const result = await _rpcHttpLocalStore.run({ isLocal }, () => Promise.resolve(fn.apply(this.http, args)));
       res.setHeader('Content-Type', 'application/json');
       if (body.jsonrpc === '2.0') {
         return res.status(200).json({ jsonrpc: '2.0', result, id });
@@ -6928,6 +8612,62 @@ class Hub extends Service {
    * @param {object} full
    * @returns {object}
    */
+  /**
+   * Remember which WebSocket registered a WebRTC peer id, for signal routing.
+   * An id held by another live connection is refused, also to a caller without one (HTTP
+   * JSON-RPC registry clients such as GoonCitizen's cluster mesh), which would otherwise
+   * rewrite a browser's listing. With an older `@fabric/http` that passes no `connection`
+   * at all, nothing is bound.
+   * @param {string} peerId
+   * @param {Object} [context] `withContext` call context
+   * @returns {{ ok: boolean, message?: string }}
+   */
+  _bindWebRtcSignalConnection (peerId, context) {
+    const connection = context && context.connection;
+    if (!this._webrtcSignalConnections) this._webrtcSignalConnections = new Map();
+    const held = this._webrtcSignalConnections.get(peerId);
+    if (!connection) {
+      if (held && held.readyState === 1) return { ok: false, message: 'peerId is registered by another connection' };
+      return { ok: true };
+    }
+    if (held && held !== connection && held.readyState === 1) {
+      return { ok: false, message: 'peerId is registered by another connection' };
+    }
+    if (held !== connection) {
+      this._webrtcSignalConnections.set(peerId, connection);
+      if (typeof connection.once === 'function') {
+        connection.once('close', () => {
+          if (this._webrtcSignalConnections.get(peerId) === connection) this._webrtcSignalConnections.delete(peerId);
+        });
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Deliver a WebRTC signal to the connection that registered `toPeerId`.
+   * @param {Object} context `withContext` call context
+   * @param {string} fromPeerId
+   * @param {string} toPeerId
+   * @param {Message} msg
+   * @returns {{ status: string, message?: string }}
+   */
+  _relayWebRtcSignal (context, fromPeerId, toPeerId, msg) {
+    if (!context || !('connection' in context)) {
+      // Older @fabric/http: no caller connection to route by; Bridges filter on toPeerId.
+      if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
+      return { status: 'success' };
+    }
+    const connections = this._webrtcSignalConnections || new Map();
+    if (!context.connection || connections.get(fromPeerId) !== context.connection) {
+      return { status: 'error', message: 'fromPeerId is not registered on this connection' };
+    }
+    const target = connections.get(toPeerId);
+    if (!target || target.readyState !== 1) return { status: 'error', message: 'toPeerId is not connected to this Hub' };
+    target.send(msg.toBuffer());
+    return { status: 'success' };
+  }
+
   _redactBitcoinStatusForNonAdmin (full) {
     if (!full || typeof full !== 'object') return full;
     const out = { ...full };
@@ -6966,7 +8706,7 @@ class Hub extends Service {
 
   /**
    * Positive sats listed on Bitcoin block/tx Fabric documents for inventory HTLC (`purchasePriceSats`).
-   * @param {'block'|'transaction'} kind
+   * @param {'block'|'transaction'|'rawBlock'} kind
    * @returns {number|undefined}
    */
   _resolveBitcoinDocumentInventoryPriceSats (kind) {
@@ -6976,6 +8716,8 @@ class Hub extends Service {
       raw = b.documentInventoryBlockPriceSats;
     } else if (kind === 'transaction') {
       raw = b.documentInventoryTransactionPriceSats;
+    } else if (kind === 'rawBlock') {
+      raw = b.documentInventoryRawBlockPriceSats;
     } else {
       return undefined;
     }
@@ -6998,7 +8740,7 @@ class Hub extends Service {
       const c = coll[id];
       const d = docs[id];
       const mime = (d && d.mime) || (c && c.mime) || '';
-      if (mime !== FABRIC_BITCOIN_BLOCK_DOC_MIME && mime !== FABRIC_BITCOIN_TX_DOC_MIME) return false;
+      if (mime !== FABRIC_BITCOIN_BLOCK_DOC_MIME && mime !== FABRIC_BITCOIN_TX_DOC_MIME && mime !== FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME) return false;
       const h = (d && d.bitcoinHeight != null) ? d.bitcoinHeight : (c && c.bitcoinHeight);
       return isDocumentHeightPruned(pruneHeight, h);
     });
@@ -7087,7 +8829,11 @@ class Hub extends Service {
       // Tip-first for status / ListBlocks default (matches prior recentBlocks order).
       recentBlocks.reverse();
 
-      const mempoolVerbose = await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
+      const mempoolSize = mempoolInfo && Number.isFinite(Number(mempoolInfo.size)) ? Number(mempoolInfo.size) : null;
+      const mempoolSummaryOnly = mempoolSize != null && mempoolSize > BITCOIN_VERBOSE_MEMPOOL_MAX_TXS;
+      const mempoolVerbose = mempoolSummaryOnly
+        ? {}
+        : await bitcoin._makeRPCRequest('getrawmempool', [true]).catch(() => ({}));
       const mempoolTxs = Object.entries(mempoolVerbose || {})
         .sort((a, b) => Number((b[1] && b[1].time) || 0) - Number((a[1] && a[1].time) || 0))
         .slice(0, 10)
@@ -7098,9 +8844,11 @@ class Hub extends Service {
           vsize: tx && tx.vsize != null ? tx.vsize : null
         }));
 
-      const mempoolTxCountFull = Object.keys(mempoolVerbose || {}).length;
+      const mempoolTxCountFull = mempoolSummaryOnly ? mempoolSize : Object.keys(mempoolVerbose || {}).length;
       const MAX_MEMPOOL_FEE_SUM = 25000;
-      let mempoolFeeSats = 0;
+      let mempoolFeeSats = mempoolSummaryOnly && typeof mempoolInfo.total_fee === 'number'
+        ? Math.round(mempoolInfo.total_fee * SATS_PER_BTC)
+        : 0;
       let fi = 0;
       for (const txid of Object.keys(mempoolVerbose || {})) {
         if (fi++ >= MAX_MEMPOOL_FEE_SUM) break;
@@ -7110,7 +8858,7 @@ class Hub extends Service {
           if (typeof btc === 'number' && Number.isFinite(btc)) mempoolFeeSats += Math.round(btc * SATS_PER_BTC);
         }
       }
-      const mempoolFeesTruncated = mempoolTxCountFull > MAX_MEMPOOL_FEE_SUM;
+      const mempoolFeesTruncated = !mempoolSummaryOnly && mempoolTxCountFull > MAX_MEMPOOL_FEE_SUM;
 
       const trusted = balances && balances.mine && balances.mine.trusted != null ? balances.mine.trusted : 0;
       const beacon = this._beaconEpochState || null;
@@ -7176,13 +8924,33 @@ class Hub extends Service {
    * Incoming tips are relayed by Fabric `Peer` (Bitcoin block opcode). Use the `BitcoinBlock` vector label so encoders map to the correct opcode (not all cores accept `BITCOIN_BLOCK` as the constructor label).
    * @param {object} payload Same shape as `BitcoinBlock` Fabric message log (tip, height, network, at, …)
    */
+  /**
+   * Block relay telemetry + compact block relay (`services/blockRelay.js`), created on first use.
+   * @returns {BlockRelay}
+   */
+  _getBlockRelay () {
+    if (this.blockRelay) return this.blockRelay;
+    const b = (this.settings && this.settings.bitcoin) || {};
+    const cfg = (b.blockRelay && typeof b.blockRelay === 'object') ? b.blockRelay : {};
+    this.blockRelay = new BlockRelay(Object.assign({ network: b.network, debug: !!this.settings.debug }, cfg), {
+      rpc: (method, params) => {
+        const svc = this._getBitcoinService();
+        if (!svc || typeof svc._makeRPCRequest !== 'function') return Promise.reject(new Error('bitcoin unavailable'));
+        return svc._makeRPCRequest(method, params);
+      },
+      send: (peer, body) => this._sendGenericFabricEnvelopeToPeer(peer, body),
+      peers: () => Object.keys((this.agent && this.agent.connections) || {})
+    });
+    return this.blockRelay;
+  }
+
   _broadcastBitcoinBlockToFabricPeers (payload = {}) {
     try {
       if (!this.agent || typeof this.agent.relayFrom !== 'function') return;
       if (!this.agent.key || !this.agent.key.private) return;
       const tip = String(payload.tip || '').trim();
       if (!tip) return;
-      const p2pMsg = Message.fromVector(['BitcoinBlock', JSON.stringify(payload)]).signWithKey(this.agent.key);
+      const p2pMsg = Message.fromLegacyBody('BitcoinBlock', payload).signWithKey(this.agent.key);
       this.agent.relayFrom('_hub', p2pMsg);
     } catch (err) {
       console.error('[HUB] _broadcastBitcoinBlockToFabricPeers error:', err && err.message ? err.message : err);
@@ -7258,6 +9026,10 @@ class Hub extends Service {
         }
       }
 
+      this._deliverConfirmedHtlcPayments().catch((deliverErr) => {
+        console.warn('[HUB] INVENTORY HTLC block delivery:', deliverErr && deliverErr.message ? deliverErr.message : deliverErr);
+      });
+
       if (this.beacon && this.beacon.state && this.beacon.state.status === 'RUNNING') {
         try {
           await this.beacon.recordEpochFromBlock({
@@ -7300,8 +9072,9 @@ class Hub extends Service {
       const docTxCfg = this.settings.bitcoin && this.settings.bitcoin.documentTransactions;
       const documentTxEnabled = docTxCfg === true || docTxCfg === 'true' || docTxCfg === 1 || docTxCfg === '1';
       const federationScan = this._federationRegistryScanEnabled();
+      const initialSync = !!(status.blockchain && status.blockchain.initialblockdownload);
       let fullBlock = null;
-      if ((documentBlocksEnabled || federationScan) && tip) {
+      if ((documentBlocksEnabled || federationScan) && tip && !initialSync) {
         try {
           const bitcoinSvc = this._getBitcoinService();
           if (bitcoinSvc && typeof bitcoinSvc._makeRPCRequest === 'function') {
@@ -7354,13 +9127,116 @@ class Hub extends Service {
     }
     const id = bitcoinBlockDocumentId(block, networkName);
     const summary = buildBitcoinBlockSummary(block, networkName);
-    const now = new Date().toISOString();
     const h = String(block.hash);
     const name = `Bitcoin block ${summary.height != null && Number.isFinite(Number(summary.height)) ? summary.height : '?'} (${h.slice(0, 10)}…)`;
     const mime = FABRIC_BITCOIN_BLOCK_DOC_MIME;
     const blockPriceSats = this._resolveBitcoinDocumentInventoryPriceSats('block');
     const heightNorm = summary.height != null && Number.isFinite(Number(summary.height)) ? Number(summary.height) : null;
+    await this._publishGeneratedDocument({
+      id,
+      buffer,
+      name,
+      mime,
+      label: 'block document',
+      tag: 'bitcoin-block-document',
+      catalog: {
+        bitcoinBlockHash: h,
+        ...(heightNorm != null ? { bitcoinHeight: heightNorm } : {}),
+        ...(blockPriceSats != null ? { purchasePriceSats: blockPriceSats } : {})
+      },
+      activity: { bitcoinBlock: true }
+    });
+  }
 
+  /**
+   * Store a full raw block (consensus serialization) as a published Document
+   * other peers can buy (`bitcoin.documentRawBlocks`, off by default: it keeps a
+   * second copy of every block beside bitcoind's). The content is split into the
+   * normal 32 KiB blobs on delivery. Idempotent per block; follows the prune
+   * retention of the other Bitcoin documents via `bitcoinHeight`.
+   * @param {{ raw: string, hash: string }} payload `Bitcoin` `rawBlock` event
+   * @returns {Promise<boolean>} whether a new document was stored
+   */
+  async _ensureBitcoinRawBlockDocument (payload = {}) {
+    const hash = payload && typeof payload.hash === 'string' ? payload.hash.toLowerCase() : '';
+    const rawHex = payload && typeof payload.raw === 'string' ? payload.raw : '';
+    if (!/^[0-9a-f]{64}$/.test(hash) || !rawHex || rawHex.length % 2) return false;
+    if (!this._rawBlockDocumentHashes) this._rawBlockDocumentHashes = new Set();
+    if (this._rawBlockDocumentHashes.has(hash)) return false;
+    const buffer = Buffer.from(rawHex, 'hex');
+    const sizeErr = this._validateDocumentSize(buffer);
+    if (sizeErr) {
+      console.warn('[HUB:BITCOIN] raw block document:', sizeErr.message);
+      return false;
+    }
+    const maxBytes = Number(this.settings.bitcoin && this.settings.bitcoin.documentRawBlocksMaxBytes);
+    if (Number.isFinite(maxBytes) && maxBytes > 0 && this._rawBlockDocumentBytesTotal() + buffer.length > maxBytes) {
+      if (!this._rawBlockDocumentCapWarned) {
+        this._rawBlockDocumentCapWarned = true;
+        console.warn('[HUB:BITCOIN] raw block documents reached documentRawBlocksMaxBytes', maxBytes, '; not storing more');
+      }
+      return false;
+    }
+    let height = null;
+    try {
+      const header = this.bitcoin && typeof this.bitcoin._makeRPCRequest === 'function'
+        ? await this.bitcoin._makeRPCRequest('getblockheader', [hash, true])
+        : null;
+      if (header && Number.isFinite(Number(header.height))) height = Number(header.height);
+    } catch (_) { /* height is optional: without it the document is never pruned */ }
+    const id = crypto.createHash('sha256').update(buffer).digest('hex');
+    const priceSats = this._resolveBitcoinDocumentInventoryPriceSats('rawBlock');
+    this._rawBlockDocumentHashes.add(hash);
+    await this._publishGeneratedDocument({
+      id,
+      buffer,
+      name: `Bitcoin raw block ${height != null ? height : '?'} (${hash.slice(0, 10)}…)`,
+      mime: FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME,
+      label: 'raw block document',
+      tag: 'bitcoin-raw-block-document',
+      catalog: {
+        bitcoinBlockHash: hash,
+        ...(height != null ? { bitcoinHeight: height } : {}),
+        ...(priceSats != null ? { purchasePriceSats: priceSats } : {})
+      },
+      activity: { bitcoinRawBlock: true }
+    });
+    return true;
+  }
+
+  /**
+   * Bytes of published raw-block documents (for `documentRawBlocksMaxBytes`).
+   * @returns {number}
+   * @private
+   */
+  _rawBlockDocumentBytesTotal () {
+    const coll = (this._state.content.collections && this._state.content.collections.documents) || {};
+    let total = 0;
+    for (const row of Object.values(coll)) {
+      if (row && row.published && row.mime === FABRIC_BITCOIN_RAW_BLOCK_DOC_MIME) total += Number(row.size) || 0;
+    }
+    return total;
+  }
+
+  /**
+   * Persist and publish a document the Hub generated itself (Bitcoin block
+   * summaries, raw blocks): write `documents/<id>.json`, add it to the published
+   * catalog with `catalog` fields, append `PublishDocument`, record an `Add`.
+   * Idempotent: an id already published is left alone.
+   * @param {Object} opts
+   * @param {string} opts.id Content id (sha256 of `buffer`)
+   * @param {Buffer} opts.buffer Document content
+   * @param {string} opts.name
+   * @param {string} opts.mime
+   * @param {string} opts.label Log label
+   * @param {string} opts.tag Chain-state refresh tag
+   * @param {Object} [opts.catalog] Extra fields on the catalog row (height, price, …)
+   * @param {Object} [opts.activity] Extra fields on the `Add` activity object
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _publishGeneratedDocument ({ id, buffer, name, mime, label, tag, catalog = {}, activity = {} }) {
+    const now = new Date().toISOString();
     this._ensureResourceCollections();
     this._state.documents = this._state.documents || {};
     this._state.content.collections = this._state.content.collections || {};
@@ -7393,18 +9269,18 @@ class Hub extends Service {
           contentBase64: buffer.toString('base64')
         });
       } catch (e) {
-        console.error('[HUB:BITCOIN] block document persist failed:', e && e.message ? e.message : e);
+        console.error(`[HUB:BITCOIN] ${label} persist failed:`, e && e.message ? e.message : e);
         return;
       }
       this._state.documents[id] = { ...meta };
-      this._refreshChainState('bitcoin-block-document');
+      this._refreshChainState(tag);
       // Single activity: `Add` to the documents collection below (avoids paired Create+Add rows).
       parsed = meta;
     } else {
       try {
         parsed = JSON.parse(existingRaw);
       } catch (e) {
-        console.error('[HUB:BITCOIN] block document corrupt:', id, e && e.message ? e.message : e);
+        console.error(`[HUB:BITCOIN] ${label} corrupt:`, id, e && e.message ? e.message : e);
         return;
       }
       if (!this._state.documents[id]) {
@@ -7440,9 +9316,7 @@ class Hub extends Service {
       revision: parsed.revision || 1,
       edited: parsed.edited || parsed.created || pubNow,
       published: pubNow,
-      bitcoinBlockHash: h,
-      ...(heightNorm != null ? { bitcoinHeight: heightNorm } : {}),
-      ...(blockPriceSats != null ? { purchasePriceSats: blockPriceSats } : {})
+      ...catalog
     };
     if (!exists) {
       this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
@@ -7457,7 +9331,7 @@ class Hub extends Service {
     } catch (e) {
       console.error('[HUB:BITCOIN] PublishDocument message failed:', e && e.message ? e.message : e);
     }
-    this._refreshChainState('publish-bitcoin-block-document');
+    this._refreshChainState(`publish-${tag}`);
     this.commit();
     if (typeof this._pushNetworkStatus === 'function') {
       try {
@@ -7475,7 +9349,7 @@ class Hub extends Service {
           size: coll[id].size,
           sha256: coll[id].sha256,
           published: pubNow,
-          bitcoinBlock: true
+          ...activity
         },
         target: { type: 'Collection', name: 'documents' }
       });
@@ -9441,6 +11315,20 @@ class Hub extends Service {
    * @param {object} req
    * @returns {string}
    */
+  /** A JSON body field (POST keeps the wallet out of URLs and logs), else the query. */
+  _bitcoinXpubBodyOrQuery (req, name) {
+    const body = req && req.body && typeof req.body === 'object' ? req.body : null;
+    if (body && body[name] != null) return body[name];
+    return req && req.query ? req.query[name] : undefined;
+  }
+
+  /** Watched addresses as a comma list, from a JSON body (string or array) or `?addresses=`. */
+  _bitcoinXpubAddressesFromRequest (req) {
+    const raw = this._bitcoinXpubBodyOrQuery(req, 'addresses');
+    if (Array.isArray(raw)) return raw.map((a) => String(a).trim()).filter(Boolean).join(',');
+    return raw != null ? String(raw).trim() : '';
+  }
+
   _bitcoinXpubFromRequest (req) {
     const h = (req && req.headers) || {};
     const headerRaw = h['x-fabric-xpub'] || h['x-fabric-xpub-key'] || '';
@@ -9470,7 +11358,7 @@ class Hub extends Service {
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
       try {
-        const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+        const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
         const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
@@ -9522,9 +11410,9 @@ class Hub extends Service {
         });
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
-      const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+      const limit = Math.max(1, Math.min(100, Number(this._bitcoinXpubBodyOrQuery(req, 'limit') || 50)));
       try {
-        const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+        const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
         const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
@@ -9590,7 +11478,7 @@ class Hub extends Service {
       if (isClientWallet) {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+          const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
           const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
@@ -9810,12 +11698,12 @@ class Hub extends Service {
       const xpub = this._bitcoinXpubFromRequest(req);
       const isHubWallet = walletId && String(walletId) === String(bitcoin.walletName);
       const isClientWallet = !isHubWallet && xpub;
-      const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+      const limit = Math.max(1, Math.min(100, Number(this._bitcoinXpubBodyOrQuery(req, 'limit') || 50)));
 
       if (isClientWallet) {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+          const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
           const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
@@ -9879,14 +11767,32 @@ class Hub extends Service {
       const bitcoin = this._getBitcoinService();
       if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
 
-      const to = String(body.to || body.address || '').trim();
-      const amountSats = Number(body.amountSats || 0);
+      // `to` may be a BIP21 URI; with pj= and internal Payjoin on, the payment goes through Payjoin.
+      const dest = this._paymentDestination(body);
+      const to = dest.address;
+      const amountSats = Number(body.amountSats || dest.amountSats || 0);
       const amountBTC = Number((amountSats / 100000000).toFixed(8));
       const memo = String(body.memo || '');
 
       if (!to) return res.status(400).json({ status: 'error', message: 'Destination address is required.' });
       if (!Number.isFinite(amountSats) || amountSats <= 0) {
         return res.status(400).json({ status: 'error', message: 'amountSats must be a positive integer.' });
+      }
+
+      if (dest.bip21) {
+        let send;
+        try {
+          send = await this._maybePayjoinSend(body, amountSats);
+        } catch (err) {
+          return res.status(400).json({ status: 'error', message: err && err.message ? err.message : String(err), payjoin: err && err.payjoinSend });
+        }
+        if (send) {
+          return res.json({
+            walletId: String((req.params && req.params.walletId) || body.walletId || bitcoin.walletName),
+            network: bitcoin.network,
+            payment: { txid: send.txid, destination: send.address, amountSats: send.amountSats, amountBTC, payjoin: true, payjoinSendId: send.id }
+          });
+        }
       }
 
       // Regtest / signet have no fee estimates: send with an explicit fee_rate there,
@@ -10055,7 +11961,7 @@ class Hub extends Service {
         return res.json(payments.filter(Boolean));
       }
 
-      const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
+      const addressesParam = this._bitcoinXpubAddressesFromRequest(req);
       const watchAddrs = new Set(addressesParam.split(',').map((a) => String(a).trim()).filter(Boolean));
       const filtered = await this._filterMempoolPaymentSummariesForAddresses(bitcoin, watchAddrs, limit);
       return res.json(filtered);
@@ -10074,7 +11980,8 @@ class Hub extends Service {
         });
       }
 
-      const capabilities = payjoin.getCapabilities();
+      // Recent sessions (addresses, amounts) only for the operator.
+      const capabilities = payjoin.getCapabilities({ operator: this._httpCallerIsOperator(req) });
       this._state.content.services.payjoin = {
         available: !!capabilities.available,
         sessions: Number(capabilities.counts && capabilities.counts.sessions ? capabilities.counts.sessions : 0)
@@ -10157,7 +12064,7 @@ class Hub extends Service {
     if (!this.agent || typeof this.agent.relayFrom !== 'function') return null;
     if (!key || !key.private) return null;
     try {
-      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+      const msg = Message.fromLegacyBody('CONTRACT_MESSAGE', body);
       msg.signWithKey(key);
       // Peer#relayFrom writes synchronously and returns nothing.
       this.agent.relayFrom('_hub', msg);
@@ -10292,6 +12199,10 @@ class Hub extends Service {
     if (!Number.isSafeInteger(amountSats) || amountSats <= 0) throw new Error('amountSats must be a positive integer');
     const feeRate = Number(opts.feeRateSatVb);
     if (!(feeRate > 0)) throw new Error('feeRateSatVb must be positive');
+    if (opts.bip21) {
+      const send = await this._maybePayjoinSend({ bip21: opts.bip21, feeRateSatVb: feeRate }, amountSats);
+      if (send) return send.txid;
+    }
     await bitcoin._loadWallet(bitcoin.walletName);
     // sendtoaddress address amount comment comment_to subtractfee replaceable conf_target estimate_mode avoid_reuse fee_rate
     const txid = await bitcoin._makeWalletRequest('sendtoaddress', [
@@ -10383,6 +12294,32 @@ class Hub extends Service {
    * @returns {Function}
    * @private
    */
+  /**
+   * `GET /services/federations/messages`: frames for the member whose key
+   * signed the `X-Fabric-Mailbox` proof (a core `DELEGATION_MAILBOX_FETCH`,
+   * which names the pubkey and `since`; each nonce works once). A bare
+   * `?pubkey=` is refused, so nobody can list another member's federations.
+   * @param {Object} federations
+   * @param {Object} req
+   * @returns {Object}
+   */
+  _readFederationMailbox (federations, req) {
+    const fail = (statusCode, message) => Object.assign(new Error(message), { statusCode });
+    const proof = String((req.headers && req.headers['x-fabric-mailbox']) || '').trim();
+    if (!proof) throw fail(401, 'X-Fabric-Mailbox required: a DELEGATION_MAILBOX_FETCH signed by the member key');
+    const read = delegationFrames.readMailboxFetch(proof, { now: Date.now() });
+    if (!read.ok) throw fail(401, read.error);
+    if (!this._federationMailboxNonces) this._federationMailboxNonces = new Map();
+    const spent = this._federationMailboxNonces;
+    const now = Date.now();
+    for (const [nonce, expiresAt] of spent) if (expiresAt <= now) spent.delete(nonce);
+    if (spent.has(read.nonce)) throw fail(409, 'mailbox proof already used');
+    if (spent.size >= 100000) throw fail(503, 'too many mailbox reads in flight; retry shortly');
+    spent.set(read.nonce, read.expiresAt);
+    const q = req.query || {};
+    return Object.assign({ type: 'FederationMessages' }, federations.framesFor(read.pubkey, { since: read.since, limit: q.limit }));
+  }
+
   _federationRoute (fn, opts = {}) {
     const limit = Number(opts.limit) || 30;
     const hits = new Map();
@@ -10405,7 +12342,8 @@ class Hub extends Service {
           return res.json(await fn(federations, req));
         } catch (err) {
           const message = err && err.message ? err.message : String(err);
-          return res.status(/^unknown federation/.test(message) ? 404 : 400).json({ status: 'error', message });
+          const status = err && Number.isInteger(err.statusCode) ? err.statusCode : (/^unknown federation/.test(message) ? 404 : 400);
+          return res.status(status).json({ status: 'error', message });
         }
       };
       if (String(req.method || 'GET').toUpperCase() === 'GET') return this.http.jsonOrShell(req, res, run);
@@ -10421,6 +12359,10 @@ class Hub extends Service {
       }
       return res.json(market.getCapabilities());
     });
+  }
+
+  _handleBlockRelayRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => res.json(this._getBlockRelay().getStatus()));
   }
 
   _handleMarketProvidersRequest (req, res) {
@@ -10447,6 +12389,7 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const market = this._getMarketService();
       if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to read the market budget.' });
       return res.json(market.agentStatus());
     });
   }
@@ -10485,10 +12428,124 @@ class Hub extends Service {
     });
   }
 
+  /**
+   * Point the Bitcoin service's watchtower at this Hub's operator key and
+   * at Fabric peers already registered here. A WebRTC peer id is not a key.
+   * @returns {object|null}
+   * @private
+   */
+  _wireWatchtower () {
+    const tower = this.bitcoin && this.bitcoin.watchtower;
+    if (!tower) return null;
+    if (this._fabricKey && this._fabricKey.private) {
+      const { xOnlyPubkeyHex } = require('@fabric/core/types/witness');
+      tower.localPubkey = xOnlyPubkeyHex(this._fabricKey.private);
+    }
+    tower._admit = (pubkey) => this._watchtowerPeerRegistered(pubkey);
+    return tower;
+  }
+
+  /**
+   * @param {string} pubkey x-only or compressed
+   * @returns {boolean}
+   * @private
+   */
+  _watchtowerPeerRegistered (pubkey) {
+    const agent = this.agent;
+    const rows = [];
+    try {
+      if (agent && agent.peers) rows.push(...Object.values(agent.peers));
+      if (agent && Array.isArray(agent.knownPeers)) rows.push(...agent.knownPeers);
+    } catch (_) { return false; }
+    return rows.some((rec) => {
+      if (!rec || typeof rec !== 'object') return false;
+      const pk = rec.publicKey || rec.pubkey || rec.id;
+      return pk && Key.pubkeysMatch(pk, pubkey);
+    });
+  }
+
+  /**
+   * Restore filings saved under `fabric/watchtower.json`.
+   * @private
+   */
+  _loadWatchtower () {
+    const tower = this._wireWatchtower();
+    if (!tower || !this.fs || typeof this.fs.readFile !== 'function') return;
+    try {
+      const raw = this.fs.readFile('fabric/watchtower.json');
+      if (!raw) return;
+      const data = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw));
+      tower.import(data);
+    } catch (e) {
+      console.warn('[HUB:WATCHTOWER] restore failed:', e && e.message ? e.message : e);
+    }
+  }
+
+  /**
+   * @private
+   */
+  _persistWatchtower () {
+    const tower = this.bitcoin && this.bitcoin.watchtower;
+    if (!tower || !this.fs || typeof this.fs.publish !== 'function') return;
+    Promise.resolve(this.fs.publish('fabric/watchtower.json', tower.export())).catch((e) => {
+      console.warn('[HUB:WATCHTOWER] persist failed:', e && e.message ? e.message : e);
+    });
+  }
+
+  /**
+   * Keep a client's justice filing when that client is already registered.
+   * @param {object} appointment
+   * @returns {object|null}
+   * @private
+   */
+  _acceptWatchtowerAppointment (appointment) {
+    const tower = this._wireWatchtower();
+    if (!tower || !appointment) return null;
+    try {
+      const filed = tower.file(appointment);
+      this._persistWatchtower();
+      return filed;
+    } catch (e) {
+      if (!e || e.code !== 'UNREGISTERED') console.warn('[HUB:WATCHTOWER]', e && e.message ? e.message : e);
+      return null;
+    }
+  }
+
+  /**
+   * `POST /services/watchtower/appointments`. A current Passport session may
+   * file for its own key. A registered Fabric peer may file for its own key
+   * without a session. Anyone else is refused.
+   * @param {object} req
+   * @param {object} res
+   */
+  _handleWatchtowerAppointmentRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const tower = this._wireWatchtower();
+      if (!tower) return res.status(503).json({ error: 'watchtower unavailable' });
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const appointment = body.type === Watchtower.TYPE ? body : body.appointment;
+      if (!appointment) return res.status(400).json({ error: 'WatchtowerAppointment required' });
+      let sessionPubkey = null;
+      try {
+        const session = await hubRequestSession(this, req);
+        if (session) sessionPubkey = session.pubkey;
+      } catch (_) { sessionPubkey = null; }
+      try {
+        const filed = tower.file(appointment, { sessionPubkey });
+        this._persistWatchtower();
+        return res.status(201).json({ type: 'WatchtowerAppointmentAccepted', hint: filed.hint, client: filed.client });
+      } catch (e) {
+        const status = e && e.code === 'UNREGISTERED' ? 403 : 400;
+        return res.status(status).json({ error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
   _handleMarketChannelsRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const market = this._getMarketService();
       if (!market) return res.status(503).json({ available: false, service: 'market' });
+      if (!this._marketAgentAdminOk(req)) return res.status(403).json({ error: 'Admin token required to read payment channels.' });
       return res.json(market.channelsStatus());
     });
   }
@@ -10622,6 +12679,7 @@ class Hub extends Service {
       const receiveTemplate = String(body.receiveTemplate || '').trim();
       const federationXOnlyHex = String(body.federationXOnlyHex || '').trim();
       let address = String(body.address || '').trim();
+      const operator = this._httpCallerIsOperator(req);
       if (!receiveTemplate && !address) {
         if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to allocate a Hub wallet address for Payjoin.')) {
           return;
@@ -10641,7 +12699,8 @@ class Hub extends Service {
         address,
         receiveTemplate,
         federationXOnlyHex: federationXOnlyHex || undefined,
-        receiverContribution: payjoinContributionFlag(body)
+        // Anyone may open a session to receive a plain payment; only the operator's sessions get a Hub coin.
+        receiverContribution: operator ? payjoinContributionFlag(body) : false
       });
 
       this._state.content.services.payjoin = this._state.content.services.payjoin || {};
@@ -10662,6 +12721,8 @@ class Hub extends Service {
     return this.http.jsonOrShell(req, res, async () => {
       const payjoin = this._getPayjoinService();
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      // The list shows every payer's amounts, addresses and proposal txids; a payer reads its own session by id.
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to list Payjoin sessions.')) return;
       const limit = Math.max(1, Math.min(200, Number(req.query.limit || 25)));
       const includeExpired = String(req.query.includeExpired || '').toLowerCase() !== 'false';
       const sessions = payjoin.listSessions({ limit, includeExpired }).map((session) => payjoin.getSession(session.id, {
@@ -10681,7 +12742,9 @@ class Hub extends Service {
       if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
       const sessionId = req && req.params ? req.params.sessionId : null;
       if (!sessionId) return res.status(400).json({ status: 'error', message: 'sessionId is required.' });
-      const session = payjoin.getSession(sessionId, { includeProposals: true });
+      // Payers see what they need to pay; proposals and the Hub's contributed coins are the operator's.
+      const operator = this._httpCallerIsOperator(req);
+      const session = payjoin.getSession(sessionId, operator ? { includeProposals: true } : { view: 'payer' });
       if (!session) return res.status(404).json({ status: 'error', message: 'Payjoin session not found.' });
       return res.json({
         service: 'payjoin',
@@ -10745,7 +12808,7 @@ class Hub extends Service {
         });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
-        if (bip78Wire) return res.status(400).json({ errorCode: 'original-psbt-rejected', message: msg });
+        if (bip78Wire) return res.status(400).json({ errorCode: (e && e.bip78ErrorCode) || 'original-psbt-rejected', message: msg });
         return res.status(400).json({ status: 'error', message: msg });
       }
 
@@ -10769,6 +12832,17 @@ class Hub extends Service {
         res.status(200);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         return res.send(out);
+      }
+      if (!this._httpCallerIsOperator(req)) {
+        // The payer gets its answer, not the session's other proposals or the Hub's coin details.
+        return res.json({
+          status: result.status,
+          sessionId: result.sessionId,
+          proposalId: result.proposal && result.proposal.id,
+          bip78Psbt: result.bip78Psbt,
+          bip78Error: result.bip78Error,
+          session: payjoin.getSession(result.sessionId, { view: 'payer' })
+        });
       }
       return res.json(result);
     };
@@ -10839,6 +12913,8 @@ class Hub extends Service {
       if (!mailbox) {
         return res.status(503).json({ status: 'error', message: 'BIP77 experimental mailbox unavailable' });
       }
+      // Mailbox ids are capabilities; listing them is for the operator only.
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to list Payjoin mailboxes.')) return;
       const includeExpired = String((req.query && req.query.includeExpired) || '') === '1' ||
         String((req.query && req.query.includeExpired) || '').toLowerCase() === 'true';
       const limit = Number((req.query && req.query.limit) || 25);
@@ -10871,8 +12947,117 @@ class Hub extends Service {
           note: 'Opaque enqueue/poll only. markDelivered ≠ Payjoin settled.'
         });
       } catch (e) {
+        const status = e && e.code === 'MAILBOX_LIMIT' ? 429 : 400;
+        return res.status(status).json({ status: 'error', message: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  /** POST /services/payjoin/sessions/:sessionId/cancel — admin (SatoshiPortal `cancelReceive`). */
+  _handlePayjoinSessionCancelRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to cancel a Payjoin session.')) return;
+      try {
+        const session = await payjoin.cancelSession(req.params && req.params.sessionId);
+        return res.json({ service: 'payjoin', session });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return res.status(/not found/i.test(msg) ? 404 : 409).json({ status: 'error', message: msg });
+      }
+    });
+  }
+
+  /** GET /services/payjoin/sends — admin. */
+  _handlePayjoinSendsListRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to list Payjoin sends.')) return;
+      return res.json({ service: 'payjoin', sends: payjoin.listSends({ limit: req.query && req.query.limit }) });
+    });
+  }
+
+  /**
+   * POST /services/payjoin/sends — admin (SatoshiPortal `send`): pay `{ bip21, feeRateSatVb?, maxAdditionalFeeContributionSats?, dryRun? }`
+   * from the Hub wallet through BIP78. Needs `walletSend` enabled (`FABRIC_PAYJOIN_INTERNAL=1`). Nothing is broadcast when the receiver fails.
+   */
+  _handlePayjoinSendCreateRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to pay from the Hub wallet.')) return;
+      if (!payjoin.operationEnabled('walletSend')) {
+        return res.status(403).json({ status: 'error', message: 'Internal Payjoin is off on this Hub (payjoin.internal.enable / FABRIC_PAYJOIN_INTERNAL=1).' });
+      }
+      const body = (req.body && typeof req.body === 'object') ? req.body : {};
+      try {
+        const send = await payjoin.createSend({
+          bip21: body.bip21 || body.uri,
+          feeRateSatVb: body.feeRateSatVb,
+          maxAdditionalFeeContributionSats: body.maxAdditionalFeeContributionSats,
+          dryRun: body.dryRun === true,
+          operation: 'walletSend'
+        });
+        if (send.txid) {
+          try { this._mergePersistedTxLabel(String(send.txid), 'payjoin_send', { sendId: send.id, destination: send.address }); } catch (_) {}
+        }
+        return res.status(send.status === 'failed' ? 400 : 200).json({ service: 'payjoin', send });
+      } catch (e) {
         return res.status(400).json({ status: 'error', message: e && e.message ? e.message : String(e) });
       }
+    });
+  }
+
+  /** GET /services/payjoin/sends/:sendId — admin. */
+  _handlePayjoinSendViewRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to view a Payjoin send.')) return;
+      const send = payjoin.getSend(req.params && req.params.sendId);
+      if (!send) return res.status(404).json({ status: 'error', message: 'Payjoin send not found.' });
+      return res.json({ service: 'payjoin', send });
+    });
+  }
+
+  /** POST /services/payjoin/sends/:sendId/cancel — admin (SatoshiPortal `cancelSend`). */
+  _handlePayjoinSendCancelRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      if (!payjoin) return res.status(503).json({ status: 'error', message: 'Payjoin service unavailable' });
+      if (!this._requireAdminTokenForHubWalletHttp(req, res, 'Admin token required to cancel a Payjoin send.')) return;
+      try {
+        const send = await payjoin.cancelSend(req.params && req.params.sendId);
+        return res.json({ service: 'payjoin', send });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return res.status(/not found/i.test(msg) ? 404 : 409).json({ status: 'error', message: msg });
+      }
+    });
+  }
+
+  /** GET /services/payjoin/operations — which Hub operations settle through Payjoin here. */
+  _handlePayjoinOperationsRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const payjoin = this._getPayjoinService();
+      const settings = payjoin ? payjoin._operationSettings() : { enable: false };
+      return res.json({
+        service: 'payjoin',
+        internal: !!(settings.internal && settings.internal.enable === true),
+        operations: payjoinInternalOperations.listOperations(settings)
+      });
+    });
+  }
+
+  /** /services/payjoin/v2[/…] — BIP77 OHTTP directory stub. */
+  _handlePayjoinV2StubRequest (req, res) {
+    return res.status(501).json({
+      status: 'error',
+      code: 'not_implemented',
+      feature: 'bip77-ohttp',
+      message: 'BIP77 (OHTTP relay + Payjoin directory) is not implemented on this Hub; use BIP78 pj= or the experimental /services/payjoin/mailboxes.'
     });
   }
 
@@ -11213,8 +13398,9 @@ class Hub extends Service {
         if (!this.setup.verifyAdminToken(rpcToken)) {
           return { status: 'error', message: 'Admin token required to spend from the Hub wallet (bridge payment).' };
         }
-        const to = String(params.to || params.address || '').trim();
-        const amountSats = Number(params.amountSats || 0);
+        const dest = this._paymentDestination(params);
+        const to = dest.address;
+        const amountSats = Number(params.amountSats || dest.amountSats || 0);
         const amountBTC = Number((amountSats / 100000000).toFixed(8));
         const memo = String(params.memo || '');
         const walletId = String(params.walletId || bitcoin.walletName || '');
@@ -11222,6 +13408,22 @@ class Hub extends Service {
         if (!to) return { status: 'error', message: 'Destination address is required.' };
         if (!Number.isFinite(amountSats) || amountSats <= 0) {
           return { status: 'error', message: 'amountSats must be a positive integer.' };
+        }
+
+        if (dest.bip21) {
+          let send;
+          try {
+            send = await this._maybePayjoinSend(params, amountSats);
+          } catch (err) {
+            return { status: 'error', message: err && err.message ? err.message : String(err), payjoin: err && err.payjoinSend };
+          }
+          if (send) {
+            return {
+              walletId,
+              network: bitcoin.network,
+              payment: { txid: send.txid, destination: send.address, amountSats: send.amountSats, amountBTC, payjoin: true, payjoinSendId: send.id }
+            };
+          }
         }
 
         const txid = await bitcoin._processSpendMessage({
@@ -11329,7 +13531,7 @@ class Hub extends Service {
     // Bitcoind-compatible JSON-RPC 2.0 (params array) — passthrough + local verifymessage.
     if (body.jsonrpc === '2.0' && typeof body.method === 'string') {
       return Promise.resolve()
-        .then(() => this._hubBitcoindJsonRpc(body, res))
+        .then(() => this._hubBitcoindJsonRpc(body, res, { isAdmin: this._isSetupAdminRequest(req) }))
         .catch((error) => {
           const id = Object.prototype.hasOwnProperty.call(body, 'id') ? body.id : null;
           res.setHeader('Content-Type', 'application/json');
@@ -11359,12 +13561,28 @@ class Hub extends Service {
   /**
    * POST /services/bitcoin with body { jsonrpc: '2.0', method, params: [], id }.
    * - verifymessage: implemented locally (no bitcoind) using tiny-secp256k1 + bitcoinjs-lib.
-   * - other methods: forwarded to Fabric Bitcoin service RPC when available (passthrough to bitcoind).
+   * - other methods: forwarded to Fabric Bitcoin service RPC when available (passthrough to bitcoind),
+   *   subject to {@link bitcoindRpcAccess}: read-only methods are public, the rest need the admin token.
+   * @param {Object} body JSON-RPC request body
+   * @param {Object} res Express response
+   * @param {Object} [opts]
+   * @param {boolean} [opts.isAdmin] caller presented a valid admin token
    */
-  async _hubBitcoindJsonRpc (body, res) {
+  async _hubBitcoindJsonRpc (body, res, opts = {}) {
     const method = String(body.method || '').trim();
     const params = Array.isArray(body.params) ? body.params : [];
     const id = Object.prototype.hasOwnProperty.call(body, 'id') ? body.id : null;
+    if (method !== 'verifymessage') {
+      const access = bitcoindRpcAccess(method, { isAdmin: opts.isAdmin === true });
+      if (!access.allowed) {
+        res.setHeader('Content-Type', 'application/json');
+        return res.status(access.status).json({
+          jsonrpc: '2.0',
+          error: { code: -32600, message: access.message },
+          id
+        });
+      }
+    }
     const reply = (err, result) => {
       res.setHeader('Content-Type', 'application/json');
       if (err) {
@@ -12298,8 +14516,28 @@ class Hub extends Service {
         this.bitcoin.on('error', (...error) => console.error('[BITCOIN]', '[ERROR]', ...error));
         this.bitcoin.on('log', (...log) => console.log('[BITCOIN]', ...log));
         this.bitcoin.on('warning', (...warning) => console.warn('[BITCOIN]', '[WARNING]', ...warning));
-        this.bitcoin.on('block', this._handleBitcoinBlockUpdate.bind(this));
+        // Core's payload can carry the whole block; queue only what the handler reads.
+        this.bitcoin.on('block', (payload = {}) => {
+          // Stamp arrival before the serial queue so relay telemetry sees ZMQ time.
+          this._getBlockRelay().onLocalBlock(payload).catch((err) => {
+            console.warn('[HUB:BLOCKRELAY] local block:', err && err.message ? err.message : err);
+          });
+          this._bitcoinBlockQueue.push({
+            tip: payload.tip,
+            height: payload.height,
+            supply: payload.supply
+          });
+        });
         this.bitcoin.on('transaction', this._handleBitcoinTransactionUpdate.bind(this));
+        // Full raw blocks as purchasable documents: opt-in, multiplies mainnet storage.
+        const rawBlocksCfg = this.settings.bitcoin && this.settings.bitcoin.documentRawBlocks;
+        if (rawBlocksCfg === true || rawBlocksCfg === 1 || rawBlocksCfg === '1' || rawBlocksCfg === 'true') {
+          this.bitcoin.on('rawBlock', (payload) => {
+            this._ensureBitcoinRawBlockDocument(payload).catch((err) => {
+              console.warn('[HUB:BITCOIN] raw block document failed:', err && err.message ? err.message : err);
+            });
+          });
+        }
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
         this._repairManagedRegtestSettingsJsonIfCorrupt();
@@ -12325,8 +14563,13 @@ class Hub extends Service {
         this.payjoin.attach({
           fs: this.fs,
           bitcoin: this._getBitcoinService(),
-          key: this._rootKey
+          key: this._rootKey,
+          isOwnedAddress: (address) => this._hubWalletOwnsAddress(address),
+          walletRpc: this._getBitcoinService() ? (method, params) => this._hubWalletRpc(method, params) : null
         });
+        // Ids and statuses only: session and send details stay behind the admin token.
+        this.payjoin.on('session', (view) => this._broadcastPayjoinUpdate('session', view));
+        this.payjoin.on('send', (view) => this._broadcastPayjoinUpdate('send', view));
         await this.payjoin.start();
       }
 
@@ -12535,6 +14778,7 @@ class Hub extends Service {
         this.market.attach({ hub: this, fs: this.fs, key: this._fabricKey });
         await this.market.start();
       }
+      this._loadWatchtower();
 
       if (this.challenge && this.settings.challenge && this.settings.challenge.enable !== false) {
         this.challenge.attach({ hub: this, fs: this.fs, book: this.market ? this.market.book : null, key: this._fabricKey });
@@ -12695,6 +14939,16 @@ class Hub extends Service {
         ['POST', '/services/payjoin/sessions/:sessionId/proposals', this._handlePayjoinProposalSubmitRequest.bind(this)],
         ['POST', '/services/payjoin/sessions/:sessionId/contribute', this._handlePayjoinContributeRequest.bind(this)],
         ['POST', '/services/payjoin/sessions/:sessionId/acp-hub-boost', this._handlePayjoinContributeRequest.bind(this)],
+        ['POST', '/services/payjoin/sessions/:sessionId/cancel', this._handlePayjoinSessionCancelRequest.bind(this)],
+        ['GET', '/services/payjoin/sends', this._handlePayjoinSendsListRequest.bind(this)],
+        ['POST', '/services/payjoin/sends', this._handlePayjoinSendCreateRequest.bind(this)],
+        ['GET', '/services/payjoin/sends/:sendId', this._handlePayjoinSendViewRequest.bind(this)],
+        ['POST', '/services/payjoin/sends/:sendId/cancel', this._handlePayjoinSendCancelRequest.bind(this)],
+        ['GET', '/services/payjoin/operations', this._handlePayjoinOperationsRequest.bind(this)],
+        ['GET', '/services/payjoin/v2', this._handlePayjoinV2StubRequest.bind(this)],
+        ['POST', '/services/payjoin/v2', this._handlePayjoinV2StubRequest.bind(this)],
+        ['GET', '/services/payjoin/v2/:resource', this._handlePayjoinV2StubRequest.bind(this)],
+        ['POST', '/services/payjoin/v2/:resource', this._handlePayjoinV2StubRequest.bind(this)],
         ['GET', '/services/payjoin/mailboxes', this._handlePayjoinMailboxesListRequest.bind(this)],
         ['POST', '/services/payjoin/mailboxes', this._handlePayjoinMailboxCreateRequest.bind(this)],
         ['GET', '/services/payjoin/mailboxes/:mailboxId', this._handlePayjoinMailboxPollRequest.bind(this)],
@@ -12760,10 +15014,10 @@ class Hub extends Service {
         network: f.settings.network,
         pubkey: f.pubkey
       }), { limit: 120 }));
-      this.http._addRoute('GET', '/services/federations/messages', this._federationRoute((f, req) => {
-        const q = req.query || {};
-        return Object.assign({ type: 'FederationMessages' }, f.framesFor(q.pubkey, { since: q.since, limit: q.limit }));
-      }, { limit: 120 }));
+      this.http._addRoute('GET', '/services/federations/messages', this._federationRoute(
+        (f, req) => this._readFederationMailbox(f, req),
+        { limit: 120 }
+      ));
       this.http._addRoute('POST', '/services/federations/messages', this._federationRoute(async (f, req) => (
         Object.assign({ type: 'FederationMessageAccepted' }, await f.submitFrame(federationBody(req).fabric))
       ), { limit: 30 }));
@@ -12775,6 +15029,7 @@ class Hub extends Service {
       ), { limit: 10 }));
       /* Document Market: ranked chunk index + local provider telemetry (services/market.js) */
       this.http._addRoute('GET', '/services/market', this._handleMarketServiceRequest.bind(this));
+      this.http._addRoute('GET', '/services/market/blocks', this._handleBlockRelayRequest.bind(this));
       this.http._addRoute('GET', '/services/market/providers', this._handleMarketProvidersRequest.bind(this));
       this.http._addRoute('GET', '/services/market/chunks', this._handleMarketChunksRequest.bind(this));
       this.http._addRoute('GET', '/services/market/agent', this._handleMarketAgentRequest.bind(this));
@@ -12782,6 +15037,7 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/market/agent/wants', this._handleMarketAgentWantRequest.bind(this));
       this.http._addRoute('GET', '/services/market/channels', this._handleMarketChannelsRequest.bind(this));
       this.http._addRoute('POST', '/services/market/channels', this._handleMarketChannelOpenRequest.bind(this));
+      this.http._addRoute('POST', '/services/watchtower/appointments', this._handleWatchtowerAppointmentRequest.bind(this));
       /* Collaboration: contacts, email invitations, multisig-oriented groups (see functions/hubCollaboration.js) */
       hubCollaboration.registerHttp(this);
       /* Distributed execution: manifest + beacon epoch status (@fabric/core + @fabric/http) */
@@ -12817,9 +15073,10 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/binaries/check', this._handleManagedBinariesCheckRequest.bind(this));
 
       mountHubPassport(this);
-      mountFabricDeviceLinkHttp(this);
-      require('../functions/identityClusterHttp').mountIdentityClusterHttp(this);
-      require('../functions/fabricLocalSignerHub').mountFabricLocalSignerHub(this);
+      if (!mountHubPassportPeer(this)) console.warn('[FABRIC:HUB]', 'Passport peer sign-in is off: this Hub has no identity key yet.');
+      mountFabricDelegateHub(this, {
+        dir: resolveStorePath((this.settings && this.settings.fs && this.settings.fs.path) || 'stores/hub')
+      });
 
       // Configure routes
       this._addAllRoutes();
@@ -12835,18 +15092,21 @@ class Hub extends Service {
         this.http._registerBitcoin(this.bitcoin || null);
       }
 
-      this.http._registerMethod('getUnusedAddress', async () => {
+      this.http._registerMethod('getUnusedAddress', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) throw new Error('Bitcoin service is unavailable.');
         const address = await bitcoin.getUnusedAddress();
         return { address, network: bitcoin.network };
       });
 
-      this.http._registerMethod('GetBitcoinStatus', async () => {
-        return this._collectBitcoinStatus({ force: true });
+      this.http._registerMethod('GetBitcoinStatus', async (...params) => {
+        const status = await this._collectBitcoinStatus({ force: true });
+        return this._rpcCallerIsOperator(params) ? status : this._redactBitcoinStatusForNonAdmin(status);
       });
 
       this.http._registerMethod('GetAddressBalance', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) throw new Error('Bitcoin service is unavailable.');
         const body = params[0] || {};
@@ -12905,6 +15165,26 @@ class Hub extends Service {
         return this._claimInventoryHtlcOnChain(body);
       });
 
+      this.http._registerMethod('OpenPurchasedDocument', async (...params) => {
+        const body = params[0] || {};
+        return this._openPurchasedDocument(body);
+      });
+
+      this.http._registerMethod('PayInventoryHtlc', async (...params) => {
+        const body = params[0] || {};
+        return this._payInventoryHtlc(body);
+      });
+
+      this.http._registerMethod('RefundInventoryHtlc', async (...params) => {
+        const body = params[0] || {};
+        return this._refundInventoryHtlc(body);
+      });
+
+      this.http._registerMethod('ListInventoryPurchases', (...params) => {
+        const body = params[0] || {};
+        return this._listInventoryPurchases(body);
+      });
+
       this.http._registerMethod('BuildDocumentOfferEscrow', (...params) => {
         const body = params[0] || {};
         return this._buildDocumentOfferEscrow(body);
@@ -12930,11 +15210,82 @@ class Hub extends Service {
         return this._rpcBroadcastSignedTransaction(body);
       });
 
-      this.http._registerMethod('GetPayjoinStatus', async () => {
+      this.http._registerMethod('GetPayjoinStatus', async (...params) => {
         const payjoin = this._getPayjoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
-        return payjoin.getCapabilities();
+        return payjoin.getCapabilities({ operator: this._rpcCallerIsOperator(params) });
       });
+
+      this.http._registerMethod('ListPayjoinOperations', async () => {
+        const payjoin = this._getPayjoinService();
+        const settings = payjoin ? payjoin._operationSettings() : { enable: false };
+        return { type: 'PayjoinOperations', operations: payjoinInternalOperations.listOperations(settings) };
+      });
+
+      this.http._registerMethod('CancelPayjoinSession', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        try {
+          return await payjoin.cancelSession(String(body.sessionId || body.id || '').trim());
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+      });
+
+      this.http._registerMethod('CreatePayjoinSend', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        if (!payjoin.operationEnabled('walletSend')) return { status: 'error', message: 'Internal Payjoin is off on this Hub (FABRIC_PAYJOIN_INTERNAL=1).' };
+        const body = params[0] || {};
+        try {
+          const send = await payjoin.createSend({
+            bip21: body.bip21 || body.uri,
+            feeRateSatVb: body.feeRateSatVb,
+            maxAdditionalFeeContributionSats: body.maxAdditionalFeeContributionSats,
+            dryRun: body.dryRun === true,
+            operation: 'walletSend'
+          });
+          if (send.txid) {
+            try { this._mergePersistedTxLabel(String(send.txid), 'payjoin_send', { sendId: send.id, destination: send.address }); } catch (_) {}
+          }
+          return send;
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+      });
+
+      this.http._registerMethod('GetPayjoinSend', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        return payjoin.getSend(String(body.sendId || body.id || '').trim()) || { status: 'error', message: 'Payjoin send not found' };
+      });
+
+      this.http._registerMethod('ListPayjoinSends', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        return payjoin.listSends({ limit: body.limit });
+      });
+
+      this.http._registerMethod('CancelPayjoinSend', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
+        const payjoin = this._getPayjoinService();
+        if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        const body = params[0] || {};
+        try {
+          return await payjoin.cancelSend(String(body.sendId || body.id || '').trim());
+        } catch (e) {
+          return { status: 'error', message: e && e.message ? e.message : String(e) };
+        }
+      });
+
+      this.http._registerMethod('GetBlockRelayStatus', async () => this._getBlockRelay().getStatus());
 
       this.http._registerMethod('GetPeeringStatus', async () => {
         const peering = this._getPeeringService();
@@ -12961,6 +15312,7 @@ class Hub extends Service {
       hubCollaboration.registerRpc(this);
 
       this.http._registerMethod('CreatePayjoinDeposit', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const payjoin = this._getPayjoinService();
         const bitcoin = this._getBitcoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
@@ -12989,6 +15341,7 @@ class Hub extends Service {
       this.http._registerMethod('ListPayjoinSessions', (...params) => {
         const payjoin = this._getPayjoinService();
         if (!payjoin) return { status: 'error', message: 'Payjoin service unavailable' };
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const body = params[0] || {};
         const limit = Math.max(1, Math.min(200, Number(body.limit || 25)));
         const includeExpired = body.includeExpired !== false;
@@ -13004,7 +15357,7 @@ class Hub extends Service {
         const body = params[0] || {};
         const sessionId = String(body.sessionId || body.id || body || '').trim();
         if (!sessionId) return { status: 'error', message: 'sessionId is required' };
-        const session = payjoin.getSession(sessionId, { includeProposals: true });
+        const session = payjoin.getSession(sessionId, this._rpcCallerIsOperator(params) ? { includeProposals: true } : { view: 'payer' });
         if (!session) return { status: 'error', message: 'Payjoin session not found' };
         return session;
       });
@@ -13026,6 +15379,16 @@ class Hub extends Service {
             this._mergePersistedTxLabel(tid, 'payjoin', { sessionId, proposalId: prop.id });
           }
         } catch (_) {}
+        if (!this._rpcCallerIsOperator(params)) {
+          return {
+            status: result.status,
+            sessionId: result.sessionId,
+            proposalId: result.proposal && result.proposal.id,
+            bip78Psbt: result.bip78Psbt,
+            bip78Error: result.bip78Error,
+            session: payjoin.getSession(result.sessionId, { view: 'payer' })
+          };
+        }
         return result;
       });
 
@@ -13049,7 +15412,8 @@ class Hub extends Service {
           const msg = Message.fromVector(['ContractProposal', json]);
           if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
-          const p2pMsg = Message.fromVector(['ContractProposal', json]).signWithKey(this.agent.key);
+          // Browsers get JSON over WebSocket; Fabric peers require the field body.
+          const p2pMsg = Message.fromLegacyBody('CONTRACT_PROPOSAL', payload).signWithKey(this.agent.key);
           this.agent.relayFrom('_client', p2pMsg);
         } catch (err) {
           console.error('[HUB] SubmitContractProposal relay error:', err);
@@ -13072,6 +15436,7 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('AddPeer', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const peer = params[0];
         try {
           const normalized = this._connectPeer(peer);
@@ -13084,6 +15449,7 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('RemovePeer', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         if (!idOrAddress) return { status: 'error', message: 'id or address required' };
         const ok = this._disconnectPeer(idOrAddress);
@@ -13100,14 +15466,14 @@ class Hub extends Service {
           return { status: 'error', message: 'peer not connected' };
         }
         const myId = this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : '';
-        const body = JSON.stringify({
+        const body = {
           v: 1,
           reason: 'hub-request-fabric-resync',
           requester: myId,
           at: new Date().toISOString()
-        });
+        };
         try {
-          this._sendVectorToPeer(address, ['ChainSyncRequest', body]);
+          this._sendMessageToPeer(address, Message.fromLegacyBody('ChainSyncRequest', body));
           return { status: 'success', address };
         } catch (err) {
           console.error('[HUB] RequestFabricPeerResync error:', err);
@@ -13290,14 +15656,22 @@ class Hub extends Service {
         if (!address || !this.agent.connections[address]) return { status: 'error', message: 'peer not connected' };
 
         let doc = docParam && typeof docParam === 'object' ? docParam : null;
-        const docId = doc && (doc.id || docParam);
+        const docId = doc ? doc.id : (typeof docParam === 'string' ? docParam : null);
         if (!docId) return { status: 'error', message: 'document id required' };
 
         try {
-          if (!doc.contentBase64 && docId) {
-            const raw = this.fs.readFile(`documents/${docId}.json`);
+          if (!doc || !doc.contentBase64) {
+            const storedId = this._normalizeDocumentId(docId);
+            const raw = storedId ? this.fs.readFile(`documents/${storedId}.json`) : null;
             if (!raw) return { status: 'error', message: 'document not found' };
             doc = JSON.parse(raw);
+            if (documentContentKey.isSealedDocument(doc) || doc.htlcFileV1) {
+              const opts = params[2] || docParam || {};
+              const token = opts && typeof opts === 'object' ? (opts.adminToken || opts.token) : null;
+              if (!(token && this.setup && this.setup.verifyAdminToken(token))) {
+                return { status: 'error', message: 'Admin token required to send a sealed or bought document.' };
+              }
+            }
           }
           const sendRes = await this._sendDocumentToPeerAddress(address, doc);
           if (!sendRes || sendRes.status !== 'success') {
@@ -13377,7 +15751,6 @@ class Hub extends Service {
 
         const name = doc.name ? String(doc.name) : 'upload';
         const mime = doc.mime ? String(doc.mime) : 'application/octet-stream';
-        const size = doc.size != null ? Number(doc.size) : null;
         let contentBase64 = doc.contentBase64 ? String(doc.contentBase64) : '';
         const filePathRaw = doc.filePath != null ? String(doc.filePath).trim() : '';
 
@@ -13419,8 +15792,38 @@ class Hub extends Service {
         if (looksLikeBulkSecurityAdvisory(doc) || looksLikeBulkSecurityAdvisory(buffer) || looksLikeBulkSecurityAdvisory(name)) {
           return { status: 'error', message: 'bulk security-advisory documents are not ingested' };
         }
-        const sha256 = doc.sha256 ? String(doc.sha256) : crypto.createHash('sha256').update(buffer).digest('hex');
+        const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+        if (doc.sha256 && String(doc.sha256).trim().toLowerCase() !== sha256) {
+          return { status: 'error', message: 'sha256 does not match the content' };
+        }
         const id = sha256;
+        const existingRaw = this.fs && typeof this.fs.readFile === 'function'
+          ? this.fs.readFile(`documents/${id}.json`)
+          : null;
+        if (existingRaw) {
+          // Same bytes by construction; rewriting would drop a seal or a price.
+          const existing = parseFilesystemJson(existingRaw) || {};
+          const { contentBase64: _held, ...existingMeta } = existing;
+          this._state.documents = this._state.documents || {};
+          if (!this._state.documents[id]) {
+            this._state.documents[id] = {
+              id,
+              sha256: existingMeta.sha256 || id,
+              name: existingMeta.name,
+              mime: existingMeta.mime,
+              size: existingMeta.size,
+              created: existingMeta.created,
+              lineage: existingMeta.lineage || id,
+              parent: existingMeta.parent || null,
+              revision: existingMeta.revision || 1,
+              edited: existingMeta.edited || existingMeta.created
+            };
+          }
+          return { type: 'CreateDocumentResult', document: { ...existingMeta, id }, existing: true };
+        }
+        if (!this._documentStoreHasRoom(buffer.length)) {
+          return { status: 'error', message: 'This Hub has no room left for documents (DISK_ALLOCATION_MB).' };
+        }
         const now = new Date().toISOString();
 
         const meta = {
@@ -13428,7 +15831,7 @@ class Hub extends Service {
           sha256,
           name,
           mime,
-          size: size != null && !Number.isNaN(size) ? size : buffer.length,
+          size: buffer.length,
           created: now,
           lineage: id,
           parent: null,
@@ -13613,9 +16016,13 @@ class Hub extends Service {
         };
       });
 
-      // Get a document (metadata + base64 content when held locally)
+      // Get a document (metadata + base64 content when held locally; sealed or
+      // bought copies only with { adminToken }).
       this.http._registerMethod('GetDocument', async (...params) => {
-        return this._getDocumentPayload(params[0]);
+        const arg = params[0];
+        const token = arg && typeof arg === 'object' ? (arg.adminToken || arg.token) : null;
+        const admin = !!(token && this.setup && this.setup.verifyAdminToken(token));
+        return this._getDocumentPayload(arg, { admin });
       });
 
       // Create a pay-to-distribute invoice: returns address + amount for L1 payment.
@@ -13654,11 +16061,30 @@ class Hub extends Service {
 
         this._distributeRequests[documentId] = { address, amountSats, config: distributeConfig, createdAt: now };
 
+        // Internal Payjoin: the invoice address gets a BIP78 session (the payer must still pay amountSats itself).
+        let payjoinSession = null;
+        const hook = this._payjoinHook('distributeInvoice');
+        if (hook.payjoin) {
+          try {
+            payjoinSession = await hook.service.createDepositSession({
+              walletId: bitcoin.walletName,
+              address,
+              amountSats: Math.round(amountSats),
+              label: `distribute ${documentId.slice(0, 12)}`,
+              operation: 'distributeInvoice'
+            });
+          } catch (err) {
+            console.warn('[HUB] distribute invoice Payjoin session failed:', err && err.message ? err.message : err);
+          }
+        }
+
         return {
           type: 'CreateDistributeInvoiceResult',
           documentId,
           address,
           amountSats,
+          bip21Uri: payjoinSession ? payjoinSession.bip21Uri : undefined,
+          payjoinSessionId: payjoinSession ? payjoinSession.id : undefined,
           config: distributeConfig,
           network: bitcoin.network || 'regtest',
           expiresAt: now
@@ -13806,14 +16232,38 @@ class Hub extends Service {
           ? Math.max(0, Number(arg.purchasePriceSats))
           : 0;
         if (!id) return { status: 'error', message: 'id required' };
-        if (purchasePriceSats > 0 && !FEATURE_FLAGS.DOCUMENT_PURCHASE) {
-          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: id };
+        const salesRefusal = purchasePriceSats > 0 ? this._documentSalesRefusal() : null;
+        if (salesRefusal) return { status: 'error', message: salesRefusal, documentId: id };
+        if (purchasePriceSats > 0 && purchasePriceSats < HTLC_MINIMUM_SATS) {
+          return {
+            status: 'error',
+            message: `purchasePriceSats must be 0 or at least ${HTLC_MINIMUM_SATS} (smaller sales cannot be claimed on chain)`,
+            documentId: id
+          };
         }
         try {
           // Ensure the document exists locally
           const raw = this.fs.readFile(`documents/${id}.json`);
           if (!raw) return { status: 'error', message: 'document not found', documentId: id };
           let parsed = JSON.parse(raw);
+
+          // Anyone may list a new free document; prices, existing listings,
+          // and sealed or bought copies are the operator's.
+          const listed = this._state.content.collections &&
+            this._state.content.collections.documents &&
+            this._state.content.collections.documents[id];
+          const needsOperator = purchasePriceSats > 0 || !!listed ||
+            documentContentKey.isSealedDocument(parsed) || !!parsed.htlcFileV1;
+          if (needsOperator) {
+            const token = arg && typeof arg === 'object' ? (arg.adminToken || arg.token) : null;
+            if (!(token && this.setup && this.setup.verifyAdminToken(token))) {
+              return {
+                status: 'error',
+                message: 'Admin token required to price, re-list, or publish a sealed document.',
+                documentId: id
+              };
+            }
+          }
 
           if (purchasePriceSats > 0) {
             const sealed = await this._sealDocumentForPricedPublish(id, parsed);
@@ -13893,9 +16343,8 @@ class Hub extends Service {
       // Create an HTLC purchase invoice for a published document. Returns address + amount.
       // Params: ({ documentId, amountSats? }) — amountSats defaults to document's purchasePriceSats
       this.http._registerMethod('CreatePurchaseInvoice', async (...params) => {
-        if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) {
-          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: null };
-        }
+        const salesRefusal = this._documentSalesRefusal();
+        if (salesRefusal) return { status: 'error', message: salesRefusal, documentId: null };
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         if (!documentId) return { status: 'error', message: 'documentId required', documentId: null };
@@ -13922,7 +16371,9 @@ class Hub extends Service {
         const costPerByteSats = Math.max(0, Number(this.setup.getSetting('COST_PER_BYTE_SATS') || 0.01));
         const floorSats = costPerByteSats > 0 ? Math.ceil(contentSize * costPerByteSats) : 0;
         const docPrice = Number(publishedMeta.purchasePriceSats || 0);
-        const amountSats = Math.max(Number(config.amountSats || 0) || docPrice, floorSats);
+        // A buyer may offer more than the listing, never less.
+        const offered = Number(config.amountSats) > 0 ? Math.round(Number(config.amountSats)) : 0;
+        const amountSats = Math.max(docPrice, floorSats, offered);
         if (!Number.isFinite(amountSats) || amountSats <= 0) {
           return {
             status: 'error',
@@ -13950,20 +16401,17 @@ class Hub extends Service {
         const contentHash = resolved.contentHashHex;
         const sealed = resolved.binding === 'sealed';
 
+        const refused = await this._makeRoomForPurchaseInvoice(bitcoin);
+        if (refused) return { status: 'error', message: refused, documentId };
+
         const address = await bitcoin.getUnusedAddress();
         const now = new Date().toISOString();
-        this._purchaseRequests[documentId] = {
-          address,
-          amountSats,
-          contentHash,
-          contentHashHex: contentHash,
-          binding: resolved.binding,
-          sealed,
-          createdAt: now
-        };
-
-        return {
-          type: 'CreatePurchaseInvoiceResult',
+        // Each invoice is its own address; only the caller holding its claim token
+        // can redeem it, since the payment txid is public once broadcast.
+        const invoiceId = crypto.randomBytes(16).toString('hex');
+        const claimToken = crypto.randomBytes(32).toString('hex');
+        this._loadPurchaseInvoices()[invoiceId] = {
+          invoiceId,
           documentId,
           address,
           amountSats,
@@ -13971,17 +16419,32 @@ class Hub extends Service {
           contentHashHex: contentHash,
           binding: resolved.binding,
           sealed,
+          claimTokenHash: crypto.createHash('sha256').update(claimToken).digest('hex'),
+          createdAt: now
+        };
+        this._persistPurchaseInvoices();
+
+        return {
+          type: 'CreatePurchaseInvoiceResult',
+          documentId,
+          invoiceId,
+          claimToken,
+          address,
+          amountSats,
+          contentHash,
+          contentHashHex: contentHash,
+          binding: resolved.binding,
+          sealed,
           network: bitcoin.network || 'regtest',
-          expiresAt: now
+          expiresAt: new Date(Date.parse(now) + PURCHASE_INVOICE_TTL_MS).toISOString()
         };
       });
 
       // Claim purchase: verify L1 payment; for sealed docs return plaintext + content key preimage.
       // Params: ({ documentId, txid })
       this.http._registerMethod('ClaimPurchase', async (...params) => {
-        if (!FEATURE_FLAGS.DOCUMENT_PURCHASE) {
-          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)', documentId: null };
-        }
+        const salesRefusal = this._documentSalesRefusal();
+        if (salesRefusal) return { status: 'error', message: salesRefusal, documentId: null };
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         const txid = config.txid ? String(config.txid).trim() : null;
@@ -13989,15 +16452,17 @@ class Hub extends Service {
         if (!txid) return { status: 'error', message: 'txid required (proof of payment)', documentId };
 
         const bitcoin = this._getBitcoinService();
-        const pending = this._purchaseRequests[documentId];
+        const pending = this._findPurchaseInvoice(documentId, config.claimToken, config.invoiceId);
         if (!bitcoin || !pending) {
-          return { status: 'error', message: 'Purchase invoice required. Call CreatePurchaseInvoice first, pay, then pass txid.', documentId };
+          return { status: 'error', message: 'Purchase invoice required. Call CreatePurchaseInvoice first, pay, then pass txid with the claimToken it returned.', documentId };
         }
 
-        const verified = await this._verifyL1Payment(bitcoin, txid, pending.address, pending.amountSats);
-        if (!verified) {
+        const paid = await this._l1PaymentVerificationDetail(bitcoin, txid, pending.address, pending.amountSats);
+        if (!paid.verified) {
           return { status: 'error', message: 'Payment verification failed. Ensure the transaction pays to the invoice address with at least the required amount.', documentId };
         }
+        const pendingClaim = this._purchaseClaimPending(paid, documentId, txid);
+        if (pendingClaim) return Object.assign({ type: 'ClaimPurchaseResult' }, pendingClaim);
 
         try {
           this._mergePersistedTxLabel(txid, 'document_purchase', { documentId });
@@ -14029,11 +16494,13 @@ class Hub extends Service {
         }
         if (pending.sealed && contentKey && documentContentKey.isSealedDocument(parsed)) {
           try {
-            const plain = documentContentKey.openCiphertext(
-              Buffer.from(contentBase64, 'base64'),
-              contentKey,
-              parsed.encryption.iv
-            );
+            const plain = parsed.encryption && parsed.encryption.perBlob
+              ? this._openPerBlobDocument(parsed, contentKey, documentId)
+              : documentContentKey.openCiphertext(
+                Buffer.from(contentBase64, 'base64'),
+                contentKey,
+                parsed.encryption.iv
+              );
             outContentBase64 = plain.toString('base64');
             preimageHex = contentKey.toString('hex');
           } catch (e) {
@@ -14041,7 +16508,12 @@ class Hub extends Service {
           }
         }
 
-        delete this._purchaseRequests[documentId];
+        // Kept so the buyer can open it again with the same token.
+        if (!pending.claimedTxid) {
+          pending.claimedTxid = txid;
+          pending.claimedAt = new Date().toISOString();
+          this._persistPurchaseInvoices();
+        }
 
         return {
           type: 'ClaimPurchaseResult',
@@ -14061,13 +16533,21 @@ class Hub extends Service {
 
       // Set purchase price for a published document. Admin or document owner.
       this.http._registerMethod('SetDocumentPrice', async (...params) => {
-        if (!FEATURE_FLAGS.DOCUMENT_PURCHASE && Number(params[0] && (params[0].purchasePriceSats || params[0].amountSats)) > 0) {
-          return { status: 'error', message: 'Document purchase is disabled (FABRIC_FEATURE_DOCUMENT_PURCHASE)' };
-        }
+        const salesRefusal = Number(params[0] && (params[0].purchasePriceSats || params[0].amountSats)) > 0
+          ? this._documentSalesRefusal()
+          : null;
+        if (salesRefusal) return { status: 'error', message: salesRefusal };
         const config = params[0] || {};
         const documentId = this._normalizeDocumentId(config.documentId || config.id);
         const purchasePriceSats = Math.max(0, Number(config.purchasePriceSats || config.amountSats || 0));
         if (!documentId) return { status: 'error', message: 'documentId required' };
+        const priceToken = config.adminToken || config.token;
+        if (!(priceToken && this.setup && this.setup.verifyAdminToken(priceToken))) {
+          return { status: 'error', message: 'Admin token required to set a document price.' };
+        }
+        if (purchasePriceSats > 0 && purchasePriceSats < HTLC_MINIMUM_SATS) {
+          return { status: 'error', message: `purchasePriceSats must be 0 or at least ${HTLC_MINIMUM_SATS}` };
+        }
 
         this._ensureResourceCollections();
         const collections = this._state.content.collections.documents;
@@ -14110,6 +16590,15 @@ class Hub extends Service {
           const sourceRaw = this.fs.readFile(`documents/${sourceId}.json`);
           if (!sourceRaw) return { status: 'error', message: 'document not found' };
           const source = JSON.parse(sourceRaw);
+          if (documentContentKey.isSealedDocument(source) || source.htlcFileV1) {
+            const token = req.adminToken || req.token;
+            if (!(token && this.setup && this.setup.verifyAdminToken(token))) {
+              return { status: 'error', message: 'Admin token required to edit a sealed or bought document.' };
+            }
+            if (req.contentBase64 == null && req.content == null) {
+              return { status: 'error', message: 'content required to revise a sealed document' };
+            }
+          }
 
           const nextName = req.name ? String(req.name) : String(source.name || 'document');
           const nextMime = req.mime ? String(req.mime) : String(source.mime || 'application/octet-stream');
@@ -14131,6 +16620,11 @@ class Hub extends Service {
 
           const now = new Date().toISOString();
           const nextId = crypto.createHash('sha256').update(buffer).digest('hex');
+          const clashRaw = nextId !== sourceId ? this.fs.readFile(`documents/${nextId}.json`) : null;
+          const clash = clashRaw ? parseFilesystemJson(clashRaw) : null;
+          if (clash && (documentContentKey.isSealedDocument(clash) || clash.htlcFileV1)) {
+            return { status: 'error', message: 'that content is already held as a sealed document', documentId: nextId };
+          }
           const lineage = source.lineage || source.id || sourceId;
           const nextRevision = Number(source.revision || 1) + 1;
 
@@ -14295,7 +16789,16 @@ class Hub extends Service {
           if (!ch) return fail('Challenge service required for bounty bonds.');
           try {
             const epochs = Math.max(1, Math.floor(Number(config.epochs) || 1));
-            const tip = Number(bitcoin && bitcoin.height) || 0;
+            let refundAfterHeight = Number(config.refundAfterHeight) || 0;
+            if (!refundAfterHeight) {
+              let tip = Number(bitcoin && bitcoin.height) || 0;
+              if (!(tip > 0) && bitcoin && typeof bitcoin._makeRPCRequest === 'function') {
+                tip = Number(await bitcoin._makeRPCRequest('getblockcount', [])) || 0;
+              }
+              // A refund height counted from 0 would let the publisher take the bounty back at once.
+              if (!(tip > 0)) return fail('bond: the chain tip is unknown; pass refundAfterHeight or wait for Bitcoin to sync.');
+              refundAfterHeight = tip + Math.max(144, epochs * 144);
+            }
             bondRecord = ch.createBounty({
               contractId: `pending:${documentId}`,
               merkleRootHex: config.merkleRootHex || null,
@@ -14303,7 +16806,7 @@ class Hub extends Service {
               amountSats,
               epochs,
               startEpoch: config.startEpoch,
-              refundAfterHeight: Number(config.refundAfterHeight) || (tip + Math.max(144, epochs * 144)),
+              refundAfterHeight,
               network: (bitcoin && bitcoin.network) || this.settings.network || 'regtest'
             });
           } catch (e) {
@@ -15281,6 +17784,8 @@ class Hub extends Service {
           contract: this.contract.id,
           /** Stable Fabric P2P identity (secp256k1 pubkey hex) for sharing — does not change with contract state. */
           fabricPeerId: this.agent && this.agent.id ? String(this.agent.id) : null,
+          /** Bech32 `id1…` that peers put in `target` (e.g. `RequestPeerInventory` `inventoryTarget`). */
+          fabricIdentityId: this.agent && this.agent.identity && this.agent.identity.id ? String(this.agent.identity.id) : null,
           documents: this._state.documents,
           setup: setupStatus,
           publishedDocuments: (this._state.content && this._state.content.collections && this._state.content.collections.documents) ? this._state.content.collections.documents : {},
@@ -15291,10 +17796,10 @@ class Hub extends Service {
           bitcoin: bitcoinSnapshot,
           /** Outbound email (invitations / alerts); no secrets in this snapshot. */
           email: emailSnapshot,
-          network: {
-            address: this.http.agent.listenAddress,
-            listening: this.http.agent.listening
-          },
+          network: (() => {
+            const { listenAddress, listening } = PeeringService.p2pListener(this);
+            return { address: listenAddress, listening };
+          })(),
           // TCP known peers plus browser WebRTC registrations (Fabric ids via metadata.fabricPeerId).
           peers: mergeFabricPeersWithWebRtcRegistry(this.agent.knownPeers, this.http.webrtcPeerList || []),
           /** Fabric P2P byte counters vs Bitcoin L1 (1 MiB / 10 min) split across 32 peers. */
@@ -15319,7 +17824,8 @@ class Hub extends Service {
 
       this.http._registerMethod('GetNetworkStatus', async (...params) => {
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
+        const status = buildNetworkStatus();
+        return fitHubNetworkStatus(this._rpcCallerIsOperator(params) ? status : redactNetworkStatusForPublic(status), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetSetupStatus', (...params) => {
@@ -15352,10 +17858,16 @@ class Hub extends Service {
         }
         const contractId = p.contractId != null ? String(p.contractId).trim() : '';
         if (contractId) {
+          const peerInput = p.peerKey != null ? String(p.peerKey).trim() : '';
           const rows = contractMessageQueue.listQueuedMessages(store, contractId, {
             limit: p.limit,
             includeDelivered: p.includeDelivered === true,
-            peerKey: p.peerKey || null
+            peerKey: peerInput
+              ? contractMessageQueue.mailboxKey(this._fabricIdForConnection(peerInput) || peerInput)
+              : null,
+            recipient: p.recipient || null,
+            ref: p.ref || null,
+            slot: p.slot || null
           });
           return {
             type: 'ListContractMessageQueueResult',
@@ -15386,10 +17898,13 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('DrainContractMessageQueue', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) {
+          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'adminToken required' };
+        }
         const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
-        const address = p.address || p.peer || params[0];
+        const address = p.address || p.peerId || p.peer || params[0];
         if (!address || typeof address === 'object') {
-          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'address required' };
+          return { type: 'DrainContractMessageQueueResult', status: 'error', message: 'address or peerId required' };
         }
         const result = this._drainContractMessageQueueToPeer(String(address), {
           limitPerContract: p.limitPerContract
@@ -15401,7 +17916,8 @@ class Hub extends Service {
         // For the UI we return the same shape as GetNetworkStatus
         // so the bridge/networkStatus wiring can remain consistent.
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
+        const status = buildNetworkStatus();
+        return fitHubNetworkStatus(this._rpcCallerIsOperator(params) ? status : redactNetworkStatusForPublic(status), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetWorkerStatus', (...params) => {
@@ -15429,6 +17945,9 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('GetNodeWealthSummary', async (...params) => {
+        if (!this._rpcCallerIsOperator(params)) {
+          return { type: 'GetNodeWealthSummaryResult', status: 'error', message: 'adminToken required' };
+        }
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
         const btc = this._state && this._state.content && this._state.content.services && this._state.content.services.bitcoin
           ? this._state.content.services.bitcoin.status || {}
@@ -15449,6 +17968,7 @@ class Hub extends Service {
       });
 
       this.http._registerMethod('ListWorkerQueue', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
         const offset = Math.max(0, Number(req.offset || 0) || 0);
         const limit = Math.max(1, Math.min(200, Number(req.limit || 50) || 50));
@@ -15566,7 +18086,7 @@ class Hub extends Service {
             actor: { id: this.agent.identity.id },
             object: { slots: maxPeers - connCount, transport: 'fabric', host, port }
           };
-          const p2pMsg = Message.fromVector([P2P_PEERING_OFFER, JSON.stringify(payload)]).signWithKey(this.agent.key);
+          const p2pMsg = Message.fromLegacyBody(P2P_PEERING_OFFER, payload).signWithKey(this.agent.key);
           this.agent.relayFrom('_hub', p2pMsg);
         } catch (err) {
           console.error('[HUB] maybeBroadcastFabricPeeringOffer error:', err);
@@ -15574,9 +18094,11 @@ class Hub extends Service {
       };
 
       // Push network status to all WebSocket clients when peer connections change
-      const pushNetworkStatus = () => {
+      const sendNetworkStatus = () => {
+        this._pushNetworkStatusTimer = null;
         try {
-          const status = fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
+          // Pushed to every WebSocket client, so always the public view.
+          const status = fitHubNetworkStatus(redactNetworkStatusForPublic(buildNetworkStatus()), NETWORK_STATUS_MAX_BYTES);
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
             method: 'JSONCallResult',
             params: [null, status]
@@ -15590,6 +18112,11 @@ class Hub extends Service {
           console.error('[HUB] pushNetworkStatus error:', err);
         }
       };
+      const pushNetworkStatus = () => {
+        if (this._pushNetworkStatusTimer) return;
+        this._pushNetworkStatusTimer = setTimeout(sendNetworkStatus, NETWORK_STATUS_PUSH_MS);
+        if (typeof this._pushNetworkStatusTimer.unref === 'function') this._pushNetworkStatusTimer.unref();
+      };
       // Expose for lifecycle cleanup.
       this._pushNetworkStatus = pushNetworkStatus;
 
@@ -15599,19 +18126,9 @@ class Hub extends Service {
         const addr = ev && (ev.address || ev.id);
         this._requestMainchainInventoryFromPeer(addr, 'connection-open').catch(() => {});
         try { this._requestDocumentInventoryFromPeer(addr, 'connection-open'); } catch (_) {}
-        // Opaque CONTRACT_MESSAGE later-relay (hub-blind; does not open seals).
-        try {
-          const drain = this._drainContractMessageQueueToPeer(addr);
-          if (drain && drain.delivered && this.settings && this.settings.debug) {
-            console.debug('[HUB:QUEUE] drained', drain.delivered, 'frames across', drain.contracts, 'contracts →', addr);
-          }
-        } catch (err) {
-          if (this.settings && this.settings.debug) {
-            console.error('[HUB:QUEUE] drain on connect failed:', err && err.message ? err.message : err);
-          }
-        }
       });
       this.agent.on('connections:close', pushNetworkStatus);
+      this._bindContractMailboxEvents();
 
       // Push network status when WebRTC peers connect/disconnect
       this.http.on('webrtc:connection', pushNetworkStatus);
@@ -15620,17 +18137,37 @@ class Hub extends Service {
       // Periodic Fabric peering offer (when below max peers, even if connections don't change)
       this._fabricPeeringOfferIntervalId = setInterval(maybeBroadcastFabricPeeringOffer, FABRIC_PEERING_OFFER_INTERVAL_MS);
 
-      // Keep configured peers (e.g. the playnet seed) connected; `peerRedialMs: 0` turns it off.
+      // Keep configured peers (e.g. the playnet seed) and `redialPeers` connected; `peerRedialMs: 0` turns it off.
+      // The first tick lands at a random point in the interval so a fleet of instances
+      // started together doesn't handshake with a public Hub all at once.
       const peerRedialMs = this.settings.peerRedialMs == null ? 60000 : Number(this.settings.peerRedialMs);
       if (Number.isFinite(peerRedialMs) && peerRedialMs > 0) {
-        this._configuredPeerRedialTimer = setInterval(() => this._redialConfiguredPeers(), peerRedialMs);
+        const redialTick = () => this._refreshPeerHostAddresses()
+          .catch(() => {})
+          .then(() => this._redialConfiguredPeers());
+        this._configuredPeerRedialTimer = setTimeout(() => {
+          redialTick();
+          this._configuredPeerRedialTimer = setInterval(redialTick, peerRedialMs);
+          if (typeof this._configuredPeerRedialTimer.unref === 'function') this._configuredPeerRedialTimer.unref();
+        }, Math.floor(Math.random() * peerRedialMs));
         if (typeof this._configuredPeerRedialTimer.unref === 'function') this._configuredPeerRedialTimer.unref();
       }
+
+      // Collect delivered sales: once the buyer holds the key, an unclaimed HTLC only waits for their refund.
+      // Also delivers confirmed sales the block hook missed (no ZMQ, or the buyer reconnected).
+      this._inventoryHtlcClaimTimer = setInterval(() => {
+        this._deliverConfirmedHtlcPayments()
+          .catch(() => {})
+          .then(() => this._claimDeliveredInventoryHtlcs())
+          .catch(() => {});
+      }, INVENTORY_HTLC_CLAIM_INTERVAL_MS);
+      if (typeof this._inventoryHtlcClaimTimer.unref === 'function') this._inventoryHtlcClaimTimer.unref();
 
       // Set a node-local nickname for a peer (stored in this node's LevelDB peer registry).
       // When the target is this hub's own identity, also broadcast P2P_PEER_ALIAS (UTF-8 nickname).
       // Params: (idOrAddress: string, nickname: string|null) — id (public key) or address
       this.http._registerMethod('SetPeerNickname', (...params) => {
+        if (!this._rpcCallerIsOperator(params)) return { status: 'error', message: 'adminToken required' };
         const idOrAddress = params[0] && (params[0].address || params[0].id || params[0]);
         const nickname = params[1] != null ? params[1] : (params[0] && params[0].nickname);
         if (!idOrAddress) return { status: 'error', message: 'id or address required' };
@@ -15750,7 +18287,11 @@ class Hub extends Service {
       });
 
       // Relay native WebRTC signaling messages between browser clients.
-      this.http._registerMethod('SendWebRTCSignal', (...params) => {
+      // Relay native WebRTC signaling between browser clients: only to the
+      // connection that registered the target id, and only from the connection
+      // that registered the sender id, so SDP and ICE candidates (client IPs)
+      // never reach other clients.
+      this.http._registerMethod('SendWebRTCSignal', (context, ...params) => {
         const options = params[0] || {};
         const fromPeerId = options.fromPeerId;
         const toPeerId = options.toPeerId;
@@ -15761,31 +18302,16 @@ class Hub extends Service {
         }
 
         try {
-          // Use webrtcPeers map as a registry of known browser peers; actual
-          // WebSocket connections are managed by HTTPServer. We broadcast the
-          // signal and let Bridge instances filter on toPeerId.
-          const payload = {
-            type: 'WebRTCSignal',
-            fromPeerId,
-            toPeerId,
-            signal
-          };
-
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
             method: 'JSONCallResult',
-            params: [null, payload]
+            params: [null, { type: 'WebRTCSignal', fromPeerId, toPeerId, signal }]
           })]);
-
-          if (typeof this.http.broadcast === 'function') {
-            this.http.broadcast(msg);
-          }
-
-          return { status: 'success' };
+          return this._relayWebRtcSignal(context, String(fromPeerId), String(toPeerId), msg);
         } catch (err) {
           console.error('[HUB]', 'Error relaying WebRTC signal:', err);
           return { status: 'error', message: err.message || String(err) };
         }
-      });
+      }, { withContext: true });
 
       // Relay messages received via WebRTC data channel to WebSocket clients (and Fabric P2P).
       // Two P2P_RELAY body layouts (intentional):
@@ -15883,6 +18409,19 @@ class Hub extends Service {
           return;
         }
 
+        const ownListing = this._state.content && this._state.content.collections &&
+          this._state.content.collections.documents &&
+          this._state.content.collections.documents[docId];
+        const held = !!this.fs.readFile(`documents/${docId}.json`);
+        if (held && (ownListing || documentContentKey.readContentKey(this.fs, docId))) {
+          console.warn('[HUB] Dropping incoming file for a document this Hub lists or sealed:', docId);
+          return;
+        }
+        if (!this._admitIncomingFile(docId, incomingBuffer.length, origin && origin.name)) {
+          console.warn('[HUB] Dropping incoming file over the receive budget:', docId, origin && origin.name);
+          return;
+        }
+
         const normalized = {
           id: doc.id,
           name: doc.name || 'received',
@@ -15893,10 +18432,22 @@ class Hub extends Service {
           created: doc.created || new Date().toISOString(),
           receivedFrom: origin && origin.name,
           ...(doc.merkleRootHex ? { merkleRootHex: doc.merkleRootHex } : {}),
-          ...(doc.htlcFileV1 ? { htlcFileV1: doc.htlcFileV1 } : {})
+          ...(doc.htlcFileV1 ? { htlcFileV1: doc.htlcFileV1 } : {}),
+          ...(doc.sealedBatch && Array.isArray(doc.parts) ? { parts: doc.parts } : {})
         };
 
+        if (normalized.parts) {
+          await this.fs.publish(`documents/${normalized.id}.batches`, {
+            type: 'DocumentBlobBatch',
+            documentId: normalized.id,
+            batches: [doc.sealedBatch]
+          });
+        }
         await this.fs.publish(`documents/${normalized.id}.json`, normalized);
+        const waiting = this._pendingHtlcReveals && this._pendingHtlcReveals.get(normalized.id);
+        if (waiting && normalized.htlcFileV1 && Date.now() - waiting.at < 10 * 60 * 1000) {
+          await this._acceptHtlcKeyReveal(waiting.reveal).catch(() => false);
+        }
         this._state.documents = this._state.documents || {};
         this._state.documents[normalized.id] = {
           id: normalized.id,
@@ -15908,7 +18459,8 @@ class Hub extends Service {
         };
         if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
         const payload = JSON.stringify({ type: 'P2P_FILE_SEND', object: normalized });
-        const msg = Message.fromVector(['FileMessage', payload]);
+        // Browser broadcast; `FileMessage` was never registered (always P2P_BASE_MESSAGE).
+        const msg = Message.fromVector(['P2P_BASE_MESSAGE', payload]);
         if (this._fabricKey) msg.signWithKey(this._fabricKey);
         if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
         this.recordActivity({
@@ -15956,6 +18508,12 @@ class Hub extends Service {
             if (text.startsWith('{')) {
               const reveal = JSON.parse(text);
               if (reveal && reveal.type === 'HTLC_KEY_REVEAL') isKeyReveal = true;
+              const selfFabricId = this.agent && this.agent.identity ? String(this.agent.identity.id) : '';
+              if (isKeyReveal && (!reveal.deliveryFabricId || String(reveal.deliveryFabricId).trim() === selfFabricId)) {
+                this._acceptHtlcKeyReveal(reveal).catch((revealErr) => {
+                  console.warn('[HUB] HTLC_KEY_REVEAL store failed:', revealErr && revealErr.message ? revealErr.message : revealErr);
+                });
+              }
               if (isKeyReveal && reveal.deliveryFabricId && reveal.preimageHex) {
                 const destId = String(reveal.deliveryFabricId).trim();
                 const selfId = this.agent && this.agent.identity && this.agent.identity.id
@@ -16090,13 +18648,6 @@ class Hub extends Service {
         try {
           const body = (ev && ev.object) || {};
           const t = body.type || body['@type'];
-          if (t === 'IdentityCrossSign' || t === 'IdentityCrossSignRevoke') {
-            require('../functions/identityClusterHttp').ingestIdentityCrossSign(
-              this,
-              body,
-              (ev && ev.signer) || body.pubkeyHex
-            );
-          }
           if (t === 'AvailabilityCommitment' || t === 'AvailabilityResponse' || t === 'FraudProof' || t === 'DepositPenaltyPreSig') {
             const ch = this._getChallengeService();
             // Timelocked non-response proofs need the deposit outpoint looked up on chain.
@@ -16105,6 +18656,12 @@ class Hub extends Service {
           if (typeof t === 'string' && t.startsWith('Channel')) {
             const market = this._getMarketService();
             if (market) market.ingestChannelMessage(body, { sellerId: ev && ev.signer ? String(ev.signer) : undefined });
+          }
+          const appointment = (body.object && body.object.type === Watchtower.TYPE)
+            ? body.object
+            : (body.type === Watchtower.TYPE ? body : null);
+          if (appointment && (!body.contract || body.contract === Watchtower.CONTRACT_ID || body.type === Watchtower.TYPE)) {
+            this._acceptWatchtowerAppointment(appointment);
           }
           if (this.coinjoin && this.coinjoin.ownsContractMessage(body)) {
             this.coinjoin.handleContractMessage(body).catch(() => {});
@@ -16118,7 +18675,7 @@ class Hub extends Service {
             }
             this.federations.handleContractMessage(body, String(ev.signer));
           }
-        } catch (_) { /* ignore unverified cluster gossip */ }
+        } catch (_) { /* ignore malformed contract messages */ }
         if (this.settings && this.settings.debug) {
           const body = (ev && ev.object) || {};
           console.log('[HUB:CONTRACT]', contract, body.type || null, 'count=', this._contractMessageCounts[contract]);
@@ -16126,23 +18683,23 @@ class Hub extends Service {
       });
 
       // BitcoinBlock gossip is relayed peer-to-peer in @fabric/core Peer; no WebSocket fan-out unless we add a subscription later.
-      this.agent.on('bitcoinBlock', ({ message, origin }) => {
+      this.agent.on('bitcoinBlock', ({ message, origin, object }) => {
         const from = origin && origin.name ? origin.name : '';
-        let parsed = null;
-        try {
-          const raw = message && message.data != null
-            ? (typeof message.data === 'string' ? message.data : String(message.data))
-            : '';
-          parsed = raw ? JSON.parse(raw) : null;
-        } catch (e) {
-          parsed = null;
-        }
+        const parsed = object && typeof object === 'object' ? object : null;
         if (this.settings && this.settings.debug) {
           console.debug('[HUB:P2P] BitcoinBlock from', from || '?', parsed || (message && message.data));
         }
         if (parsed && typeof parsed === 'object' && parsed.tip) {
+          this._getBlockRelay().onGossip(parsed, from);
           this._ingestP2pBitcoinBlockForFabricLog(parsed, from).catch(() => {});
         }
+      });
+
+      // Point-to-point compact block relay bodies (never mesh-flooded by core Peer).
+      this.agent.on('generic', ({ type, body, origin }) => {
+        const relay = this._getBlockRelay();
+        if (!relay.owns(type) || !origin || !origin.name) return;
+        relay.handleMessage(body, origin.name).catch(() => {});
       });
 
       // Fabric P2P ChainSyncRequest: inventory exchange + replay BitcoinBlock messages from this hub's log.
@@ -16196,7 +18753,7 @@ class Hub extends Service {
               try {
                 const fwdObj = { ...obj, fileRelayTtl: nextTtl };
                 const fwd = { type: 'P2P_FILE_SEND', actor: message.actor, object: fwdObj };
-                this._sendVectorToPeer(nextAddr, ['P2P_FILE_SEND', JSON.stringify(fwd)]);
+                this._sendMessageToPeer(nextAddr, Message.fromLegacyBody('P2P_FILE_SEND', fwd));
               } catch (relayErr) {
                 console.warn('[HUB] P2P_FILE_SEND relay failed:', relayErr && relayErr.message ? relayErr.message : relayErr);
               }
@@ -16211,11 +18768,22 @@ class Hub extends Service {
               console.warn('[HUB] Dropping P2P_FILE_SEND blob:', obj.name, error);
               return;
             }
+            const transferKey = documentFileShare.sealedTransferKey(origin && origin.name, obj);
+            const sealedPart = documentFileShare.fileShareSealedPart(obj);
+            if (sealedPart) {
+              if (!this._incomingSealedParts) this._incomingSealedParts = documentFileShare.createSealedPartCollector();
+              this._incomingSealedParts.note(transferKey, sealedPart);
+            }
             if (status !== 'complete' || !Buffer.isBuffer(buffer)) return;
-            await persistIncomingDocument(
-              documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex),
-              origin
-            );
+            const sealedParts = sealedPart ? this._incomingSealedParts.take(transferKey) : undefined;
+            const received = documentFileShare.receivedFileShareDocument(obj, buffer, merkleRootHex, sealedParts);
+            // A per-blob copy without every blob's wrap could never open, and it would
+            // replace a sealed copy still waiting for its key reveal.
+            if (documentFileShare.isPerBlobHeader(received.htlcFileV1) && !(received.sealedBatch && Array.isArray(received.parts))) {
+              console.warn('[HUB] Dropping per-blob file without sealed parts:', received.id);
+              return;
+            }
+            await persistIncomingDocument(received, origin);
             return;
           }
 
@@ -16321,50 +18889,35 @@ class Hub extends Service {
             items = await this._attachHtlcToInventoryItems(items, message, htlcDirectConn, requesterFabricId, relayReturnHop);
           }
 
-          const responsePayload = {
-            type: kind === 'documents' ? FABRIC_DOCUMENT_OFFER_RESPONSE : 'INVENTORY_RESPONSE',
-            actor: { id: this.agent.identity.id },
-            object: {
-              kind,
-              items,
-              created: Date.now()
-            },
-            target: targetId
-          };
-
           const originAddress = originConn;
-          if (originAddress && this.agent.connections[originAddress]) {
-            this._sendGenericFabricEnvelopeToPeer(originAddress, responsePayload);
-          } else if (typeof this.agent.relay === 'function') {
-            // Fallback: relay to all peers (for older Peer implementations that support relay)
-            const reply = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key);
-            this.agent.relay(reply);
-          } else {
-            // As a last resort, iterate connections and write directly.
-            try {
-              const reply = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key);
-              const buf = reply.toBuffer();
-              for (const sock of Object.values(this.agent.connections || {})) {
-                if (sock && typeof sock._writeFabric === 'function') {
-                  sock._writeFabric(buf);
-                }
-              }
-            } catch (e) {
-              console.warn('[HUB] Could not broadcast inventory reply via fallback:', e);
-            }
-          }
+          for (const responsePayload of this._inventoryResponsePayloads(kind, items, targetId, originAddress)) {
 
-          // Also broadcast the inventory response to all WebSocket clients so
-          // browser Bridges can update their per-peer inventories.
-          try {
-            const payload = JSON.stringify(responsePayload);
-            const wsMsg = Message.fromVector(['GenericMessage', payload]);
-            if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
-            if (typeof this.http.broadcast === 'function') {
-              this.http.broadcast(wsMsg);
+            if (originAddress && this.agent.connections[originAddress]) {
+              this._sendGenericFabricEnvelopeToPeer(originAddress, responsePayload);
+            } else {
+              // The requester is not a direct peer: write the reply to every peer.
+              try {
+                const buf = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]).signWithKey(this.agent.key).toBuffer();
+                for (const sock of Object.values(this.agent.connections || {})) {
+                  if (sock && typeof sock._writeFabric === 'function') sock._writeFabric(buf);
+                }
+              } catch (e) {
+                console.warn('[HUB] Could not broadcast inventory reply:', e);
+              }
             }
-          } catch (broadcastErr) {
-            console.error('[HUB] Failed to broadcast inventory response to clients:', broadcastErr);
+
+            // Also broadcast the inventory response to all WebSocket clients so
+            // browser Bridges can update their per-peer inventories.
+            try {
+              const payload = JSON.stringify(responsePayload);
+              const wsMsg = Message.fromVector(['GenericMessage', payload]);
+              if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
+              if (typeof this.http.broadcast === 'function') {
+                this.http.broadcast(wsMsg);
+              }
+            } catch (broadcastErr) {
+              console.error('[HUB] Failed to broadcast inventory response to clients:', broadcastErr);
+            }
           }
         } catch (err) {
           console.error('[HUB] Failed to handle inventory request:', err);
@@ -16493,10 +19046,12 @@ class Hub extends Service {
   async _startPhase_runtime () {
       // @fabric/http `start()` registers default RegisterWebRTCPeer / ListWebRTCPeers (JSON-RPC).
       // Re-bind Hub's mesh registry + candidate logic so POST /services/rpc does not use the stock handlers.
-      this.http._registerMethod('RegisterWebRTCPeer', (...params) => {
+      this.http._registerMethod('RegisterWebRTCPeer', (context, ...params) => {
         const info = params[0] || {};
         const peerId = info.peerId;
         if (!peerId) return { status: 'error', message: 'peerId required' };
+        const bound = this._bindWebRtcSignalConnection(String(peerId), context);
+        if (!bound.ok) return { status: 'error', message: bound.message };
 
         console.debug('[HUB] RegisterWebRTCPeer:', peerId);
 
@@ -16530,7 +19085,7 @@ class Hub extends Service {
           this._pushNetworkStatus();
         }
         return { status: 'success', peerId };
-      });
+      }, { withContext: true });
 
       this.http._registerMethod('ListWebRTCPeers', (...params) => {
         const options = params[0] || {};
@@ -16637,6 +19192,7 @@ class Hub extends Service {
 
     const stopWork = async () => {
       this._state.status = 'STOPPING';
+      if (this.blockRelay) this.blockRelay.stop();
 
       // Detach network-status listeners and peering offer timer before stopping subsystems.
       if (this._fabricPeeringOfferIntervalId) {
@@ -16646,8 +19202,13 @@ class Hub extends Service {
         } catch (e) {}
       }
       if (this._configuredPeerRedialTimer) {
+        // Either the jittered first-tick timeout or the interval; clearInterval clears both.
         clearInterval(this._configuredPeerRedialTimer);
         this._configuredPeerRedialTimer = null;
+      }
+      if (this._inventoryHtlcClaimTimer) {
+        clearInterval(this._inventoryHtlcClaimTimer);
+        this._inventoryHtlcClaimTimer = null;
       }
       if (this._workQueueTimer) {
         try {
@@ -16656,6 +19217,18 @@ class Hub extends Service {
         } catch (e) {}
       }
       this._stopHeapTelemetry();
+      if (this._pushNetworkStatusTimer) {
+        clearTimeout(this._pushNetworkStatusTimer);
+        this._pushNetworkStatusTimer = null;
+      }
+      this._unbindContractMailboxEvents();
+      if (this._contractMessageQueueStore && typeof this._contractMessageQueueStore.flush === 'function') {
+        try {
+          this._contractMessageQueueStore.flush();
+        } catch (e) {
+          console.warn('[HUB] contract message queue flush failed:', e && e.message ? e.message : e);
+        }
+      }
       if (this._pushNetworkStatus) {
         try {
           this.agent.removeListener('connections:open', this._pushNetworkStatus);
@@ -16698,6 +19271,14 @@ class Hub extends Service {
         }
       }
 
+      if (this.market && typeof this.market.stop === 'function') {
+        try {
+          await this.market.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Market service cleanly:', err && err.message ? err.message : err);
+        }
+      }
+
       if (this.lightning && typeof this.lightning.stop === 'function') {
         try {
           await this.lightning.stop();
@@ -16728,6 +19309,14 @@ class Hub extends Service {
           await this.coinjoin.stop();
         } catch (err) {
           console.warn('[HUB] Failed to stop Coinjoin service cleanly:', err && err.message ? err.message : err);
+        }
+      }
+
+      if (this.delegation && typeof this.delegation.stop === 'function') {
+        try {
+          this.delegation.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop delegation cleanly:', err && err.message ? err.message : err);
         }
       }
 

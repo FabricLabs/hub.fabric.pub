@@ -7,7 +7,7 @@ const { FIXTURE_SEED } = require('@fabric/core/constants');
 const { importSeed, deriveAccount } = require('@fabric/core/functions/accountKeys');
 const { signAssertion, readChallenge } = require('@fabric/core/functions/passport');
 const { createPassportRelyingParty } = require('@fabric/http/functions/passportRelyingParty');
-const { passportInstalled, passportStatus, loginWithPassport } = require('../functions/passportSiteLogin');
+const { probePassport, loginWithPassport } = require('../functions/passportSiteLogin');
 const {
   getPassportSession,
   setPassportSession,
@@ -93,13 +93,18 @@ describe('Passport site login (v2)', function () {
     setPassportSession(null);
   });
 
-  it('sees Passport only by the protocol 2 marker', function () {
-    const doc = (value) => ({ documentElement: { getAttribute: () => value } });
-    assert.strictEqual(passportInstalled(doc('2')), true);
-    assert.strictEqual(passportInstalled(doc(null)), false);
-    assert.strictEqual(passportInstalled(doc('abcdefghijklmnopabcdefghijklmnop')), false);
-    assert.strictEqual(passportStatus(doc('abcdefghijklmnopabcdefghijklmnop')), 'outdated', 'a v1 Passport is asked to update');
-    assert.strictEqual(passportStatus(doc(null)), 'missing');
+  it('asks Passport over a port whether it is there', async function () {
+    const page = (answer, marker = null) => Object.assign(pageWindow(answer), {
+      document: { documentElement: { getAttribute: () => marker } }
+    });
+    const hello = (v) => (data, port) => {
+      assert.strictEqual(data.type, 'PASSPORT_HELLO');
+      port.postMessage({ type: 'PASSPORT_HELLO', v });
+    };
+    assert.strictEqual(await probePassport(page(hello(2))), 'ready');
+    assert.strictEqual(await probePassport(page(hello(1))), 'outdated');
+    assert.strictEqual(await probePassport(page(null), { timeoutMs: 20 }), 'missing');
+    assert.strictEqual(await probePassport(page(null, '2'), { timeoutMs: 20 }), 'outdated', 'an older Passport only marks the page');
   });
 
   it('signs in with the identity only, and keeps the session view in memory', async function () {

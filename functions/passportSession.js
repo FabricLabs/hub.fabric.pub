@@ -3,8 +3,12 @@
 /**
  * Browser view of the Hub Passport session (`GET /sessions/current`).
  * The session itself is the HttpOnly `fabric.session` cookie; the page only
- * keeps the public view in memory and never stores a token.
+ * keeps the public view in memory and never stores a token. A peer session
+ * (Passport v3) lives in Passport; its view carries `peerSessionId`, and
+ * ending it asks Passport to close it.
  */
+
+const { closePeer } = require('@fabric/http/functions/passportPage');
 
 const PASSPORT_SESSION_EVENT = 'fabric:passportSessionChanged';
 
@@ -50,6 +54,8 @@ function fetchFor (fetchImpl) {
  * @returns {Promise<object|null>}
  */
 async function refreshPassportSession (fetchImpl) {
+  // A peer session lives in Passport, not in a cookie; the Hub has nothing to say about it here.
+  if (current && current.peerSessionId) return getPassportSession();
   const f = fetchFor(fetchImpl);
   if (!f) return null;
   try {
@@ -77,7 +83,14 @@ async function refreshPassportSession (fetchImpl) {
  */
 async function endPassportSession (fetchImpl) {
   const f = fetchFor(fetchImpl);
+  const ended = current;
   setPassportSession(null);
+  if (ended && ended.peerSessionId && typeof window !== 'undefined') {
+    try {
+      await closePeer(window, { sessionId: ended.peerSessionId });
+    } catch (_) {}
+    return;
+  }
   if (!f) return;
   try {
     await f('/sessions/current', { method: 'DELETE', credentials: 'same-origin', cache: 'no-store' });

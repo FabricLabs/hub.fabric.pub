@@ -174,6 +174,18 @@ describe('Hub Document Market accumulate + republish', function () {
     await hub.stop().catch(() => {});
   });
 
+  it('keeps its own price for a held copy when a peer resyncs the same document', async function () {
+    const hub = await makeHub({ republishWithMarkup: false });
+    const fileId = 'ab'.repeat(32);
+    await holdBlob(hub, fileId);
+    hub._ensureResourceCollections();
+    hub._state.content.collections.documents[fileId] = { id: fileId, published: new Date().toISOString(), purchasePriceSats: 6000 };
+    hub._mergeFabricResyncInventoryItems([{ id: fileId, name: 'paper.txt', purchasePriceSats: 5000, published: true }]);
+    const local = hub._collectLocalDocumentInventoryItems().find((row) => row.id === fileId);
+    assert.strictEqual(local.purchasePriceSats, 6000);
+    await hub.stop().catch(() => {});
+  });
+
   it('raises an underpriced local listing and skips a scan of ids without blobs', async function () {
     const hub = await makeHub();
     const fileId = 'aa'.repeat(32);

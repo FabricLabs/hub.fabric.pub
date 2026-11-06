@@ -33,6 +33,14 @@ describe('fabricProtocolUrl', function () {
     assert.ok(out.summary.byteLength >= 208);
   });
 
+  it('previews a field-encoded CONTRACT_MESSAGE as its JSON object', function () {
+    const body = { contract: 'ab'.repeat(32), type: 'Example', object: { n: 1 } };
+    const hex = Message.fromLegacyBody('CONTRACT_MESSAGE', body).toBuffer().toString('hex');
+    const out = fabricMessageSummaryFromHex(hex);
+    assert.strictEqual(out.ok, true);
+    assert.deepStrictEqual(JSON.parse(out.summary.bodyPreview), body);
+  });
+
   it('parseOpaqueFabricMessageHex reads fabric:deadbeef…', function () {
     const m = new Message({ type: 'GenericMessage', data: { x: 1 } });
     const hex = m.toBuffer().toString('hex');
@@ -51,18 +59,16 @@ describe('fabricProtocolUrl', function () {
   });
 
   it('decodeOpaqueFabricUri checks the author signature with a current core', function () {
-    let siteLogin = null;
+    let fabricUri = null;
     try {
-      siteLogin = require('@fabric/core/functions/fabricSiteLogin');
-      require('@fabric/core/functions/fabricUri');
+      fabricUri = require('@fabric/core/functions/fabricUri');
     } catch (_) {
       this.skip();
     }
     const Key = require('@fabric/core/types/key');
     const key = new Key();
-    const nonce = 'a'.repeat(64);
-    const response = siteLogin.signSiteLoginResponse({ origin: 'https://shop.example', nonce, signer: 'passport' }, key);
-    const out = decodeOpaqueFabricUri(response.uri);
+    const signed = Message.fromVector(['GenericMessage', JSON.stringify({ x: 1 })]).signWithKey(key);
+    const out = decodeOpaqueFabricUri(fabricUri.encodeFabricUri(signed));
     assert.strictEqual(out.ok, true, out.error);
     assert.strictEqual(out.verified, true);
     assert.strictEqual(out.signed, true);

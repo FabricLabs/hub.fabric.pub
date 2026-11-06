@@ -48,7 +48,11 @@ module.exports = {
     },
     security: {
       title: 'Security',
-      body: 'Your Passport sign-in to this Hub and the devices that share your Fabric identity.'
+      body: 'Your Passport sign-in to this Hub, and the apps linked to sign with it.'
+    },
+    signing: {
+      title: 'Signing rules',
+      body: 'What this Hub signs for your linked signers without asking you.'
     },
     admin: {
       title: 'Admin',

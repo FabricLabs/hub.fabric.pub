@@ -86,6 +86,9 @@ describe('functions/desktopShellPolicy', () => {
       assert.strictEqual(checkPayjoinTarget('http://pj.example.com/', { hubPort: 8080 }).ok, false);
       assert.strictEqual(checkPayjoinTarget('https://192.168.1.10/pj', { hubPort: 8080 }).ok, false);
       assert.strictEqual(checkPayjoinTarget('https://localhost:9000/pj', { hubPort: 8080 }).ok, false);
+      assert.strictEqual(checkPayjoinTarget('https://[::ffff:127.0.0.1]/pj', { hubPort: 8080 }).ok, false);
+      assert.strictEqual(checkPayjoinTarget('https://[::ffff:c0a8:10a]/pj', { hubPort: 8080 }).ok, false);
+      assert.strictEqual(isPrivateAddress('::ffff:808:808'), false);
       assert.strictEqual(checkPayjoinTarget('https://[::1]/pj', { hubPort: 8080 }).ok, false);
       assert.strictEqual(checkPayjoinTarget('http://127.0.0.1:9999/', { hubPort: 8080 }).ok, false);
       assert.strictEqual(checkPayjoinTarget('https://user:pw@pj.example.com/', { hubPort: 8080 }).ok, false);

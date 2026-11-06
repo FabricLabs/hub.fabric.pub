@@ -25,6 +25,15 @@ describe('functions/desktopLogFile', () => {
     assert.ok(out.includes('FABRIC_MNEMONIC=[redacted]'));
   });
 
+  it('redactLogText scrubs objects printed by util.format', () => {
+    const util = require('util');
+    const out = redactLogText(util.format('state', { adminToken: 's3cret', name: 'hub', nested: { password: "it's", 'appSecret': 'a\'b' } }));
+    assert.ok(!out.includes('s3cret'), out);
+    assert.ok(!out.includes("it's"), out);
+    assert.ok(!out.includes("a\\'b"), out);
+    assert.ok(out.includes("name: 'hub'"), out);
+  });
+
   it('RotatingLogFile rolls over past maxBytes and keeps N files', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-log-'));
     const filePath = path.join(dir, 'fabric-hub.log');

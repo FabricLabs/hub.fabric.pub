@@ -13,15 +13,10 @@
     "./functions/fabricMessageEnvelope": "./functions/fabricMessageEnvelope.js",
     "./functions/fabricDocumentOfferEnvelope": "./functions/fabricDocumentOfferEnvelope.js",
     "./functions/documentInventoryMarket": "./functions/documentInventoryMarket.js",
-    "./functions/identityCluster": "./functions/identityCluster.js",
-    "./functions/identityClusterHttp": "./functions/identityClusterHttp.js",
-    "./functions/identityCrossSign": "./functions/identityCrossSign.js",
-    "./functions/identityCrossSignVerify": "./functions/identityCrossSignVerify.js",
-    "./functions/fabricLinkedDevices": "./functions/fabricLinkedDevices.js",
     "./functions/fabricProtocolUrl": "./functions/fabricProtocolUrl.js",
-    "./functions/fabricDeviceLink": "./functions/fabricDeviceLink.js",
-    "./functions/fabricDeviceLinkClient": "./functions/fabricDeviceLinkClient.js",
-    "./functions/fabricDeviceLinkMessages": "./functions/fabricDeviceLinkMessages.js",
+    "./functions/signerRules": "./functions/signerRules.js",
+    "./functions/hubPassport": "./functions/hubPassport.js",
+    "./functions/fabricDelegateHub": "./functions/fabricDelegateHub.js",
     "./functions/fabricHubAllowlist": "./functions/fabricHubAllowlist.js",
     "./functions/httpSharedMode": "./functions/httpSharedMode.js",
     "./functions/oracleAttestation": "./functions/oracleAttestation.js",
@@ -47,6 +42,7 @@
     "contracts/**",
     "functions/**/*.js",
     "libs/**/*.js",
+    "locales/**/*.js",
     "routes/**/*.js",
     "scripts/**/*.js",
     "scripts/startup/**",
@@ -190,8 +186,8 @@
     "@babel/preset-env": "=7.26.7",
     "@babel/preset-react": "=7.26.3",
     "@babel/register": "=7.25.9",
-    "@fabric/core": "FabricLabs/fabric#feature/passport-v2",
-    "@fabric/http": "FabricLabs/fabric-http#feature/passport-v2",
+    "@fabric/core": "FabricLabs/fabric#feature/schemas",
+    "@fabric/http": "FabricLabs/fabric-http#feature/passport",
     "@noble/curves": "=2.4.0",
     "@noble/hashes": "=2.4.0",
     "@types/react": "=18.3.18",
@@ -204,6 +200,7 @@
     "graphviz-wasm": "=3.0.2",
     "html5-qrcode": "=2.3.8",
     "isomorphic-ws": "=4.0.1",
+    "jayson": "=5.0.0",
     "jquery": "=3.7.1",
     "jsdom": "=30.1.3",
     "lodash.merge": "=4.6.2",
@@ -243,6 +240,19 @@
     "webpack-bundle-analyzer": "=4.10.2",
     "webpack-cli": "=5.1.4",
     "webpack-dev-server": "=6.1.0"
+  },
+  "overrides": {
+    "@electron/asar": "=4.3.1",
+    "@electron/universal": "=3.0.6",
+    "ejs": "=7.0.2",
+    "glob@>=9.0.0 <14.0.2": "=14.0.3",
+    "minimatch@>=9.0.0 <11.0.1": "=11.0.3",
+    "page": {
+      "path-to-regexp": "=1.9.0"
+    },
+    "temp": {
+      "rimraf": "=6.1.3"
+    }
   },
   "c8": {
     "exclude": [

@@ -85,10 +85,19 @@ module.exports = Object.assign({}, defaults, {
      */
     documentTransactions: process.env.FABRIC_BITCOIN_DOCUMENT_TX === '1' || process.env.FABRIC_BITCOIN_DOCUMENT_TX === 'true',
     /**
+     * Store each full raw block (from ZMQ `rawblock`) as a purchasable Document.
+     * Off by default: it keeps a second copy of every block beside bitcoind's
+     * (hundreds of GB on mainnet). Enable with FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS=1.
+     */
+    documentRawBlocks: process.env.FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS === '1' || process.env.FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS === 'true',
+    /** Optional cap on bytes of stored raw-block documents (0 / unset = no cap). */
+    documentRawBlocksMaxBytes: Number(process.env.FABRIC_BITCOIN_DOCUMENT_RAW_BLOCKS_MAX_BYTES || 0),
+    /**
      * Listed L1 prices for inventory / Document Market (HTLC purchase flow). Set to 0 to omit `purchasePriceSats`.
      */
     documentInventoryBlockPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_BLOCK_PRICE_SATS || 1000),
     documentInventoryTransactionPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_TX_PRICE_SATS || 100),
+    documentInventoryRawBlockPriceSats: Number(process.env.FABRIC_BITCOIN_DOC_RAW_BLOCK_PRICE_SATS || 10000),
     /**
      * When non-empty, HTTP watch-only xpub routes that call `scantxoutset` require this shared secret:
      * **`GET /services/bitcoin/xpub`**, **`GET /services/bitcoin/xpub/utxos`**, **`GET /services/bitcoin/xpub/transactions`**
@@ -102,7 +111,26 @@ module.exports = Object.assign({}, defaults, {
     enable: process.env.FABRIC_PAYJOIN_ENABLE ? process.env.FABRIC_PAYJOIN_ENABLE !== 'false' : true,
     endpointBasePath: process.env.FABRIC_PAYJOIN_BASE_PATH || '/services/payjoin',
     defaultSessionTTLSeconds: Number(process.env.FABRIC_PAYJOIN_SESSION_TTL_SECONDS || 1800),
-    maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256)
+    maxOpenSessions: Number(process.env.FABRIC_PAYJOIN_MAX_OPEN_SESSIONS || 256),
+    /** Contribute Hub coins only to outputs paying an address the Hub wallet owns (fails closed). */
+    requireOwnedReceiveAddress: true,
+    /** Originals stored per session; only the first gets a Hub coin (UTXO-probing guard). */
+    maxProposalsPerSession: 3,
+    /**
+     * Internal Payjoin: the Hub wallet pays BIP21 `pj=` URIs through BIP78 and Hub
+     * invoices carry `pj=` (see functions/payjoinInternalOperations.js). Off by default;
+     * FABRIC_PAYJOIN_INTERNAL=1 turns it on, `operations: { walletSend: false }` turns one back off.
+     * A failed proposal fails the send; the original is never broadcast as a fallback.
+     */
+    internal: {
+      enable: ['1', 'true'].includes(String(process.env.FABRIC_PAYJOIN_INTERNAL || '').toLowerCase()),
+      operations: {},
+      timeoutMs: Number(process.env.FABRIC_PAYJOIN_SEND_TIMEOUT_MS || 30000),
+      maxAdditionalFeeContributionSats: Number(process.env.FABRIC_PAYJOIN_MAX_FEE_CONTRIBUTION_SATS || 1000),
+      maxResponseBytes: 100000,
+      /** null = plain http / local pj= hosts allowed off mainnet only; never on mainnet. */
+      allowInsecureEndpoints: null
+    }
   },
   lightning: {
     /**

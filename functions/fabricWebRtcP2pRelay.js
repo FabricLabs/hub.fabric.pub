@@ -137,7 +137,17 @@ function buildInnerWireBuffer (original, originalType, signingKey) {
     throw new Error('P2P_CONTRACT_MESSAGE original must be author-signed Message wire (base64)');
   }
 
-  const inner = Message.fromVector([outerType, outerBody]);
+  // Field-layout types must go to Fabric peers as fields (they drop JSON bodies).
+  let inner = null;
+  if (Message.LEGACY_BODY_TYPES.includes(Message.canonicalTypeName(outerType))) {
+    try {
+      const parsed = JSON.parse(outerBody);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        inner = Message.fromLegacyBody(outerType, parsed);
+      }
+    } catch (_) { /* not a JSON object: send as is */ }
+  }
+  if (!inner) inner = Message.fromVector([outerType, outerBody]);
   if (signingKey) inner.signWithKey(signingKey);
   return inner.toBuffer();
 }

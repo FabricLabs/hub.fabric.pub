@@ -57,7 +57,7 @@ const NETWORKS = Object.freeze({
     base: 30000,
     seed: true,
     beaconIntervalMs: 10000,
-    extraParams: ['-dnsseed=0', '-fallbackfee=0.0002', '-maxtxfee=10', '-incrementalrelayfee=0']
+    extraParams: ['-dnsseed=0', '-fallbackfee=0.00001', '-incrementalrelayfee=0']
   },
   signet: {
     base: 31000,
@@ -65,7 +65,7 @@ const NETWORKS = Object.freeze({
     beaconIntervalMs: 0,
     // Public chains sync from the internet; pruned (MiB) so each instance stays small.
     prune: 550,
-    extraParams: ['-fallbackfee=0.0002']
+    extraParams: ['-fallbackfee=0.00001']
   },
   mainnet: {
     base: 32000,
@@ -187,23 +187,34 @@ function ensureInstanceKey (dir) {
  * Settings fragment merged over `settings/local.js` by `playnet-hub-with-settings.js`.
  * @param {object} opts
  * @param {boolean} [opts.mine=true] run the seed's Beacon miner (off on a shared public chain)
+ * @param {string[]} [opts.redialPeers] Fabric peers the Hub keeps dialing but skips at boot
  * @returns {object}
  */
 function buildFragment (opts) {
-  const { network, instance, dir, key, seedPort, fabricPeers, bitcoinPeers, mine = true } = opts;
+  const { network, instance, dir, key, seedPort, fabricPeers, redialPeers, bitcoinPeers, mine = true } = opts;
   const profile = networkProfile(network);
   const ports = instance.ports;
   const isSeed = instance.name === 'seed';
   const extra = profile.extraParams.slice();
   if (isSeed) extra.push('-bind=127.0.0.1');
-  if (seedPort && !isSeed) extra.push(`-addnode=127.0.0.1:${seedPort}`);
-  for (const peer of bitcoinPeers || []) extra.push(`-addnode=${peer}`);
+  // -connect, not -addnode: bitcoind also redials whoever it remembers in
+  // peers.dat, which put a private chain onto the public playnet node.
+  const connects = [];
+  if (seedPort && !isSeed) connects.push(`127.0.0.1:${seedPort}`);
+  for (const peer of bitcoinPeers || []) connects.push(peer);
+  if (connects.length) {
+    for (const peer of connects) extra.push(`-connect=${peer}`);
+  } else if (profile.seed) {
+    extra.push('-connect=0');
+  }
   return {
     title: instance.label,
     alias: instance.name,
     port: ports.fabric,
     interface: '127.0.0.1',
     peers: fabricPeers || [],
+    // Not dialed at boot (deploy staggers those handshakes), but redialed whenever the session drops.
+    redialPeers: redialPeers || [],
     // Busy public Hubs can sit silent for 20 s or more mid-handshake (core's default idle timeout is 5 s).
     connectTimeout: 60000,
     path: dir,
@@ -331,6 +342,31 @@ async function bootstrapAdmin (port, nodeName, tokenFile, opts = {}) {
   throw new Error(`POST /settings on ${port} failed: ${r.status} ${r.raw}`);
 }
 
+/**
+ * Re-sign an instance's saved admin token when it no longer verifies against
+ * the identity key its `key.json` derives to (a core with another identity
+ * path). Setup won't issue a second token once the Hub is configured.
+ * @param {{ xprv: string }} key the instance key from {@link ensureInstanceKey}
+ * @param {string} tokenFile
+ * @param {string} network
+ * @returns {string|null} the new token, or null when the saved one still verifies (or none is saved)
+ */
+function refreshAdminToken (key, tokenFile, network) {
+  let saved = '';
+  try { saved = fs.readFileSync(tokenFile, 'utf8').trim(); } catch (_) { return null; }
+  if (!saved || !key || !key.xprv) return null;
+  const Key = require('@fabric/core/types/key');
+  const Token = require('@fabric/core/types/token');
+  const { hubServerKeys } = require(path.join(REPO, 'functions', 'hubAccount'));
+  const { isOperatorAdminToken } = require(path.join(REPO, 'functions', 'operatorAdminToken'));
+  const { identity } = hubServerKeys({ _rootKey: new Key({ xprv: key.xprv }), settings: { network } });
+  if (!identity || isOperatorAdminToken(saved, [identity])) return null;
+  const token = new Token({ capability: 'OP_IDENTITY', issuer: identity, subject: 'admin' }).toSignedString();
+  fs.writeFileSync(tokenFile, token + '\n', { mode: 0o600 });
+  fs.chmodSync(tokenFile, 0o600);
+  return token;
+}
+
 function pidAlive (pid) {
   if (!pid) return false;
   try {
@@ -414,6 +450,7 @@ module.exports = {
   waitHttp,
   waitBitcoinOnline,
   bootstrapAdmin,
+  refreshAdminToken,
   pidAlive,
   readPid,
   startDetached,

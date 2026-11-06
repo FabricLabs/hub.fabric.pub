@@ -244,11 +244,11 @@ function waitInventoryItem (buyerHub, docId, { requireHtlc = false, timeoutMs = 
   });
 }
 
-async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000) {
+async function waitDocumentBytes (baseUrl, docId, timeoutMs = 30000, adminToken = null) {
   const deadline = Date.now() + timeoutMs;
   let lastMsg = '';
   while (Date.now() < deadline) {
-    const r = await rpc(baseUrl, 'GetDocument', [{ id: docId }]);
+    const r = await rpc(baseUrl, 'GetDocument', [{ id: docId, ...(adminToken ? { adminToken } : {}) }]);
     const doc = r && r.document;
     if (doc && typeof doc.contentBase64 === 'string' && doc.contentBase64.length > 0) {
       return doc;
@@ -881,12 +881,13 @@ async function waitTracked (httpBase, pred, timeoutMs = 30000, label = 'tracked 
     assert.ok(pricedId, 'CreateDocument priced id');
     const pricedPub = await rpc(httpBases[0], 'PublishDocument', [{
       id: pricedId,
-      purchasePriceSats: PRICE_SATS
+      purchasePriceSats: PRICE_SATS,
+      adminToken
     }]);
     assert.ok(pricedPub.document && pricedPub.document.published, 'priced PublishDocument');
     assert.strictEqual(Number(pricedPub.document.purchasePriceSats), PRICE_SATS);
 
-    const sellerHeld = await rpc(httpBases[0], 'GetDocument', [{ id: pricedId }]);
+    const sellerHeld = await rpc(httpBases[0], 'GetDocument', [{ id: pricedId, adminToken }]);
     const sealedB64 = sellerHeld && sellerHeld.document && sellerHeld.document.contentBase64;
     assert.ok(sealedB64, 'seller holds sealed bytes');
     assert.notStrictEqual(sealedB64, pricedB64, 'priced publish stores ciphertext');
@@ -983,7 +984,7 @@ async function waitTracked (httpBase, pred, timeoutMs = 30000, label = 'tracked 
       assert.strictEqual(httpProof.body.verified, true, 'HTTP L1 payment proof');
     }
 
-    const delivered = await waitDocumentBytes(httpBases[1], pricedId, 45000);
+    const delivered = await waitDocumentBytes(httpBases[1], pricedId, 45000, adminTokens[1]);
     assert.strictEqual(delivered.contentBase64, sealedB64, 'buyer receives seller ciphertext');
     assert.notStrictEqual(delivered.contentBase64, pricedB64, 'buyer store is still sealed');
     suite.pricedId = pricedId;
@@ -1129,11 +1130,9 @@ async function waitTracked (httpBase, pred, timeoutMs = 30000, label = 'tracked 
     if (suite.pricedId && suite.sealedB64) {
       const htlcDoc = await spokes[1].rpc('GetDocument', [{ id: suite.pricedId }]);
       assert.ok(htlcDoc && htlcDoc.document, 'buyer spoke sees HTLC document');
-      assert.strictEqual(
-        htlcDoc.document.contentBase64,
-        suite.sealedB64,
-        'buyer spoke reads seller ciphertext from the L1 inventory flow'
-      );
+      assert.strictEqual(htlcDoc.document.contentBase64, undefined,
+        'a client without the admin token never gets the bought ciphertext');
+      assert.strictEqual(htlcDoc.document.contentWithheld, true);
     }
   });
 });

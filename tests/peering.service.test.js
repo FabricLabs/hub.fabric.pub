@@ -52,6 +52,27 @@ describe('PeeringService', function () {
     assert.strictEqual(PeeringService.verifyHubAttestation(forged).ok, false);
   });
 
+  it('reports the Hub Peer listener, not the HTTP agent', function () {
+    const server = { listening: true, address: () => ({ address: '0.0.0.0', port: 7777 }) };
+    const hub = {
+      http: { clock: 1, agent: {} },
+      agent: { id: 'fab-peer-id', server, connections: { a: {} } },
+      settings: {}
+    };
+    const svc = new PeeringService({});
+    svc.attach({ key: new Key({}), hub });
+    assert.deepStrictEqual(
+      { listenAddress: svc.buildClaim().p2p.listenAddress, listening: svc.buildClaim().p2p.listening },
+      { listenAddress: '0.0.0.0:7777', listening: true }
+    );
+    hub.agent.listenAddress = 'hub.example:7777';
+    assert.strictEqual(svc.buildClaim().p2p.listenAddress, 'hub.example:7777');
+    server.listening = false;
+    assert.strictEqual(svc.buildClaim().p2p.listening, false);
+    hub.agent = { server: { address: () => null, close () {}, on () {} } };
+    assert.deepStrictEqual(PeeringService.p2pListener(hub), { listenAddress: null, listening: false });
+  });
+
   it('claims no federation key when Federations are off', function () {
     const svc = new PeeringService({});
     svc.attach({ key: new Key({}), hub: { http: { agent: null }, agent: null, settings: {} } });

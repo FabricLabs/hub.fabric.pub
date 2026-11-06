@@ -44,6 +44,13 @@ function blockHashFromHeader (headerHex) {
   return Buffer.from(crypto.createHash('sha256').update(once).digest()).reverse().toString('hex');
 }
 
+/** @private x-only hex of an x-only or compressed pubkey, or null */
+function xOnlyHex (pubkey) {
+  const hex = String(pubkey || '').toLowerCase();
+  if (/^(02|03)[0-9a-f]{64}$/.test(hex)) return hex.slice(2);
+  return HEX64.test(hex) ? hex : null;
+}
+
 /** @private txid of a raw transaction hex, or null */
 function txidFromHex (txHex) {
   try {
@@ -518,9 +525,12 @@ class ChallengeService extends Service {
   commitmentFor (merkleRootHex, providerPubkey) {
     const root = String(merkleRootHex || '').toLowerCase();
     const pk = String(providerPubkey || '').toLowerCase();
+    const publisher = xOnlyHex(this.publisherPubkey());
     let best = null;
     for (const c of this._commitments.values()) {
       if (c.merkleRootHex !== root || c.pubkey !== pk) continue;
+      // Fraud proofs bind a challenge to the commitment's publisher; one made to another publisher cannot back ours.
+      if (!publisher || xOnlyHex(c.publisherPubkey) !== publisher) continue;
       if (!best || Number(c.untilEpoch || 0) > Number(best.untilEpoch || 0)) best = c;
     }
     return best;
@@ -754,7 +764,7 @@ class ChallengeService extends Service {
       const Message = require('@fabric/core/types/message');
       const pubkey = this.publisherPubkey();
       const body = { contract: this.settings.contract, type, actor: pubkey ? { publicKey: pubkey, id: pubkey } : undefined, object };
-      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+      const msg = Message.fromLegacyBody('CONTRACT_MESSAGE', body);
       if (this.key && this.key.private) msg.signWithKey(this.key);
       hub.agent.relayFrom('_hub', msg).catch(() => {});
       return true;

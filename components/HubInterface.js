@@ -383,6 +383,8 @@ const {
 const { ToastContainer, toast: toastify, Slide } = require('react-toastify');
 const { toast } = require('../functions/toast');
 const SecurityHome = require('./SecurityHome');
+const SignerRulesHome = require('./SignerRulesHome');
+const DelegationRequestWatcher = require('./DelegationRequestWatcher');
 const SettingsHome = require('./SettingsHome');
 const CollaborationHome = require('./CollaborationHome');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
@@ -1355,7 +1357,13 @@ class HubInterface extends React.Component {
       const upstream = loadUpstreamSettings();
       const summary = await fetchWalletSummaryWithCache(upstream, wallet, { bypassCache: forceRefresh, network });
       if (!isCurrent()) return;
-      const balanceSats = Number(summary.balanceSats ?? summary.balance ?? 0);
+      const reported = summary ? (summary.balanceSats ?? summary.balance) : undefined;
+      if (reported === undefined || reported === null) {
+        // A failed fetch with no cached row: keep the last balance rather than announcing zero.
+        this.setState((prev) => ({ clientBalance: prev.clientBalance, clientBalanceLoading: false }));
+        return;
+      }
+      const balanceSats = Number(reported);
       if (Number.isFinite(balanceSats)) {
         const confirmedSats = Number(summary.confirmedSats ?? balanceSats);
         const unconfirmedSats = Number(summary.unconfirmedSats ?? 0);
@@ -1620,6 +1628,7 @@ class HubInterface extends React.Component {
               responseCapture={this.responseCapture}
             />
             <FabricMessagePrompt />
+            <DelegationRequestWatcher adminToken={this.state.adminToken} />
             <FederationContractInviteModal
               open={this.state.federationInviteModalOpen}
               detail={this.state.federationInviteDetail}
@@ -2742,7 +2751,7 @@ class HubInterface extends React.Component {
                             ? bridgeInstance.getDecryptedDocumentContent(id)
                             : null;
                         }}
-                        onUnlockHtlcDocument={async (docId, preimageHex) => {
+                        onUnlockHtlcDocument={async (docId, preimageHex, unlockOptions) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) {
                             return { ok: false, error: t.shell.bridgeErrors.notReady };
                           }
@@ -2750,7 +2759,7 @@ class HubInterface extends React.Component {
                           if (typeof bridgeInstance.unlockHtlcEncryptedDocument !== 'function') {
                             return { ok: false, error: t.shell.bridgeErrors.htlcUnavailable };
                           }
-                          return bridgeInstance.unlockHtlcEncryptedDocument(docId, preimageHex);
+                          return bridgeInstance.unlockHtlcEncryptedDocument(docId, preimageHex, unlockOptions);
                         }}
                         onPublishDocument={(id, opts) => {
                           if (!this.bridgeRef || !this.bridgeRef.current) return;
@@ -2843,7 +2852,11 @@ class HubInterface extends React.Component {
                   />
                   <Route
                     path="/settings/security"
-                    element={hubPv(<SecurityHome identity={this.state.uiLocalIdentity} />)}
+                    element={hubPv(<SecurityHome adminToken={this.state.adminToken} />)}
+                  />
+                  <Route
+                    path="/settings/signing"
+                    element={hubPv(<SignerRulesHome adminToken={this.state.adminToken} />)}
                   />
                   <Route
                     path="/admin/beacon-federation"

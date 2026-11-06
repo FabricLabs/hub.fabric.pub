@@ -84,13 +84,19 @@ describe('fabricMessageRegistry', function () {
     assert.ok(types.includes('FederationContractInvite'));
     assert.ok(types.includes('MissionBroadcast'));
     assert.ok(types.includes('GameStateSnapshot'), 'GameStateSnapshot from core applicationNamespaces');
-    try {
-      const core = require('@fabric/core/functions/applicationNamespaces');
-      for (const key of Object.keys(core.CONTRACT_BODY_TYPES)) {
-        assert.ok(types.includes(key), `missing core CONTRACT_BODY_TYPES.${key}`);
-      }
-    } catch (_) {
-      // Linked core without applicationNamespaces — meta fallback still covers GameStateSnapshot.
+    const core = require('@fabric/core/functions/applicationNamespaces');
+    for (const key of Object.keys(core.CONTRACT_BODY_TYPES)) {
+      assert.ok(types.includes(key), `missing core CONTRACT_BODY_TYPES.${key}`);
+    }
+  });
+
+  it('marks types core maps from legacy JSON as fields', function () {
+    const Message = require('@fabric/core/types/message');
+    for (const name of ['Ping', 'Pong', 'DocumentPublish', 'DocumentRequest', 'CONTRACT_PUBLISH', 'CONTRACT_MESSAGE']) {
+      const row = registry.OUTER_WIRE_TYPES.find((r) => r.name === name);
+      assert.ok(row, name);
+      assert.strictEqual(row.encoding, registry.PayloadEncoding.fieldsLegacyJson, name);
+      assert.ok(Message.LEGACY_BODY_TYPES.includes(Message.canonicalTypeName(row.opcodeDec)), name);
     }
   });
 });

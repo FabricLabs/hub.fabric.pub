@@ -65,7 +65,9 @@ function FabricDocumentRecord (props) {
   }, [record && record.merkleRootHex]);
 
   if (!record) return null;
-  const html = documentView.renderDocumentHTML({ document: record, offers, opened: props.opened || null }, { href: '/documents' });
+  // The Hub has no blob purchase route yet, so the per-blob buy buttons would do nothing.
+  const html = documentView.renderDocumentHTML({ document: record, offers, opened: props.opened || null }, { href: '/documents' })
+    .replace(/<button class="ui mini button" data-action="_buyBlob" data-blob-index="\d+">buy<\/button>/g, '');
   return React.createElement('fabric-document', {
     'data-merkle-root': record.merkleRootHex,
     'data-document-id': record.documentId || undefined,

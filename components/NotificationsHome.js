@@ -5,6 +5,7 @@ const { Link } = require('react-router-dom');
 const { Button, Header, Icon, Segment } = require('semantic-ui-react');
 const InAppNotificationsList = require('./InAppNotificationsList');
 const FederationRequestsPanel = require('./FederationRequestsPanel');
+const DelegationRequestsPanel = require('./DelegationRequestsPanel');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
   loadHubUiFeatureFlags,
@@ -65,6 +66,7 @@ function NotificationsHome (props) {
           <InAppNotificationsList uf={uf} showHeader={false} />
         </section>
       </Segment>
+      <DelegationRequestsPanel adminToken={readHubAdminTokenFromBrowser(props && props.adminToken)} />
       <FederationRequestsPanel adminToken={readHubAdminTokenFromBrowser(props && props.adminToken)} compact />
     </fabric-hub-notifications>
   );

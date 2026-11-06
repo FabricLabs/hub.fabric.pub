@@ -275,6 +275,7 @@ describe('Hub BIP78 text/plain proposal HTTP handler', () => {
         calls.push(input);
         return { proposal: { id: 'p', psbt: DEMO_PSBT }, bip78Psbt: DEMO_PSBT };
       },
+      getSession () { return null; },
       extractProposalTxid () { return null; }
     });
     hub._mergePersistedTxLabel = () => {};

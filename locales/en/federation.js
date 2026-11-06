@@ -433,7 +433,8 @@ module.exports = {
       status: {
         pending: 'Waiting for approvals',
         broadcast: 'Sent',
-        failed: 'Could not be sent'
+        failed: 'Could not be sent',
+        declined: 'Declined by a signing rule'
       },
       txid: (txid) => `Transaction ${txid}`
     },

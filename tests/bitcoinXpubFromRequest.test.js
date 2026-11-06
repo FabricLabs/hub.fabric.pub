@@ -31,3 +31,25 @@ describe('Hub._bitcoinXpubFromRequest', () => {
     }), 'xpubFromQuery');
   });
 });
+
+describe('Hub._bitcoinXpubAddressesFromRequest', () => {
+  const hub = Object.create(Hub.prototype);
+
+  it('reads a JSON body array or string before the query', () => {
+    assert.equal(hub._bitcoinXpubAddressesFromRequest({
+      body: { addresses: [' bcrt1qa ', 'bcrt1qb', ''] },
+      query: { addresses: 'bcrt1qquery' }
+    }), 'bcrt1qa,bcrt1qb');
+    assert.equal(hub._bitcoinXpubAddressesFromRequest({ body: { addresses: 'bcrt1qa,bcrt1qb' } }), 'bcrt1qa,bcrt1qb');
+  });
+
+  it('falls back to ?addresses= and to nothing', () => {
+    assert.equal(hub._bitcoinXpubAddressesFromRequest({ query: { addresses: ' bcrt1qquery ' } }), 'bcrt1qquery');
+    assert.equal(hub._bitcoinXpubAddressesFromRequest({ query: {} }), '');
+  });
+
+  it('reads limit from the body before the query', () => {
+    assert.equal(hub._bitcoinXpubBodyOrQuery({ body: { limit: 10 }, query: { limit: '40' } }, 'limit'), 10);
+    assert.equal(hub._bitcoinXpubBodyOrQuery({ query: { limit: '40' } }, 'limit'), '40');
+  });
+});

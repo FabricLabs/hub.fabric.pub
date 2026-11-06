@@ -11,9 +11,6 @@ describe('Hub lifted API package exports', function () {
   const exportIds = [
     './functions/fabricHubAllowlist',
     './functions/httpSharedMode',
-    './functions/fabricDeviceLink',
-    './functions/fabricDeviceLinkClient',
-    './functions/fabricDeviceLinkMessages',
     './functions/oracleAttestation',
     './functions/fabricPubkey',
     './functions/fabricChatNormalize',
@@ -21,11 +18,8 @@ describe('Hub lifted API package exports', function () {
     './functions/operatorAdminToken',
     './functions/hubLifecycle',
     './functions/documentInventoryMarket',
-    './functions/identityCluster',
-    './functions/identityClusterHttp',
-    './functions/identityCrossSign',
-    './functions/identityCrossSignVerify',
-    './functions/fabricLinkedDevices',
+    './functions/signerRules',
+    './functions/fabricDelegateHub',
     './services/email',
     './services/fabric'
   ];
@@ -84,64 +78,12 @@ describe('Hub lifted APIs match @fabric/http where applicable', function () {
     assert.strictEqual(hubShared.resolveHttpListenHost({ mode: 'server', env: {} }), '0.0.0.0');
   });
 
-  it('fabricDeviceLink re-exports http thin-client Origin helpers', function () {
-    const hubLink = require('../functions/fabricDeviceLink');
-    const httpLink = require('@fabric/http/functions/fabricDeviceLinkHttp');
-    assert.strictEqual(hubLink.clientMayAccessDeviceLink, httpLink.clientMayAccessDeviceLink);
-    assert.strictEqual(hubLink.isThinClientOrigin, httpLink.isThinClientOrigin);
-    assert.strictEqual(hubLink.MAX_SESSIONS_PER_ORIGIN, httpLink.MAX_SESSIONS_PER_ORIGIN);
-    assert.strictEqual(hubLink.evictDeviceLinkOriginOverflow, httpLink.evictDeviceLinkOriginOverflow);
-    assert.strictEqual(hubLink.offerReplayKey, httpLink.offerReplayKey);
-    const android = {
-      socket: { remoteAddress: '203.0.113.9' },
-      headers: { origin: 'https://localhost' }
-    };
-    assert.strictEqual(hubLink.clientMayAccessDeviceLink(android, 'https://relay.goon.vc'), true);
-    assert.strictEqual(hubLink.clientMayAccessDeviceLink(android, 'https://phish.example'), false);
-  });
-
-  it('fabricDeviceLinkClient omits Origin/Referer when window is the global', function () {
-    const { deviceLinkHeaders } = require('../functions/fabricDeviceLinkClient');
-    const nodeHeaders = deviceLinkHeaders('https://hub.example');
-    assert.strictEqual(nodeHeaders.Origin, 'https://hub.example');
-    const prior = globalThis.window;
-    globalThis.window = globalThis;
-    try {
-      const browserHeaders = deviceLinkHeaders('https://hub.example');
-      assert.strictEqual(browserHeaders.Origin, undefined);
-      assert.strictEqual(browserHeaders.Referer, undefined);
-    } finally {
-      if (prior === undefined) delete globalThis.window;
-      else globalThis.window = prior;
-    }
-  });
-
-  it('identityCrossSign and identityCrossSignVerify re-export core', function () {
-    const hubSign = require('../functions/identityCrossSign');
-    const coreSign = require('@fabric/core/functions/identityCrossSign');
-    assert.strictEqual(hubSign.SIGN_TYPE, coreSign.SIGN_TYPE);
-    const hubVerify = require('../functions/identityCrossSignVerify');
-    const coreVerify = require('@fabric/core/functions/identityCrossSignVerify');
-    assert.strictEqual(hubVerify.signCrossSign, coreVerify.signCrossSign);
-  });
-
-  it('rejects unknown kind and truncated identity-id hex via the core pin', function () {
-    const crypto = require('crypto');
-    const Identity = require('@fabric/core/types/identity');
-    const { SIGN_TYPE, buildCrossSignMessage } = require('../functions/identityCrossSign');
-    const { signCrossSign } = require('../functions/identityCrossSignVerify');
-    const { fabricIdentityIdFromPubkeyHex } = require('@fabric/core/functions/fabricIdentitySchnorr');
-    const ident = new Identity(new Key());
-    const peer = new Identity(new Key());
-    const nonce = crypto.randomBytes(32).toString('hex');
-    assert.throws(
-      () => signCrossSign(ident, { peerPubkey: peer.pubkey, nonce }, 'ChatMessage'),
-      /unknown cross-sign type/i
-    );
-    assert.strictEqual(buildCrossSignMessage(nonce, 'aa', peer.pubkey), null);
-    assert.throws(() => fabricIdentityIdFromPubkeyHex('02aa'), /66 hex/i);
-    assert.ok(typeof fabricIdentityIdFromPubkeyHex(ident.fabricKey.pubkey) === 'string');
-    assert.strictEqual(SIGN_TYPE, 'IdentityCrossSign');
+  it('signerRules and fabricDelegateHub load', function () {
+    const rules = require('../functions/signerRules');
+    assert.strictEqual(typeof rules.evaluate, 'function');
+    assert.strictEqual(rules.validateRules([]).rules.length, 0);
+    const mount = require('../functions/fabricDelegateHub');
+    assert.strictEqual(typeof mount.mountFabricDelegateHub, 'function');
   });
 
   it('oracleAttestation + fabricPubkey + fabricChatNormalize re-export http', function () {

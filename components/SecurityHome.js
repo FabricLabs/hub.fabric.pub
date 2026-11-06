@@ -23,25 +23,31 @@ const {
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const {
-  readLinkedDevices,
-  peerIdOf,
-  revokeLinkedDevice
-} = require('../functions/fabricLinkedDevices');
-const { identitySigner } = require('../functions/hubAccountVault');
+  getLinkedSigners,
+  revokeSignerGrant
+} = require('../functions/hubDelegationClient');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const t = require('../locales/en');
 
 const copy = t.identity.security;
 
+/** @private */
+function shortKey (pk) {
+  const s = String(pk || '');
+  return s.length > 20 ? `${s.slice(0, 10)}…${s.slice(-6)}` : s;
+}
+
 /**
- * Security: the Passport session this browser holds and the devices that share its identity.
- * @param {{ identity?: object }} props The Hub's in-memory identity (revoking needs it unlocked).
+ * Security: the Passport session this browser holds, and (for the operator)
+ * the apps linked to sign with this Hub.
+ * @param {{ adminToken?: string }} props
  */
 function SecurityHome (props = {}) {
-  const identity = props.identity || null;
+  const adminToken = readHubAdminTokenFromBrowser(props.adminToken);
   const [session, setSession] = React.useState(() => getPassportSession());
   const [error, setError] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
-  const [linkedDevices, setLinkedDevices] = React.useState(() => readLinkedDevices());
+  const [signers, setSigners] = React.useState(null);
   const busyDepthRef = React.useRef(0);
 
   const beginBusy = React.useCallback(() => {
@@ -61,26 +67,56 @@ function SecurityHome (props = {}) {
     return () => window.removeEventListener(PASSPORT_SESSION_EVENT, sync);
   }, []);
 
-  const refreshLinkedDevices = React.useCallback(() => {
-    setLinkedDevices(readLinkedDevices());
-  }, []);
+  const refreshSigners = React.useCallback(async () => {
+    if (!adminToken) return;
+    try {
+      setSigners(await getLinkedSigners(adminToken));
+    } catch (e) {
+      if (e.status !== 404) setError(e.message);
+    }
+  }, [adminToken]);
 
-  const handleRevokeDevice = React.useCallback(async (device) => {
+  React.useEffect(() => { void refreshSigners(); }, [refreshSigners]);
+
+  const handleRevoke = React.useCallback(async (grant) => {
     beginBusy();
     setError(null);
     try {
-      const r = await revokeLinkedDevice(device, identitySigner(identity));
-      if (!r.ok) {
-        setError(r.error || copy.devices.revokeFailed);
-        return;
-      }
-      refreshLinkedDevices();
+      await revokeSignerGrant(adminToken, grant.hash);
+      await refreshSigners();
     } catch (e) {
-      setError(t.common.errors.withReason(copy.devices.revokeFailed, (e && e.message) ? e.message : String(e)));
+      setError(t.common.errors.withReason(copy.signers.revokeFailed, (e && e.message) ? e.message : String(e)));
     } finally {
       endBusy();
     }
-  }, [beginBusy, endBusy, refreshLinkedDevices, identity]);
+  }, [beginBusy, endBusy, refreshSigners, adminToken]);
+
+  const renderGrants = (list, revocable) => (
+    !list || list.length === 0 ? <p style={{ color: '#888' }}>{copy.signers.none}</p> : (
+      <List divided relaxed>
+        {list.map((g) => (
+          <List.Item key={g.hash}>
+            {revocable && !g.revoked ? (
+              <List.Content floated="right">
+                <Button negative size="mini" disabled={busy} onClick={() => void handleRevoke(g)}>
+                  {copy.signers.revoke}
+                </Button>
+              </List.Content>
+            ) : null}
+            <List.Header>
+              {g.label || shortKey(revocable ? g.grantee : g.grantor)}
+              {g.revoked ? <Label size="tiny" style={{ marginLeft: '0.5em' }}>{copy.signers.revoked}</Label> : null}
+            </List.Header>
+            <List.Description>
+              {(g.scopes || []).map((sc) => copy.signers.scopes[sc] || sc).join(', ')}
+              {g.origins && g.origins.length ? ` · ${g.origins.join(', ')}` : ''}
+              {g.issuedAt ? ` · ${new Date(g.issuedAt).toLocaleString()}` : ''}
+            </List.Description>
+          </List.Item>
+        ))}
+      </List>
+    )
+  );
 
   const [hubUiTick, setHubUiTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setHubUiTick((n) => n + 1)), []);
@@ -132,48 +168,32 @@ function SecurityHome (props = {}) {
       )}
 
       <Segment>
-        <section aria-labelledby="security-linked-devices-h3">
-        <Header as="h3" id="security-linked-devices-h3">{copy.devices.title}</Header>
-        <p style={{ color: '#666', fontSize: '0.95em' }}>
-          {copy.devices.intro}
-        </p>
-        {linkedDevices.length > 0 ? (
-          <p style={{ color: '#666', fontSize: '0.95em' }}>{copy.devices.signHint}</p>
-        ) : null}
-        <details className="hub-developer-details">
-          <summary>{t.common.developerDetails}</summary>
-          <p style={{ color: '#666', margin: '0.35em 0 0' }}>{copy.devices.developer}</p>
-        </details>
-        {linkedDevices.length === 0 ? (
-          <Message>
-            {copy.devices.empty}
-          </Message>
+        <section aria-labelledby="security-linked-signers-h3" data-testid="security-linked-signers">
+        <Header as="h3" id="security-linked-signers-h3">{copy.signers.title}</Header>
+        <p style={{ color: '#666', fontSize: '0.95em' }}>{copy.signers.intro}</p>
+        {!adminToken ? (
+          <Message>{copy.signers.adminOnly}</Message>
         ) : (
-          <List divided relaxed>
-            {linkedDevices.map((d, i) => {
-              const pid = peerIdOf(d);
-              return (
-                <List.Item key={pid || i}>
-                  <List.Content floated="right">
-                    <Button
-                      negative
-                      size="mini"
-                      disabled={busy}
-                      onClick={() => void handleRevokeDevice(d)}
-                    >
-                      {copy.devices.revoke}
-                    </Button>
-                  </List.Content>
-                  <List.Header>{d.label || d.kind || copy.devices.fallbackName}</List.Header>
-                  <List.Description>
-                    {pid ? <code style={{ fontSize: '0.85em' }}>{pid}</code> : t.common.none}
-                    {d.hubOrigin ? ` · ${d.hubOrigin}` : ''}
-                    {d.linkedAt ? ` · ${new Date(d.linkedAt).toLocaleString()}` : ''}
-                  </List.Description>
-                </List.Item>
-              );
-            })}
-          </List>
+          <>
+            <p style={{ color: '#666', fontSize: '0.95em' }}>
+              {copy.signers.pairHint}{' '}
+              <Link to="/settings/signing">{copy.signers.rulesLink}</Link>
+              {' · '}
+              <Link to="/notifications">{copy.signers.requestsLink}</Link>
+            </p>
+            <Header as="h4">{copy.signers.given}</Header>
+            {renderGrants(signers && signers.given, true)}
+            <Header as="h4">{copy.signers.received}</Header>
+            {renderGrants(signers && signers.received, false)}
+            {signers && signers.pubkey ? (
+              <details className="hub-developer-details">
+                <summary>{t.common.developerDetails}</summary>
+                <p style={{ color: '#666', margin: '0.35em 0 0' }}>
+                  {copy.signers.developer} <code style={{ wordBreak: 'break-all' }}>{signers.pubkey}</code>
+                </p>
+              </details>
+            ) : null}
+          </>
         )}
         </section>
       </Segment>
