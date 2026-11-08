@@ -632,12 +632,15 @@ class Home extends React.Component {
               <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5em', marginBottom: '0.5em' }}>
                   <Header as="h4" style={{ margin: 0 }}>
-                    <Icon name="server" /> {hc.network.title}
-                    {nodeHost ? (
-                      <span title={hc.health.host} style={{ fontWeight: 'normal', color: '#666' }}>
-                        {' · '}<code style={{ fontSize: '0.88em' }}>{nodeHost}</code>
-                      </span>
-                    ) : null}
+                    <Icon name="server" />
+                    <Header.Content>
+                      {hc.network.title}
+                      {nodeHost ? (
+                        <span title={hc.health.host} style={{ fontWeight: 'normal', color: '#666' }}>
+                          {' · '}<code style={{ fontSize: '0.88em' }}>{nodeHost}</code>
+                        </span>
+                      ) : null}
+                    </Header.Content>
                   </Header>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
                     {snapshotUpdated ? (
