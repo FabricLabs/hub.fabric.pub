@@ -1,7 +1,7 @@
 $ npm i --allow-git=all
 npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
-added 1055 packages, and audited 1056 packages in 2m
+added 1055 packages, and audited 1056 packages in 39s
 
 208 packages are looking for funding
   run `npm fund` for details
