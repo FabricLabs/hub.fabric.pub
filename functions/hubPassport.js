@@ -9,7 +9,8 @@
  * Origins are pinned: loopback on the Hub port, `FABRIC_HUB_PUBLIC_ORIGIN`,
  * `payjoin.publicOrigin`, each origin in `FABRIC_HUB_PASSPORT_ORIGINS` (comma
  * list, e.g. a second public name), and each `FABRIC_HUB_ALLOWED_HOSTS` name
- * on the Hub port. The `Host` header never adds one.
+ * on the Hub port, and the Hub's onion origin while its Tor onion service is
+ * on (only the onion key's holder can serve it). The `Host` header never adds one.
  *
  * Peer sessions (Passport v3, {@link mountHubPassportPeer}) pin nothing: the
  * user signs in to this Hub by its identity key, from any page, over the Hub
@@ -58,6 +59,7 @@ function hubPinnedOrigins (hub, env = process.env) {
     hub.settings && hub.settings.payjoin && hub.settings.payjoin.publicOrigin,
     ...String(env.FABRIC_HUB_PASSPORT_ORIGINS || '').split(',').map((o) => o.trim())
   ];
+  if (typeof hub.torOrigin === 'function') extra.push(hub.torOrigin());
   for (const raw of extra) {
     try {
       if (raw) out.add(new URL(String(raw)).origin);

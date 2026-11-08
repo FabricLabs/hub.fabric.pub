@@ -13,5 +13,6 @@ module.exports = {
   payments: require('./payments'),
   settings: require('./settings'),
   federation: require('./federation'),
+  messages: require('./messages'),
   delegation: require('./delegation')
 };

@@ -469,6 +469,23 @@ describe('documentInventoryMarket', function () {
     assert.strictEqual(market.peerLabel({ peerAddress: '10.0.0.1:9' }), '10.0.0.1:9');
   });
 
+  it('keeps the editable-document contract and revision of an offer', function () {
+    const fileId = '77'.repeat(32);
+    const contractId = 'AB'.repeat(32);
+    const row = market.normalizeInventoryItem({ id: fileId, name: 'v2.txt', contractId, revision: 2 }, { peerPubkey: '02' + '88'.repeat(32) });
+    assert.strictEqual(row.contractId, contractId.toLowerCase());
+    assert.strictEqual(row.revision, 2);
+    const loose = market.normalizeInventoryItem({ id: fileId, contractId: 'not-hex', revision: 2 });
+    assert.ok(!('contractId' in loose));
+    assert.ok(!('revision' in loose));
+    const noRevision = market.normalizeInventoryItem({ id: fileId, contractId, revision: -1 });
+    assert.strictEqual(noRevision.contractId, contractId.toLowerCase());
+    assert.ok(!('revision' in noRevision));
+    const catalog = market.mergeCatalog([], [row]);
+    assert.strictEqual(catalog[0].contractId, contractId.toLowerCase());
+    assert.strictEqual(catalog[0].revision, 2);
+  });
+
   it('keeps compact inventory HTLC quotes and drops seller preimage', function () {
     const fileId = 'cd'.repeat(32);
     const row = market.normalizeInventoryItem({

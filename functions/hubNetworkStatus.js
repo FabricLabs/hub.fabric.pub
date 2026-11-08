@@ -59,7 +59,8 @@ const NETWORK_STATUS_HEAVY_FIELDS = Object.freeze([
   'state',
   'documents',
   'publishedDocuments',
-  'webrtcPeers'
+  'webrtcPeers',
+  'chain'
 ]);
 
 /** Status fields never dropped: who the Hub is and whether it is set up. */
@@ -82,8 +83,8 @@ const NETWORK_STATUS_KEPT_FIELDS = Object.freeze([
  * ({@link mergeTruncatedNetworkStatus}) and fetch them with their own calls.
  * Still too large, it keeps the first `peers`, fresh, with `peersTotal` and
  * `peersPartial: true` (not in `truncated`: an old full list would hide every
- * change), then drops
- * the largest remaining fields outside {@link NETWORK_STATUS_KEPT_FIELDS}.
+ * change), then drops the largest remaining fields outside
+ * {@link NETWORK_STATUS_KEPT_FIELDS}, giving the room each frees back to `peers`.
  * @param {object} status
  * @param {number} maxBytes JSON byte budget (frame body minus the JSONCall envelope)
  * @returns {object} `status` itself when it fits, else a trimmed copy
@@ -103,23 +104,36 @@ function fitHubNetworkStatus (status, maxBytes) {
     drop(field);
     if (size(out) <= maxBytes) return out;
   }
-  if (Array.isArray(status.peers) && status.peers.length) {
-    out.peersTotal = status.peers.length;
-    let keep = status.peers.length;
-    while (keep > 0 && size(out) > maxBytes) {
-      keep = Math.floor(keep / 2);
-      out.peers = status.peers.slice(0, keep);
+  const peers = Array.isArray(status.peers) ? status.peers : [];
+  // The longest prefix of `peers` that fits beside everything else in `out`.
+  // A partial list is still current, so clients take it as is; `peersPartial` says it is partial.
+  const fitPeers = () => {
+    if (!peers.length) return;
+    out.peersTotal = peers.length;
+    out.peers = peers;
+    delete out.peersPartial;
+    if (size(out) <= maxBytes) return;
+    out.peersPartial = true;
+    let lo = 0;
+    let hi = peers.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      out.peers = peers.slice(0, mid);
+      if (size(out) <= maxBytes) lo = mid;
+      else hi = mid - 1;
     }
-    // A partial list is still current, so clients take it as is; `peersPartial` says it is partial.
-    if (keep < status.peers.length) out.peersPartial = true;
-    if (size(out) <= maxBytes) return out;
-  }
+    out.peers = peers.slice(0, lo);
+  };
+  fitPeers();
+  if (size(out) <= maxBytes) return out;
   const rest = Object.keys(out)
-    .filter((field) => !NETWORK_STATUS_KEPT_FIELDS.includes(field))
+    .filter((field) => !NETWORK_STATUS_KEPT_FIELDS.includes(field) && field !== 'peers' && field !== 'peersPartial')
     .map((field) => ({ field, bytes: out[field] === undefined ? 0 : size(out[field]) }))
     .sort((a, b) => b.bytes - a.bytes);
   for (const { field } of rest) {
     drop(field);
+    // Room a dropped field frees goes back to the peer list first.
+    fitPeers();
     if (size(out) <= maxBytes) return out;
   }
   return out;

@@ -32,3 +32,4 @@ exclude_paths:
   - 'coverage/**'
   - 'SECURITY.md'
   - 'AUDIT.md'
+  - 'API.md'

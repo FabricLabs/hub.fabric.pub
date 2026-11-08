@@ -9,6 +9,7 @@ const {
   Header,
   Icon,
   Input,
+  Label,
   List,
   Loader,
   Message,
@@ -2300,26 +2301,27 @@ class BitcoinHome extends React.Component {
         {isExplorerPage ? (
         <Segment id="bitcoin-explorer">
           <Header as='h3'>{c.explorerSection.title}</Header>
-          <p style={{ color: '#666', marginBottom: '0.5em' }}>{c.explorerSection.intro}</p>
+          <p>{c.explorerSection.intro}</p>
           {!hubUi.bitcoinExplorer && (this.state.blocks.length > 0 || this.state.transactions.length > 0) ? (
-            <Message info size="small" style={{ marginBottom: '0.75em' }}>
+            <Message info size="small">
               {shared.explorerRoutesOff}
             </Message>
           ) : null}
           <Header as='h4'>{c.explorerSection.recentBlocks}</Header>
           {this.state.blocks.length === 0 ? (
             explorerDataPending ? (
-              <p style={{ color: '#666' }}>
-                <Loader inline active size="small" /> {c.explorerSection.loadingBlocks}
-              </p>
+              <Loader active inline="centered" size="small" content={c.explorerSection.loadingBlocks} />
             ) : (
-              <div style={{ color: '#666' }}>
-                <p style={{ margin: '0 0 0.35em', fontWeight: 600, color: '#444' }}>{shared.noBlocks.title}</p>
-                <p style={{ margin: '0 0 0.35em' }}>{shared.noBlocks.body}</p>
-                {bitcoinHealth !== 'ok' ? <p style={{ margin: '0 0 0.35em' }}>{bitcoinHealthLabel}. {bitcoinHealthHint}</p> : null}
-                <p style={{ margin: '0 0 0.35em' }}>{shared.noBlocks.check}</p>
-                {isRegtest ? <p style={{ margin: 0 }}>{shared.noBlocks.regtest}</p> : null}
-              </div>
+              <Message
+                info
+                header={shared.noBlocks.title}
+                list={[
+                  shared.noBlocks.body,
+                  bitcoinHealth !== 'ok' ? `${bitcoinHealthLabel}. ${bitcoinHealthHint}` : null,
+                  shared.noBlocks.check,
+                  isRegtest ? shared.noBlocks.regtest : null
+                ].filter(Boolean)}
+              />
             )
           ) : (
             <List divided relaxed>
@@ -2367,14 +2369,12 @@ class BitcoinHome extends React.Component {
             </List>
           )}
 
-          <Header as='h4' style={{ marginTop: '1em' }}>{c.explorerSection.mempool(this.state.transactions.length)}</Header>
+          <Header as='h4'>{c.explorerSection.mempool(this.state.transactions.length)}</Header>
           {this.state.transactions.length === 0 ? (
             explorerDataPending ? (
-              <p style={{ color: '#666' }}>
-                <Loader inline active size="small" /> {c.explorerSection.loadingMempool}
-              </p>
+              <Loader active inline="centered" size="small" content={c.explorerSection.loadingMempool} />
             ) : (
-              <p style={{ color: '#666' }}>{shared.noMempool}</p>
+              <p>{shared.noMempool}</p>
             )
           ) : (
             <List divided relaxed>
@@ -2397,7 +2397,7 @@ class BitcoinHome extends React.Component {
                           this.trimHash(tid)
                         )}
                         {unconfirmed && (
-                          <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#f2711c' }}>{shared.unconfirmed}</span>
+                          <Label size="mini" color="orange">{shared.unconfirmed}</Label>
                         )}
                       </List.Header>
                       <List.Description>

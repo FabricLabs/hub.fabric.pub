@@ -26,7 +26,7 @@ Hub admin capabilities (Beacon accept, generateblock, wallet spend, **regtest fa
 - Loopback WebSocket upgrades are origin-checked (`createWebSocketOriginCheck`; extra origins via `FABRIC_HUB_WS_ORIGINS`).
 - Network status pushed to every WebSocket client, and `GetNetworkStatus` / `ListPeers` for non-operators, keep only mesh fields of browser-reported WebRTC metadata (`redactNetworkStatusForPublic`). Payjoin session lists (RPC and `GET /services/payjoin/sessions`) need the operator; a payer reads its own session by id.
 - WebRTC signals (`SendWebRTCSignal`) go only to the WebSocket that registered `toPeerId`, and only from the one that registered `fromPeerId`; never broadcast (SDP / ICE carry client IPs).
-- Federation mailbox reads need an `X-Fabric-Mailbox` proof (`DELEGATION_MAILBOX_FETCH` signed by the member key, nonce once); `?pubkey=` alone is refused.
+- Federation mailbox reads need an `X-Fabric-Mailbox` proof (`DELEGATION_MAILBOX_FETCH` signed by the member key for one of this Hub's pinned origins and purpose `federation-mailbox`, nonce once); `?pubkey=` alone is refused, and so is a proof for another Hub or use.
 - **Fabric hallmarks** (`bitcoin.hallmarks` / `FABRIC_HALLMARKS`) spend wallet UTXOs when enabled (regtest); off by default. Commitment digests are public on L1 by design — never enable on mainnet until fee/policy review.
 
 ## Outstanding (PR #16 / RSI follow-ups)

@@ -86,6 +86,17 @@ describe('local network instances', function () {
     assert.strictEqual(ctx.remotes.length, 2);
   });
 
+  it('deploy --only starts just the named instances, keeping their ports', function () {
+    assert.deepStrictEqual(deploy.parseArgs(['--only', 'operator']).only, ['operator']);
+    assert.deepStrictEqual(deploy.parseArgs(['--only', 'seed,operator', '--only', 'hub-goon-vc']).only, ['seed', 'operator', 'hub-goon-vc']);
+    const all = deploy.context({ network: 'mainnet', root: '/tmp/fabric-localnet-test' });
+    const ctx = deploy.context({ network: 'mainnet', only: ['operator'], root: '/tmp/fabric-localnet-test' });
+    assert.deepStrictEqual(ctx.instances.map((i) => i.name), ['operator']);
+    assert.deepStrictEqual(ctx.instances[0].ports, all.instances.find((i) => i.name === 'operator').ports);
+    assert.strictEqual(ctx.instances[0].ports.http, 32188);
+    assert.throws(() => deploy.context({ network: 'mainnet', only: ['seed'], root: '/tmp/fabric-localnet-test' }), /no such instance on mainnet/);
+  });
+
   it('re-signs a saved admin token only when the identity key no longer verifies it', function () {
     const fs = require('fs');
     const os = require('os');

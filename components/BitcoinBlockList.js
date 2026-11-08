@@ -2,7 +2,7 @@
 
 const React = require('react');
 const { Link } = require('react-router-dom');
-const { Button, Header, Icon, List, Segment } = require('semantic-ui-react');
+const { Button, Header, Icon, List, Loader, Message, Segment } = require('semantic-ui-react');
 const { fetchBitcoinStatus, fetchExplorerData, loadUpstreamSettings, getSpendWalletContext } = require('../functions/bitcoinClient');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { SATS_PER_BTC } = require('../constants');
@@ -87,13 +87,16 @@ class BitcoinBlockList extends React.Component {
     else if (health === 'starting') healthLine = `${t.bitcoin.health.starting}. ${t.bitcoin.health.startingHint}`;
     else if (health === 'unreachable') healthLine = `${t.bitcoin.health.unreachable}. ${t.bitcoin.health.unreachableHint}`;
     return (
-      <div style={{ color: '#666' }}>
-        <p style={{ margin: '0 0 0.35em', fontWeight: 600, color: '#444' }}>{shared.noBlocks.title}</p>
-        <p style={{ margin: '0 0 0.35em' }}>{shared.noBlocks.body}</p>
-        {healthLine ? <p style={{ margin: '0 0 0.35em' }}>{healthLine}</p> : null}
-        <p style={{ margin: '0 0 0.35em' }}>{shared.noBlocks.check}</p>
-        {network === 'regtest' ? <p style={{ margin: 0 }}>{shared.noBlocks.regtest}</p> : null}
-      </div>
+      <Message
+        info
+        header={shared.noBlocks.title}
+        list={[
+          shared.noBlocks.body,
+          healthLine,
+          shared.noBlocks.check,
+          network === 'regtest' ? shared.noBlocks.regtest : null
+        ].filter(Boolean)}
+      />
     );
   }
 
@@ -101,28 +104,24 @@ class BitcoinBlockList extends React.Component {
     return (
       <div className="fade-in">
         <Segment loading={this.state.loading}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5em', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-              <Button as={Link} to="/services/bitcoin" basic size="small" title={shared.backToBitcoinTitle}>
-                <Icon name="arrow left" />
-                {shared.backToBitcoin}
-              </Button>
-              <Header as="h2" style={{ margin: 0 }}>
-                <Icon name="list" />
-                <Header.Content>{c.title}</Header.Content>
-              </Header>
-            </div>
-            <Button basic size="small" onClick={() => this.refresh()}>
-              <Icon name="refresh" />
-              {t.common.actions.refresh}
-            </Button>
-          </div>
+          <Button basic size="small" floated="right" onClick={() => this.refresh()}>
+            <Icon name="refresh" />
+            {t.common.actions.refresh}
+          </Button>
+          <Button as={Link} to="/services/bitcoin" basic size="small" title={shared.backToBitcoinTitle}>
+            <Icon name="arrow left" />
+            {shared.backToBitcoin}
+          </Button>
+          <Header as="h2">
+            <Icon name="list" />
+            <Header.Content>{c.title}</Header.Content>
+          </Header>
         </Segment>
         <Segment>
           <Header as="h3">{c.recentBlocks}</Header>
           {this.state.blocks.length === 0 ? (
             this.state.loading ? (
-              <p style={{ color: '#666' }}>{c.loading}</p>
+              <Loader active inline="centered" content={c.loading} />
             ) : this.renderNoBlocks()
           ) : (
             <List divided relaxed>
@@ -146,7 +145,7 @@ class BitcoinBlockList extends React.Component {
         <Segment>
           <Header as="h3">{c.mempool(this.state.transactions.length)}</Header>
           {this.state.transactions.length === 0 ? (
-            <p style={{ color: '#666' }}>{shared.noMempool}</p>
+            <p>{shared.noMempool}</p>
           ) : (
             <List divided relaxed>
               {this.state.transactions.map((tx, idx) => {

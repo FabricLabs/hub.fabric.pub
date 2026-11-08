@@ -390,6 +390,10 @@ const CollaborationHome = require('./CollaborationHome');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const SettingsFederationHome = require('./SettingsFederationHome');
 const FederationsHome = require('./FederationsHome');
+const FederationPage = require('./FederationPage');
+const FabricMessagesHome = require('./FabricMessagesHome');
+const FabricMessageRecord = require('./FabricMessageRecord');
+const CollectionRecordPage = require('./CollectionRecordPage');
 const FederationInviteNotificationBanner = require('./FederationInviteNotificationBanner');
 const PublicVisitorGate = require('./PublicVisitorGate');
 const { computePublicHubVisitor } = require('../functions/hubPublicVisitor');
@@ -2301,6 +2305,26 @@ class HubInterface extends React.Component {
                     ))}
                   />
                   <Route
+                    path="/messages"
+                    element={hubPv((
+                      <UiFlagRoute flag="activities">
+                        <FabricMessagesHome adminToken={this.state.adminToken} />
+                      </UiFlagRoute>
+                    ))}
+                  />
+                  <Route
+                    path="/messages/:id"
+                    element={hubPv((
+                      <UiFlagRoute flag="activities">
+                        <FabricMessageRecord adminToken={this.state.adminToken} />
+                      </UiFlagRoute>
+                    ))}
+                  />
+                  <Route
+                    path="/collections/:kind/:id"
+                    element={hubPv(<CollectionRecordPage adminToken={this.state.adminToken} />)}
+                  />
+                  <Route
                     path="/services/bitcoin"
                     element={hubPv((
                       <BitcoinHomeWithNav
@@ -2638,21 +2662,6 @@ class HubInterface extends React.Component {
                             });
                           }
                         }}
-                        adminPeerToolsToken={
-                          this.state.adminToken
-                          || (typeof window !== 'undefined' ? readStorageString('fabric.hub.adminToken') : '')
-                          || ''
-                        }
-                        onSendFlushChainToTrustedPeers={(body) => {
-                          const t = this.state.adminToken
-                            || (typeof window !== 'undefined' ? readStorageString('fabric.hub.adminToken') : '')
-                            || '';
-                          if (!t || !body || !this.bridgeRef || !this.bridgeRef.current) return;
-                          const bridgeInstance = this.bridgeRef.current;
-                          if (typeof bridgeInstance.sendFlushChainToTrustedPeersRequest === 'function') {
-                            bridgeInstance.sendFlushChainToTrustedPeersRequest(body, t);
-                          }
-                        }}
                         {...this.props}
                       />
                       </PeersFeatureRoute>
@@ -2837,6 +2846,10 @@ class HubInterface extends React.Component {
                         <FederationsHome adminToken={this.state.adminToken} bridgeRef={this.bridgeRef} />
                       </UiFlagRoute>
                     ))}
+                  />
+                  <Route
+                    path="/federations/:id"
+                    element={hubPv(<FederationPage adminToken={this.state.adminToken} />)}
                   />
                   <Route
                     path="/settings/federation"

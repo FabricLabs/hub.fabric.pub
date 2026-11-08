@@ -135,6 +135,15 @@ const MarketService = require('../services/market');
 const BlockRelay = require('../services/blockRelay');
 const CoinjoinService = require('../services/coinjoin');
 const FederationsService = require('../services/federations');
+const DocumentContractsService = require('../services/documentContracts');
+const {
+  DOCUMENT_REVISION_TYPE,
+  DOCUMENT_PROVENANCE_TYPE,
+  isDocumentContractDefinition,
+  parseDocumentContractFrame
+} = require('@fabric/core/functions/documentRevisions');
+const { pubkeyXOnly } = require('@fabric/core/functions/pubkey');
+const fabricMessageView = require('../functions/fabricMessageView');
 const { isHttpSharedModeEnabled } = require('../functions/httpSharedMode');
 const { mergeFabricPeersWithWebRtcRegistry } = require('../functions/mergeFabricPeersWithWebRtcRegistry');
 const {
@@ -281,6 +290,9 @@ const Federation = require('@fabric/core/types/federation');
 // Hub Services
 const Fabric = require('../services/fabric');
 const SetupService = require('../services/setup');
+const HubTor = require('../services/tor');
+const { applyTorSetup, normalizeTorSettings } = require('../functions/hubTor');
+const { loadOrCreateOnionKey } = require('../functions/torOnionKey');
 const {
   applyHubBitcoinRuntimeFromSetup,
   buildHubSetupInitialConfig,
@@ -289,6 +301,7 @@ const {
 const { seedHubStoresAfterSetup } = require('../functions/hubSetupStores');
 const payjoinReceiverContribution = require('../functions/payjoinReceiverContribution');
 const payjoinInternalOperations = require('../functions/payjoinInternalOperations');
+const { isPrivateHost } = require('../functions/payjoinEndpointPolicy');
 const hubNetworkJoin = require('../functions/hubNetworkJoin');
 
 /** `receiverContribution` (or legacy `autoAcpBoost`) from a request body; undefined = service default. */
@@ -296,7 +309,7 @@ function payjoinContributionFlag (body = {}) {
   const value = body.receiverContribution != null ? body.receiverContribution : body.autoAcpBoost;
   return value != null ? !!value : undefined;
 }
-const { mountHubPassport, mountHubPassportPeer, hubRequestSession } = require('../functions/hubPassport');
+const { mountHubPassport, mountHubPassportPeer, hubRequestSession, hubPinnedOrigins } = require('../functions/hubPassport');
 const { mountFabricDelegateHub, passportExtensionIds } = require('../functions/fabricDelegateHub');
 // const Queue = require('../types/queue');
 
@@ -377,7 +390,9 @@ class Hub extends Service {
         { method: 'GET', route: '/contracts', handler: ROUTES.contracts.list.bind(this) },
         { method: 'GET', route: '/contracts/:id', handler: ROUTES.contracts.view.bind(this) },
         { method: 'GET', route: '/documents', handler: ROUTES.documents.list.bind(this) },
-        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) }
+        { method: 'GET', route: '/documents/:id', handler: ROUTES.documents.view.bind(this) },
+        { method: 'GET', route: '/messages', handler: ROUTES.messages.list.bind(this) },
+        { method: 'GET', route: '/messages/:id', handler: ROUTES.messages.view.bind(this) }
       ],
       commitments: [],
       constraints: {
@@ -795,6 +810,9 @@ class Hub extends Service {
         ? { maxDepositSats: federationCapSats, maxWithdrawalSats: federationCapSats }
         : {})
     });
+    this.documentContracts = new DocumentContractsService(
+      (this.settings.documents && this.settings.documents.contracts) || {}
+    );
     if (this.payjoin) this.payjoin.settings.coinjoinProfile = () => {
       const coinjoin = this._getCoinjoinService();
       if (!coinjoin || !coinjoin.available) return null;
@@ -1624,6 +1642,7 @@ class Hub extends Service {
         : undefined;
       const bitcoinBlockHash = (c && c.bitcoinBlockHash) || meta.bitcoinBlockHash;
       const bitcoinTxid = (c && c.bitcoinTxid) || meta.bitcoinTxid;
+      const contract = this.documentContracts ? this.documentContracts.contractFor(id) : null;
       return {
         id,
         sha256: meta.sha256 || id,
@@ -1632,6 +1651,7 @@ class Hub extends Service {
         size: meta.size,
         created: meta.created,
         published,
+        ...(contract ? { contractId: contract.contractId, revision: contract.revision } : {}),
         ...(purchasePriceSats ? { purchasePriceSats } : {}),
         ...(bitcoinHeight != null ? { bitcoinHeight } : {}),
         ...(bitcoinBlockHash ? { bitcoinBlockHash: String(bitcoinBlockHash) } : {}),
@@ -4979,6 +4999,63 @@ class Hub extends Service {
   }
 
   /**
+   * Application contract view for `GET /contracts/:id`: the tracked
+   * CONTRACT_PUBLISH entry (pending or accepted), its Statechain head when
+   * accepted, the root-journal patches that sealed it under
+   * `/namespaces/<id>`, the opaque CONTRACT_MESSAGE queue (no frame bytes),
+   * and the log entries that name it. Null when the id is not tracked.
+   * @param {string} contractId
+   * @returns {(Object|null)}
+   */
+  _applicationContractJson (contractId) {
+    const id = contractId != null ? String(contractId).trim() : '';
+    if (!id) return null;
+    const summary = this._getTrackedContractsSummary();
+    const tracked = (summary.accepted || []).find((e) => e.contractId === id) ||
+      (summary.pending || []).find((e) => e.contractId === id) || null;
+    if (!tracked) return null;
+    let sidechain = null;
+    if (tracked.status === 'accepted') {
+      const state = this._getContractSidechainStateJson({ contractId: id });
+      if (state && state.type === 'ContractSidechainState') sidechain = state;
+    }
+    let seals = [];
+    try {
+      const seal = sidechainState.parentSealPath(id);
+      const journal = sidechainState.summarizeJournal(this.fs, { limit: 500, includePatches: true });
+      const touches = (p) => p && (p.path === seal || String(p.path).startsWith(`${seal}/`) ||
+        (p.path === '/namespaces' && p.value && typeof p.value === 'object' && Object.prototype.hasOwnProperty.call(p.value, id)));
+      seals = (journal.entries || [])
+        .filter((row) => (row.patches || []).some(touches))
+        .map(({ patches, ...row }) => row);
+    } catch (_) {
+      seals = [];
+    }
+    let queue = { count: 0, entries: [] };
+    try {
+      const store = this._ensureContractMessageQueueStore();
+      if (store) {
+        const rows = contractMessageQueue.listQueuedMessages(store, id, { limit: 100 });
+        queue = {
+          count: rows.length,
+          entries: rows.slice().reverse().map((e) => ({
+            hash: e.hash,
+            type: e.type || null,
+            author: e.author || null,
+            origin: e.origin || null,
+            enqueuedAt: e.enqueuedAt || null,
+            delivered: e.deliveredTo && typeof e.deliveredTo === 'object' ? Object.keys(e.deliveredTo).length : 0
+          }))
+        };
+      }
+    } catch (_) {
+      queue = { count: 0, entries: [] };
+    }
+    const messages = fabricMessageView.filterMessages(this._getFabricMessages(), { contract: id, limit: 50 }).messages;
+    return { contractId: id, status: tracked.status, tracked, sidechain, seals, queue, messages };
+  }
+
+  /**
    * Patch a contract-namespace Statechain, then seal its head into Hub `/namespaces/<id>`.
    * Auth: same as root sidechain (federation witness or admin token).
    */
@@ -5968,6 +6045,17 @@ class Hub extends Service {
           message: `PSBT destSats ${r.destSats} does not match request amountSats ${request.amountSats}`
         };
       }
+      // A dry run burns nothing, so it must not hand out a spend.
+      if (burnGate.skipped) {
+        return {
+          type: 'PrepareFederationVaultWithdrawalPsbtResult',
+          dryRun: true,
+          leaves: built.leaves || [],
+          tip,
+          conservation: burnGate.reserve || null,
+          destSats: r.destSats
+        };
+      }
       return {
         type: 'PrepareFederationVaultWithdrawalPsbtResult',
         leaves: built.leaves || [],
@@ -6010,12 +6098,14 @@ class Hub extends Service {
   }
 
   /**
-   * Peg-out rate limits (Liquid SideSwap lesson).
+   * Peg-out rate limits (Liquid SideSwap lesson). The daily total is read from
+   * the sealed reserve ledger, so it holds across restarts and previews.
    * @param {number} amountSats
+   * @param {string} [requestId] Already-burned requests are not counted twice
    * @returns {{ ok: true }|{ ok: false, error: string }}
    * @private
    */
-  _federationPegOutLimitsOk (amountSats) {
+  _federationPegOutLimitsOk (amountSats, requestId = '') {
     const amount = Math.round(Number(amountSats));
     const bitcoin = this._getBitcoinService();
     const network = (bitcoin && bitcoin.network) || 'regtest';
@@ -6035,14 +6125,15 @@ class Hub extends Service {
     if (amount > maxOne) {
       return { ok: false, error: `amountSats exceeds peg-out max (${maxOne})` };
     }
-    if (!this._federationPegOutDaily) {
-      this._federationPegOutDaily = { day: '', total: 0 };
+    if (!this._sidechainState) {
+      this._sidechainState = sidechainState.loadState(this.fs);
     }
     const day = new Date().toISOString().slice(0, 10);
-    if (this._federationPegOutDaily.day !== day) {
-      this._federationPegOutDaily = { day, total: 0 };
-    }
-    if (this._federationPegOutDaily.total + amount > maxDaily) {
+    const id = String(requestId || '').toLowerCase();
+    const sealed = Federation.readReserve((this._sidechainState && this._sidechainState.content) || {}).withdrawals
+      .filter((w) => String(w.burnedAt || '').slice(0, 10) === day && String(w.requestId || '').toLowerCase() !== id)
+      .reduce((sum, w) => sum + (Number(w.amountSats) || 0), 0);
+    if (sealed + amount > maxDaily) {
       return { ok: false, error: `amountSats exceeds daily peg-out max (${maxDaily})` };
     }
     return { ok: true };
@@ -6057,7 +6148,7 @@ class Hub extends Service {
    * @private
    */
   _federationPegOutBurnGate (request, body = {}) {
-    const limits = this._federationPegOutLimitsOk(request.amountSats);
+    const limits = this._federationPegOutLimitsOk(request.amountSats, request.requestId);
     if (!limits.ok) return { status: 'error', message: limits.error };
 
     if (!this._sidechainState) {
@@ -6069,7 +6160,7 @@ class Hub extends Service {
       const reserve = Federation.readReserve(content);
       const cons = Federation.assertConservation(reserve);
       if (!cons.ok) return { status: 'error', message: cons.error };
-      return { status: 'success', reserve };
+      return { status: 'success', reserve, skipped: true };
     }
 
     // Prefer already-burned ledger row matching requestId.
@@ -6100,11 +6191,6 @@ class Hub extends Service {
     if (!burned.ok) return { status: 'error', message: burned.error };
 
     // Preview only — do not mutate `_sidechainState.content` (seal via patches).
-    if (!this._federationPegOutDaily) this._federationPegOutDaily = { day: '', total: 0 };
-    const day = new Date().toISOString().slice(0, 10);
-    if (this._federationPegOutDaily.day !== day) this._federationPegOutDaily = { day, total: 0 };
-    this._federationPegOutDaily.total += Number(request.amountSats) || 0;
-
     return {
       status: 'success',
       reserve: burned.reserve,
@@ -6915,6 +7001,355 @@ class Hub extends Service {
   }
 
   /**
+   * A document file, parsed, or null.
+   * @param {string} documentId
+   * @returns {Object|null}
+   * @private
+   */
+  _readDocumentFile (documentId) {
+    const id = this._normalizeDocumentId(documentId);
+    if (!id || !this.fs) return null;
+    try {
+      const raw = this.fs.readFile(`documents/${id}.json`);
+      return raw ? parseFilesystemJson(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Versions before an editable contract existed, oldest first, following
+   * each file's `parent` back from `documentId`.
+   * @param {string} documentId
+   * @returns {Object[]}
+   * @private
+   */
+  _legacyDocumentHistory (documentId) {
+    const out = [];
+    const seen = new Set();
+    let id = this._normalizeDocumentId(documentId);
+    while (id && !seen.has(id) && out.length < 1000) {
+      seen.add(id);
+      const doc = this._readDocumentFile(id);
+      if (!doc) break;
+      const sealed = documentContentKey.isSealedDocument(doc);
+      out.unshift({
+        id,
+        sha256: doc.sha256 || id,
+        name: doc.name,
+        mime: doc.mime,
+        size: doc.size,
+        edited: doc.edited || doc.created,
+        merkleRootHex: sealed && doc.encryption ? doc.encryption.merkleRootHex : undefined
+      });
+      id = this._normalizeDocumentId(doc.parent);
+    }
+    return out;
+  }
+
+  /**
+   * Write `contractId`, `revision`, and `parent` onto a held version (file,
+   * in-memory row, and catalog row).
+   * @param {string} documentId
+   * @param {{ contractId: string, revision: number, parent: (string|null) }} fields
+   * @returns {Promise<boolean>} Whether anything changed.
+   * @private
+   */
+  async _applyDocumentContractFields (documentId, fields) {
+    const id = this._normalizeDocumentId(documentId);
+    const doc = this._readDocumentFile(id);
+    if (!doc) return false;
+    // A copy whose digests disagree with the signed revision is not that version.
+    if (fields.sha256 && doc.sha256 && String(doc.sha256).toLowerCase() !== fields.sha256) return false;
+    const heldRoot = doc.merkleRootHex || (doc.encryption && doc.encryption.merkleRootHex) || null;
+    if (fields.merkleRootHex && heldRoot && String(heldRoot).toLowerCase() !== fields.merkleRootHex) return false;
+    const parent = fields.parent || null;
+    let changed = false;
+    if (doc.contractId !== fields.contractId || doc.revision !== fields.revision || (doc.parent || null) !== parent) {
+      await this.fs.publish(`documents/${id}.json`, {
+        ...doc,
+        contractId: fields.contractId,
+        revision: fields.revision,
+        parent
+      });
+      changed = true;
+    }
+    const patch = (row) => {
+      if (!row) return;
+      row.contractId = fields.contractId;
+      row.revision = fields.revision;
+      row.parent = parent;
+    };
+    patch(this._state.documents && this._state.documents[id]);
+    const catalog = this._state.content && this._state.content.collections && this._state.content.collections.documents;
+    if (catalog && catalog[id] && (catalog[id].contractId !== fields.contractId || catalog[id].revision !== fields.revision)) {
+      patch(catalog[id]);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Bring held versions of a document contract in line with its history.
+   * @param {string} contractId
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _onDocumentContractChanged (contractId) {
+    if (!this.documentContracts || !contractId) return;
+    const view = this.documentContracts.get(contractId);
+    if (!view) return;
+    let changed = false;
+    for (const rev of view.revisions.concat(view.forks)) {
+      const row = this.documentContracts.contractFor(rev.documentIdentifier);
+      if (!row || row.contractId !== view.contractId || row.frameId !== rev.frameId) continue;
+      if (await this._applyDocumentContractFields(rev.documentIdentifier, {
+        contractId: view.contractId,
+        revision: rev.revision,
+        parent: rev.previousDocumentIdentifier,
+        sha256: rev.sha256,
+        merkleRootHex: rev.merkleRootHex
+      })) changed = true;
+    }
+    if (changed) {
+      this._refreshChainState('document-contract');
+      this.commit();
+    }
+  }
+
+  /**
+   * A document contract with, per version, whether this Hub holds it and at
+   * what price it is listed.
+   * @param {string} contractId
+   * @returns {Object|null}
+   * @private
+   */
+  _documentContractJson (contractId) {
+    if (!this.documentContracts) return null;
+    const view = this.documentContracts.get(contractId);
+    if (!view) return null;
+    const catalog = (this._state.content && this._state.content.collections && this._state.content.collections.documents) || {};
+    const offers = this._state.content && this._state.content.collections
+      ? this._state.content.collections[documentInventoryMarket.COLLECTION] || {}
+      : {};
+    const annotate = (rev) => {
+      const id = rev.documentIdentifier;
+      const listed = catalog[id] || null;
+      const remote = Object.values(offers).filter((row) => row && (row.documentId === id || row.id === id || row.sha256 === id));
+      return {
+        ...rev,
+        held: !!this._readDocumentFile(id),
+        published: !!(listed && listed.published),
+        purchasePriceSats: listed && listed.purchasePriceSats ? listed.purchasePriceSats : null,
+        offers: remote.length
+      };
+    };
+    return {
+      ...view,
+      head: view.head ? annotate(view.head) : null,
+      revisions: view.revisions.map(annotate),
+      forks: view.forks.map(annotate)
+    };
+  }
+
+  /**
+   * Make a held document editable (see {@link DocumentContractsService#create}).
+   * @param {Object} req `{ id, editors?, threshold?, note? }`
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _createDocumentContract (req = {}) {
+    if (!this.documentContracts) throw new Error('document contracts are disabled on this Hub');
+    const id = this._normalizeDocumentId(req.id || req.documentId);
+    if (!id) throw new Error('id required');
+    const existing = this.documentContracts.contractFor(id);
+    if (existing) return { contract: this._documentContractJson(existing.contractId), created: false };
+    const history = this._legacyDocumentHistory(id);
+    if (!history.length) throw new Error('document not found');
+    const contract = await this.documentContracts.create({
+      history,
+      editors: Array.isArray(req.editors) ? req.editors : [],
+      threshold: req.threshold,
+      note: req.note
+    });
+    await this._onDocumentContractChanged(contract.contractId);
+    await this._appendFabricMessage('CreateDocumentContract', {
+      contract: contract.contractId,
+      document: id,
+      name: contract.name,
+      revisions: contract.revisions.length
+    });
+    return { contract: this._documentContractJson(contract.contractId), created: true };
+  }
+
+  /**
+   * Versions of a document: its contract's history when it is editable, else
+   * the in-memory lineage from before contracts.
+   * @param {string} documentId
+   * @returns {Object}
+   * @private
+   */
+  _listDocumentRevisions (documentId) {
+    const id = this._normalizeDocumentId(documentId);
+    const row = id && this.documentContracts ? this.documentContracts.contractFor(id) : null;
+    if (row) {
+      const contract = this._documentContractJson(row.contractId);
+      if (contract) {
+        return {
+          type: 'ListDocumentRevisionsResult',
+          contractId: row.contractId,
+          lineage: contract.revisions.length ? contract.revisions[0].documentIdentifier : id,
+          documentId: id,
+          revision: row.revision,
+          head: contract.head,
+          editable: contract.editable,
+          revisions: contract.revisions,
+          forks: contract.forks
+        };
+      }
+    }
+    const docs = this._state.documents || {};
+    const seed = docs[id] || null;
+    const lineage = (seed && (seed.lineage || seed.id)) || id;
+    const revisions = Object.values(docs)
+      .filter((doc) => doc && (doc.lineage || doc.id) === lineage)
+      .sort((a, b) => Number(a.revision || 0) - Number(b.revision || 0));
+    return {
+      type: 'ListDocumentRevisionsResult',
+      contractId: null,
+      lineage,
+      documentId: id,
+      revisions,
+      forks: []
+    };
+  }
+
+  /**
+   * @param {Object} req `{ contractId }` or `{ id }` (a version's document id).
+   * @returns {Object}
+   * @private
+   */
+  _getDocumentContractResult (req = {}) {
+    if (!this.documentContracts) return { status: 'error', message: 'document contracts are disabled on this Hub' };
+    let contractId = String(req.contractId || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(contractId)) {
+      const id = this._normalizeDocumentId(req.id || req.documentId);
+      const row = id ? this.documentContracts.contractFor(id) : null;
+      contractId = row ? row.contractId : '';
+    }
+    const contract = contractId ? this._documentContractJson(contractId) : null;
+    if (!contract) return { status: 'error', message: 'document contract not found' };
+    const out = { type: 'GetDocumentContractResult', contract };
+    if (req.includeFrames) {
+      out.frames = this.documentContracts.frames(contractId).map((f) => ({
+        id: f.id,
+        parent: f.parent,
+        author: f.author,
+        fabric: `fabric:${f.hex}`
+      }));
+    }
+    return out;
+  }
+
+  /**
+   * @param {Object} req `{ fabric | frame | hex, adminToken? }`
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _submitDocumentRevisionFrame (req = {}) {
+    if (!this.documentContracts) return { status: 'error', message: 'document contracts are disabled on this Hub' };
+    const input = req.fabric || req.frame || req.hex;
+    if (!input || typeof input !== 'string') return { status: 'error', message: 'fabric frame required' };
+    const parsed = parseDocumentContractFrame(input);
+    if (!parsed.ok) return { status: 'error', message: parsed.reason || 'not a document contract frame' };
+    if (parsed.kind === 'publish' && !this._verifyOperatorAdminToken(req.adminToken || req.token)) {
+      return { status: 'error', message: 'adminToken required to add a document contract' };
+    }
+    const result = await this.documentContracts.ingestFrame(input);
+    if (!result.accepted && !result.duplicate && !result.pending) {
+      return { status: 'error', message: result.reason || 'frame refused', contractId: result.contractId || null };
+    }
+    if (result.accepted && this.agent && typeof this.agent.relayFrom === 'function') {
+      try {
+        const buf = Buffer.from(parsed.hex, 'hex');
+        this.agent.relayFrom('_hub', Message.fromBuffer(buf));
+      } catch (_) { /* kept locally even when the mesh is down */ }
+    }
+    return Object.assign({ type: 'SubmitDocumentRevisionFrameResult', frameId: parsed.id }, result);
+  }
+
+  /**
+   * Send a version's provenance to a peer ahead of its file, as point-to-point
+   * `DocumentProvenance` envelopes (the frames split to fit a message). The
+   * frames keep their editors' signatures; the envelope is signed by this peer.
+   * @param {string} address
+   * @param {string} documentId
+   * @returns {number} Frames sent.
+   * @private
+   */
+  _sendDocumentProvenanceToPeer (address, documentId) {
+    if (!this.documentContracts) return 0;
+    const provenance = this.documentContracts.provenanceFor(documentId);
+    if (!provenance || !provenance.collection || !Array.isArray(provenance.collection.messages)) return 0;
+    const frames = provenance.collection.messages.map((m) => m.hex).filter(Boolean);
+    const budget = 48000;
+    const parts = [];
+    let current = [];
+    let size = 0;
+    for (const hex of frames) {
+      if (current.length && size + hex.length > budget) {
+        parts.push(current);
+        current = [];
+        size = 0;
+      }
+      current.push(hex);
+      size += hex.length;
+    }
+    if (current.length) parts.push(current);
+    parts.forEach((part, index) => {
+      this._sendGenericFabricEnvelopeToPeer(address, {
+        type: DOCUMENT_PROVENANCE_TYPE,
+        object: {
+          contractId: provenance.contractId,
+          documentIdentifier: provenance.documentIdentifier,
+          revision: provenance.revision,
+          part: index + 1,
+          parts: parts.length,
+          frames: part
+        }
+      });
+    });
+    return frames.length;
+  }
+
+  /**
+   * Keep the frames of a peer's `DocumentProvenance` envelope. Each frame is
+   * checked on its own (editors' signatures, chain), so a partial or forged
+   * envelope adds nothing that does not belong to the contract's history.
+   * @param {Object} body Generic message body.
+   * @param {Object} [origin]
+   * @returns {Promise<number>} Frames kept.
+   * @private
+   */
+  async _ingestDocumentProvenanceEnvelope (body, origin = null) {
+    if (!this.documentContracts) return 0;
+    const object = body && typeof body === 'object' ? (body.object || body) : {};
+    const frames = Array.isArray(object.frames) ? object.frames.slice(0, 256) : [];
+    let kept = 0;
+    for (const hex of frames) {
+      if (typeof hex !== 'string' || hex.length > 131072) continue;
+      try {
+        const res = await this.documentContracts.ingestFrame(hex);
+        if (res.accepted) kept++;
+      } catch (_) { /* skip a bad frame */ }
+    }
+    if (kept && this.settings && this.settings.debug) {
+      console.log(`[HUB:DOCUMENTS] kept ${kept} provenance frame(s) from ${origin && origin.name ? origin.name : 'peer'}`);
+    }
+    return kept;
+  }
+
+  /**
    * Open a per-blob priced document with the batch preimage `S`.
    * Wraps live in the private batches file, not the public document.
    * @private
@@ -7513,6 +7948,14 @@ class Hub extends Service {
       });
     } catch (e) {
       return { status: 'error', message: e && e.message ? e.message : 'file share failed' };
+    }
+    // An editable document's version travels with its history (direct sends only).
+    if (!relayExtras) {
+      try {
+        this._sendDocumentProvenanceToPeer(address, doc.id || doc.sha256);
+      } catch (err) {
+        if (this.settings && this.settings.debug) console.warn('[HUB:DOCUMENTS] provenance not sent:', err && err.message ? err.message : err);
+      }
     }
     // Peers drop JSON P2P_FILE_SEND bodies; send each frame as fields.
     for (const frame of share.frames) {
@@ -8782,12 +9225,38 @@ class Hub extends Service {
 
   async _collectBitcoinStatus (options = {}) {
     const force = !!options.force;
+    if (!force && this._bitcoinStatusCache.value && (Date.now() - this._bitcoinStatusCache.updatedAt) < this._bitcoinCacheTTL) {
+      return this._bitcoinStatusCache.value;
+    }
+    return this._coalesceBitcoinStatus();
+  }
+
+  /**
+   * One status collect at a time. A request made while one runs waits for a
+   * single follow-up run, so its answer is never older than the request and
+   * any number of callers cost at most two runs.
+   * @private
+   */
+  _coalesceBitcoinStatus () {
+    if (this._bitcoinStatusQueued) return this._bitcoinStatusQueued;
+    if (!this._bitcoinStatusRunning) {
+      this._bitcoinStatusRunning = this._collectBitcoinStatusNow().finally(() => {
+        this._bitcoinStatusRunning = null;
+      });
+      return this._bitcoinStatusRunning;
+    }
+    this._bitcoinStatusQueued = this._bitcoinStatusRunning.catch(() => {}).then(() => {
+      this._bitcoinStatusQueued = null;
+      return this._coalesceBitcoinStatus();
+    });
+    return this._bitcoinStatusQueued;
+  }
+
+  /** @private */
+  async _collectBitcoinStatusNow () {
     const now = Date.now();
     this._state.content.services = this._state.content.services || {};
     this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
-    if (!force && this._bitcoinStatusCache.value && (now - this._bitcoinStatusCache.updatedAt) < this._bitcoinCacheTTL) {
-      return this._bitcoinStatusCache.value;
-    }
 
     const bitcoin = this._getBitcoinService();
     if (!bitcoin) {
@@ -9702,16 +10171,29 @@ class Hub extends Service {
 
   /**
    * Wallet / mempool refresh on transaction-related ZMQ (no new chain tip).
+   * bitcoind announces every mempool admission, so the refresh trails them:
+   * at most one per `bitcoin.transactionStatusMs` (default 5 s).
+   * @returns {Promise<void>|undefined} The scheduled refresh, or nothing when one is already due.
    */
-  async _handleBitcoinTransactionUpdate (_payload = {}) {
-    try {
-      this._bitcoinStatusCache = { value: null, updatedAt: 0 };
-      const status = await this._collectBitcoinStatus({ force: true });
-      if (!status || !status.available) return;
-      this._broadcastBitcoinStatusToClients(status);
-    } catch (err) {
-      console.error('[HUB] _handleBitcoinTransactionUpdate error:', err && err.message ? err.message : err);
-    }
+  _handleBitcoinTransactionUpdate (_payload = {}) {
+    if (this._bitcoinTxStatusTimer) return undefined;
+    const configured = Number(this.settings.bitcoin && this.settings.bitcoin.transactionStatusMs);
+    const windowMs = Number.isFinite(configured) && configured >= 0 ? configured : 5000;
+    const wait = Math.max(0, windowMs - (Date.now() - (this._bitcoinTxStatusAt || 0)));
+    return new Promise((resolve) => {
+      this._bitcoinTxStatusTimer = setTimeout(async () => {
+        this._bitcoinTxStatusTimer = null;
+        this._bitcoinTxStatusAt = Date.now();
+        try {
+          const status = await this._collectBitcoinStatus({ force: true });
+          if (status && status.available) this._broadcastBitcoinStatusToClients(status);
+        } catch (err) {
+          console.error('[HUB] _handleBitcoinTransactionUpdate error:', err && err.message ? err.message : err);
+        }
+        resolve();
+      }, wait);
+      if (typeof this._bitcoinTxStatusTimer.unref === 'function') this._bitcoinTxStatusTimer.unref();
+    });
   }
 
   _handleBitcoinStatusRequest (req, res) {
@@ -9884,6 +10366,12 @@ class Hub extends Service {
       applyHubBitcoinRuntimeFromSetup({ bitcoin: this.bitcoin.settings, lightning: this.settings.lightning }, initialConfig);
     }
     const seeded = seedHubStoresAfterSetup(this);
+    if (initialConfig.TOR_ENABLE !== undefined) {
+      this.settings.tor = applyTorSetup(this.settings, initialConfig, process.env);
+      this._restartTor().catch((err) => {
+        console.warn('[HUB:TOR] Start after setup failed:', err && err.message ? err.message : err);
+      });
+    }
     if (initialConfig.HTTP_SHARED_MODE === true) {
       if (!this._httpRebindLock) this._httpRebindLock = Promise.resolve();
       this._httpRebindLock = this._httpRebindLock
@@ -9895,6 +10383,21 @@ class Hub extends Service {
     return seeded;
   }
 
+  /**
+   * Federation member URLs come from invites. A Hub with a public origin never
+   * posts to loopback or private-network hosts; a local or LAN Hub may.
+   * @returns {boolean}
+   */
+  _federationPrivateDeliveryAllowed () {
+    const origin = (this.settings.payjoin && this.settings.payjoin.publicOrigin) || '';
+    if (!origin) return true;
+    try {
+      return isPrivateHost(new URL(origin).hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
   _handleSettingsBootstrapRequest (req, res) {
     return this.http.jsonOrShell(req, res, async () => {
       const status = this.setup.getSetupStatus();
@@ -9902,13 +10405,8 @@ class Hub extends Service {
         return res.status(403).json({ error: 'Already configured', message: 'Hub is already configured.' });
       }
       const body = req.body || {};
-      const hubSetupSecret = getHubSetupUiSecretTrimmed();
-      if (hubSetupSecret.length) {
-        const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
-        if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
-          return res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
-        }
-      }
+      const refusal = this._firstRunSetupRequestError(req);
+      if (refusal) return res.status(403).json({ error: 'Forbidden', message: refusal });
       const initialConfig = buildHubSetupInitialConfig(body);
       const result = await this.setup.createAdminToken(initialConfig);
       const stores = this._applyFirstTimeSetupStores(initialConfig);
@@ -9924,19 +10422,38 @@ class Hub extends Service {
     });
   }
 
+  /**
+   * Why a first-run setup call (admin token mint, binary install) is refused,
+   * or null. Before setup, whoever reaches `POST /settings` gets the admin
+   * token, and CORS is `*`: a page on another site could mint it through
+   * 127.0.0.1. So a browser call must come from this Hub's own page, and
+   * without the setup secret only a loopback caller qualifies.
+   * @param {Object} req Express request
+   * @returns {string|null}
+   */
+  _firstRunSetupRequestError (req) {
+    if (isCrossOriginRead(req)) return 'Set up this Hub from its own page.';
+    const hubSetupSecret = getHubSetupUiSecretTrimmed();
+    if (hubSetupSecret.length) {
+      const body = req.body || {};
+      const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
+      return timingSafeSha256Utf8Match(provided, hubSetupSecret) ? null : 'Invalid setup UI secret.';
+    }
+    if (!isTrustedLoopbackRequest(req, { allowedHosts: this._loopbackAllowedHosts || [] })) {
+      return 'Set FABRIC_HUB_SETUP_UI_SECRET to set up this Hub from another machine.';
+    }
+    return null;
+  }
+
   _authorizeManagedBinariesWrite (req, res) {
     const status = this.setup && typeof this.setup.getSetupStatus === 'function'
       ? this.setup.getSetupStatus()
       : { configured: true, needsSetup: false };
     if (status.needsSetup && !status.configured) {
-      const hubSetupSecret = getHubSetupUiSecretTrimmed();
-      if (hubSetupSecret.length) {
-        const body = req.body || {};
-        const provided = body.setupUiSecret || body.SETUP_UI_SECRET || '';
-        if (!timingSafeSha256Utf8Match(provided, hubSetupSecret)) {
-          res.status(403).json({ error: 'Forbidden', message: 'Invalid setup UI secret.' });
-          return false;
-        }
+      const refusal = this._firstRunSetupRequestError(req);
+      if (refusal) {
+        res.status(403).json({ error: 'Forbidden', message: refusal });
+        return false;
       }
       return true;
     }
@@ -10159,6 +10676,12 @@ class Hub extends Service {
       }
       await this.setup.setSetting(name, value);
 
+      if (settingName.startsWith('TOR_')) {
+        this.settings.tor = applyTorSetup(this.settings, this.setup.listSettings(), process.env);
+        await this._restartTor();
+        return res.status(200).json({ success: true, setting: name, value, tor: this._torStatus() });
+      }
+
       if (settingName === 'HTTP_SHARED_MODE') {
         const envIf = process.env.FABRIC_HUB_INTERFACE || process.env.INTERFACE;
         if (envIf && String(envIf).trim()) {
@@ -10187,6 +10710,79 @@ class Hub extends Service {
       }
 
       return res.status(200).json({ success: true, setting: name, value });
+    });
+  }
+
+  _torStoreDir () {
+    return path.join(resolveStorePath((this.settings && this.settings.fs && this.settings.fs.path) || 'stores/hub'), 'tor');
+  }
+
+  /**
+   * `http://<address>.onion` while the onion service is on (the key is created
+   * on first use, so the origin is known before Tor starts), else null.
+   * @returns {(string|null)}
+   */
+  torOrigin () {
+    if (this.tor && this.tor.address) return `http://${this.tor.address}`;
+    if (!normalizeTorSettings(this.settings.tor).enable) return null;
+    try {
+      return `http://${loadOrCreateOnionKey(path.join(this._torStoreDir(), 'hidden_service')).address}`;
+    } catch (err) {
+      console.warn('[HUB:TOR] Cannot read the onion key:', err && err.message ? err.message : err);
+      return null;
+    }
+  }
+
+  _torStatus () {
+    if (this.tor) return this.tor.status();
+    const tor = normalizeTorSettings(this.settings.tor);
+    return { enabled: tor.enable, mode: tor.mode, state: 'stopped', address: null, origin: null, bootstrap: 0, error: null, ports: [], advertise: tor.advertise };
+  }
+
+  /** (Re)start the onion service from `settings.tor`; stops it when disabled. */
+  async _restartTor () {
+    if (this.tor) {
+      const previous = this.tor;
+      this.tor = null;
+      try {
+        await previous.stop();
+      } catch (err) {
+        console.warn('[HUB:TOR] Stop failed:', err && err.message ? err.message : err);
+      }
+    }
+    const settings = normalizeTorSettings(this.settings.tor);
+    if (!settings.enable) return null;
+    const tor = new HubTor({
+      settings,
+      dir: this._torStoreDir(),
+      httpServer: () => (this.http ? this.http.http : null),
+      peer: this.settings.listen === false ? null : { port: Number(this.settings.port), interface: this.settings.interface }
+    });
+    tor.on('log', (message) => console.log('[HUB:TOR]', message));
+    tor.on('warning', (message) => console.warn('[HUB:TOR]', message));
+    tor.on('ready', (status) => {
+      const peer = status.ports.find((p) => p !== 80);
+      console.log('[HUB:TOR]', `Onion service ready: ${status.origin}${peer ? ` (Fabric peer ${status.address}:${peer})` : ''}`);
+    });
+    this.tor = tor;
+    await tor.start();
+    return tor;
+  }
+
+  /**
+   * `GET /services/tor`: full status for an admin; others see the address only
+   * when `tor.advertise` is on and the service is running.
+   */
+  _handleTorServiceRequest (req, res) {
+    return this.http.jsonOrShell(req, res, async () => {
+      const status = this._torStatus();
+      if (this._isSetupAdminRequest(req)) return res.status(200).json(Object.assign({ service: 'tor' }, status));
+      const shown = status.advertise && status.state === 'running';
+      return res.status(200).json({
+        service: 'tor',
+        address: shown ? status.address : null,
+        origin: shown ? status.origin : null
+      });
     });
   }
 
@@ -12297,8 +12893,9 @@ class Hub extends Service {
   /**
    * `GET /services/federations/messages`: frames for the member whose key
    * signed the `X-Fabric-Mailbox` proof (a core `DELEGATION_MAILBOX_FETCH`,
-   * which names the pubkey and `since`; each nonce works once). A bare
-   * `?pubkey=` is refused, so nobody can list another member's federations.
+   * which names the pubkey and `since`, one of this Hub's pinned origins, and
+   * purpose `federation-mailbox`; each nonce works once). A bare `?pubkey=`
+   * is refused, so nobody can list another member's federations.
    * @param {Object} federations
    * @param {Object} req
    * @returns {Object}
@@ -12307,8 +12904,10 @@ class Hub extends Service {
     const fail = (statusCode, message) => Object.assign(new Error(message), { statusCode });
     const proof = String((req.headers && req.headers['x-fabric-mailbox']) || '').trim();
     if (!proof) throw fail(401, 'X-Fabric-Mailbox required: a DELEGATION_MAILBOX_FETCH signed by the member key');
-    const read = delegationFrames.readMailboxFetch(proof, { now: Date.now() });
+    const purpose = 'federation-mailbox';
+    const read = delegationFrames.readMailboxFetch(proof, { origin: hubPinnedOrigins(this), purpose, now: Date.now() });
     if (!read.ok) throw fail(401, read.error);
+    if (!read.origin || read.purpose !== purpose) throw fail(401, 'mailbox proof is not bound to this Hub');
     if (!this._federationMailboxNonces) this._federationMailboxNonces = new Map();
     const spent = this._federationMailboxNonces;
     const now = Date.now();
@@ -12318,6 +12917,23 @@ class Hub extends Service {
     spent.set(read.nonce, read.expiresAt);
     const q = req.query || {};
     return Object.assign({ type: 'FederationMessages' }, federations.framesFor(read.pubkey, { since: read.since, limit: q.limit }));
+  }
+
+  /**
+   * Who is reading a federation page: the operator (admin token) sees every
+   * federation; a Passport session that disclosed its cosigner key is a member
+   * and sees the federations that list that key; any other session is
+   * `signedIn`, and a request without one is `anonymous`. Neither sees any.
+   * @param {Object} req
+   * @returns {Promise<{ role: string, key: (string|null) }>}
+   */
+  async _federationViewer (req) {
+    if (this._httpCallerIsOperator(req)) return { role: 'operator', key: null };
+    const session = await hubRequestSession(this, req).catch(() => null);
+    if (!session) return { role: 'anonymous', key: null };
+    const cosigner = session.session && session.session.cosigner && session.session.cosigner.pubkey;
+    const key = cosigner ? pubkeyXOnly(cosigner) : null;
+    return key ? { role: 'member', key } : { role: 'signedIn', key: null };
   }
 
   _federationRoute (fn, opts = {}) {
@@ -12636,7 +13252,7 @@ class Hub extends Service {
       if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
       const out = challenge.commit(req.body || {});
       if (!out.ok) return res.status(400).json({ error: out.error });
-      await challenge._persist();
+      if (!out.duplicate) await challenge._persist();
       return res.status(201).json({ type: 'AvailabilityCommitment', data: out });
     });
   }
@@ -12646,7 +13262,7 @@ class Hub extends Service {
       const challenge = this._getChallengeService();
       if (!challenge) return res.status(503).json({ available: false, service: 'challenge' });
       const out = challenge.respond(req.body || {});
-      await challenge._persist();
+      if (!out.refused && !out.duplicate && out.reason !== 'unknown challenge') await challenge._persist();
       return res.status(out.ok ? 200 : 422).json({ type: 'AvailabilityVerdict', data: out });
     });
   }
@@ -14591,10 +15207,15 @@ class Hub extends Service {
           publish: (body) => this._publishContractMessage(body, this._cosignerKey, 'FEDERATION'),
           relay: (message) => this.agent.relayFrom('_hub', message),
           deliver: async (url, fabric) => {
-            const res = await fetch(`${String(url).replace(/\/+$/, '')}/services/federations/messages`, {
+            const target = new URL(`${String(url).replace(/\/+$/, '')}/services/federations/messages`);
+            if (isPrivateHost(target.hostname) && !this._federationPrivateDeliveryAllowed()) {
+              throw new Error(`refusing to post to private host ${target.hostname}`);
+            }
+            const res = await fetch(target.href, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
               body: JSON.stringify({ fabric }),
+              redirect: 'error',
               signal: AbortSignal.timeout(15000)
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -14615,6 +15236,28 @@ class Hub extends Service {
           if (policy) await this.federations.importPolicy(policy);
         } catch (err) {
           console.warn('[HUB:FEDERATION] policy import skipped:', err && err.message ? err.message : err);
+        }
+      }
+
+      if (this.documentContracts) {
+        this.documentContracts.attach({
+          fs: this.fs,
+          key: this._fabricKey,
+          relay: (message) => {
+            if (this.agent && typeof this.agent.relayFrom === 'function') this.agent.relayFrom('_hub', message);
+          }
+        });
+        this.documentContracts.on('warning', (msg) => console.warn('[HUB]', msg));
+        this.documentContracts.on('revision', (ev) => {
+          Promise.resolve(this._onDocumentContractChanged(ev && ev.contractId)).catch(() => {});
+        });
+        this.documentContracts.on('contract', (ev) => {
+          Promise.resolve(this._onDocumentContractChanged(ev && ev.contractId)).catch(() => {});
+        });
+        try {
+          await this.documentContracts.start();
+        } catch (err) {
+          console.warn('[HUB:DOCUMENTS] document contracts failed to load:', err && err.message ? err.message : err);
         }
       }
 
@@ -14761,6 +15404,7 @@ class Hub extends Service {
                 parent: entry.parent || null,
                 revision: entry.revision || 1,
                 edited: entry.edited || entry.created || null,
+                ...(entry.contractId ? { contractId: entry.contractId } : {}),
                 ...(entry.bitcoinHeight != null && Number.isFinite(Number(entry.bitcoinHeight))
                   ? { bitcoinHeight: Math.round(Number(entry.bitcoinHeight)) }
                   : {}),
@@ -15007,6 +15651,60 @@ class Hub extends Service {
         this.http._addRoute(method, route, handler);
       }
       /* Named federation mailbox (services/federations.js): members without a Fabric peer read and post signed frames */
+      /* Editable documents: each version's history and provenance (public, like the catalog) */
+      const documentRoute = (fn, opts = {}) => {
+        const limit = Number(opts.limit) || 60;
+        const hits = new Map();
+        return (req, res) => {
+          const run = async () => {
+            const now = Date.now();
+            const who = String(req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
+            const seen = hits.get(who);
+            if (!seen || now - seen.since > 60000) {
+              hits.set(who, { since: now, count: 1 });
+              if (hits.size > 10000) hits.delete(hits.keys().next().value);
+            } else if (++seen.count > limit) {
+              return res.status(429).json({ status: 'error', message: 'Too many requests; try again in a minute.' });
+            }
+            try {
+              const out = await fn(req);
+              if (out && out.status === 'error') {
+                return res.status(/not found|no contract/.test(out.message || '') ? 404 : 400).json(out);
+              }
+              return res.json(out);
+            } catch (err) {
+              return res.status(400).json({ status: 'error', message: err && err.message ? err.message : String(err) });
+            }
+          };
+          if (String(req.method || 'GET').toUpperCase() === 'GET') return this.http.jsonOrShell(req, res, run);
+          return run();
+        };
+      };
+      const documentParam = (req) => this._normalizeDocumentId(req && req.params && req.params.id);
+      this.http._addRoute('GET', '/documents/:id/revisions', documentRoute(async (req) => {
+        const id = documentParam(req);
+        if (!id) return { status: 'error', message: 'id required' };
+        return this._listDocumentRevisions(id);
+      }, { limit: 120 }));
+      this.http._addRoute('GET', '/documents/:id/provenance', documentRoute(async (req) => {
+        const id = documentParam(req);
+        if (!id) return { status: 'error', message: 'id required' };
+        const provenance = this.documentContracts ? this.documentContracts.provenanceFor(id) : null;
+        if (!provenance) return { status: 'error', message: 'document has no contract history (not found)' };
+        return provenance;
+      }, { limit: 120 }));
+      this.http._addRoute('POST', '/documents/:id/revisions', documentRoute(async (req) => {
+        const body = (req.body && typeof req.body === 'object') ? req.body : {};
+        const auth = String(req.headers && req.headers.authorization || '');
+        const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : null;
+        const row = this.documentContracts ? this.documentContracts.contractFor(documentParam(req)) : null;
+        const parsed = parseDocumentContractFrame(body.fabric || body.frame || body.hex || '');
+        if (row && parsed.ok && parsed.contractId !== row.contractId) {
+          return { status: 'error', message: 'frame belongs to another document contract' };
+        }
+        return this._submitDocumentRevisionFrame(Object.assign({}, body, { adminToken: body.adminToken || bearer }));
+      }, { limit: 30 }));
+
       const federationBody = (req) => ((req && req.body && typeof req.body === 'object') ? req.body : {});
       this.http._addRoute('GET', '/services/federations', this._federationRoute((f) => ({
         type: 'FederationsStatus',
@@ -15027,6 +15725,23 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/federations/:federationId/transactions', this._federationRoute(async (f, req) => (
         Object.assign({ type: 'FederationTransaction' }, await f.broadcastTransaction(req.params && req.params.federationId, federationBody(req).txHex))
       ), { limit: 10 }));
+      /* Federation pages: the operator sees every federation, a Passport member those naming their cosigner key */
+      const federationPage = (handler) => (req, res) => this.http.jsonOrShell(req, res, () => handler(req, res));
+      this.http._addRoute('GET', '/federations', federationPage(this._federationRoute(async (f, req) => {
+        const viewer = await this._federationViewer(req);
+        if (viewer.role === 'anonymous') throw new Error('unknown federation');
+        return { type: 'Federations', viewer, federations: f.listFor(viewer) };
+      }, { limit: 120 })));
+      this.http._addRoute('GET', '/federations/:federationId', federationPage(this._federationRoute(async (f, req) => {
+        const viewer = await this._federationViewer(req);
+        return { type: 'Federation', federation: await f.getFor(req.params && req.params.federationId, viewer) };
+      }, { limit: 120 })));
+      this.http._addRoute('GET', '/federations/:federationId/messages', this._federationRoute(async (f, req) => {
+        const viewer = await this._federationViewer(req);
+        const federation = await f.getFor(req.params && req.params.federationId, viewer);
+        const q = req.query || {};
+        return Object.assign({ type: 'FederationMessages', federationId: federation.id }, f.framesForFederation(federation.id, { since: q.since, limit: q.limit }));
+      }, { limit: 120 }));
       /* Document Market: ranked chunk index + local provider telemetry (services/market.js) */
       this.http._addRoute('GET', '/services/market', this._handleMarketServiceRequest.bind(this));
       this.http._addRoute('GET', '/services/market/blocks', this._handleBlockRelayRequest.bind(this));
@@ -15071,6 +15786,7 @@ class Hub extends Service {
       this.http._addRoute('GET', '/services/binaries', this._handleManagedBinariesGetRequest.bind(this));
       this.http._addRoute('POST', '/services/binaries', this._handleManagedBinariesInstallRequest.bind(this));
       this.http._addRoute('POST', '/services/binaries/check', this._handleManagedBinariesCheckRequest.bind(this));
+      this.http._addRoute('GET', '/services/tor', this._handleTorServiceRequest.bind(this));
 
       mountHubPassport(this);
       if (!mountHubPassportPeer(this)) console.warn('[FABRIC:HUB]', 'Passport peer sign-in is off: this Hub has no identity key yet.');
@@ -15478,44 +16194,6 @@ class Hub extends Service {
         } catch (err) {
           console.error('[HUB] RequestFabricPeerResync error:', err);
           return { status: 'error', message: err && err.message ? err.message : 'send failed' };
-        }
-      });
-
-      // Federation / playnet: sign and send P2P_FLUSH_CHAIN to peers above registry score threshold.
-      // Params: { snapshotBlockHash, network?, label?, adminToken|token }
-      this.http._registerMethod('SendFlushChainToTrustedPeers', (...params) => {
-        const req = params[0] && typeof params[0] === 'object' ? params[0] : {};
-        const token = String(req.adminToken || req.token || '').trim();
-        if (!this.setup.verifyAdminToken(token)) {
-          return { status: 'error', message: 'adminToken required' };
-        }
-        const snapshotBlockHash = String(req.snapshotBlockHash || '').trim().toLowerCase();
-        if (!/^[0-9a-f]{64}$/.test(snapshotBlockHash)) {
-          return { status: 'error', message: 'snapshotBlockHash must be 64 hex characters' };
-        }
-        const agent = this.agent;
-        if (!agent || typeof agent.sendFlushChainToTrustedPeers !== 'function') {
-          return { status: 'error', message: 'FlushChain not available on this hub Peer (upgrade @fabric/core)' };
-        }
-        const body = { snapshotBlockHash };
-        const net = req.network != null ? String(req.network).trim() : '';
-        const label = req.label != null ? String(req.label).trim() : '';
-        if (net) body.network = net;
-        if (label) body.label = label;
-        try {
-          const peersNotified = agent.sendFlushChainToTrustedPeers(body);
-          console.debug('[HUB] SendFlushChainToTrustedPeers:', { peersNotified, snapshotBlockHash, network: body.network });
-          return {
-            status: 'success',
-            type: 'SendFlushChainToTrustedPeersResult',
-            peersNotified,
-            snapshotBlockHash,
-            network: body.network || null,
-            label: body.label || null
-          };
-        } catch (err) {
-          console.error('[HUB] SendFlushChainToTrustedPeers error:', err);
-          return { status: 'error', message: err && err.message ? err.message : String(err) };
         }
       });
 
@@ -16590,15 +17268,39 @@ class Hub extends Service {
           const sourceRaw = this.fs.readFile(`documents/${sourceId}.json`);
           if (!sourceRaw) return { status: 'error', message: 'document not found' };
           const source = JSON.parse(sourceRaw);
-          if (documentContentKey.isSealedDocument(source) || source.htlcFileV1) {
-            const token = req.adminToken || req.token;
-            if (!(token && this.setup && this.setup.verifyAdminToken(token))) {
+          const isOperator = this._verifyOperatorAdminToken(req.adminToken || req.token);
+          const sourceSealed = documentContentKey.isSealedDocument(source) || !!source.htlcFileV1;
+          if (sourceSealed) {
+            if (!isOperator) {
               return { status: 'error', message: 'Admin token required to edit a sealed or bought document.' };
             }
             if (req.contentBase64 == null && req.content == null) {
               return { status: 'error', message: 'content required to revise a sealed document' };
             }
           }
+          // An editable document's versions are signed by this Hub; only its operator signs.
+          const sourceContract = this.documentContracts ? this.documentContracts.contractFor(sourceId) : null;
+          if (sourceContract && !isOperator) {
+            return { status: 'error', message: 'Admin token required to edit an editable document (each version is signed by this Hub).' };
+          }
+          const catalogRows = (this._state.content.collections && this._state.content.collections.documents) || {};
+          const sourceListing = catalogRows[sourceId] || null;
+          // A new version keeps the price it replaces unless the operator sets one.
+          let nextPriceSats = sourceListing && Number(sourceListing.purchasePriceSats) > 0
+            ? Math.round(Number(sourceListing.purchasePriceSats))
+            : 0;
+          if (req.purchasePriceSats != null && Number.isFinite(Number(req.purchasePriceSats))) {
+            if (!isOperator) return { status: 'error', message: 'Admin token required to price a document.' };
+            nextPriceSats = Math.max(0, Math.round(Number(req.purchasePriceSats)));
+          }
+          if (nextPriceSats > 0 && nextPriceSats < HTLC_MINIMUM_SATS) {
+            return { status: 'error', message: `purchasePriceSats must be 0 or at least ${HTLC_MINIMUM_SATS}` };
+          }
+          if (nextPriceSats > 0 && !isOperator) {
+            return { status: 'error', message: 'Admin token required to edit a priced document.' };
+          }
+          const salesRefusal = nextPriceSats > 0 ? this._documentSalesRefusal() : null;
+          if (salesRefusal) return { status: 'error', message: salesRefusal };
 
           const nextName = req.name ? String(req.name) : String(source.name || 'document');
           const nextMime = req.mime ? String(req.mime) : String(source.mime || 'application/octet-stream');
@@ -16625,10 +17327,21 @@ class Hub extends Service {
           if (clash && (documentContentKey.isSealedDocument(clash) || clash.htlcFileV1)) {
             return { status: 'error', message: 'that content is already held as a sealed document', documentId: nextId };
           }
+          if (sourceContract) {
+            const clashContract = this.documentContracts.contractFor(nextId);
+            if (clashContract && clashContract.contractId !== sourceContract.contractId) {
+              return { status: 'error', message: 'that content is already a version of another editable document', documentId: nextId };
+            }
+          }
+          if (nextId === sourceId && sourceSealed) {
+            return { status: 'error', message: 'content unchanged', documentId: nextId };
+          }
           const lineage = source.lineage || source.id || sourceId;
-          const nextRevision = Number(source.revision || 1) + 1;
+          const nextRevision = sourceContract
+            ? sourceContract.revision + 1
+            : Number(source.revision || 1) + 1;
 
-          const nextDocument = {
+          let nextDocument = {
             id: nextId,
             sha256: nextId,
             name: nextName,
@@ -16639,6 +17352,7 @@ class Hub extends Service {
             lineage,
             parent: source.id || sourceId,
             revision: nextRevision,
+            ...(sourceContract ? { contractId: sourceContract.contractId } : {}),
             contentBase64: nextContentBase64
           };
 
@@ -16655,10 +17369,35 @@ class Hub extends Service {
             edited: now,
             lineage,
             parent: source.id || sourceId,
-            revision: nextRevision
+            revision: nextRevision,
+            ...(sourceContract ? { contractId: sourceContract.contractId } : {})
           };
 
-          const shouldPublish = (req.publish !== false) || !!(this._state.content.collections.documents && this._state.content.collections.documents[sourceId]);
+          if (nextPriceSats > 0) {
+            const sealed = await this._sealDocumentForPricedPublish(nextId, nextDocument);
+            nextDocument = sealed.parsed;
+          }
+
+          let contractRevision = null;
+          if (sourceContract) {
+            const appended = await this.documentContracts.appendRevision({
+              previousDocumentId: sourceId,
+              document: {
+                id: nextId,
+                sha256: nextId,
+                name: nextName,
+                mime: nextMime,
+                size: buffer.length,
+                merkleRootHex: nextDocument.encryption ? nextDocument.encryption.merkleRootHex : undefined
+              },
+              editedAt: now,
+              note: req.note
+            });
+            contractRevision = appended.revision;
+          }
+
+          // Earlier versions stay listed; the new one is listed alongside them.
+          const shouldPublish = (req.publish !== false) || !!sourceListing;
           if (shouldPublish) {
             this._ensureResourceCollections();
             this._state.content.counts = this._state.content.counts || {};
@@ -16675,7 +17414,12 @@ class Hub extends Service {
               lineage,
               parent: source.id || sourceId,
               revision: nextRevision,
-              published: now
+              ...(sourceContract ? { contractId: sourceContract.contractId } : {}),
+              published: now,
+              ...(nextPriceSats > 0 ? { purchasePriceSats: nextPriceSats } : {}),
+              ...(documentContentKey.isSealedDocument(nextDocument)
+                ? { encryption: { scheme: nextDocument.encryption.scheme, contentSha256: nextDocument.encryption.contentSha256 } }
+                : {})
             };
             if (!exists) {
               this._state.content.counts.documents = (this._state.content.counts.documents || 0) + 1;
@@ -16685,17 +17429,22 @@ class Hub extends Service {
               document: nextId,
               name: nextName,
               lineage,
-              revision: nextRevision
+              revision: nextRevision,
+              ...(sourceContract ? { contract: sourceContract.contractId } : {})
             });
           }
 
           this._refreshChainState('edit-document');
+          this.commit();
           if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
 
           return {
             type: 'EditDocumentResult',
             published: !!shouldPublish,
-            document: this._state.documents[nextId]
+            document: this._state.documents[nextId],
+            ...(sourceContract
+              ? { contractId: sourceContract.contractId, contractRevision, fork: !sourceContract.head }
+              : {})
           };
         } catch (err) {
           console.error('[HUB] EditDocument error:', err);
@@ -16710,18 +17459,49 @@ class Hub extends Service {
         const resolved = this._normalizeDocumentId(req.id || params[0]);
         if (!resolved) return { status: 'error', message: 'id required' };
 
-        const docs = this._state.documents || {};
-        const seed = docs[resolved] || null;
-        const lineage = (seed && (seed.lineage || seed.id)) || resolved;
-        const revisions = Object.values(docs)
-          .filter((doc) => doc && (doc.lineage || doc.id) === lineage)
-          .sort((a, b) => Number(a.revision || 0) - Number(b.revision || 0));
+        return this._listDocumentRevisions(resolved);
+      });
 
-        return {
-          type: 'ListDocumentRevisionsResult',
-          lineage,
-          revisions
-        };
+      // Make a held document editable: publish its DocumentContract (signed by
+      // this Hub) and record its earlier versions as revisions. Admin only.
+      // Params: ({ id, editors?, threshold?, note?, adminToken })
+      this.http._registerMethod('CreateDocumentContract', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : { id: params[0] };
+        if (!this._verifyOperatorAdminToken(req.adminToken || req.token)) {
+          return { status: 'error', message: 'adminToken required' };
+        }
+        try {
+          const out = await this._createDocumentContract(req);
+          if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
+          return Object.assign({ type: 'CreateDocumentContractResult' }, out);
+        } catch (err) {
+          return { status: 'error', message: err && err.message ? err.message : 'could not make the document editable', contractId: err && err.contractId };
+        }
+      });
+
+      // An editable document's history. Params: ({ contractId } | { id })
+      this.http._registerMethod('GetDocumentContract', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : { id: params[0] };
+        return this._getDocumentContractResult(req);
+      });
+
+      // One version's provenance: its contract's publish frame and every revision up
+      // to it, as a FabricMessageCollection anyone can check. Params: ({ id })
+      this.http._registerMethod('GetDocumentProvenance', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : { id: params[0] };
+        const id = this._normalizeDocumentId(req.id || req.documentId);
+        if (!id) return { status: 'error', message: 'id required' };
+        const provenance = this.documentContracts ? this.documentContracts.provenanceFor(id) : null;
+        if (!provenance) return { status: 'error', message: 'document has no contract history', documentId: id };
+        return { type: 'GetDocumentProvenanceResult', documentId: id, provenance };
+      });
+
+      // A signed DocumentContract or DocumentRevision frame (`fabric:<hex>` or hex)
+      // from another editor. Revisions by non-editors are refused; a publish needs
+      // the admin token. Params: ({ fabric, adminToken? })
+      this.http._registerMethod('SubmitDocumentRevisionFrame', async (...params) => {
+        const req = (params[0] && typeof params[0] === 'object') ? params[0] : { fabric: params[0] };
+        return this._submitDocumentRevisionFrame(req);
       });
 
       // Create a long-term storage contract for a document, funded with Bitcoin.
@@ -18457,6 +19237,21 @@ class Hub extends Service {
           size: normalized.size,
           created: normalized.created
         };
+        // Provenance sent ahead of the file (DocumentProvenance) names its version.
+        const contractRow = this.documentContracts ? this.documentContracts.contractFor(normalized.id) : null;
+        if (contractRow) {
+          const view = this.documentContracts.get(contractRow.contractId);
+          const rev = view ? view.revisions.concat(view.forks).find((r) => r.frameId === contractRow.frameId) : null;
+          if (rev) {
+            await this._applyDocumentContractFields(normalized.id, {
+              contractId: contractRow.contractId,
+              revision: rev.revision,
+              parent: rev.previousDocumentIdentifier,
+              sha256: rev.sha256,
+              merkleRootHex: rev.merkleRootHex
+            }).catch(() => false);
+          }
+        }
         if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
         const payload = JSON.stringify({ type: 'P2P_FILE_SEND', object: normalized });
         // Browser broadcast; `FileMessage` was never registered (always P2P_BASE_MESSAGE).
@@ -18617,6 +19412,15 @@ class Hub extends Service {
       this.agent.on('contract:publish', (ev) => {
         const contract = ev && ev.contract ? String(ev.contract) : null;
         if (!contract) return;
+        if (this.documentContracts && isDocumentContractDefinition(ev.object)) {
+          // Editable documents keep their own history; they are not tracked applications.
+          if (ev.wireMessage) {
+            this.documentContracts.ingestFrame(ev.wireMessage).catch((err) => {
+              if (this.settings && this.settings.debug) console.error('[HUB:DOCUMENTS] contract publish ingest failed:', err && err.message ? err.message : err);
+            });
+          }
+          return;
+        }
         const firstSeen = !this._contractNamespaces.has(contract);
         if (firstSeen) this._contractNamespaces.add(contract);
         Promise.resolve()
@@ -18666,6 +19470,9 @@ class Hub extends Service {
           if (this.coinjoin && this.coinjoin.ownsContractMessage(body)) {
             this.coinjoin.handleContractMessage(body).catch(() => {});
           }
+          if (this.documentContracts && t === DOCUMENT_REVISION_TYPE && ev && ev.wireMessage) {
+            this.documentContracts.ingestFrame(ev.wireMessage).catch(() => {});
+          }
           if (this.federations && this.federations.ownsContractMessage(body) && ev && ev.signer) {
             const frame = ev.wireMessage || (ev.messageHex ? `fabric:${ev.messageHex}` : null);
             if (frame) {
@@ -18697,6 +19504,10 @@ class Hub extends Service {
 
       // Point-to-point compact block relay bodies (never mesh-flooded by core Peer).
       this.agent.on('generic', ({ type, body, origin }) => {
+        if (type === DOCUMENT_PROVENANCE_TYPE) {
+          this._ingestDocumentProvenanceEnvelope(body, origin).catch(() => {});
+          return;
+        }
         const relay = this._getBlockRelay();
         if (!relay.owns(type) || !origin || !origin.name) return;
         relay.handleMessage(body, origin.name).catch(() => {});
@@ -19155,6 +19966,7 @@ class Hub extends Service {
       }
       await this.startBeacon();
       this._startHeapTelemetry();
+      await this._restartTor();
 
       // Local State
       this._state.status = 'STARTED';
@@ -19210,6 +20022,10 @@ class Hub extends Service {
         clearInterval(this._inventoryHtlcClaimTimer);
         this._inventoryHtlcClaimTimer = null;
       }
+      if (this._bitcoinTxStatusTimer) {
+        clearTimeout(this._bitcoinTxStatusTimer);
+        this._bitcoinTxStatusTimer = null;
+      }
       if (this._workQueueTimer) {
         try {
           clearInterval(this._workQueueTimer);
@@ -19238,6 +20054,15 @@ class Hub extends Service {
           this.http.removeListener('webrtc:connection', this._pushNetworkStatus);
           this.http.removeListener('webrtc:disconnect', this._pushNetworkStatus);
         } catch (e) {}
+      }
+
+      if (this.tor) {
+        try {
+          await this.tor.stop();
+        } catch (err) {
+          console.warn('[HUB] Failed to stop Tor cleanly:', err && err.message ? err.message : err);
+        }
+        this.tor = null;
       }
 
       if (this.http && typeof this.http.stop === 'function') {

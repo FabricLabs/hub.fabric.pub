@@ -201,4 +201,20 @@ describe('hubHeapTelemetry leak fields', function () {
     assert.ok(snap.resources === null || typeof snap.resources === 'object');
     assert.strictEqual(snap.growth, null);
   });
+
+  it('reports event-loop delay and utilization since the previous snapshot', async function () {
+    hubHeapTelemetry.collectEventLoop();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const until = Date.now() + 60;
+    while (Date.now() < until) { /* block the loop */ }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const loop = hubHeapTelemetry.collectEventLoop();
+    assert.ok(loop, 'second call reports');
+    for (const field of ['p50Ms', 'p99Ms', 'maxMs', 'meanMs', 'utilization']) {
+      assert.ok(Number.isFinite(loop[field]), field);
+    }
+    assert.ok(loop.maxMs >= 30, `max ${loop.maxMs} ms reflects the blocked stretch`);
+    assert.ok(loop.p50Ms < 15, `p50 ${loop.p50Ms} ms leaves out the timer interval`);
+    assert.ok(loop.utilization > 0 && loop.utilization <= 1);
+  });
 });

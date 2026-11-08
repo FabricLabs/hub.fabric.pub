@@ -5,7 +5,6 @@ exclude_paths:
   - "assets/bundles/**"
   - "assets/scripts/**"
   - "assets/semantic*.js"
-  - "libraries/semantic/**"
   - "node_modules/**"
   - "coverage/**"
   - "reports/**"
@@ -19,6 +18,7 @@ exclude_paths:
   - "webpack.config.js"
   - "install.js"
   - "build.js"
+  - "API.md"
 
 engines:
   # Global exclude_paths do not always apply to Semgrep (OpenGrep); repeat here.
@@ -31,7 +31,6 @@ engines:
       - "install.js"
       - "build.js"
       - "scripts/**"
-      - "libraries/semantic/**"
       # Semgrep browser/localStorage/HTTP FPs: storage keys, hub RPC, validated probes, server paths.
       - "constants.js"
       - "services/hub.js"

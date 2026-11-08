@@ -1,8 +1,10 @@
 'use strict';
 
 const React = require('react');
+const { Link } = require('react-router-dom');
 const { Button, Header, Icon, List, Message, Segment } = require('semantic-ui-react');
 const { hubJsonRpc } = require('../functions/hubJsonRpc');
+const { federationHref } = require('../functions/federationView');
 const t = require('../locales/en');
 
 const c = t.federation.named;
@@ -112,7 +114,7 @@ function FederationRequestsPanel (props) {
                 </Button>
               </List.Content>
               <List.Content>
-                <List.Header>{c.invites.body(v.name, v.threshold, v.validators.length)}</List.Header>
+                <List.Header as={Link} to={federationHref(v)}>{c.invites.body(v.name, v.threshold, v.validators.length)}</List.Header>
                 <List.Description>
                   {c.invites.from(memberLabel(v, v.publisher))}
                   {' · '}
@@ -141,7 +143,7 @@ function FederationRequestsPanel (props) {
                 </Button>
               </List.Content>
               <List.Content>
-                <List.Header>{c.approvals.body(w.federation.name, t.common.sats(w.amountSats), w.destinationAddress)}</List.Header>
+                <List.Header as={Link} to={federationHref(w.federation)}>{c.approvals.body(w.federation.name, t.common.sats(w.amountSats), w.destinationAddress)}</List.Header>
                 <List.Description>
                   {c.approvals.fee(t.common.sats(w.feeSats))}
                   {' · '}

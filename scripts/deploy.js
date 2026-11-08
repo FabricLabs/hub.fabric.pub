@@ -70,6 +70,7 @@ function parseArgs (argv) {
     else if (a === '--playnet') out.playnet = true;
     else if (a === '--additive') out.additive = true;
     else if (a === '--remote') out.remotes = (out.remotes || []).concat(String(argv[++i] || '').split(',').filter(Boolean));
+    else if (a === '--only') out.only = (out.only || []).concat(String(argv[++i] || '').split(',').filter(Boolean));
     else if (a === '--keys') out.keys = true;
     else if (a === '--json') out.json = true;
     else if (a === '--root') out.root = argv[++i];
@@ -82,7 +83,7 @@ function parseArgs (argv) {
 
 function usage () {
   console.log([
-    'Usage: npm run deploy -- --network <regtest|signet|mainnet> --local [start|status|stop|restart|reset] [--playnet] [--remote <host[:port]>] [--keys] [--json] [--root <dir>] [--base <port>]',
+    'Usage: npm run deploy -- --network <regtest|signet|mainnet> --local [start|status|stop|restart|reset] [--playnet] [--remote <host[:port]>] [--only <instance>] [--keys] [--json] [--root <dir>] [--base <port>]',
     '',
     '  start    start every instance, bootstrap admin tokens, check health, write network-profile.json',
     '  status   print instance health and the network profile',
@@ -92,7 +93,8 @@ function usage () {
     '',
     `  --playnet  also peer with ${PLAYNET_HUBS.join(', ')} (Fabric, and Bitcoin P2P off mainnet) and compare them with this tree`,
     '  --remote   peer with this public Hub instead (repeatable; HTTPS for its API, port 7777 unless given)',
-    '  --additive keep the whole local network (stand-ins, miner, own chain) and only add Fabric peers to the public Hubs'
+    '  --additive keep the whole local network (stand-ins, miner, own chain) and only add Fabric peers to the public Hubs',
+    '  --only     act on these instances alone (repeatable or comma list; e.g. `--only operator` for a single mainnet sync)'
   ].join('\n'));
 }
 
@@ -117,11 +119,18 @@ function context (opts) {
   const root = net.networkRoot(profile.name, opts.root);
   const remotes = (opts.remotes || ((opts.playnet || opts.additive) ? PLAYNET_HUBS : [])).map(parseRemote);
   const additive = !!opts.additive && remotes.length > 0;
-  const instances = net.instancesFor(profile.name, profile.base, { remotes: remotes.length > 0 && !additive }).map((i) => Object.assign(i, {
+  let instances = net.instancesFor(profile.name, profile.base, { remotes: remotes.length > 0 && !additive }).map((i) => Object.assign(i, {
     dir: path.join(root, i.name),
     tokenFile: path.join(root, i.name, 'admin-token.txt'),
     fragmentFile: path.join(root, i.name, 'fragment.json')
   }));
+  if (opts.only && opts.only.length) {
+    const unknown = opts.only.filter((name) => !instances.some((i) => i.name === name));
+    if (unknown.length) {
+      throw new Error(`--only ${unknown.join(', ')}: no such instance on ${profile.name} (expected ${instances.map((i) => i.name).join(', ')})`);
+    }
+    instances = instances.filter((i) => opts.only.includes(i.name));
+  }
   return { profile, root, instances, remotes, additive, profileFile: path.join(root, 'network-profile.json') };
 }
 
@@ -280,6 +289,7 @@ async function instanceHealth (ctx, instance) {
     height: null,
     bitcoinPeers: null,
     fabricPeers: null,
+    fabricPeersPartial: false,
     fabricPeerAddresses: [],
     fabricDialing: [],
     block1: null,
@@ -311,6 +321,8 @@ async function instanceHealth (ctx, instance) {
     const list = Array.isArray(peers) ? peers : Object.values(peers || {});
     const connected = list.filter((p) => p && p.status === 'connected');
     h.fabricPeers = connected.length;
+    // The Hub cuts its peer list to fit one frame; a cut list can't show who is missing.
+    h.fabricPeersPartial = !!(result && result.peersPartial);
     // A socket reads "connected" before its handshake; only bytes back make a session.
     const answered = (p) => Number(p.bytesIn) > 0;
     h.fabricPeerAddresses = connected.filter(answered).map((p) => String(p.address || p.id || ''));
@@ -362,7 +374,7 @@ function printHealth (ctx, health) {
     console.log(`${h.name.padEnd(15)} ${h.running ? 'up  ' : 'down'} ${h.http}  fabric ${h.fabric}  btc ${h.bitcoinP2p}`);
     if (h.running) {
       console.log(`${''.padEnd(15)} height ${h.height == null ? '?' : h.height}  btc peers ${h.bitcoinPeers == null ? '?' : h.bitcoinPeers}` +
-        `  fabric peers ${h.fabricPeers == null ? '?' : h.fabricPeers}  key ${h.pubkey || '?'}${h.attestationVerified === false ? ' (attestation NOT verified)' : ''}`);
+        `  fabric peers ${h.fabricPeers == null ? '?' : h.fabricPeers}${h.fabricPeersPartial ? '+ (list cut to fit)' : ''}  key ${h.pubkey || '?'}${h.attestationVerified === false ? ' (attestation NOT verified)' : ''}`);
     }
     if (h.adminTokenFile) console.log(`${''.padEnd(15)} admin token ${h.adminTokenFile}`);
   }
@@ -467,14 +479,14 @@ function healthProblems (ctx, health, remotes = []) {
     if (!r.reachable) problems.push(`${r.name} is unreachable${r.error ? `: ${r.error}` : ''}`);
     else if (r.attestationVerified === false) problems.push(`${r.name} attestation signature does not verify`);
     for (const h of health) {
-      if (h.running && r.reachable && !connectedTo(h, r, remotes)) problems.push(`${h.name} has no Fabric connection to ${r.name} (${r.fabric})`);
+      if (h.running && r.reachable && !h.fabricPeersPartial && !connectedTo(h, r, remotes)) problems.push(`${h.name} has no Fabric connection to ${r.name} (${r.fabric})`);
     }
   }
   for (const h of health) {
     if (!h.running) problems.push(`${h.name} is not running`);
     else if (!h.pubkey) problems.push(`${h.name} has no peering attestation`);
     else if (h.attestationVerified === false) problems.push(`${h.name} attestation signature does not verify`);
-    if (h.running && health.length > 1 && h.fabricPeers === 0) problems.push(`${h.name} has no Fabric peer connection`);
+    if (h.running && health.length > 1 && h.fabricPeers === 0 && !h.fabricPeersPartial) problems.push(`${h.name} has no Fabric peer connection`);
   }
   const keys = health.map((h) => h.pubkey).filter(Boolean);
   if (new Set(keys).size !== keys.length) problems.push('instances share an identity key');

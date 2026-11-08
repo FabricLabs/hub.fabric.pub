@@ -66,6 +66,7 @@ class Onboarding extends React.Component {
       step: 'intro',
       nodeName: props.nodeName || 'Hub',
       httpSharedMode: !!props.httpSharedMode,
+      torEnable: !!props.torEnable,
       bitcoinPreset: preset.id,
       bitcoinNetwork: network,
       bitcoinManaged: props.bitcoinManaged !== false,
@@ -362,6 +363,7 @@ class Onboarding extends React.Component {
           NODE_TEMPERATURE: 0,
           NODE_GOALS: JSON.stringify([]),
           HTTP_SHARED_MODE: !!this.state.httpSharedMode,
+          TOR_ENABLE: !!this.state.torEnable,
           BITCOIN_NETWORK: this.state.bitcoinNetwork,
           BITCOIN_MANAGED: this.state.bitcoinManaged,
           BITCOIN_PRESET: this.state.bitcoinPreset,
@@ -536,6 +538,21 @@ class Onboarding extends React.Component {
           <details className="hub-developer-details" style={{ marginTop: '0.25em' }}>
             <summary>{t.common.developerDetails}</summary>
             <small style={hintStyle}>{c.shareDeveloper}</small>
+          </details>
+        </Form.Field>
+        <Form.Field>
+          <Checkbox
+            data-testid="hub-onboarding-tor"
+            label={c.tor}
+            checked={!!this.state.torEnable}
+            onChange={(e, { checked }) => this.setState({ torEnable: !!checked })}
+          />
+          <small style={hintStyle}>
+            {c.torHint}
+          </small>
+          <details className="hub-developer-details" style={{ marginTop: '0.25em' }}>
+            <summary>{t.common.developerDetails}</summary>
+            <small style={hintStyle}>{c.torDeveloper}</small>
           </details>
         </Form.Field>
         <Form.Field>

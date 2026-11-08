@@ -710,6 +710,31 @@ describe('Browser Interface', function () {
       assert.ok(hasHeading, 'Notifications page should render heading');
     });
 
+    it('should render Fabric messages page without crashing', async function () {
+      await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/messages', { activities: true });
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, '/messages', `Expected /messages, got ${pathname}`);
+      if (!HUB_E2E) {
+        const gated = await waitForTestId(sandbox.browser, 'hub-client-needs-hub', 8000);
+        assert.ok(gated, 'static origin: /messages should show the HTML-client Hub gate');
+        return;
+      }
+      const hasHeading = await sandbox.browser.evaluate(() => {
+        const el = document.getElementById('fabric-messages-heading');
+        return !!(el && /Fabric messages/.test(String(el.textContent || '')));
+      });
+      assert.ok(hasHeading, 'Fabric messages page should render its heading');
+    });
+
+    it('should render a federation page without crashing', async function () {
+      await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, `/federations/${'ab'.repeat(32)}`, { sidechain: true });
+      const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');
+      assert.strictEqual(pathname, `/federations/${'ab'.repeat(32)}`);
+      if (await skipLiveHubPageIfClientOrigin(sandbox.browser)) return;
+      const ok = await sandbox.browser.evaluate(() => /federation/i.test(document.body && document.body.innerText ? document.body.innerText : ''));
+      assert.ok(ok, 'An unknown federation should still render the federation page');
+    });
+
     it('should render Features page without crashing', async function () {
       await gotoWithHubUiFeatureFlags(sandbox.browser, baseUrl, '/features', { features: true });
       const pathname = await sandbox.browser.evaluate(() => window.location.pathname || '');

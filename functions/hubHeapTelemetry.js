@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const v8 = require('v8');
+const { monitorEventLoopDelay, performance } = require('perf_hooks');
 const hubHeapBounds = require('./hubHeapBounds');
 
 const LOG_PREFIX = '[HUB:HEAP]';
@@ -100,6 +101,41 @@ function activeResources () {
   const counts = {};
   for (const type of process.getActiveResourcesInfo()) counts[type] = (counts[type] || 0) + 1;
   return counts;
+}
+
+const LOOP_RESOLUTION_MS = 20;
+let loopDelay = null;
+let loopUtilization = null;
+
+/**
+ * Event-loop delay and utilization since the previous call (the first call
+ * starts the histogram and reports null). Each call resets the window.
+ * @returns {object|null}
+ */
+function collectEventLoop () {
+  if (!loopDelay) {
+    try {
+      loopDelay = monitorEventLoopDelay({ resolution: LOOP_RESOLUTION_MS });
+      loopDelay.enable();
+      loopUtilization = performance.eventLoopUtilization();
+    } catch (_) {
+      loopDelay = null;
+    }
+    return null;
+  }
+  // The histogram records each whole timer interval, so the resolution is subtracted.
+  const ms = (ns) => Math.max(0, Math.round(Number(ns) / 1e4 - LOOP_RESOLUTION_MS * 100) / 100);
+  const utilization = performance.eventLoopUtilization(loopUtilization);
+  loopUtilization = performance.eventLoopUtilization();
+  const out = {
+    p50Ms: ms(loopDelay.percentile(50)),
+    p99Ms: ms(loopDelay.percentile(99)),
+    maxMs: ms(loopDelay.max),
+    meanMs: ms(loopDelay.mean),
+    utilization: Math.round(utilization.utilization * 1000) / 1000
+  };
+  loopDelay.reset();
+  return out;
 }
 
 /**
@@ -283,6 +319,7 @@ function collectHubHeapTelemetry (hub, opts = {}) {
     },
     bitcoinService: collectBitcoinServiceRetainers(hub),
     pending: collectPendingWork(hub),
+    eventLoop: collectEventLoop(),
     listeners: {
       hub: listenerTotal(hub),
       agent: listenerTotal(agent),
@@ -427,6 +464,7 @@ module.exports = {
   mapSize,
   growthSince,
   collectPendingWork,
+  collectEventLoop,
   collectBitcoinServiceRetainers,
   DEFAULT_SIGNAL,
   DEFAULT_MAX_SNAPSHOTS,

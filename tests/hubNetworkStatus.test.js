@@ -102,6 +102,21 @@ describe('hubNetworkStatus', function () {
       Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
     });
 
+    it('gives the peer list back the room a dropped field frees', function () {
+      const peers = Array.from({ length: 15 }, (_, i) => ({ id: `peer-${i}`, address: `127.0.0.1:${30000 + i}`, status: 'connected', note: 'x'.repeat(2000) }));
+      const status = { fabricPeerId: 'f', network: { address: 'a' }, peers, chain: { blocks: 'y'.repeat(60000) }, bitcoin: { height: 1 } };
+      const fitted = fitHubNetworkStatus(status, MAX_MESSAGE_SIZE - 1024);
+      assert.deepStrictEqual(fitted.truncated, ['chain'], 'the chain goes before any peer');
+      assert.deepStrictEqual(fitted.peers, peers);
+      assert.strictEqual(fitted.peersPartial, undefined);
+      const crowded = { fabricPeerId: 'f', network: { address: 'a' }, peers, documentMarket: { rows: 'y'.repeat(70000) }, bitcoin: { height: 1 } };
+      const refit = fitHubNetworkStatus(crowded, MAX_MESSAGE_SIZE - 1024);
+      assert.deepStrictEqual(refit.truncated, ['documentMarket']);
+      assert.deepStrictEqual(refit.peers, peers, 'every peer fits once documentMarket is gone');
+      assert.strictEqual(refit.peersPartial, undefined);
+      assert.deepStrictEqual(refit.bitcoin, { height: 1 });
+    });
+
     it('client keeps its previous copy of truncated fields', function () {
       const previous = { peers: [], messages: { a: 1 }, fabricMessages: { b: 2 } };
       const next = { peers: [{ id: 'p' }], truncated: ['messages'] };

@@ -122,6 +122,12 @@ stores/hub-test
 
 # Hub operator debug mirror (see functions/hubDebugFileLog.js)
 stores/hub/debug.log
+# Hub data holds ROOT_KEY, coinjoin round keys, the onion key, and delegation
+# state; only the tracked STATE template is committed.
+stores/hub/*
+!stores/hub/STATE
+# LevelDB tables dropped into the static root would be served publicly
+assets/**/*.ldb
 # V8 heap snapshots hold keys (see functions/hubHeapTelemetry.js)
 *.heapsnapshot
 logs/hub/debug.log
@@ -178,9 +184,6 @@ stores/schemas/
 stores/schemas-backup/
 stores/hub-test-lightning/
 stores/hub-test-lightning-nc/
-
-# Local Fomantic checkout — compiled CSS/JS already lives in assets/
-libraries/fomantic/
 
 # Twemoji SVGs imported by build:semantic (CC-BY 4.0; see NOTICE there)
 /assets/themes/fabric/assets/twemoji/

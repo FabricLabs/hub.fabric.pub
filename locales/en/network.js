@@ -49,26 +49,7 @@ module.exports = {
       inViewCount: (n) => `${n} (direct and browser)`,
       relayHeading: 'Block relay',
       relayBody: 'When this Hub sees a new Bitcoin block, it signs a short notice and sends it to its peers, who pass it on. Compare the block height and latest block with your peers to check that you are on the same chain.',
-      relayDeveloper: 'On a new tip (ZMQ hashblock) this Hub signs BitcoinBlock P2P messages; peers relay the same wire bytes and drop duplicates. Compare height and tip after addnode or long regtest chains.',
-      operatorHint: 'Operators: add the admin token under Settings → Admin to reset the chain on trusted peers from this page.'
-    },
-
-    flush: {
-      heading: 'Reset chain on trusted peers',
-      warning: 'This asks every connected peer with a high trust score to roll its Bitcoin chain back to the block you enter. Use it only on regtest, playnet, signet, or testnet, and only when the other operators expect it.',
-      developer: 'Sends a signed P2P_FLUSH_CHAIN to every connected peer whose registry score is above the Hub threshold (default 800). Peers that accept it may rewind toward snapshotBlockHash with invalidateblock.',
-      toastHeader: 'Reset chain',
-      invalidHash: 'Enter the block hash as 64 hexadecimal characters.',
-      sent: 'Reset request sent. Check the Hub logs and each peer’s Bitcoin node.',
-      hashLabel: 'Known-good block hash',
-      hashPlaceholder: '64-character block hash',
-      networkLabel: 'Network',
-      labelLabel: 'Log label (optional)',
-      labelPlaceholder: 'For example, round-3-baseline',
-      useTip: 'Use latest block',
-      useTipTitle: 'Fill in the latest block this Hub knows about',
-      noTipTitle: 'This Hub has not reported a latest block yet',
-      send: 'Send reset request'
+      relayDeveloper: 'On a new tip (ZMQ hashblock) this Hub signs BitcoinBlock P2P messages; peers relay the same wire bytes and drop duplicates. Compare height and tip after addnode or long regtest chains.'
     },
 
     primary: {

@@ -94,7 +94,7 @@ class HubDelegation extends EventEmitter {
    * @param {Function} settings.getAccount `({ network, account }) => deriveAccount result|null`
    * @param {Object} [settings.federations] `services/federations.js`
    * @param {Function} [settings.approve] `(prompt) => Promise<boolean>` native dialog (desktop only).
-   * @param {string[]} [settings.origins] Origins the rendezvous serves.
+   * @param {string[]} [settings.origins] Origins the rendezvous and mailbox serve; mailbox read proofs must name one.
    * @param {string[]} [settings.extensionIds] Chrome Passport ids.
    * @param {string[]} [settings.extensionOrigins]
    * @param {Function} [settings.now]
@@ -121,6 +121,7 @@ class HubDelegation extends EventEmitter {
     this.store.sign = (hash, answer, options) => this._settleHeld(hash, options, () => sign(hash, answer, options), null);
     this.store.decline = (hash, reason, options) => this._settleHeld(hash, options, () => decline(hash, reason, options), reason || 'declined');
     this.mailbox = createDelegationMailbox({
+      origins: this.settings.origins,
       store: dir ? fileStore(path.join(dir, 'delegation')) : undefined,
       now: this._now,
       deliver: (to, buffer) => this._deliver(to, buffer)

@@ -8,6 +8,8 @@
  * Lightning, Raspberry Pi, regtest) rather than exposing all 160+ Core flags.
  */
 
+const { torSetupFromBody } = require('../../functions/hubTor');
+
 /** Minimum spinner time after Complete Setup before handing off to the Hub UI. */
 const HUB_SETUP_APPLY_MIN_MS = 2500;
 
@@ -389,7 +391,8 @@ function buildHubSetupInitialConfig (body) {
     DISK_ALLOCATION_MB: src.DISK_ALLOCATION_MB ?? src.diskAllocationMb ?? 1024,
     COST_PER_BYTE_SATS: src.COST_PER_BYTE_SATS ?? src.costPerByteSats ?? 0.01,
     HTTP_SHARED_MODE: httpShared,
-    ...parsed.settingsKeys
+    ...parsed.settingsKeys,
+    ...torSetupFromBody(src)
   };
   if (!bitcoinManaged) {
     config.BITCOIN_HOST = src.BITCOIN_HOST || src.bitcoinHost || '127.0.0.1';

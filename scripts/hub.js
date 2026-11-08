@@ -1,8 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
 require('../functions/patchLinkedFabricNodePath');
 
 let loadFabricHomeEnv;
@@ -17,31 +14,12 @@ try {
   require('../functions/hubManagedBinaries').applyManagedNodeBinariesToProcessEnv();
 } catch (_) {}
 
-// Settings
-let settings = require('../settings/local');
-
-// Default RPC port per Bitcoin network (bitcoind standard ports)
-const defaultBitcoinRpcPort = (network) => {
-  const n = String(network || 'mainnet').toLowerCase();
-  if (n === 'regtest') return 18443;
-  if (n === 'testnet') return 18332;
-  if (n === 'signet') return 38332;
-  return 8332;
-};
-
 /** Writable root for stores (Electron desktop sets FABRIC_HUB_USER_DATA to app.getPath('userData')). */
 const userDataRoot = process.env.FABRIC_HUB_USER_DATA || process.cwd();
 
 const { installHubDebugFileLog } = require('../functions/hubDebugFileLog');
-const { isHttpSharedModeEnabled, applySharedModeWebsocketGate } = require('../functions/httpSharedMode');
-const { applyHubBitcoinRuntimeFromSetup } = require('../functions/hubBitcoinSetup');
 const { spawnedBitcoindPid } = require('../functions/bitcoinManagedAttach');
-let resolveFabricPeerInterface;
-try {
-  ({ resolveFabricPeerInterface } = require('@fabric/core/functions/fabricListenInterface'));
-} catch (_) {
-  resolveFabricPeerInterface = null;
-}
+const { resolveHubRuntimeSettings, keyBagHasAny, hubRootKeyFile, withPersistentHubKey } = require('../functions/hubRuntimeSettings');
 const _hubDebugLog = installHubDebugFileLog({ userDataRoot });
 if (_hubDebugLog.active && _hubDebugLog.filePath) {
   console.log(
@@ -51,214 +29,8 @@ if (_hubDebugLog.active && _hubDebugLog.filePath) {
   );
 }
 
-function bitcoinDataDirForNetwork (root, network) {
-  const n = String(network || 'regtest').toLowerCase();
-  const rel = {
-    mainnet: path.join('stores', 'bitcoin'),
-    testnet: path.join('stores', 'bitcoin-testnet'),
-    testnet4: path.join('stores', 'bitcoin-testnet4'),
-    signet: path.join('stores', 'bitcoin-signet'),
-    regtest: path.join('stores', 'bitcoin-regtest'),
-    playnet: path.join('stores', 'bitcoin-playnet')
-  }[n] || path.join('stores', 'bitcoin-regtest');
-  return path.join(root, rel);
-}
-
-// Merge setup settings from internal Hub STATE store (`settings`).
-const statePath = path.join(userDataRoot, 'stores', 'hub', 'STATE');
-let setup = {};
-try {
-  if (fs.existsSync(statePath)) {
-    const rawState = fs.readFileSync(statePath, 'utf8');
-    const parsedState = JSON.parse(rawState);
-    const candidate = parsedState && typeof parsedState === 'object' ? parsedState.settings : null;
-    if (candidate && typeof candidate === 'object') {
-      setup = candidate;
-    }
-  }
-} catch (e) {
-  setup = {};
-}
-try {
-  if (setup && typeof setup === 'object' && Object.keys(setup).length) {
-    const parseVal = (v) => {
-      if (v === undefined || v === null) return undefined;
-      if (typeof v === 'string') {
-        if (v === 'true') return true;
-        if (v === 'false') return false;
-        const n = Number(v);
-        if (!isNaN(n) && String(n) === v) return n;
-        return v;
-      }
-      return v;
-    };
-    if (setup.BITCOIN_NETWORK || setup.BITCOIN_MANAGED !== undefined || setup.BITCOIN_PRESET || setup.BITCOIN_PRUNE != null) {
-      settings = { ...settings };
-      applyHubBitcoinRuntimeFromSetup(settings, setup);
-    }
-    if (setup.BITCOIN_MANAGED !== undefined) {
-      const managed = parseVal(setup.BITCOIN_MANAGED);
-      settings = { ...settings, bitcoin: { ...settings.bitcoin, managed: managed !== false } };
-      if (managed === false) {
-        const network = setup.BITCOIN_NETWORK || settings.bitcoin?.network || 'mainnet';
-        const rpcPort = parseVal(setup.BITCOIN_RPC_PORT);
-        settings = {
-          ...settings,
-          bitcoin: {
-            ...settings.bitcoin,
-            host: parseVal(setup.BITCOIN_HOST) || '127.0.0.1',
-            rpcport: Number(rpcPort) || defaultBitcoinRpcPort(network),
-            username: parseVal(setup.BITCOIN_USERNAME) || '',
-            password: parseVal(setup.BITCOIN_PASSWORD) || ''
-          }
-        };
-      }
-    }
-    if (setup.LIGHTNING_MANAGED !== undefined || setup.LIGHTNING_SOCKET) {
-      settings = { ...settings, lightning: settings.lightning || {} };
-      if (setup.LIGHTNING_MANAGED !== undefined) {
-        settings.lightning.managed = parseVal(setup.LIGHTNING_MANAGED) !== false;
-      }
-      if (parseVal(setup.LIGHTNING_MANAGED) === false && setup.LIGHTNING_SOCKET) {
-        settings.lightning.socketPath = parseVal(setup.LIGHTNING_SOCKET) || setup.LIGHTNING_SOCKET;
-      }
-    }
-    // LAN / shared HTTP: initial bind only when env does not override (runtime toggles use hub rebind).
-    if (setup.HTTP_SHARED_MODE !== undefined && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
-      const shared = parseVal(setup.HTTP_SHARED_MODE);
-      const bindAll = isHttpSharedModeEnabled(shared);
-      settings = {
-        ...settings,
-        http: {
-          ...(settings.http || {}),
-          interface: bindAll ? '0.0.0.0' : '127.0.0.1'
-        }
-      };
-      if (typeof applySharedModeWebsocketGate === 'function') {
-        settings = applySharedModeWebsocketGate(settings, { bindAll, env: process.env });
-      }
-    }
-    if (setup.BITCOIN_ADDNODES || setup.FABRIC_PEERS) {
-      settings = require('../functions/hubNetworkJoin').applyNetworkJoinFromSetup({ ...settings }, setup);
-    }
-  }
-} catch (e) {
-  // Ignore; use defaults from local.js
-}
-
-// Explicit Bitcoin env wins over first-time setup (e.g. `npm run start:mainnet-local` while settings still says regtest).
-if (process.env.FABRIC_BITCOIN_NETWORK && String(process.env.FABRIC_BITCOIN_NETWORK).trim()) {
-  settings = {
-    ...settings,
-    bitcoin: {
-      ...settings.bitcoin,
-      network: String(process.env.FABRIC_BITCOIN_NETWORK).trim()
-    }
-  };
-}
-if (Object.prototype.hasOwnProperty.call(process.env, 'FABRIC_BITCOIN_MANAGED') && String(process.env.FABRIC_BITCOIN_MANAGED).trim() !== '') {
-  const v = String(process.env.FABRIC_BITCOIN_MANAGED).toLowerCase();
-  const managed = v !== 'false' && v !== '0';
-  settings = {
-    ...settings,
-    bitcoin: {
-      ...settings.bitcoin,
-      managed
-    }
-  };
-}
-
-// Desktop (Electron): default HTTP to loopback unless operator set HTTP_SHARED_MODE in settings.
-// Without this, settings/local.js default interface would be 0.0.0.0. CLI/dev without FABRIC_HUB_USER_DATA keeps LAN-open default.
-if (process.env.FABRIC_HUB_USER_DATA && !process.env.FABRIC_HUB_INTERFACE && !process.env.INTERFACE) {
-  const sharedDefined = setup && Object.prototype.hasOwnProperty.call(setup, 'HTTP_SHARED_MODE');
-  if (!sharedDefined) {
-    settings = {
-      ...settings,
-      http: { ...(settings.http || {}), interface: '127.0.0.1' }
-    };
-  }
-}
-
-// Desktop: a developer node on the public playnet (Fabric seeds + regtest addnode).
-if (process.env.FABRIC_HUB_USER_DATA) {
-  settings = require('../functions/hubNetworkJoin').applyDesktopPlaynetDefaults({ ...settings }, setup || {});
-}
-
-// Electron / packaged desktop: writable stores + absolute bitcoind datadir under userData
-if (process.env.FABRIC_HUB_USER_DATA) {
-  const u = process.env.FABRIC_HUB_USER_DATA;
-  const net = (settings.bitcoin && settings.bitcoin.network) || 'regtest';
-  const hubStore = path.join(u, 'stores', 'hub');
-  settings = {
-    ...settings,
-    path: hubStore,
-    fs: { ...settings.fs, path: hubStore },
-    peersDb: process.env.FABRIC_HUB_PEERS_DB || path.join(hubStore, 'peers'),
-    bitcoin: {
-      ...settings.bitcoin,
-      datadir: bitcoinDataDirForNetwork(u, net)
-    },
-    lightning: {
-      ...(settings.lightning || {}),
-      datadir: path.join(u, 'stores', 'lightning', 'hub')
-    }
-  };
-}
-
-// Fabric Peer bind: FABRIC_INTERFACE / FABRIC_PEER_INTERFACE (canonical helper).
-if (typeof resolveFabricPeerInterface === 'function') {
-  settings = {
-    ...settings,
-    interface: resolveFabricPeerInterface({
-      interface: settings.interface,
-      env: process.env
-    })
-  };
-}
-
-function _keyBagEmpty (bag) {
-  if (!bag || typeof bag !== 'object') return true;
-  const xprv = String(bag.xprv || '').trim();
-  const seed = String(bag.seed || '').trim();
-  const mnemonic = String(bag.mnemonic || '').trim();
-  return !(xprv || seed || mnemonic);
-}
-
-try {
-  const { exclusiveOperatorKeySettings, resolveFabricOperatorKeySettings } = require('@fabric/core/functions/fabricOperatorIdentity');
-  const exclusive = exclusiveOperatorKeySettings(settings.key);
-  if (exclusive) {
-    settings = { ...settings, key: exclusive };
-  } else if (_keyBagEmpty(settings.key)) {
-    const resolved = resolveFabricOperatorKeySettings(process.env, {
-      allowWalletFallback: true,
-      password: process.env.FABRIC_PASSWORD
-    });
-    if (resolved && resolved.key) {
-      settings = { ...settings, key: resolved.key };
-      console.log('[FABRIC:HUB] Identity from', resolved.source, '(fabric setup Environment)');
-    }
-  }
-} catch (_) {
-  if (_keyBagEmpty(settings.key)) {
-    try {
-      const { loadIdentityFromWalletFile } = require('@fabric/core/functions/fabricWalletIdentity');
-      const fromWallet = loadIdentityFromWalletFile({ password: process.env.FABRIC_PASSWORD });
-      if (fromWallet && fromWallet.xprv) {
-        settings = {
-          ...settings,
-          key: { xprv: fromWallet.xprv, xpub: fromWallet.xpub || null }
-        };
-        console.log('[FABRIC:HUB] Identity loaded from ~/.fabric/wallet.json');
-      }
-    } catch (__) { /* older core pin or locked wallet */ }
-  }
-}
-
-function _keyBagHasAny (bag) {
-  return !_keyBagEmpty(bag) || !!String((bag && bag.xpub) || '').trim();
-}
+// Settings: settings/local.js + first-time setup (STATE) + env, desktop paths, operator key.
+let { settings } = resolveHubRuntimeSettings({ userDataRoot });
 
 /** The desktop main process holds the OS keychain, so it reads (or creates) the sealed key. */
 function requestRootKeyFromDesktop (timeoutMs = 30000) {
@@ -287,14 +59,17 @@ function requestRootKeyFromDesktop (timeoutMs = 30000) {
 
 /** Without an operator key, keep one Hub root key in the store instead of a new one per start. */
 async function ensurePersistentHubKey () {
-  if (_keyBagHasAny(settings.key)) return;
-  const { rootKeyPath, loadOrCreateHubRootKey } = require('../functions/hubRootKey');
-  const filePath = rootKeyPath(settings.path || path.join(userDataRoot, 'stores', 'hub'));
-  const result = process.parentPort && process.env.FABRIC_HUB_USER_DATA
-    ? await requestRootKeyFromDesktop()
-    : loadOrCreateHubRootKey({ filePath });
-  settings = { ...settings, key: { xprv: result.xprv } };
-  console.log('[FABRIC:HUB] Hub key', result.created ? 'created in' : 'loaded from', filePath, result.sealed ? '(sealed with the OS keychain)' : '');
+  if (keyBagHasAny(settings.key)) return;
+  if (process.parentPort && process.env.FABRIC_HUB_USER_DATA) {
+    const filePath = hubRootKeyFile(settings, userDataRoot);
+    const result = await requestRootKeyFromDesktop();
+    settings = { ...settings, key: { xprv: result.xprv } };
+    console.log('[FABRIC:HUB] Hub key', result.created ? 'created in' : 'loaded from', filePath, result.sealed ? '(sealed with the OS keychain)' : '');
+    return;
+  }
+  const result = withPersistentHubKey(settings, { userDataRoot });
+  settings = result.settings;
+  console.log('[FABRIC:HUB] Hub key', result.created ? 'created in' : 'loaded from', result.filePath, result.sealed ? '(sealed with the OS keychain)' : '');
 }
 
 // Services

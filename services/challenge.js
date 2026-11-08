@@ -72,6 +72,8 @@ class ChallengeService extends Service {
       // Blocks after the issuing tip by which a provider must answer (timelocked
       // non-response: the provider's pre-signed penalty carries this nLockTime).
       deadlineBlocks: 144,
+      // Anyone can post a self-signed commitment, so the store is bounded (oldest dropped first).
+      maxCommitments: 10000,
       network: 'regtest'
     }, settings);
 
@@ -516,7 +518,12 @@ class ChallengeService extends Service {
   commit (body) {
     if (!body || body.type !== 'AvailabilityCommitment') return { ok: false, error: 'not an AvailabilityCommitment' };
     if (!Witness.verifyArtifact(body)) return { ok: false, error: 'commitment signature invalid' };
+    const publisher = xOnlyHex(this.publisherPubkey());
+    if (publisher && xOnlyHex(body.publisherPubkey) !== publisher) return { ok: false, error: 'commitment names another publisher' };
     const hash = Witness.artifactHash(body);
+    if (this._commitments.has(hash)) return { ok: true, hash, duplicate: true };
+    const max = Math.max(1, Number(this.settings.maxCommitments) || 10000);
+    while (this._commitments.size >= max) this._commitments.delete(this._commitments.keys().next().value);
     this._commitments.set(hash, body);
     this.emit('commitment', body);
     return { ok: true, hash };
@@ -616,6 +623,14 @@ class ChallengeService extends Service {
     // fraud (wrong leaf or swept non-response) into a bounty reveal.
     if (row.response || (row.verdict && row.verdict.fraud)) {
       return Object.assign({ duplicate: true }, row.verdict || { ok: false, reason: 'challenge already resolved' });
+    }
+    // Only the provider's own signed answer to this challenge settles it: a junk
+    // response must not lock the challenge against the real answer or the sweep.
+    if (!Witness.verifyArtifact(response, row.challenge.providerPubkey)) {
+      return { ok: false, refused: true, reason: 'response signature invalid', fraud: null };
+    }
+    if (String(response.challengeHash) !== Witness.artifactHash(row.challenge)) {
+      return { ok: false, refused: true, reason: 'response answers another challenge', fraud: null };
     }
     const verdict = this.challenger.validate(row.challenge, response, ctx);
     row.response = response;

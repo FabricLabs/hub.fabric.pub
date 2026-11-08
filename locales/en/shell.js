@@ -41,8 +41,8 @@ module.exports = {
   notifications: {
     label: 'Notifications',
     titleEmpty: 'Notifications: wallet, Payjoin, and Hub messages',
-    titleCount: (n) => `${n} notification${n === 1 ? '' : 's'}. Open Notifications.`,
-    badgeTitle: (n) => `${n} notification${n === 1 ? '' : 's'}`
+    titleCount: (n) => `${n} unread notification${n === 1 ? '' : 's'}. Open Notifications.`,
+    badgeTitle: (n) => `${n} unread notification${n === 1 ? '' : 's'}`
   },
   wallet: {
     menuIntro: 'Jump to your wallet, or start a deposit or withdrawal.',

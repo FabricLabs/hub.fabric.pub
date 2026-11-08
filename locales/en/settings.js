@@ -24,7 +24,7 @@ module.exports = {
     },
     notifications: {
       title: 'Notifications',
-      body: 'Recent wallet, Payjoin, and Hub notifications.'
+      body: 'Your wallet, Payjoin, and Hub notification history.'
     },
     activities: {
       title: 'Activity log',

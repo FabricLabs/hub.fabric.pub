@@ -20,7 +20,7 @@ const Key = require('@fabric/core/types/key');
 const SIGNING_TAGS = require('@fabric/core/functions/signingTags');
 const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, P2P_CHAT_MESSAGE, P2P_PEER_ALIAS, P2P_FILE_SEND, MAGIC_BYTES } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
-const { pushUiNotification } = require('../functions/uiNotifications');
+const { pushUiNotification, isWalletTransactionNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const {
   isDocumentInventoryDocumentsOfferResponse,
@@ -1730,13 +1730,21 @@ class Bridge extends React.Component {
     const keys = Object.keys(messages);
     const filtered = {};
     for (const k of keys) filtered[k] = messages[k];
-    // Cap at 500 messages to avoid localStorage bloat
-    const toStore = keys.length > 500
-      ? Object.fromEntries(keys.sort((a, b) => {
-          const ta = (filtered[a] && filtered[a].object && filtered[a].object.created) || 0;
-          const tb = (filtered[b] && filtered[b].object && filtered[b].object.created) || 0;
-          return ta - tb;
-        }).slice(-500).map((k) => [k, filtered[k]]))
+    // Cap at 500 messages to avoid localStorage bloat; wallet transaction notices are always kept.
+    const isWalletNotice = (k) => {
+      const m = filtered[k];
+      return !!(m && m.type === 'CLIENT_NOTICE' && isWalletTransactionNotification(m.object));
+    };
+    const createdMs = (k) => {
+      const c = filtered[k] && filtered[k].object && filtered[k].object.created;
+      const ms = typeof c === 'number' ? c : Date.parse(String(c || ''));
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    const capped = keys.filter((k) => !isWalletNotice(k));
+    const toStore = capped.length > 500
+      ? Object.fromEntries(keys.filter(isWalletNotice)
+          .concat(capped.sort((a, b) => createdMs(a) - createdMs(b)).slice(-500))
+          .map((k) => [k, filtered[k]]))
       : filtered;
     if (!this._messageCollection) this._messageCollection = new BridgeMessageCollection();
     this._messageCollection.loadMap(toStore);
@@ -5270,6 +5278,33 @@ class Bridge extends React.Component {
    * @param {string} [documentId] - optional published document id to remove from the hub catalog.
    * @returns {Promise<{ ok: boolean, message?: string, result?: object }>}
    */
+  /** Editable documents client (versions, provenance, edits) on this Hub's origin. */
+  documentContracts () {
+    if (!this._documentContractsClient) {
+      const { createDocumentContractsClient } = require('../functions/documentContractsClient');
+      this._documentContractsClient = createDocumentContractsClient({
+        headers: () => this._hubJsonRpcHttpHeaders()
+      });
+    }
+    return this._documentContractsClient;
+  }
+
+  fetchDocumentRevisions (documentId) {
+    return this.documentContracts().revisions(documentId);
+  }
+
+  fetchDocumentProvenance (documentId) {
+    return this.documentContracts().provenance(documentId);
+  }
+
+  sendCreateDocumentContractRequest (documentId, opts = {}) {
+    return this.documentContracts().makeEditable(documentId, opts);
+  }
+
+  sendEditDocumentRequest (documentId, change = {}) {
+    return this.documentContracts().edit(documentId, change);
+  }
+
   async emitTombstone (messageId, adminToken, documentId) {
     let mid, token, docId;
     const isOpts = messageId !== null && typeof messageId === 'object' && !Array.isArray(messageId) &&
@@ -5624,45 +5659,6 @@ class Bridge extends React.Component {
       }, 400);
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending RequestFabricPeerResync:', safeIdentityErr(error));
-    }
-  }
-
-  /**
-   * Operator: send `P2P_FLUSH_CHAIN` to connected peers above the hub's trusted registry score.
-   * @param {{ snapshotBlockHash: string, network?: string, label?: string }} object
-   * @param {string} adminToken - hub admin token (required by JSON-RPC)
-   */
-  sendFlushChainToTrustedPeersRequest (object, adminToken) {
-    const snap = object && object.snapshotBlockHash ? String(object.snapshotBlockHash).trim() : '';
-    if (!/^[0-9a-fA-F]{64}$/.test(snap)) {
-      console.warn('[BRIDGE] sendFlushChainToTrustedPeersRequest: snapshotBlockHash must be 64 hex');
-      return;
-    }
-    const token = adminToken != null ? String(adminToken).trim() : '';
-    if (!token) {
-      console.warn('[BRIDGE] sendFlushChainToTrustedPeersRequest: adminToken required');
-      return;
-    }
-    try {
-      const param = {
-        snapshotBlockHash: snap.toLowerCase(),
-        adminToken: token
-      };
-      if (object.network != null && String(object.network).trim()) param.network = String(object.network).trim();
-      if (object.label != null && String(object.label).trim()) param.label = String(object.label).trim();
-      const payload = {
-        method: 'SendFlushChainToTrustedPeers',
-        params: [param]
-      };
-      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
-      this.sendSignedMessage(message.toBuffer());
-      setTimeout(() => {
-        try {
-          if (typeof this.sendNetworkStatusRequest === 'function') this.sendNetworkStatusRequest();
-        } catch (e) {}
-      }, 400);
-    } catch (error) {
-      console.error('[BRIDGE]', 'Error sending SendFlushChainToTrustedPeers:', safeIdentityErr(error));
     }
   }
 

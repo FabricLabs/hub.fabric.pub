@@ -40,8 +40,6 @@ Target Hub HTTP may be local (`http://127.0.0.1:8080`) or **`https://relay.goon.
 
 | npm script | Script | Purpose |
 |------------|--------|---------|
-| `playnet:flush` | `scripts/playnet-flush-chain.js` | Send `P2P_FLUSH_CHAIN` to trusted peers (`flushChainMinTrustedScore: -1`) |
-| `playnet:reset` | `scripts/playnet-reset.js` | Flush peers (+ optional `--local` Core invalidate, `--addnode`) |
 | `playnet:status` | `scripts/playnet-status.js` | Tracked list + sidechain/contract digests + `/services/distributed/epoch` |
 | `playnet:l1-resolve` | `scripts/playnet-l1-resolve.js` | Scan tip blocks for OP_RETURN/watch outs; optional `VerifyBitcoinL1Payment` |
 | `playnet:mine-subsidy` | `scripts/playnet-mine-subsidy.js` | Mine regtest through full subsidy schedule (halving every 150), then until coinbases are mature |

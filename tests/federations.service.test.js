@@ -292,6 +292,45 @@ describe('named federation mailbox', function () {
     assert.strictEqual(hub.list().length, 1);
   });
 
+  it('an invite flood never pushes out frames of a federation the Hub joined', async function () {
+    const { hub, passport } = await hubWithPassport();
+    hub.settings.mailboxSize = 5;
+    const created = await hub.create({ threshold: 2, members: [{ pubkey: passport.pubkey }] });
+    for (let i = 0; i < 10; i++) {
+      const a = new Key({ private: crypto.randomBytes(32).toString('hex') });
+      const b = new Key({ private: crypto.randomBytes(32).toString('hex') });
+      const descriptor = Federation.buildDescriptor({ validators: [a.pubkey, b.pubkey], threshold: 2, network: 'regtest', publisher: a.pubkey });
+      await hub.submitFrame(frame(a, Federation.inviteMessage({ descriptor })));
+    }
+    assert.strictEqual(hub._mailbox.length, 5);
+    assert.ok(hub.framesFor(passport.pubkey).messages.some((m) => m.federationId === created.id));
+  });
+
+  it('bounds invites it has not answered and posts nothing to URLs they name', async function () {
+    const { hub } = await hubWithPassport();
+    hub.settings.maxPendingInvites = 2;
+    const delivered = [];
+    hub.attach({ deliver: async (url) => { delivered.push(url); } });
+    for (let i = 0; i < 3; i++) {
+      const inviter = new Key({ private: crypto.randomBytes(32).toString('hex') });
+      const descriptor = Federation.buildDescriptor({ validators: [inviter.pubkey, hub.pubkey], threshold: 2, network: 'regtest', publisher: inviter.pubkey });
+      await hub.submitFrame(frame(inviter, Federation.inviteMessage({ descriptor, members: [{ pubkey: hub.pubkey, url: 'http://127.0.0.1:9' }, { pubkey: inviter.pubkey, url: 'http://10.0.0.1' }] })));
+    }
+    await hub._queue;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(hub.list().length, 2);
+    assert.deepStrictEqual(delivered, []);
+  });
+
+  it('limits how many frames one key hands in per minute', async function () {
+    const { hub, passport } = await hubWithPassport();
+    hub.settings.framesPerSignerPerMinute = 2;
+    const created = await hub.create({ threshold: 2, members: [{ pubkey: passport.pubkey }] });
+    await hub.submitFrame(frame(passport, Federation.responseMessage(created.id, true)));
+    await hub.submitFrame(frame(passport, Federation.syncMessage(created.id)));
+    await assert.rejects(hub.submitFrame(frame(passport, Federation.responseMessage(created.id, false))), /too many frames/);
+  });
+
   it('keeps the mailbox across restarts', async function () {
     const files = new Map();
     const fs = {
@@ -432,5 +471,108 @@ describe('declined withdrawals', function () {
     assert.strictEqual(b.pending().withdrawals.length, 0);
     await assert.rejects(b.approveWithdrawal(created.id, w.requestId), /withdrawal is declined/);
     await assert.rejects(b.declineWithdrawal(created.id, w.requestId), /withdrawal is declined/);
+  });
+});
+
+describe('federation pages by viewer', function () {
+  const Message = require('@fabric/core/types/message');
+  const Federation = require('@fabric/core/types/federation');
+  const { encodeFabricUri } = require('@fabric/core/functions/fabricUri');
+
+  function frame (key, body) {
+    const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+    msg.signWithKey(key);
+    return encodeFabricUri(msg);
+  }
+
+  function newKey () {
+    return new Key({ private: crypto.randomBytes(32).toString('hex') });
+  }
+
+  async function setup () {
+    const chain = fakeChain();
+    const key = newKey();
+    const member = newKey();
+    const hub = new FederationsService({ network: 'regtest', tickMs: 0, resendMinMs: 0 });
+    hub.attach({
+      key,
+      rpc: async (m, p) => chain.rpc(m, p),
+      walletSend: async (o) => chain.walletSend(o),
+      publish: (body) => {
+        const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+        msg.signWithKey(key);
+        return msg;
+      },
+      relay: () => {}
+    });
+    await hub.start();
+    const created = await hub.create({ name: 'Ops', threshold: 2, members: [{ pubkey: member.pubkey, url: 'https://member.example' }] });
+    // A federation the Hub only relays: the member and a stranger, invited over the mailbox.
+    const other = newKey();
+    const descriptor = Federation.buildDescriptor({ validators: [member.pubkey, other.pubkey], threshold: 2, network: 'regtest', publisher: other.pubkey });
+    await hub.submitFrame(frame(other, Federation.inviteMessage({ descriptor })));
+    return { hub, member, created, relayedId: Federation.descriptorId(descriptor) };
+  }
+
+  const xonly = (k) => k.pubkey.slice(2);
+
+  it('shows the operator every federation and a member only those naming their key', async function () {
+    const { hub, member, created, relayedId } = await setup();
+    const operator = hub.listFor({ role: 'operator' });
+    assert.deepStrictEqual(operator.map((f) => f.id).sort(), [created.id, relayedId].sort());
+    assert.strictEqual(operator.find((f) => f.id === relayedId).status, 'relayed');
+
+    const mine = hub.listFor({ role: 'member', key: xonly(member) });
+    assert.deepStrictEqual(mine.map((f) => f.id).sort(), [created.id, relayedId].sort());
+    for (const f of mine) {
+      assert.ok(f.members.every((m) => m.url === null), 'members never see URLs');
+      assert.strictEqual(f.members.filter((m) => m.self).length, 1, 'the member is marked as themselves');
+      assert.deepStrictEqual(f.viewer, { role: 'member', key: xonly(member) });
+      assert.deepStrictEqual(f.previous, []);
+    }
+    assert.deepStrictEqual(hub.listFor({ role: 'member', key: xonly(newKey()) }), []);
+    assert.deepStrictEqual(hub.listFor({ role: 'signedIn', key: null }), []);
+    assert.deepStrictEqual(hub.listFor({ role: 'anonymous', key: null }), []);
+  });
+
+  it('gets one federation by id or prefix, and hides it from everyone else', async function () {
+    const { hub, member, created, relayedId } = await setup();
+    const byPrefix = await hub.getFor(created.id.slice(0, 12), { role: 'member', key: xonly(member) });
+    assert.strictEqual(byPrefix.id, created.id);
+    assert.strictEqual(byPrefix.members.find((m) => m.self).url, null);
+    const asOperator = await hub.getFor(created.id, { role: 'operator' });
+    assert.strictEqual(asOperator.members.find((m) => m.pubkey === member.pubkey).url, 'https://member.example');
+
+    const relayed = await hub.getFor(relayedId, { role: 'member', key: xonly(member) });
+    assert.strictEqual(relayed.status, 'relayed');
+    assert.deepStrictEqual(relayed.utxos, []);
+    assert.strictEqual(relayed.balanceSats, 0);
+
+    await assert.rejects(hub.getFor(created.id, { role: 'member', key: xonly(newKey()) }), /unknown federation/);
+    await assert.rejects(hub.getFor(created.id, { role: 'signedIn' }), /unknown federation/);
+    await assert.rejects(hub.getFor(created.id, { role: 'anonymous' }), /unknown federation/);
+    await assert.rejects(hub.getFor(created.id.slice(0, 11), { role: 'operator' }), /unknown federation/);
+    await assert.rejects(hub.getFor('ab'.repeat(32), { role: 'operator' }), /unknown federation/);
+  });
+
+  it('pages one federation\'s mailbox frames and finds a frame by id', async function () {
+    const { hub, member, created, relayedId } = await setup();
+    await hub.submitFrame(frame(member, Federation.responseMessage(created.id, true)));
+    const all = hub.framesForFederation(created.id);
+    assert.ok(all.messages.length >= 2, 'invite and response');
+    assert.ok(all.messages.every((m) => m.federationId === created.id));
+    assert.strictEqual(all.more, false);
+
+    const first = hub.framesForFederation(created.id, { limit: 1 });
+    assert.strictEqual(first.messages.length, 1);
+    assert.strictEqual(first.more, true);
+    const rest = hub.framesForFederation(created.id, { since: first.next });
+    assert.deepStrictEqual(rest.messages.map((m) => m.id), all.messages.slice(1).map((m) => m.id));
+
+    assert.strictEqual(hub.framesForFederation(relayedId).messages.length, 1);
+    const found = hub.frameById(all.messages[0].id);
+    assert.strictEqual(found.federationId, created.id);
+    assert.strictEqual(found.fabric, all.messages[0].fabric);
+    assert.strictEqual(hub.frameById('00'.repeat(32)), null);
   });
 });

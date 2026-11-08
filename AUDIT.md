@@ -8,7 +8,7 @@ Living posture notes for **hub.fabric.pub** (`@fabric/hub` **0.1.0-RC1**). Re-ru
 | `@fabric/core` | Git pin `FabricLabs/fabric#feature/passport` (lockfile SHA `a76f49f03ce843dd2ac7dd4f4952fba0a04255b4`) |
 | `@fabric/http` | Git pin `FabricLabs/fabric-http#feature/passport` (lockfile SHA `d6e836cd315e2ea3301ccfecd7f46239bd8b1f9c`) |
 | npm `allow-git` | **`.npmrc` `allow-git=all`** — required for nested git-dep preparation (commit-SHA fetches of core/http); `root` is insufficient |
-| Node | **`engines.node` = `26.12.1`** (aligned with core / http) |
+| Node | **`engines.node` = `26.13.0`** (aligned with core / http) |
 | WebSocket (`ws`) | **Mitigated** — direct **`8.22.0`**; no override. jayson and webpack-bundle-analyzer keep their own `ws@7.5.13` (`^7.5.10`, patched) |
 | Electron | **`44.9.3`** (clears the 39.x advisory set — popup/sandbox inheritance, cross-origin file/http reads, webview workers, permission origin attribution, eMudhra intermediates — and swaps `extract-zip` for `@electron-internal/extract-zip`). Needs macOS 13+, 64-bit only. 45 deprecates the synchronous `safeStorage` calls the admin-token store uses |
 | electron-builder | **`26.18.0`** — resolves `tar@7.5.22` and pins `builder-util-runtime@9.7.0` itself; `@electron/asar`, `@electron/universal`, `ejs`, and `temp`'s `rimraf` are overridden (see Overrides) |

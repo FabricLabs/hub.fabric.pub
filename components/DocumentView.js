@@ -24,6 +24,7 @@ const {
 const Invoice = require('./Invoice');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const FabricDocumentRecord = require('./FabricDocumentRecord');
+const DocumentRevisions = require('./DocumentRevisions');
 const { loadUpstreamSettings, fetchTransactionByHash, sendBridgePayment } = require('../functions/bitcoinClient');
 const {
   loadHubUiFeatureFlags,
@@ -1272,6 +1273,16 @@ function DocumentDetail (props) {
               {av.devPricing}
             </details>
           </Message>
+        )}
+
+        {doc && (doc.sha256 || doc.id) && (
+          <DocumentRevisions
+            documentId={String(doc.sha256 || doc.id)}
+            doc={doc}
+            adminToken={props.adminToken}
+            onChanged={() => { if (typeof props.onGetDocument === 'function') props.onGetDocument(id); }}
+            onNavigate={(path) => navigate(path)}
+          />
         )}
 
         {doc && FabricDocumentRecord.recordFromHubDocument(doc) && (

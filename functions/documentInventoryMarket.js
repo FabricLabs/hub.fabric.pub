@@ -52,6 +52,22 @@ function normalizeDocumentId (value) {
   return s || null;
 }
 
+/**
+ * `{ contractId, revision }` when an item names the editable document
+ * contract it is a version of (`@fabric/core` `functions/documentRevisions`).
+ * Advisory until the buyer checks the provenance that comes with the file.
+ * @param {Object} item
+ * @returns {Object}
+ */
+function documentContractFields (item) {
+  const contractId = String((item && item.contractId) || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(contractId)) return {};
+  const revision = Number(item.revision);
+  return Number.isSafeInteger(revision) && revision > 0
+    ? { contractId, revision }
+    : { contractId };
+}
+
 function peerKeyFromHex (value) {
   const h = String(value || '').trim().toLowerCase();
   if (/^[0-9a-f]{64}$/.test(h) || /^0[23][0-9a-f]{64}$/.test(h)) return h;
@@ -230,6 +246,7 @@ function normalizeInventoryItem (item, peer) {
     peerAlias: peer && peer.peerAlias ? String(peer.peerAlias) : null,
     receivedAt: new Date().toISOString(),
     local: false,
+    ...documentContractFields(item),
     ...(htlc ? { htlc } : {})
   };
 }
@@ -340,7 +357,8 @@ function localOffer (doc, self) {
     peerAlias: me.peerAlias || 'this node',
     peerAddress: null,
     local: true,
-    published: !!(doc.published === true || (typeof doc.published === 'string' && doc.published))
+    published: !!(doc.published === true || (typeof doc.published === 'string' && doc.published)),
+    ...documentContractFields(doc)
   };
 }
 
@@ -424,7 +442,8 @@ function catalogRowFromOffers (documentId, group) {
     peerPubkey: best.peerPubkey || null,
     peerAlias: best.peerAlias || null,
     peerAddress: best.peerAddress || null,
-    bestPeerPriceSats: Number.isFinite(priceSats(best)) ? priceSats(best) : null
+    bestPeerPriceSats: Number.isFinite(priceSats(best)) ? priceSats(best) : null,
+    ...documentContractFields(best)
   };
 }
 
@@ -568,6 +587,7 @@ module.exports = {
   HTLC_MINIMUM_SATS,
   envFlag,
   normalizeDocumentId,
+  documentContractFields,
   peerKeyFromHex,
   peerKey,
   offerRecordId,

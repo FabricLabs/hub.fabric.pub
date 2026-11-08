@@ -1,6 +1,7 @@
 'use strict';
 
 const React = require('react');
+const { Link } = require('react-router-dom');
 const { Button, Header, Icon, List, Message, Segment } = require('semantic-ui-react');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const t = require('../locales/en');
@@ -132,7 +133,7 @@ function TrackedApplicationContractsPanel (props = {}) {
                 </Button>
               </List.Content>
               <List.Content>
-                <List.Header>{row.name || c.unnamed}</List.Header>
+                <List.Header as={Link} to={`/contracts/${encodeURIComponent(row.contractId)}`}>{row.name || c.unnamed}</List.Header>
                 <List.Description style={{ wordBreak: 'break-all' }}>
                   <code>{row.contractId}</code>
                   {row.version != null ? ` · ${c.version(row.version)}` : ''}
@@ -163,7 +164,7 @@ function TrackedApplicationContractsPanel (props = {}) {
                 </Button>
               </List.Content>
               <List.Content>
-                <List.Header>{row.name || c.unnamed}</List.Header>
+                <List.Header as={Link} to={`/contracts/${encodeURIComponent(row.contractId)}`}>{row.name || c.unnamed}</List.Header>
                 <List.Description style={{ wordBreak: 'break-all' }}>
                   <code>{row.contractId}</code>
                   {row.stateDigest ? (

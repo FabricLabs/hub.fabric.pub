@@ -8,17 +8,28 @@ const FederationRequestsPanel = require('./FederationRequestsPanel');
 const DelegationRequestsPanel = require('./DelegationRequestsPanel');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const {
+  readUiNotifications,
+  markUiNotificationsRead,
+  isUnread
+} = require('../functions/uiNotifications');
+const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
 } = require('../functions/hubUiFeatureFlags');
 const t = require('../locales/en');
 
 /**
- * In-app toasts only (compact). Hub log + chat live on `/activities`.
+ * Notification history (unread rows highlighted). Hub log + chat live on `/activities`.
+ * Rows unread when the page opened are marked read when you leave it, so they stay
+ * highlighted for this visit and show as read history on the next.
  */
 function NotificationsHome (props) {
   const [flagTick, setFlagTick] = React.useState(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setFlagTick((n) => n + 1)), []);
+  React.useEffect(() => {
+    const seen = readUiNotifications().filter(isUnread).map((n) => n.id);
+    return () => markUiNotificationsRead(seen);
+  }, []);
   void flagTick;
   const uf = loadHubUiFeatureFlags();
   const c = t.home.notifications;

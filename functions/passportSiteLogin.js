@@ -25,13 +25,26 @@ const {
   callPeer,
   fetchAsPeer
 } = require('@fabric/http/functions/passportPage');
-const { setPassportSession, watchIdentityFromSession } = require('./passportSession');
+const { getPassportSession, setPassportSession, watchIdentityFromSession } = require('./passportSession');
+
+/**
+ * Disclosures to ask Passport for: `wallet` when `params.wallet`, plus `params.request`.
+ * @private
+ */
+function disclosures (params) {
+  const out = params.wallet ? ['wallet'] : [];
+  for (const name of Array.isArray(params.request) ? params.request : []) {
+    if (typeof name === 'string' && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
 
 /**
  * Sign in to this Hub with Passport.
  * @param {Object} params
  * @param {Window} params.window
  * @param {boolean} [params.wallet] Ask Passport to share the wallet xpubs too.
+ * @param {string[]} [params.request] Further disclosures (`cosigner`).
  * @param {string} [params.purpose]
  * @param {function({ cancel: Function }): void} [params.onPending]
  * @returns {Promise<{ ok: true, session: object, identity: object }|{ ok: false, error: string }>}
@@ -41,7 +54,7 @@ async function loginWithPassport (params = {}) {
     window: params.window,
     fetch: params.fetch,
     base: '/sessions',
-    request: params.wallet ? ['wallet'] : [],
+    request: disclosures(params),
     purpose: params.purpose,
     onPending: params.onPending
   });
@@ -112,6 +125,7 @@ async function confirmPeerSession (win, session, fetchImpl) {
  * @param {string[]} [params.endpoints] Hub WebSocket URLs (default: this origin's Hub).
  * @param {string} [params.peer] The Hub's identity pubkey (default: `GET /sessions/peer` on this origin).
  * @param {boolean} [params.wallet] Ask Passport to share the wallet xpubs too.
+ * @param {string[]} [params.request] Further disclosures (`cosigner`).
  * @param {string} [params.purpose]
  * @returns {Promise<{ ok: true, session: object, identity: object }|{ ok: false, error: string }>}
  */
@@ -133,7 +147,7 @@ async function loginWithPassportPeer (params = {}) {
   const opened = await connectPeer(win, {
     endpoints,
     peer: peer || undefined,
-    request: params.wallet ? ['wallet'] : [],
+    request: disclosures(params),
     purpose: params.purpose
   });
   if (!opened.ok) return { ok: false, error: opened.error || 'sign-in failed' };
@@ -152,6 +166,38 @@ async function loginWithPassportPeer (params = {}) {
   return { ok: true, session: view, identity: watchIdentityFromSession(view) };
 }
 
+/**
+ * Sign in with whichever protocol this Passport speaks (peer session when it
+ * can, else v2), asking for `request` disclosures.
+ * @param {Object} params Same as {@link loginWithPassport}
+ * @returns {Promise<{ ok: true, session: object, identity: object }|{ ok: false, error: string }>}
+ */
+async function loginWithPassportAny (params = {}) {
+  const win = params.window;
+  if (!win) return { ok: false, error: 'unsupported' };
+  const state = await probePassport(win).catch(() => 'missing');
+  if (state !== 'ready') return { ok: false, error: state === 'outdated' ? 'passport_outdated' : 'passport_missing' };
+  const peerCapable = await probePassportPeer(win).catch(() => false);
+  return peerCapable ? loginWithPassportPeer(params) : loginWithPassport(params);
+}
+
+/**
+ * `fetch` that reads as the current Passport session: a peer session has
+ * Passport sign each request; a cookie session goes as is.
+ * @param {Window} win
+ * @returns {Function}
+ */
+function sessionFetch (win) {
+  const plain = win && typeof win.fetch === 'function' ? win.fetch.bind(win) : null;
+  return (url, init = {}) => {
+    const session = getPassportSession();
+    if (session && session.peerSessionId) {
+      return fetchAsPeer(win, { sessionId: session.peerSessionId, url, init, fetch: plain });
+    }
+    return plain(url, init);
+  };
+}
+
 module.exports = {
   PASSPORT_MARKER,
   probePassport,
@@ -159,5 +205,7 @@ module.exports = {
   askPassport,
   loginWithPassport,
   loginWithPassportPeer,
+  loginWithPassportAny,
+  sessionFetch,
   hubWebSocketEndpoint
 };

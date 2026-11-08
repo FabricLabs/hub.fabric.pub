@@ -2,7 +2,7 @@
 
 const React = require('react');
 const { Link, useParams } = require('react-router-dom');
-const { Button, Header, Icon, Label, List, Loader, Message, Segment, Table } = require('semantic-ui-react');
+const { Button, Form, Header, Icon, Label, Loader, Message, Segment, Table } = require('semantic-ui-react');
 const { fetchTransactionByHash, loadUpstreamSettings } = require('../functions/bitcoinClient');
 const { SATS_PER_BTC } = require('../constants');
 const t = require('../locales/en');
@@ -89,49 +89,38 @@ function BitcoinTransactionView () {
   return (
     <div className='fade-in'>
       <Segment>
-        <div
-          style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.25em' }}
-          role="banner"
-        >
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-            <Button as={Link} to="/services/bitcoin" basic size="small" title={t.bitcoin.shared.backToBitcoinTitle}>
-              <Icon name="arrow left" aria-hidden="true" />
-              {t.bitcoin.shared.backToBitcoin}
-            </Button>
-            {TXHASH_REGEX.test(hash) && (
-              <Button
-                as={Link}
-                to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`}
-                basic
-                size="small"
-                title={t.bitcoin.shared.verifyPaymentTitle}
-              >
-                <Icon name="check circle outline" aria-hidden="true" />
-                {t.bitcoin.shared.verifyPayment}
-              </Button>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em', flexWrap: 'wrap' }}>
-            <Header as="h2" style={{ margin: 0 }}>
-              <Icon name="exchange" aria-hidden="true" />
-              <Header.Content>{c.title}</Header.Content>
-            </Header>
-            <span style={{ display: 'inline-flex', gap: '0.35em', flexWrap: 'wrap', alignItems: 'center' }} aria-hidden="true">
-              {isMempool && tx && (
-                <Label color="orange" size="small">
-                  <Icon name="clock" aria-hidden="true" />
-                  {t.bitcoin.shared.unconfirmed}
-                </Label>
-              )}
-              {confirmations != null && confirmations > 0 && (
-                <Label color="green" size="small">
-                  <Icon name="check" aria-hidden="true" />
-                  {t.bitcoin.shared.confirmations(confirmations)}
-                </Label>
-              )}
-            </span>
-          </div>
-        </div>
+        <Button as={Link} to="/services/bitcoin" basic size="small" title={t.bitcoin.shared.backToBitcoinTitle}>
+          <Icon name="arrow left" aria-hidden="true" />
+          {t.bitcoin.shared.backToBitcoin}
+        </Button>
+        {TXHASH_REGEX.test(hash) && (
+          <Button
+            as={Link}
+            to={`/services/bitcoin/resources?tx=${encodeURIComponent(hash)}`}
+            basic
+            size="small"
+            title={t.bitcoin.shared.verifyPaymentTitle}
+          >
+            <Icon name="check circle outline" aria-hidden="true" />
+            {t.bitcoin.shared.verifyPayment}
+          </Button>
+        )}
+        <Header as="h2">
+          <Icon name="exchange" aria-hidden="true" />
+          <Header.Content>{c.title}</Header.Content>
+          {isMempool && tx && (
+            <Label color="orange" size="small">
+              <Icon name="clock" aria-hidden="true" />
+              {t.bitcoin.shared.unconfirmed}
+            </Label>
+          )}
+          {confirmations != null && confirmations > 0 && (
+            <Label color="green" size="small">
+              <Icon name="check" aria-hidden="true" />
+              {t.bitcoin.shared.confirmations(confirmations)}
+            </Label>
+          )}
+        </Header>
       </Segment>
 
       {!hash && (
@@ -143,8 +132,7 @@ function BitcoinTransactionView () {
 
       {!!hash && TXHASH_REGEX.test(hash) && loading && (
         <Segment>
-          <Loader active inline="centered" />
-          <p style={{ textAlign: 'center', marginTop: '1em', color: '#666' }}>{c.loading}</p>
+          <Loader active inline="centered" content={c.loading} />
         </Segment>
       )}
 
@@ -153,7 +141,7 @@ function BitcoinTransactionView () {
           <Message.Header>{c.loadFailed}</Message.Header>
           <p>{error}</p>
           {TXHASH_REGEX.test(hash) ? (
-            <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+            <div>
               <Button type="button" size="small" onClick={() => void loadTx()}>
                 <Icon name="refresh" />
                 {t.common.actions.retry}
@@ -177,7 +165,7 @@ function BitcoinTransactionView () {
         <Message warning>
           <Message.Header>{c.notFoundTitle}</Message.Header>
           <p>{c.notFoundBody}</p>
-          <div style={{ marginTop: '0.75em', display: 'flex', gap: '0.5em', flexWrap: 'wrap' }}>
+          <div>
             <Button type="button" size="small" onClick={() => void loadTx()}>
               <Icon name="refresh" />
               {t.common.actions.retry}
@@ -208,41 +196,39 @@ function BitcoinTransactionView () {
             </Message>
           )}
           <Segment>
-            <List divided>
-              <List.Item>
-                <List.Content>
-                  <List.Header>{c.txid}</List.Header>
-                  <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{tx.txid || hash}</code>
-                </List.Content>
-              </List.Item>
-              <List.Item>
-                <List.Content>
-                  <List.Header>{c.confirmations}</List.Header>
-                  {confirmations != null ? confirmations : (isMempool ? c.zeroConfirmations : t.bitcoin.shared.notAvailable)}
-                </List.Content>
-              </List.Item>
-              <List.Item>
-                <List.Content>
-                  <List.Header>{c.block}</List.Header>
-                  {tx.blockhash ? (
-                    <Link to={`/services/bitcoin/blocks/${encodeURIComponent(tx.blockhash)}`}>
-                      <code style={{ wordBreak: 'break-all' }}>{tx.blockhash}</code>
-                    </Link>
-                  ) : (
-                    <span style={{ color: '#888' }}>{c.notInBlock}</span>
-                  )}
-                </List.Content>
-              </List.Item>
-              {tx.size != null && (
-                <List.Item>
-                  <List.Content>
-                    <List.Header>{c.size}</List.Header>
-                    {t.bitcoin.shared.bytes(tx.size)}
-                  </List.Content>
-                </List.Item>
-              )}
-            </List>
-            <Button size="small" basic onClick={loadTx} style={{ marginTop: '0.5em' }}>
+            <Table definition compact celled unstackable>
+              <Table.Body>
+                <Table.Row>
+                  <Table.Cell collapsing>{c.txid}</Table.Cell>
+                  <Table.Cell style={{ wordBreak: 'break-all' }}><code>{tx.txid || hash}</code></Table.Cell>
+                </Table.Row>
+                <Table.Row>
+                  <Table.Cell collapsing>{c.confirmations}</Table.Cell>
+                  <Table.Cell>
+                    {confirmations != null ? confirmations : (isMempool ? c.zeroConfirmations : t.bitcoin.shared.notAvailable)}
+                  </Table.Cell>
+                </Table.Row>
+                <Table.Row>
+                  <Table.Cell collapsing>{c.block}</Table.Cell>
+                  <Table.Cell style={{ wordBreak: 'break-all' }}>
+                    {tx.blockhash ? (
+                      <Link to={`/services/bitcoin/blocks/${encodeURIComponent(tx.blockhash)}`}>
+                        <code>{tx.blockhash}</code>
+                      </Link>
+                    ) : (
+                      <Label size="small" basic>{c.notInBlock}</Label>
+                    )}
+                  </Table.Cell>
+                </Table.Row>
+                {tx.size != null && (
+                  <Table.Row>
+                    <Table.Cell collapsing>{c.size}</Table.Cell>
+                    <Table.Cell>{t.bitcoin.shared.bytes(tx.size)}</Table.Cell>
+                  </Table.Row>
+                )}
+              </Table.Body>
+            </Table>
+            <Button size="small" basic onClick={loadTx}>
               <Icon name="refresh" />
               {t.common.actions.refresh}
             </Button>
@@ -265,15 +251,15 @@ function BitcoinTransactionView () {
                       <Table.Cell>
                         {inp.txid ? (
                           <Link to={`/services/bitcoin/transactions/${encodeURIComponent(inp.txid)}`}>
-                            <code style={{ fontSize: '0.85em' }}>{String(inp.txid).slice(0, 16)}…</code>
+                            <code>{String(inp.txid).slice(0, 16)}…</code>
                           </Link>
                         ) : (
-                          <span style={{ color: '#888' }}>{c.coinbase}</span>
+                          <Label size="small" basic>{c.coinbase}</Label>
                         )}
                       </Table.Cell>
                       <Table.Cell>{inp.vout != null ? inp.vout : t.common.none}</Table.Cell>
                       <Table.Cell>
-                        <code style={{ fontSize: '0.8em', wordBreak: 'break-all' }}>
+                        <code>
                           {(inp.scriptSig && inp.scriptSig.hex) ? `${inp.scriptSig.hex.slice(0, 32)}…` : t.common.none}
                         </code>
                       </Table.Cell>
@@ -288,13 +274,13 @@ function BitcoinTransactionView () {
             <Header as="h3">
               {c.outputs(outputs.length)}
               {totalOutSats > 0 && (
-                <Header.Subheader style={{ fontWeight: 'normal', color: '#666' }}>
+                <Header.Subheader>
                   {c.total(t.common.sats(totalOutSats))}
                 </Header.Subheader>
               )}
             </Header>
             {outputs.length === 0 ? (
-              <p style={{ color: '#666' }}>{c.noOutputs}</p>
+              <p>{c.noOutputs}</p>
             ) : (
               <Table compact="very" celled>
                 <Table.Header>
@@ -316,22 +302,20 @@ function BitcoinTransactionView () {
                       <Table.Row key={`${idx}:${out && out.value}`}>
                         <Table.Cell>{idx}</Table.Cell>
                         <Table.Cell>{formatValue(out && out.value)}</Table.Cell>
-                        <Table.Cell>
+                        <Table.Cell style={{ wordBreak: 'break-all' }}>
                           {addr ? (
-                            <code style={{ wordBreak: 'break-all', fontSize: '0.9em' }}>{addr}</code>
+                            <code>{addr}</code>
                           ) : (
-                            <span style={{ color: '#888' }}>{scriptType || c.nonStandard}</span>
+                            <Label size="small" basic>{scriptType || c.nonStandard}</Label>
                           )}
                         </Table.Cell>
-                        <Table.Cell>
+                        <Table.Cell style={{ wordBreak: 'break-all' }}>
                           {scriptAsm ? (
-                            <code style={{ fontSize: '0.8em', wordBreak: 'break-all', display: 'block' }} title={scriptHex || undefined}>
-                              {scriptAsm}
-                            </code>
+                            <code title={scriptHex || undefined}>{scriptAsm}</code>
                           ) : scriptHex ? (
-                            <code style={{ fontSize: '0.75em', wordBreak: 'break-all', display: 'block' }}>{scriptHex}</code>
+                            <code>{scriptHex}</code>
                           ) : (
-                            <span style={{ color: '#888' }}>{t.common.none}</span>
+                            t.common.none
                           )}
                         </Table.Cell>
                       </Table.Row>
@@ -345,9 +329,9 @@ function BitcoinTransactionView () {
           {tx.hex && (
             <Segment>
               <Header as="h3">{c.raw}</Header>
-              <pre style={{ fontSize: '0.8em', wordBreak: 'break-all', overflow: 'auto', maxHeight: '20em', margin: 0 }}>
-                <code>{tx.hex}</code>
-              </pre>
+              <Form>
+                <Form.TextArea readOnly rows={8} value={tx.hex} aria-label={c.raw} />
+              </Form>
             </Segment>
           )}
         </>

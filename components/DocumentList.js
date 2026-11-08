@@ -855,6 +855,12 @@ function DocumentsPage (props) {
                       <List.Header>
                         <Link to={`/documents/${encodeURIComponent(doc.id)}`}>{doc.name || doc.id}</Link>
                         {labels}
+                        {doc.contractId && Number(doc.revision) > 0 && (
+                          <Label size="mini" basic title={t.documents.revisions.title} style={{ marginLeft: '0.5em' }}>
+                            <Icon name="history" />
+                            {t.documents.revisions.revision(Number(doc.revision))}
+                          </Label>
+                        )}
                       </List.Header>
                       <List.Description style={{ color: '#666' }}>
                         {doc.mime || 'application/octet-stream'}
