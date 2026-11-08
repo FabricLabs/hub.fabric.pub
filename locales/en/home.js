@@ -27,8 +27,6 @@ module.exports = {
       explore: 'Explore this Hub'
     },
     health: {
-      title: 'Node health',
-      refresh: 'Refresh node health',
       loading: 'Loading node health…',
       loadFailed: 'Could not load node health. Check that the Hub is running, then refresh.',
       host: 'Host',
@@ -37,18 +35,16 @@ module.exports = {
       cpu: 'Hub CPU',
       cpuTitle: 'CPU used by the Hub process, averaged across all cores',
       cpuValue: (pct, cores) => `${pct} (${plural(cores, 'core')})`,
-      load: 'System load (1, 5, 15 min)',
+      loadValue: (avg) => `system load ${avg}`,
       loadTitle: 'Average number of processes running or waiting on this machine over the last 1, 5, and 15 minutes. It covers the whole machine, not just the Hub; compare it with the number of CPU cores.',
       memory: 'Hub memory',
       memoryTitle: 'Memory held by the Hub process',
       disk: 'Disk',
-      diskValue: (used, total, pct) => `${used} of ${total} used${pct ? ` (${pct})` : ''}`,
-      free: 'Free',
-      dns: 'DNS',
+      diskValue: (used, total, pct, free) => `${used} of ${total} used${pct ? ` (${pct})` : ''}${free ? `, ${free} free` : ''}`,
+      checks: 'Checks',
+      dnsValue: (state) => `DNS ${state}`,
       dnsTitle: 'Whether this machine can resolve public hostnames',
-      services: 'Local services',
-      servicesValue: (ok, total) => `${ok} of ${total} reachable`,
-      checkedAt: (time) => `Checked ${time}`
+      servicesValue: (ok, total) => `${ok} of ${total} local services reachable`
     },
     client: {
       title: `${BRAND_NAME} app`,
@@ -76,17 +72,16 @@ module.exports = {
       stuckHint: 'If this does not change, check that the Hub is running and reachable, then try again.'
     },
     network: {
-      title: 'Node and network',
+      title: 'Node',
       updated: (time) => `Updated ${time}`,
-      refresh: 'Refresh network status',
+      refresh: 'Refresh node status',
       fabricId: 'Fabric ID',
       listen: 'Listen address',
       contract: 'Contract ID',
       peers: 'Peers',
       peersValue: (connected, known) => `${connected} connected of ${known} known`,
       managePeers: 'Manage peers',
-      browserPeers: 'Browser peers',
-      browserPeersMesh: (n) => `${n} on the mesh`,
+      browserPeersValue: (n, mesh) => `${n} in browsers${mesh > 0 ? ` (${mesh} on the mesh)` : ''}`,
       documents: 'Documents',
       documentsValue: (n) => `${Number(n) || 0} published`,
       copyNodeId: 'Copy node ID',
@@ -104,9 +99,6 @@ module.exports = {
       lightning: 'Lightning',
       wallet: 'Wallet',
       unavailable: 'Bitcoin is not available on this Hub.'
-    },
-    quickLinks: {
-      title: 'Quick links'
     },
     adminToken: {
       title: 'Admin token not saved',
@@ -187,21 +179,40 @@ module.exports = {
     activityLogTitle: 'Hub messages, chat, and Bitcoin blocks',
     securityTitle: 'Your Passport sign-in and linked devices',
     bitcoinTitle: 'Bitcoin dashboard',
-    summary: 'Short-lived wallet, Payjoin, and Hub alerts. This is the same list as the bell in the top bar.',
+    summary: 'Your wallet, Payjoin, and Hub notification history. New ones are highlighted until you leave this page; the bell in the top bar counts them.',
     summaryActivity: 'Hub messages, chat, and Bitcoin blocks are in the activity log.',
     summaryActivityOff: `Hub messages, chat, and Bitcoin blocks are in the activity log; turn on Activities under ${featureVisibility} to open it.`
   },
   inApp: {
     title: 'In-app notifications',
-    empty: 'No notifications yet. Wallet, Payjoin, and Hub alerts appear here.',
-    intro: 'Wallet, Payjoin, and Hub alerts. Open a link, copy the details, or dismiss them.',
+    empty: 'No notifications yet. Wallet, Payjoin, and Hub notifications appear here and stay in your history.',
+    emptyUnread: 'Nothing unread.',
+    emptyWallet: 'No wallet transactions yet.',
+    intro: 'Wallet, Payjoin, and Hub notifications. Open a link, copy the details, or mark them read.',
     copy: 'Copy details',
-    dismiss: 'Dismiss notification',
-    clearAll: 'Clear all'
+    markRead: 'Mark as read',
+    markUnread: 'Mark as unread',
+    markAllRead: 'Mark all read',
+    newLabel: 'New',
+    resolved: 'Resolved',
+    unreadRow: (title) => `Unread: ${title}`,
+    showOlder: (n) => `Show older (${n} more)`,
+    filterLabel: 'Show notifications',
+    filters: {
+      all: 'All',
+      unread: 'Unread',
+      wallet: 'Wallet'
+    },
+    ago: {
+      now: 'just now',
+      minutes: (n) => `${n} min ago`,
+      hours: (n) => `${n} h ago`,
+      days: (n) => `${n} day${n === 1 ? '' : 's'} ago`
+    }
   },
   activities: {
     title: 'Activities',
-    summary: 'Hub messages, chat, Bitcoin blocks, and network events. Wallet, Payjoin, and other short alerts are in Notifications (the bell in the top bar).',
+    summary: 'Hub messages, chat, Bitcoin blocks, and network events. Your wallet, Payjoin, and Hub notification history is in Notifications (the bell in the top bar).',
     notificationsTitle: 'Wallet, Payjoin, and Hub alerts (the same list as the bell)',
     securityTitle: 'Your Passport sign-in and linked devices',
     bitcoinTitle: 'Bitcoin dashboard',

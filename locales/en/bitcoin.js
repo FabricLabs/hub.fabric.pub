@@ -475,6 +475,7 @@ module.exports = {
     txCount: (n) => `${n} tx`,
     feeRate: (rate) => `~${rate} sat/vB`,
     fees: (amount) => `${amount} sats in fees`,
+    full: (percent) => `${percent}% of the block weight limit`,
     blockTitle: (height) => `Block #${height}`,
     currentTitle: (height) => `Block #${height} (this block)`,
     current: 'This block'

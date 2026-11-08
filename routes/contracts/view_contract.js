@@ -17,11 +17,25 @@ module.exports = async function (req, res, next) {
           contract = null;
         }
 
-        if (!contract) {
+        let application = null;
+        try {
+          application = typeof this._applicationContractJson === 'function' ? this._applicationContractJson(id) : null;
+        } catch (e) {
+          application = null;
+        }
+
+        let document = null;
+        try {
+          document = typeof this._documentContractJson === 'function' ? this._documentContractJson(id) : null;
+        } catch (e) {
+          document = null;
+        }
+
+        if (!contract && !application && !document) {
           return res.json({ status: 'error', message: 'contract not found' });
         }
 
-        return res.json({ status: 'ok', contract });
+        return res.json({ status: 'ok', contract, application, document });
       } catch (err) {
         return res.json({ status: 'error', message: err && err.message ? err.message : 'contract view failed' });
       }

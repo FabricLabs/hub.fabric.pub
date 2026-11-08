@@ -1,5 +1,5 @@
 /*
- * # Fomantic UI - 2.10.0-beta.128
+ * # Fomantic UI - 2.10.0-beta.129
  * https://github.com/fomantic/Fomantic-UI
  * https://fomantic-ui.com/
  *
@@ -9,7 +9,7 @@
  *
  */
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Site
+ * # Fomantic-UI 2.10.0-beta.129 - Site
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -425,7 +425,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Form Validation
+ * # Fomantic-UI 2.10.0-beta.129 - Form Validation
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -2496,7 +2496,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Accordion
+ * # Fomantic-UI 2.10.0-beta.129 - Accordion
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -2810,9 +2810,7 @@
                         const $element = $(this);
                         $element.css('display', '');
                         if ($element.attr('style') === '') {
-                            $element
-                                .attr('style', '')
-                                .removeAttr('style');
+                            $element.removeAttr('style');
                         }
                     },
 
@@ -2821,9 +2819,7 @@
                         const $element = $(this);
                         $element.css('opacity', '');
                         if ($element.attr('style') === '') {
-                            $element
-                                .attr('style', '')
-                                .removeAttr('style');
+                            $element.removeAttr('style');
                         }
                     },
 
@@ -3044,7 +3040,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Calendar
+ * # Fomantic-UI 2.10.0-beta.129 - Calendar
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -5005,7 +5001,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Checkbox
+ * # Fomantic-UI 2.10.0-beta.129 - Checkbox
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -5825,7 +5821,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Dimmer
+ * # Fomantic-UI 2.10.0-beta.129 - Dimmer
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -6512,7 +6508,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Dropdown
+ * # Fomantic-UI 2.10.0-beta.129 - Dropdown
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -10532,7 +10528,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Embed
+ * # Fomantic-UI 2.10.0-beta.129 - Embed
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -11179,7 +11175,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Flyout
+ * # Fomantic-UI 2.10.0-beta.129 - Flyout
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -11202,7 +11198,6 @@
     $.fn.flyout = function (...args) {
         const $window = $(window);
         const $document = $(document);
-        const $head = $('head');
         const $body = $('body');
         const $allModules = isFunction(this)
             ? $body
@@ -11252,7 +11247,6 @@
 
             let $flyouts = $module.children(selector.flyout);
             let $pusher = $context.children(selector.pusher);
-            let $style;
 
             const isFlyoutComponent = $module.hasClass('flyout');
 
@@ -11569,45 +11563,12 @@
 
                 add: {
                     inlineCSS: function () {
-                        const width = module.cache.width || $module.outerWidth();
-                        const height = module.cache.height || $module.outerHeight();
-                        const isRTL = module.is.rtl();
                         const direction = module.get.direction();
-                        const distance = {
-                            left: width,
-                            right: -width,
-                            top: height,
-                            bottom: -height,
-                        };
-                        let style;
-
-                        if (isRTL) {
-                            module.verbose('RTL detected, flipping widths');
-                            distance.left = -width;
-                            distance.right = width;
-                        }
-
-                        style = '<style>';
-
-                        if (direction === 'left' || direction === 'right') {
-                            module.debug('Adding CSS rules for animation distance', width);
-                            style += ''
-                                + ' .ui.visible.' + direction + '.flyout ~ .fixed,'
-                                + ' .ui.visible.' + direction + '.flyout ~ .pusher {'
-                                + '           transform: translate3d(' + distance[direction] + 'px, 0, 0);'
-                                + ' }';
-                        } else if (direction === 'top' || direction === 'bottom') {
-                            style += ''
-                                + ' .ui.visible.' + direction + '.flyout ~ .fixed,'
-                                + ' .ui.visible.' + direction + '.flyout ~ .pusher {'
-                                + '           transform: translate3d(0, ' + distance[direction] + 'px, 0);'
-                                + ' }';
-                        }
-
-                        style += '</style>';
-                        $style = $(style)
-                            .appendTo($head);
-                        module.debug('Adding sizing css to head', $style);
+                        const distance = direction === 'top' || direction === 'bottom'
+                            ? module.cache.height || $module.outerHeight()
+                            : module.cache.width || $module.outerWidth();
+                        module.debug('Adding CSS variable for animation distance', distance);
+                        $context.css('--flyout-' + direction + '-distance', distance + 'px');
                     },
                     keyboardShortcuts: function () {
                         module.verbose('Adding keyboard shortcuts');
@@ -12003,9 +11964,21 @@
                 remove: {
 
                     inlineCSS: function () {
-                        module.debug('Removing inline css styles', $style);
-                        if ($style && $style.length > 0) {
-                            $style.remove();
+                        const direction = module.get.direction();
+                        const $visible = $flyouts.not($module).filter('.' + className.visible + '.' + direction).last();
+                        if ($visible.length > 0) {
+                            const distance = direction === 'top' || direction === 'bottom'
+                                ? $visible.outerHeight()
+                                : $visible.outerWidth();
+                            module.debug('Using the distance of another visible flyout', distance);
+                            $context.css('--flyout-' + direction + '-distance', distance + 'px');
+
+                            return;
+                        }
+                        module.debug('Removing CSS variable for animation distance');
+                        $context.css('--flyout-' + direction + '-distance', '');
+                        if ($context.attr('style') === '') {
+                            $context.removeAttr('style');
                         }
                     },
                     keyboardShortcuts: function () {
@@ -12564,7 +12537,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Modal
+ * # Fomantic-UI 2.10.0-beta.129 - Modal
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -14072,7 +14045,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Nag
+ * # Fomantic-UI 2.10.0-beta.129 - Nag
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -14595,7 +14568,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Popup
+ * # Fomantic-UI 2.10.0-beta.129 - Popup
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -16053,7 +16026,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Progress
+ * # Fomantic-UI 2.10.0-beta.129 - Progress
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -16976,7 +16949,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Slider
+ * # Fomantic-UI 2.10.0-beta.129 - Slider
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -18426,7 +18399,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Rating
+ * # Fomantic-UI 2.10.0-beta.129 - Rating
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -18923,7 +18896,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Search
+ * # Fomantic-UI 2.10.0-beta.129 - Search
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -20443,7 +20416,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Shape
+ * # Fomantic-UI 2.10.0-beta.129 - Shape
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -20578,22 +20551,14 @@
 
                 reset: function () {
                     module.verbose('Animating states reset');
-                    $module
-                        .removeClass(className.animating)
-                        .attr('style', '')
-                        .removeAttr('style');
-                    // removeAttr style does not consistently work in safari
-                    $sides
-                        .attr('style', '')
-                        .removeAttr('style');
-                    $side
-                        .attr('style', '')
-                        .removeAttr('style')
-                        .removeClass(className.hidden);
-                    $nextSide
-                        .removeClass(className.animating)
-                        .attr('style', '')
-                        .removeAttr('style');
+                    $module.removeClass(className.animating);
+                    $side.removeClass(className.hidden);
+                    $nextSide.removeClass(className.animating);
+                    // Chrome keeps an empty style attribute if it is not read before its removal
+                    $module.add($sides).add($side).each(function () {
+                        this.getAttribute('style');
+                        this.removeAttribute('style');
+                    });
                 },
 
                 is: {
@@ -21165,7 +21130,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Sidebar
+ * # Fomantic-UI 2.10.0-beta.129 - Sidebar
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -21191,7 +21156,6 @@
         const $document = $(document);
         const $body = $('body');
         const $html = $('html');
-        const $head = $('head');
 
         let time = Date.now();
         let performance = [];
@@ -21235,7 +21199,6 @@
             let $sidebars = $module.children(selector.sidebar);
             let $fixed = $context.children(selector.fixed);
             let $pusher = $context.children(selector.pusher);
-            let $style;
 
             const element = this;
             let instance = $module.data(moduleNamespace);
@@ -21370,45 +21333,12 @@
 
                 add: {
                     inlineCSS: function () {
-                        const width = module.cache.width || $module.outerWidth();
-                        const height = module.cache.height || $module.outerHeight();
-                        const isRTL = module.is.rtl();
                         const direction = module.get.direction();
-                        const distance = {
-                            left: width,
-                            right: -width,
-                            top: height,
-                            bottom: -height,
-                        };
-                        let style;
-
-                        if (isRTL) {
-                            module.verbose('RTL detected, flipping widths');
-                            distance.left = -width;
-                            distance.right = width;
-                        }
-
-                        style = '<style>';
-
-                        if (direction === 'left' || direction === 'right') {
-                            module.debug('Adding CSS rules for animation distance', width);
-                            style += ''
-                                + ' .ui.visible.' + direction + '.sidebar ~ .fixed,'
-                                + ' .ui.visible.' + direction + '.sidebar ~ .pusher {'
-                                + '           transform: translate3d(' + distance[direction] + 'px, 0, 0);'
-                                + ' }';
-                        } else if (direction === 'top' || direction === 'bottom') {
-                            style += ''
-                                + ' .ui.visible.' + direction + '.sidebar ~ .fixed,'
-                                + ' .ui.visible.' + direction + '.sidebar ~ .pusher {'
-                                + '           transform: translate3d(0, ' + distance[direction] + 'px, 0);'
-                                + ' }';
-                        }
-
-                        style += '</style>';
-                        $style = $(style)
-                            .appendTo($head);
-                        module.debug('Adding sizing css to head', $style);
+                        const distance = direction === 'top' || direction === 'bottom'
+                            ? module.cache.height || $module.outerHeight()
+                            : module.cache.width || $module.outerWidth();
+                        module.debug('Adding CSS variable for animation distance', distance);
+                        $context.css('--sidebar-' + direction + '-distance', distance + 'px');
                     },
                 },
 
@@ -21741,9 +21671,21 @@
                 remove: {
 
                     inlineCSS: function () {
-                        module.debug('Removing inline css styles', $style);
-                        if ($style && $style.length > 0) {
-                            $style.remove();
+                        const direction = module.get.direction();
+                        const $visible = $sidebars.not($module).filter('.' + className.visible + '.' + direction).last();
+                        if ($visible.length > 0) {
+                            const distance = direction === 'top' || direction === 'bottom'
+                                ? $visible.outerHeight()
+                                : $visible.outerWidth();
+                            module.debug('Using the distance of another visible sidebar', distance);
+                            $context.css('--sidebar-' + direction + '-distance', distance + 'px');
+
+                            return;
+                        }
+                        module.debug('Removing CSS variable for animation distance');
+                        $context.css('--sidebar-' + direction + '-distance', '');
+                        if ($context.attr('style') === '') {
+                            $context.removeAttr('style');
                         }
                     },
 
@@ -22118,7 +22060,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Sticky
+ * # Fomantic-UI 2.10.0-beta.129 - Sticky
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -22971,7 +22913,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Tab
+ * # Fomantic-UI 2.10.0-beta.129 - Tab
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -23839,7 +23781,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Toast
+ * # Fomantic-UI 2.10.0-beta.129 - Toast
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -24756,7 +24698,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Transition
+ * # Fomantic-UI 2.10.0-beta.129 - Transition
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -24960,10 +24902,7 @@
 
                 force: {
                     visible: function () {
-                        const style = $module.attr('style');
-                        const userStyle = module.get.userStyle(style);
                         const displayType = module.get.displayType();
-                        const overrideStyle = userStyle + 'display: ' + displayType + ' !important;';
                         const inlineDisplay = $module[0].style.display;
                         const mustStayHidden = !displayType || (inlineDisplay === 'none' && settings.skipInlineHidden) || $module[0].tagName.match(/(script|link|style)/i);
                         if (mustStayHidden) {
@@ -24972,8 +24911,7 @@
                             return false;
                         }
                         module.verbose('Overriding default display to show element', displayType);
-                        $module
-                            .attr('style', overrideStyle);
+                        $module[0].style.setProperty('display', displayType, 'important');
 
                         return true;
                     },
@@ -25294,11 +25232,6 @@
                         }
 
                         return $module.data(metadata.displayType);
-                    },
-                    userStyle: function (style) {
-                        style = style || $module.attr('style') || '';
-
-                        return style.replace(/display.*?;/, '');
                     },
                     transitionExists: function (animation) {
                         return $.fn.transition.exists[animation];
@@ -25712,7 +25645,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - API
+ * # Fomantic-UI 2.10.0-beta.129 - API
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -26825,7 +26758,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - State
+ * # Fomantic-UI 2.10.0-beta.129 - State
  * https://github.com/fomantic/Fomantic-UI/
  *
  *
@@ -27479,7 +27412,7 @@
 })(jQuery, window, document);
 
 /*!
- * # Fomantic-UI 2.10.0-beta.128 - Visibility
+ * # Fomantic-UI 2.10.0-beta.129 - Visibility
  * https://github.com/fomantic/Fomantic-UI/
  *
  *

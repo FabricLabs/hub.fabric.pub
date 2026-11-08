@@ -11,6 +11,8 @@ const { contractToDot } = require('../functions/contractGraphDot');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const { describeHubRpcFailure } = require('../functions/hubRpcHints');
 const DistributedFederationPanel = require('./DistributedFederationPanel');
+const ContractJournal = require('./ContractJournal');
+const { applicationSummary } = require('../functions/contractJournalView');
 const {
   loadHubUiFeatureFlags,
   subscribeHubUiFeatureFlags
@@ -19,6 +21,91 @@ const {
 const common = strings.common;
 const net = strings.network;
 const cv = net.contractView;
+
+const appCopy = strings.messages.application;
+
+function ApplicationContract (props) {
+  const s = applicationSummary(props.application);
+  const facts = [
+    [appCopy.name, s.name],
+    [appCopy.version, s.version],
+    [appCopy.status, s.status],
+    [appCopy.signer, s.signer, true],
+    [appCopy.definitionDigest, s.definitionDigest, true],
+    [appCopy.spendAddress, s.spendAddress, true],
+    [appCopy.clock, s.clock],
+    [appCopy.stateDigest, s.stateDigest, true],
+    [appCopy.sealPath, s.parentSealPath, true]
+  ].filter(([, v]) => v != null && v !== '');
+  return (
+    <Segment style={{ marginBottom: '1em' }}>
+      <Header as="h3">{appCopy.title}</Header>
+      <p style={{ color: '#666' }}>{appCopy.help}</p>
+      <Table definition compact unstackable>
+        <Table.Body>
+          {facts.map(([label, value, mono]) => (
+            <Table.Row key={label}>
+              <Table.Cell collapsing>{label}</Table.Cell>
+              <Table.Cell>{mono ? <code style={{ wordBreak: 'break-all' }}>{String(value)}</code> : String(value)}</Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table>
+      <p style={{ color: '#666' }}>{appCopy.counts(s.messages, s.seals, s.queued)}</p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35em', marginBottom: '0.75em' }}>
+        {s.contractId ? (
+          <Button size="small" basic as={Link} to={`/messages?contract=${encodeURIComponent(s.contractId)}`}>{appCopy.allMessages}</Button>
+        ) : null}
+        <Button size="small" basic as={Link} to="/contracts">{appCopy.tracked}</Button>
+      </div>
+      <ContractJournal application={props.application} />
+    </Segment>
+  );
+}
+
+const rvCopy = strings.documents.revisions;
+
+/** An editable document's contract: editors and every version, newest first. */
+function DocumentContract (props) {
+  const d = props.document;
+  const head = d.head || null;
+  const row = (rev, fork) => (
+    <Table.Row key={rev.frameId}>
+      <Table.Cell collapsing>
+        {rvCopy.revision(rev.revision)}{' '}
+        {head && rev.frameId === head.frameId ? <Label size="mini" color="green">{rvCopy.current}</Label> : null}
+        {fork ? <Label size="mini">{rvCopy.fork}</Label> : null}
+      </Table.Cell>
+      <Table.Cell>
+        <Link to={`/documents/${encodeURIComponent(rev.documentIdentifier)}`}>{rev.name}</Link>
+        {rev.note ? <div style={{ color: '#666' }}><em>{rvCopy.note(rev.note)}</em></div> : null}
+      </Table.Cell>
+      <Table.Cell>{rev.editedAt ? new Date(rev.editedAt).toLocaleString() : ''}</Table.Cell>
+      <Table.Cell><code title={rev.author}>{String(rev.author || '').slice(0, 12)}…</code></Table.Cell>
+      <Table.Cell>
+        {rev.held === false ? rvCopy.notHeld : (rev.purchasePriceSats ? rvCopy.price(rev.purchasePriceSats) : rvCopy.free)}
+        {rev.offers > 0 ? <> · {rvCopy.offers(rev.offers)}</> : null}
+      </Table.Cell>
+    </Table.Row>
+  );
+  return (
+    <Segment style={{ marginBottom: '1em' }}>
+      <Header as="h3">
+        <Icon name="history" />
+        <Header.Content>
+          {d.name}
+          <Header.Subheader>{rvCopy.title} · {rvCopy.editors(d.editors.length)}</Header.Subheader>
+        </Header.Content>
+      </Header>
+      <Table compact unstackable>
+        <Table.Body>
+          {d.revisions.slice().reverse().map((rev) => row(rev, false))}
+          {(d.forks || []).map((rev) => row(rev, true))}
+        </Table.Body>
+      </Table>
+    </Segment>
+  );
+}
 
 async function fetchJsonRpcResult (method, params) {
   const res = await fetch('/services/rpc', {
@@ -46,6 +133,8 @@ function ContractView (props) {
   const id = params && params.id ? params.id : '';
 
   const [contract, setContract] = React.useState(null);
+  const [application, setApplication] = React.useState(null);
+  const [documentContract, setDocumentContract] = React.useState(null);
   const [loading, setLoading] = React.useState(!!id);
   const [error, setError] = React.useState(null);
   const [payTxMeta, setPayTxMeta] = React.useState(null);
@@ -137,10 +226,14 @@ function ContractView (props) {
       if (!res.ok || !body || body.status === 'error') {
         setError((body && body.message) || cv.error.fallback);
         setContract(null);
+        setApplication(null);
+        setDocumentContract(null);
         return;
       }
-      const c = body.contract || body.result || body;
+      const c = Object.prototype.hasOwnProperty.call(body, 'contract') ? body.contract : (body.result || body);
       setContract(c || null);
+      setApplication(body.application || null);
+      setDocumentContract(body.document || null);
     } catch (e) {
       setError(e && e.message ? e.message : cv.error.fallback);
     } finally {
@@ -363,6 +456,8 @@ function ContractView (props) {
               </div>
             </Message>
           )}
+          {!loading && !error && application ? <ApplicationContract application={application} /> : null}
+          {!loading && !error && documentContract ? <DocumentContract document={documentContract} /> : null}
           {!loading && !error && contract && contractDot ? (
             <Segment style={{ marginBottom: '1em' }}>
               <Header as="h3">{cv.graph.heading}</Header>
@@ -926,7 +1021,7 @@ function ContractView (props) {
               </Table>
             </React.Fragment>
           )}
-          {!loading && !error && !contract && (
+          {!loading && !error && !contract && !application && !documentContract && (
             <Message info role="status">
               <p>{cv.empty}</p>
             </Message>

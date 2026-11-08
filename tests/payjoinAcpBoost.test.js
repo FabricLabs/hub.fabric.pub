@@ -85,6 +85,7 @@ function fixture (opts = {}) {
         return { psbt: psbt.toBase64(), complete: false };
       }
       if (method === 'lockunspent') return true;
+      if (method === 'getaddressinfo') return { ismine: false };
       throw new Error(`unexpected RPC ${method}`);
     }
   };

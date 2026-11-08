@@ -63,8 +63,8 @@ describe('hubNetworkStatus', function () {
       const status = {
         peers: [{ id: 'p' }],
         network: { address: 'a' },
-        fabricMessages: big(150),
-        messages: big(150),
+        fabricMessages: big(300),
+        messages: big(300),
         publishedDocuments: { d: { id: 'd' } }
       };
       assert.throws(() => Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, status] })]).toBuffer(), RangeError);
@@ -76,6 +76,47 @@ describe('hubNetworkStatus', function () {
       Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
     });
 
+    it('still fits when the remaining fields are over the cap (424 KB status)', function () {
+      const peers = Array.from({ length: 2000 }, (_, i) => ({ id: `peer-${i}`, address: `10.0.0.${i % 255}:7777`, note: 'x'.repeat(150) }));
+      const status = {
+        clock: 1,
+        contract: 'c',
+        fabricPeerId: 'f',
+        network: { address: 'a' },
+        peers,
+        chain: { blocks: 'y'.repeat(120000) },
+        bitcoin: { height: 1 },
+        fabricMessages: big(10)
+      };
+      const fitted = fitHubNetworkStatus(status, MAX_MESSAGE_SIZE - 1024);
+      assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= MAX_MESSAGE_SIZE - 1024);
+      assert.strictEqual(fitted.fabricPeerId, 'f');
+      assert.deepStrictEqual(fitted.network, { address: 'a' });
+      assert.strictEqual(fitted.peersTotal, 2000);
+      assert.ok(fitted.truncated.includes('chain'));
+      assert.ok(!fitted.truncated.includes('peers'), 'a halved peer list is current, not truncated');
+      assert.strictEqual(fitted.peersPartial, true);
+      const merged = mergeTruncatedNetworkStatus(fitted, { peers: [{ id: 'gone' }] });
+      assert.deepStrictEqual(merged.peers, fitted.peers, 'peer changes reach the client');
+      assert.strictEqual(status.peers.length, 2000, 'input is not mutated');
+      Message.fromVector(['JSONCall', JSON.stringify({ method: 'JSONCallResult', params: [null, fitted] })]).toBuffer();
+    });
+
+    it('gives the peer list back the room a dropped field frees', function () {
+      const peers = Array.from({ length: 15 }, (_, i) => ({ id: `peer-${i}`, address: `127.0.0.1:${30000 + i}`, status: 'connected', note: 'x'.repeat(2000) }));
+      const status = { fabricPeerId: 'f', network: { address: 'a' }, peers, chain: { blocks: 'y'.repeat(60000) }, bitcoin: { height: 1 } };
+      const fitted = fitHubNetworkStatus(status, MAX_MESSAGE_SIZE - 1024);
+      assert.deepStrictEqual(fitted.truncated, ['chain'], 'the chain goes before any peer');
+      assert.deepStrictEqual(fitted.peers, peers);
+      assert.strictEqual(fitted.peersPartial, undefined);
+      const crowded = { fabricPeerId: 'f', network: { address: 'a' }, peers, documentMarket: { rows: 'y'.repeat(70000) }, bitcoin: { height: 1 } };
+      const refit = fitHubNetworkStatus(crowded, MAX_MESSAGE_SIZE - 1024);
+      assert.deepStrictEqual(refit.truncated, ['documentMarket']);
+      assert.deepStrictEqual(refit.peers, peers, 'every peer fits once documentMarket is gone');
+      assert.strictEqual(refit.peersPartial, undefined);
+      assert.deepStrictEqual(refit.bitcoin, { height: 1 });
+    });
+
     it('client keeps its previous copy of truncated fields', function () {
       const previous = { peers: [], messages: { a: 1 }, fabricMessages: { b: 2 } };
       const next = { peers: [{ id: 'p' }], truncated: ['messages'] };
@@ -84,6 +125,23 @@ describe('hubNetworkStatus', function () {
       assert.strictEqual(merged.fabricMessages, undefined);
       assert.deepStrictEqual(merged.peers, [{ id: 'p' }]);
       assert.strictEqual(mergeTruncatedNetworkStatus({ peers: [] }, previous).messages, undefined);
+    });
+  });
+  describe('redactNetworkStatusForPublic', function () {
+    const { redactNetworkStatusForPublic } = require('../functions/hubNetworkStatus');
+    it('keeps only mesh fields of browser-reported metadata', function () {
+      const meta = { userAgent: 'UA', publicKeyHex: '02ab', fabricPeerId: 'f1', capabilities: ['data-channel'], transport: 'webrtc', webrtcSignalingId: 'w1', meshSessionCount: 1 };
+      const status = {
+        clock: 3,
+        peers: [{ id: 'tcp', address: '10.0.0.2:7777' }, { id: 'f1', address: 'webrtc:w1', metadata: meta }],
+        webrtcPeers: [{ id: 'w1', metadata: meta }]
+      };
+      const out = redactNetworkStatusForPublic(status);
+      assert.deepStrictEqual(out.peers[1].metadata, { fabricPeerId: 'f1', capabilities: ['data-channel'], transport: 'webrtc', webrtcSignalingId: 'w1', meshSessionCount: 1 });
+      assert.strictEqual(out.webrtcPeers[0].metadata.userAgent, undefined);
+      assert.strictEqual(out.peers[0].address, '10.0.0.2:7777');
+      assert.strictEqual(out.clock, 3);
+      assert.strictEqual(status.peers[1].metadata.userAgent, 'UA', 'input untouched');
     });
   });
 });

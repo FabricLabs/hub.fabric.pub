@@ -204,23 +204,17 @@ function StatCard ({ icon, color, label, value, sub }) {
   );
 }
 
-function HealthPanel ({ health, loading, error, onRefresh }) {
+function NodeHealth ({ health, error }) {
   const c = hc.health;
   if (error) {
     return (
-      <Segment secondary style={{ padding: '0.85em' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.35em' }}>
-          <Header as="h4" style={{ margin: 0 }}><Icon name="heartbeat" /> {c.title}</Header>
-          <Button basic size="mini" icon="refresh" onClick={onRefresh} loading={loading} aria-label={c.refresh} title={c.refresh} />
-        </div>
-        <Message negative size="small" style={{ margin: '0.5em 0 0' }}>
-          {c.loadFailed}
-          <details className="hub-developer-details">
-            <summary>{t.common.developerDetails}</summary>
-            {error}
-          </details>
-        </Message>
-      </Segment>
+      <Message negative size="small" style={{ margin: 0 }}>
+        {c.loadFailed}
+        <details className="hub-developer-details">
+          <summary>{t.common.developerDetails}</summary>
+          {error}
+        </details>
+      </Message>
     );
   }
   const node = health && health.node;
@@ -232,60 +226,42 @@ function HealthPanel ({ health, loading, error, onRefresh }) {
     : null;
   const memRss = node && node.memory ? formatBytes(node.memory.rss) : null;
   const diskPct = disk && Number.isFinite(Number(disk.usedPercent)) ? `${Number(disk.usedPercent).toFixed(1)}%` : null;
-  const diskUsed = disk ? c.diskValue(formatBytes(disk.usedBytes), formatBytes(disk.usedBytes + (disk.availableBytes || 0)), diskPct) : null;
+  const diskUsed = disk ? c.diskValue(
+    formatBytes(disk.usedBytes),
+    formatBytes(disk.usedBytes + (disk.availableBytes || 0)),
+    diskPct,
+    disk.availableBytes != null ? formatBytes(disk.availableBytes) : null
+  ) : null;
+  const load = node && Array.isArray(node.loadAverage)
+    ? node.loadAverage.map((v) => Number(v || 0).toFixed(2)).join(' / ')
+    : null;
   const dns = net && net.dnsProbe;
   const probes = net && Array.isArray(net.localProbes) ? net.localProbes : [];
   const probeOk = probes.filter((p) => p.ok).length;
+  const checksOk = !!(dns && dns.ok) && probeOk === probes.length;
+
+  if (!health) {
+    return <div style={{ color: '#888' }}>{c.loading}</div>;
+  }
 
   return (
-    <Segment secondary style={{ padding: '0.85em' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.35em', marginBottom: '0.5em' }}>
-        <Header as="h4" style={{ margin: 0 }}><Icon name="heartbeat" /> {c.title}</Header>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
-          {health && health.now ? (
-            <span style={{ fontSize: '0.82em', color: '#888' }}>{c.checkedAt(new Date(health.now).toLocaleTimeString())}</span>
-          ) : null}
-          <Button basic size="mini" icon="refresh" onClick={onRefresh} loading={loading} aria-label={c.refresh} title={c.refresh} />
+    <>
+      <div title={c.uptimeTitle}><strong>{c.uptime}:</strong> {uptime}</div>
+      {cpuPct ? (
+        <div>
+          <strong>{c.cpu}:</strong> <span title={c.cpuTitle}>{c.cpuValue(cpuPct, node.cpu.cores)}</span>
+          {load ? <>{' · '}<span title={c.loadTitle}>{c.loadValue(load)}</span></> : null}
         </div>
+      ) : null}
+      {memRss ? <div title={c.memoryTitle}><strong>{c.memory}:</strong> {memRss}</div> : null}
+      {diskUsed ? <div><strong>{c.disk}:</strong> {diskUsed}</div> : null}
+      <div>
+        <strong>{c.checks}:</strong>{' '}
+        <Icon name="circle" size="tiny" color={checksOk ? 'green' : 'yellow'} style={{ verticalAlign: 'middle' }} />
+        <span title={c.dnsTitle}>{c.dnsValue(dns ? (dns.ok ? t.common.states.ok : t.common.states.failed) : t.common.none)}</span>
+        {probes.length > 0 ? <>{' · '}{c.servicesValue(probeOk, probes.length)}</> : null}
       </div>
-      {!health ? (
-        <div style={{ color: '#888', fontSize: '0.9em' }}>{c.loading}</div>
-      ) : (
-        <Grid columns={2} stackable style={{ margin: 0 }}>
-          <Grid.Row style={{ padding: '0.25em 0' }}>
-            <Grid.Column>
-              <div style={{ fontSize: '0.9em', lineHeight: 1.65 }}>
-                <div><Icon name="server" color="blue" /> <strong>{c.host}:</strong> {node && node.hostname ? node.hostname : t.common.none}</div>
-                <div title={c.uptimeTitle}><Icon name="clock outline" color="blue" /> <strong>{c.uptime}:</strong> {uptime}</div>
-                {cpuPct ? <div title={c.cpuTitle}><Icon name="microchip" color="blue" /> <strong>{c.cpu}:</strong> {c.cpuValue(cpuPct, node.cpu.cores)}</div> : null}
-                {node && Array.isArray(node.loadAverage) ? (
-                  <div title={c.loadTitle}><Icon name="tachometer alternate" color="blue" /> <strong>{c.load}:</strong> {node.loadAverage.map((v) => Number(v || 0).toFixed(2)).join(' / ')}</div>
-                ) : null}
-                {memRss ? <div title={c.memoryTitle}><Icon name="database" color="blue" /> <strong>{c.memory}:</strong> {memRss}</div> : null}
-              </div>
-            </Grid.Column>
-            <Grid.Column>
-              <div style={{ fontSize: '0.9em', lineHeight: 1.65 }}>
-                {diskUsed ? <div><Icon name="hdd outline" color="teal" /> <strong>{c.disk}:</strong> {diskUsed}</div> : null}
-                {disk && disk.availableBytes != null ? (
-                  <div><Icon name="hdd outline" color="teal" /> <strong>{c.free}:</strong> {formatBytes(disk.availableBytes)}</div>
-                ) : null}
-                <div title={c.dnsTitle}>
-                  <Icon name="signal" color={dns && dns.ok ? 'green' : 'red'} />
-                  <strong>{c.dns}:</strong> {dns ? (dns.ok ? t.common.states.ok : t.common.states.failed) : t.common.none}
-                </div>
-                {probes.length > 0 ? (
-                  <div>
-                    <Icon name="plug" color={probeOk === probes.length ? 'green' : 'yellow'} />
-                    <strong>{c.services}:</strong> {c.servicesValue(probeOk, probes.length)}
-                  </div>
-                ) : null}
-              </div>
-            </Grid.Column>
-          </Grid.Row>
-        </Grid>
-      )}
-    </Segment>
+    </>
   );
 }
 
@@ -574,6 +550,41 @@ class Home extends React.Component {
         : null;
     const contractId = networkStatus && networkStatus.contract != null ? String(networkStatus.contract) : '';
     const contractShort = contractId.length > 18 ? `${contractId.slice(0, 10)}…${contractId.slice(-6)}` : contractId;
+    const operatorNode = showHomeOperatorLinks && this.state.operatorHealth && this.state.operatorHealth.node;
+    const nodeHost = operatorNode && operatorNode.hostname ? String(operatorNode.hostname) : null;
+    const nodeIdentity = (
+      <>
+        {fabricPeerId ? (
+          <div>
+            <strong>{hc.network.fabricId}:</strong>{' '}
+            <code style={{ wordBreak: 'break-all', fontSize: '0.88em' }} title={fabricPeerId}>
+              {fabricPeerId.length > 20 ? `${fabricPeerId.slice(0, 10)}…${fabricPeerId.slice(-8)}` : fabricPeerId}
+            </code>
+          </div>
+        ) : null}
+        {hostPort ? (
+          <div><strong>{hc.network.listen}:</strong> <code style={{ fontSize: '0.88em' }}>{hostPort}</code></div>
+        ) : null}
+        {contractShort ? (
+          <div><strong>{hc.network.contract}:</strong> <code style={{ fontSize: '0.88em' }} title={contractId}>{contractShort}</code></div>
+        ) : null}
+      </>
+    );
+    const nodeNetwork = (
+      <>
+        {uf.peers && hasHubAdminForPeers ? (
+          <div>
+            <strong>{hc.network.peers}:</strong> {hc.network.peersValue(connectedPeers.length, peers.length)}
+            {webrtcPeers.length > 0 ? `, ${hc.network.browserPeersValue(webrtcPeers.length, meshStatus ? Number(meshStatus.connected) || 0 : 0)}` : ''}
+            {' · '}
+            <Link to="/peers" style={{ fontSize: '0.92em' }}>{hc.network.managePeers}</Link>
+          </div>
+        ) : null}
+        <div><strong>{hc.network.documents}:</strong> {hc.network.documentsValue(publishedCount)}</div>
+      </>
+    );
+    const canRefreshNetwork = typeof this.props.onRefreshNetworkStatus === 'function';
+    const nodeRefreshPending = this.state.snapshotRefreshPending || (showHomeOperatorLinks && this.state.operatorHealthLoading);
 
     return (
       <fabric-hub-home class='fade-in'>
@@ -616,29 +627,45 @@ class Home extends React.Component {
           </Card>
         ) : (
           <>
-            {/* ─── Promo hero: public visitors only (opt-in via Admin → Feature visibility) ─── */}
-            {uf.promo && publicHubVisitor && !this.state.promoDismissed ? (
-              <PromoHero
-                onDismiss={() => {
-                  try {
-                    writeStorageString(PROMO_DISMISSED_STORAGE_KEY, '1');
-                  } catch (e) {}
-                  this.setState({ promoDismissed: true });
-                }}
-              />
-            ) : null}
-
-            {/* ─── Main content (Identity, Bitcoin, health, quick links) ─── */}
             <div data-home-network-tick={this.state.networkStatusRenderTick}>
-              {/* ─── Identity & network ─── */}
+              {/* ─── Node: identity, network, and (for operators) health ─── */}
               <Segment style={{ marginBottom: '0.85em', padding: '0.85em' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5em', marginBottom: '0.5em' }}>
-                  <Header as="h4" style={{ margin: 0 }}><Icon name="id badge" /> {hc.network.title}</Header>
+                  <Header as="h4" style={{ margin: 0 }}>
+                    <Icon name="server" />
+                    <Header.Content>
+                      {hc.network.title}
+                      {nodeHost ? (
+                        <span title={hc.health.host} style={{ fontWeight: 'normal', color: '#666' }}>
+                          {' · '}<code style={{ fontSize: '0.88em' }}>{nodeHost}</code>
+                        </span>
+                      ) : null}
+                    </Header.Content>
+                  </Header>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
                     {snapshotUpdated ? (
                       <span style={{ fontSize: '0.82em', color: '#888' }}>{hc.network.updated(snapshotUpdated)}</span>
                     ) : null}
-                    {typeof this.props.onRefreshNetworkStatus === 'function' ? (
+                    {uf.peers && hasHubAdminForPeers && shareableString ? (
+                      <Button
+                        type="button"
+                        size="mini"
+                        basic
+                        icon
+                        aria-label={hc.network.copyNodeId}
+                        title={hc.network.copyNodeIdTitle}
+                        onClick={() => {
+                          try {
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                              navigator.clipboard.writeText(shareableString);
+                            }
+                          } catch (e) {}
+                        }}
+                      >
+                        <Icon name="copy" />
+                      </Button>
+                    ) : null}
+                    {canRefreshNetwork || showHomeOperatorLinks ? (
                       <Button
                         type="button"
                         size="mini"
@@ -646,9 +673,11 @@ class Home extends React.Component {
                         icon
                         aria-label={hc.network.refresh}
                         title={hc.network.refresh}
-                        disabled={this.state.snapshotRefreshPending}
-                        loading={this.state.snapshotRefreshPending}
+                        disabled={nodeRefreshPending}
+                        loading={nodeRefreshPending}
                         onClick={() => {
+                          if (showHomeOperatorLinks) this._refreshOperatorHealth();
+                          if (!canRefreshNetwork) return;
                           try {
                             this.setState({ snapshotRefreshPending: true });
                             if (this._snapshotRefreshSafetyTimer) clearTimeout(this._snapshotRefreshSafetyTimer);
@@ -671,64 +700,32 @@ class Home extends React.Component {
                   <Grid.Row style={{ padding: '0.15em 0' }}>
                     <Grid.Column>
                       <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
-                        {fabricPeerId ? (
-                          <div>
-                            <strong>{hc.network.fabricId}:</strong>{' '}
-                            <code style={{ wordBreak: 'break-all', fontSize: '0.88em' }} title={fabricPeerId}>
-                              {fabricPeerId.length > 20 ? `${fabricPeerId.slice(0, 10)}…${fabricPeerId.slice(-8)}` : fabricPeerId}
-                            </code>
-                          </div>
-                        ) : null}
-                        {hostPort ? (
-                          <div><strong>{hc.network.listen}:</strong> <code style={{ fontSize: '0.88em' }}>{hostPort}</code></div>
-                        ) : null}
-                        {contractShort ? (
-                          <div><strong>{hc.network.contract}:</strong> <code style={{ fontSize: '0.88em' }} title={contractId}>{contractShort}</code></div>
-                        ) : null}
+                        {nodeIdentity}
+                        {showHomeOperatorLinks ? nodeNetwork : null}
                       </div>
                     </Grid.Column>
                     <Grid.Column>
                       <div style={{ fontSize: '0.9em', lineHeight: 1.75 }}>
-                        {uf.peers && hasHubAdminForPeers ? (
-                          <>
-                            <div>
-                              <strong>{hc.network.peers}:</strong> {hc.network.peersValue(connectedPeers.length, peers.length)}
-                              {' · '}
-                              <Link to="/peers" style={{ fontSize: '0.92em' }}>{hc.network.managePeers}</Link>
-                            </div>
-                            <div>
-                              <strong>{hc.network.browserPeers}:</strong> {webrtcPeers.length}
-                              {meshStatus && Number(meshStatus.connected) > 0 ? ` (${hc.network.browserPeersMesh(meshStatus.connected)})` : ''}
-                            </div>
-                          </>
-                        ) : null}
-                        <div><strong>{hc.network.documents}:</strong> {hc.network.documentsValue(publishedCount)}</div>
+                        {showHomeOperatorLinks ? (
+                          <NodeHealth health={this.state.operatorHealth} error={this.state.operatorHealthError} />
+                        ) : nodeNetwork}
                       </div>
                     </Grid.Column>
                   </Grid.Row>
                 </Grid>
-                {uf.peers && hasHubAdminForPeers && shareableString ? (
-                  <div style={{ marginTop: '0.65em' }}>
-                    <Button
-                      size='mini'
-                      basic
-                      icon
-                      labelPosition='left'
-                      onClick={() => {
-                        try {
-                          if (navigator.clipboard && navigator.clipboard.writeText) {
-                            navigator.clipboard.writeText(shareableString);
-                          }
-                        } catch (e) {}
-                      }}
-                      title={hc.network.copyNodeIdTitle}
-                    >
-                      <Icon name='copy' />
-                      {hc.network.copyNodeId}
-                    </Button>
-                  </div>
-                ) : null}
               </Segment>
+
+              {/* ─── Promo hero: public visitors only (opt-in via Admin → Feature visibility) ─── */}
+              {uf.promo && publicHubVisitor && !this.state.promoDismissed ? (
+                <PromoHero
+                  onDismiss={() => {
+                    try {
+                      writeStorageString(PROMO_DISMISSED_STORAGE_KEY, '1');
+                    } catch (e) {}
+                    this.setState({ promoDismissed: true });
+                  }}
+                />
+              ) : null}
 
               {/* ─── Bitcoin ─── */}
               {bitcoin ? (
@@ -763,40 +760,6 @@ class Home extends React.Component {
                       {bitcoin.message ? String(bitcoin.message) : hc.bitcoin.unavailable}
                     </div>
                   )}
-                </Segment>
-              ) : null}
-
-              {/* ─── Operator health ─── */}
-              {showHomeOperatorLinks ? (
-                <HealthPanel
-                  health={this.state.operatorHealth}
-                  loading={this.state.operatorHealthLoading}
-                  error={this.state.operatorHealthError}
-                  onRefresh={() => this._refreshOperatorHealth()}
-                />
-              ) : null}
-
-              {/* ─── Quick links ─── */}
-              {showHomeOperatorLinks ? (
-                <Segment style={{ marginTop: '0.85em', padding: '0.85em' }}>
-                  <Header as="h4" style={{ margin: '0 0 0.5em' }}><Icon name="compass outline" /> {hc.quickLinks.title}</Header>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em' }}>
-                    <Button as={Link} to="/documents" size="small" basic><Icon name="file alternate outline" /> {nav.documents}</Button>
-                    {uf.peers ? <Button as={Link} to="/peers" size="small" basic><Icon name="sitemap" /> {nav.peers}</Button> : null}
-                    <Button as={Link} to="/settings" size="small" basic><Icon name="setting" /> {nav.settings}</Button>
-                    {bitcoin && bitcoin.available ? (
-                      <Button as={Link} to="/services/bitcoin" size="small" basic><Icon name="bitcoin" /> {nav.bitcoin}</Button>
-                    ) : null}
-                    {uf.sidechain ? (
-                      <Button as={Link} to="/federations" size="small" basic><Icon name="users" /> {nav.federations}</Button>
-                    ) : null}
-                    <Button as={Link} to="/contracts" size="small" basic><Icon name="file code outline" /> {nav.contracts}</Button>
-                    <Button as={Link} to="/settings/collaboration" size="small" basic><Icon name="handshake outline" /> {nav.collaboration}</Button>
-                    {uf.activities ? (
-                      <Button as={Link} to="/activities" size="small" basic><Icon name="list alternate outline" /> {nav.activityLog}</Button>
-                    ) : null}
-                    <Button as={Link} to="/settings/admin" size="small" basic><Icon name="shield" /> {nav.admin}</Button>
-                  </div>
                 </Segment>
               ) : null}
 

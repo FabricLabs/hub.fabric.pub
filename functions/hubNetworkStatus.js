@@ -59,7 +59,21 @@ const NETWORK_STATUS_HEAVY_FIELDS = Object.freeze([
   'state',
   'documents',
   'publishedDocuments',
-  'webrtcPeers'
+  'webrtcPeers',
+  'chain'
+]);
+
+/** Status fields never dropped: who the Hub is and whether it is set up. */
+const NETWORK_STATUS_KEPT_FIELDS = Object.freeze([
+  'clock',
+  'contract',
+  'fabricPeerId',
+  'fabricIdentityId',
+  'setup',
+  'network',
+  'pubkey',
+  'truncated',
+  'peersTotal'
 ]);
 
 /**
@@ -67,6 +81,10 @@ const NETWORK_STATUS_HEAVY_FIELDS = Object.freeze([
  * {@link NETWORK_STATUS_HEAVY_FIELDS} in order. Dropped names are listed in
  * `truncated`, so clients keep their last copy of those fields
  * ({@link mergeTruncatedNetworkStatus}) and fetch them with their own calls.
+ * Still too large, it keeps the first `peers`, fresh, with `peersTotal` and
+ * `peersPartial: true` (not in `truncated`: an old full list would hide every
+ * change), then drops the largest remaining fields outside
+ * {@link NETWORK_STATUS_KEPT_FIELDS}, giving the room each frees back to `peers`.
  * @param {object} status
  * @param {number} maxBytes JSON byte budget (frame body minus the JSONCall envelope)
  * @returns {object} `status` itself when it fits, else a trimmed copy
@@ -76,12 +94,47 @@ function fitHubNetworkStatus (status, maxBytes) {
   if (!status || typeof status !== 'object' || size(status) <= maxBytes) return status;
   const out = Object.assign({}, status);
   const truncated = [];
-  for (const field of NETWORK_STATUS_HEAVY_FIELDS) {
-    if (!(field in out)) continue;
+  const drop = (field) => {
     delete out[field];
     truncated.push(field);
     out.truncated = truncated.slice();
-    if (size(out) <= maxBytes) break;
+  };
+  for (const field of NETWORK_STATUS_HEAVY_FIELDS) {
+    if (!(field in out)) continue;
+    drop(field);
+    if (size(out) <= maxBytes) return out;
+  }
+  const peers = Array.isArray(status.peers) ? status.peers : [];
+  // The longest prefix of `peers` that fits beside everything else in `out`.
+  // A partial list is still current, so clients take it as is; `peersPartial` says it is partial.
+  const fitPeers = () => {
+    if (!peers.length) return;
+    out.peersTotal = peers.length;
+    out.peers = peers;
+    delete out.peersPartial;
+    if (size(out) <= maxBytes) return;
+    out.peersPartial = true;
+    let lo = 0;
+    let hi = peers.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      out.peers = peers.slice(0, mid);
+      if (size(out) <= maxBytes) lo = mid;
+      else hi = mid - 1;
+    }
+    out.peers = peers.slice(0, lo);
+  };
+  fitPeers();
+  if (size(out) <= maxBytes) return out;
+  const rest = Object.keys(out)
+    .filter((field) => !NETWORK_STATUS_KEPT_FIELDS.includes(field) && field !== 'peers' && field !== 'peersPartial')
+    .map((field) => ({ field, bytes: out[field] === undefined ? 0 : size(out[field]) }))
+    .sort((a, b) => b.bytes - a.bytes);
+  for (const { field } of rest) {
+    drop(field);
+    // Room a dropped field frees goes back to the peer list first.
+    fitPeers();
+    if (size(out) <= maxBytes) return out;
   }
   return out;
 }
@@ -101,7 +154,40 @@ function mergeTruncatedNetworkStatus (next, previous) {
   return merged;
 }
 
+/** WebRTC registry metadata the public network status keeps (the UI and mesh read only these). */
+const PUBLIC_WEBRTC_METADATA_FIELDS = Object.freeze(['fabricPeerId', 'capabilities', 'transport', 'webrtcSignalingId', 'meshSessionCount']);
+
+/** @private */
+function publicWebRtcMetadata (meta) {
+  if (!meta || typeof meta !== 'object') return meta;
+  const out = {};
+  for (const k of PUBLIC_WEBRTC_METADATA_FIELDS) if (meta[k] !== undefined) out[k] = meta[k];
+  return out;
+}
+
+/**
+ * The {@link GetNetworkStatus} view for anyone but the operator (and for the
+ * status pushed to every WebSocket client): browser-reported WebRTC metadata
+ * (user agent, refund pubkey, …) is cut to {@link PUBLIC_WEBRTC_METADATA_FIELDS}.
+ * Fabric TCP peer addresses stay: peering offers already gossip them.
+ * @param {object} status
+ * @returns {object}
+ */
+function redactNetworkStatusForPublic (status) {
+  if (!status || typeof status !== 'object') return status;
+  const out = Object.assign({}, status);
+  if (Array.isArray(status.peers)) {
+    out.peers = status.peers.map((p) => (p && p.metadata ? Object.assign({}, p, { metadata: publicWebRtcMetadata(p.metadata) }) : p));
+  }
+  if (Array.isArray(status.webrtcPeers)) {
+    out.webrtcPeers = status.webrtcPeers.map((w) => (w && w.metadata ? Object.assign({}, w, { metadata: publicWebRtcMetadata(w.metadata) }) : w));
+  }
+  return out;
+}
+
 module.exports = {
+  PUBLIC_WEBRTC_METADATA_FIELDS,
+  redactNetworkStatusForPublic,
   NETWORK_STATUS_HEAVY_FIELDS,
   isHubNetworkStatusShape,
   bridgeConnectionPhase,

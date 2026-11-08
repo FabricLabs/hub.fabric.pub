@@ -426,10 +426,7 @@ class PeersPage extends React.Component {
       addPeerModalOpen: false,
       addPeerDraft: '',
       connectPeerModalOpen: false,
-      connectPeerIdDraft: '',
-      flushChainSnapshot: '',
-      flushChainNetwork: 'playnet',
-      flushChainLabel: ''
+      connectPeerIdDraft: ''
     };
   }
 
@@ -524,9 +521,7 @@ class PeersPage extends React.Component {
       onDisconnectWebRTCPeer,
       onDisconnectAllWebRTCPeers,
       onSendWebRTCTestPing,
-      onFabricPeerResync,
-      adminPeerToolsToken,
-      onSendFlushChainToTrustedPeers
+      onFabricPeerResync
     } = this.props;
     const uf = loadHubUiFeatureFlags();
     const isLoggedIn = !!(auth && auth.id);
@@ -843,96 +838,8 @@ class PeersPage extends React.Component {
                         <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', lineHeight: 1.45 }}>{pl.chain.relayDeveloper}</p>
                       </details>
                     </Message>
-                    {!(adminPeerToolsToken && String(adminPeerToolsToken).trim()) ? (
-                      <p style={{ margin: '0.65em 0 0', fontSize: '0.82em', color: '#777' }}>
-                        {pl.chain.operatorHint}
-                      </p>
-                    ) : null}
                   </Grid.Column>
                 </Grid.Row>
-
-                {adminPeerToolsToken && String(adminPeerToolsToken).trim() && typeof onSendFlushChainToTrustedPeers === 'function' ? (
-                  <Grid.Row>
-                    <Grid.Column width={16}>
-                      <Divider />
-                      <Header as="h3" size="small" color="red">
-                        <Icon name="warning sign" />
-                        {pl.flush.heading}
-                      </Header>
-                      <Message warning size="small">
-                        <p style={{ margin: 0, lineHeight: 1.45 }}>
-                          {pl.flush.warning}
-                        </p>
-                        <details className="hub-developer-details" style={{ marginTop: '0.35em' }}>
-                          <summary style={{ cursor: 'pointer' }}>{common.developerDetails}</summary>
-                          <p style={{ margin: '0.35em 0 0', fontSize: '0.9em', lineHeight: 1.45 }}>{pl.flush.developer}</p>
-                        </details>
-                      </Message>
-                      <Form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const h = String(this.state.flushChainSnapshot || '').trim();
-                          if (!/^[0-9a-fA-F]{64}$/.test(h)) {
-                            toast.error(pl.flush.invalidHash, { header: pl.flush.toastHeader });
-                            return;
-                          }
-                          onSendFlushChainToTrustedPeers({
-                            snapshotBlockHash: h.toLowerCase(),
-                            network: String(this.state.flushChainNetwork || '').trim() || undefined,
-                            label: String(this.state.flushChainLabel || '').trim() || undefined
-                          });
-                          toast.info(pl.flush.sent, { header: pl.flush.toastHeader, autoClose: 6000 });
-                        }}
-                        style={{ maxWidth: '40rem', marginTop: '0.5em' }}
-                      >
-                        <Form.Field>
-                          <label htmlFor="flush-chain-snapshot">{pl.flush.hashLabel}</label>
-                          <Input
-                            id="flush-chain-snapshot"
-                            placeholder={pl.flush.hashPlaceholder}
-                            value={this.state.flushChainSnapshot}
-                            onChange={(e) => this.setState({ flushChainSnapshot: e.target.value })}
-                            autoComplete="off"
-                          />
-                        </Form.Field>
-                        <Form.Field>
-                          <label htmlFor="flush-chain-network">{pl.flush.networkLabel}</label>
-                          <Input
-                            id="flush-chain-network"
-                            placeholder="playnet"
-                            value={this.state.flushChainNetwork}
-                            onChange={(e) => this.setState({ flushChainNetwork: e.target.value })}
-                          />
-                        </Form.Field>
-                        <Form.Field>
-                          <label htmlFor="flush-chain-label">{pl.flush.labelLabel}</label>
-                          <Input
-                            id="flush-chain-label"
-                            placeholder={pl.flush.labelPlaceholder}
-                            value={this.state.flushChainLabel}
-                            onChange={(e) => this.setState({ flushChainLabel: e.target.value })}
-                          />
-                        </Form.Field>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5em', alignItems: 'center' }}>
-                          <Button
-                            type="button"
-                            size="small"
-                            basic
-                            disabled={!tipFull}
-                            onClick={() => this.setState({ flushChainSnapshot: tipFull || '' })}
-                            title={tipFull ? pl.flush.useTipTitle : pl.flush.noTipTitle}
-                          >
-                            {pl.flush.useTip}
-                          </Button>
-                          <Button type="submit" size="small" color="red">
-                            <Icon name="send" />
-                            {pl.flush.send}
-                          </Button>
-                        </div>
-                      </Form>
-                    </Grid.Column>
-                  </Grid.Row>
-                ) : null}
 
                 <Grid.Row>
                   <Grid.Column width={16}>

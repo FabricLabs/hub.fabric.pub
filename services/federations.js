@@ -86,6 +86,8 @@ class FederationsService extends Service {
    * @param {number} [settings.mailboxSize=2000] Frames kept for members without a peer
    * @param {number} [settings.mailboxPageSize=200] Most frames per mailbox read
    * @param {number} [settings.vaultCacheMs=30000] How long a public vault read is reused
+   * @param {number} [settings.maxPendingInvites=100] Invites the operator has not answered, kept oldest-out
+   * @param {number} [settings.framesPerSignerPerMinute=60] Frames one key may hand in per minute
    */
   constructor (settings = {}) {
     super(settings);
@@ -103,7 +105,9 @@ class FederationsService extends Service {
       resendMinMs: 10000,
       mailboxSize: 2000,
       mailboxPageSize: 200,
-      vaultCacheMs: 30000
+      vaultCacheMs: 30000,
+      maxPendingInvites: 100,
+      framesPerSignerPerMinute: 60
     }, settings);
     this.settings.network = String(this.settings.network || 'regtest').toLowerCase();
     if (this.settings.network === 'mainnet') {
@@ -122,9 +126,12 @@ class FederationsService extends Service {
     this._mailboxIds = new Set();
     this._mailboxSeq = 0;
     this._mailboxTimer = null;
+    this._mailboxRead = new Set();
+    this._signerFrames = new Map();
     this._descriptors = new Map();
     this._vaultCache = new Map();
     this._lastSent = new Map();
+    this._sentFrames = new Map();
     this._timer = null;
     this._queue = Promise.resolve();
     this._started = false;
@@ -351,6 +358,154 @@ class FederationsService extends Service {
     return view;
   }
 
+  /**
+   * Full federation id for an id or a unique prefix (at least 12 hex), among the
+   * federations this Hub is in and those whose invite it has relayed.
+   * @param {string} idOrPrefix
+   * @returns {(string|null)}
+   */
+  resolveId (idOrPrefix) {
+    const want = String(idOrPrefix || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{12,64}$/.test(want)) return null;
+    const ids = new Set([...this._records.keys(), ...this._descriptors.keys()]);
+    if (ids.has(want)) return want;
+    const hits = [...ids].filter((id) => id.startsWith(want));
+    return hits.length === 1 ? hits[0] : null;
+  }
+
+  /**
+   * A federation this Hub only relays (its invite reached the mailbox): the
+   * descriptor and vault, no member or withdrawal state.
+   * @private
+   */
+  _descriptorView (id, descriptor) {
+    return {
+      id,
+      name: null,
+      network: descriptor.network,
+      threshold: descriptor.threshold,
+      validators: descriptor.validators,
+      publisher: descriptor.publisher,
+      csvBlocks: descriptor.ladder && descriptor.ladder.csvBlocks,
+      vaultAddress: Federation.vaultForDescriptor(descriptor).address,
+      status: 'relayed',
+      source: 'mailbox',
+      self: this.pubkey,
+      selfStatus: null,
+      isPublisher: false,
+      members: descriptor.validators.map((pk) => ({ pubkey: pk, url: null, alias: null, status: null, self: false })),
+      deposits: [],
+      withdrawals: [],
+      descriptor,
+      createdAt: null,
+      updatedAt: null
+    };
+  }
+
+  /**
+   * May `viewer` see this descriptor? Operators see every federation; a member
+   * only those that list their cosigner key.
+   * @private
+   */
+  _canView (descriptor, viewer) {
+    if (!viewer || !descriptor) return false;
+    if (viewer.role === 'operator') return true;
+    return viewer.role === 'member' && !!viewer.key && Federation.isValidator(descriptor, viewer.key);
+  }
+
+  /** @private */
+  _forViewer (view, viewer) {
+    const out = Object.assign({}, view, {
+      previous: view.previous || [],
+      viewer: { role: viewer.role, key: viewer.key || null }
+    });
+    if (viewer.role !== 'operator') {
+      out.members = (view.members || []).map((m) => Object.assign({}, m, {
+        url: null,
+        self: !!viewer.key && String(m.pubkey || '').slice(2) === viewer.key
+      }));
+    }
+    return out;
+  }
+
+  /**
+   * The federations `viewer` may see, newest first.
+   * @param {{ role: string, key?: string }} viewer
+   * @returns {Object[]}
+   */
+  listFor (viewer) {
+    const out = [];
+    for (const view of this.list()) {
+      if (this._canView(view.descriptor, viewer)) out.push(this._forViewer(view, viewer));
+    }
+    for (const [id, descriptor] of this._descriptors) {
+      if (this._records.has(id) || !this._canView(descriptor, viewer)) continue;
+      out.push(this._forViewer(this._descriptorView(id, descriptor), viewer));
+    }
+    return out;
+  }
+
+  /**
+   * One federation for `viewer` (id or 12-hex prefix), with vault coins when
+   * this Hub is a member. Throws `unknown federation` for anything they may not see.
+   * @param {string} idOrPrefix
+   * @param {{ role: string, key?: string }} viewer
+   * @returns {Promise<Object>}
+   */
+  async getFor (idOrPrefix, viewer) {
+    const id = this.resolveId(idOrPrefix);
+    const descriptor = id ? this._descriptorFor(id) : null;
+    if (!descriptor || !this._canView(descriptor, viewer)) throw new Error('unknown federation');
+    const view = this._records.has(id) ? await this.get(id) : this._descriptorView(id, descriptor);
+    if (!this._records.has(id)) {
+      try {
+        const utxos = await this.vaultUtxos(view.vaultAddress);
+        view.utxos = utxos;
+        view.balanceSats = utxos.reduce((sum, u) => sum + u.sats, 0);
+      } catch (err) {
+        view.utxos = null;
+        view.balanceSats = null;
+        view.balanceError = err.message;
+      }
+    }
+    return this._forViewer(view, viewer);
+  }
+
+  /**
+   * One mailbox frame by frame id, if this Hub still holds it.
+   * @param {string} frameId
+   * @returns {(Object|null)} `{ seq, id, fabric, federationId, type, signer, at }`
+   */
+  frameById (frameId) {
+    const want = String(frameId || '').trim().toLowerCase();
+    if (!want) return null;
+    const f = this._mailbox.find((row) => row.id === want);
+    return f ? { seq: f.seq, id: f.id, fabric: f.fabric, federationId: f.federationId, type: f.type, signer: f.signer, at: f.at } : null;
+  }
+
+  /**
+   * Mailbox frames of one federation, oldest first.
+   * @param {string} federationId full id
+   * @param {Object} [opts]
+   * @param {number} [opts.since=0] Last `seq` already read
+   * @param {number} [opts.limit]
+   * @returns {{ messages: Object[], next: number, more: boolean }}
+   */
+  framesForFederation (federationId, opts = {}) {
+    const id = String(federationId || '').toLowerCase();
+    const since = Math.max(0, Number(opts.since) || 0);
+    const page = this.settings.mailboxPageSize;
+    const limit = Math.min(page, Math.max(1, Number(opts.limit) || page));
+    const messages = [];
+    for (const f of this._mailbox) {
+      if (f.seq <= since || f.federationId !== id) continue;
+      messages.push({ seq: f.seq, id: f.id, fabric: f.fabric, federationId: f.federationId, type: f.type, signer: f.signer, at: f.at });
+      if (messages.length >= limit) break;
+    }
+    const more = messages.length >= limit;
+    return { messages, next: more ? messages[messages.length - 1].seq : Math.max(since, this._mailboxSeq), more };
+  }
+
   // ---------------------------------------------------------------------------
   // Chain
 
@@ -483,6 +638,9 @@ class FederationsService extends Service {
     try {
       const sent = this._publish({ ...body, sentAt: now });
       if (sent && typeof sent.toBuffer === 'function') {
+        this._sentFrames.delete(throttleKey);
+        this._sentFrames.set(throttleKey, sent);
+        if (this._sentFrames.size > 500) this._sentFrames.delete(this._sentFrames.keys().next().value);
         try {
           this.recordFrame(sent);
         } catch (err) {
@@ -509,7 +667,8 @@ class FederationsService extends Service {
       const id = body.federationId || (body.descriptor ? Federation.descriptorId(body.descriptor) : null);
       record = id ? this._records.get(id) : null;
     } catch (_) {}
-    if (!record) return;
+    // URLs come from the invite; post to them only once the operator has joined.
+    if (!record || !this._isMember(record.id)) return;
     const uri = encodeFabricUri(message);
     for (const [pubkey, member] of Object.entries(record.members)) {
       if (String(member.pubkey || pubkey).slice(-64) === this._self || !member.url) continue;
@@ -756,6 +915,25 @@ class FederationsService extends Service {
   }
 
   /**
+   * Refuse a pending withdrawal: this Hub does not sign it, and it leaves the
+   * operator's queue. Other members may still reach the threshold without it.
+   * @param {string} federationId
+   * @param {string} requestId
+   * @returns {Promise<Object>}
+   */
+  async declineWithdrawal (federationId, requestId) {
+    const record = this._record(federationId);
+    const w = record.withdrawals[String(requestId || '').toLowerCase()];
+    if (!w) throw new Error('unknown withdrawal request');
+    if (w.status !== 'pending') throw new Error(`withdrawal is ${w.status}`);
+    if (w.signatures[this._self]) throw new Error('this Hub already signed that withdrawal');
+    w.status = 'declined';
+    w.declinedAt = Date.now();
+    await this._save(record);
+    return this._view(record).withdrawals.find((x) => x.requestId === w.requestId);
+  }
+
+  /**
    * Finalize and broadcast once the threshold is met (any member may).
    * @param {string} federationId
    * @param {string} requestId
@@ -840,18 +1018,58 @@ class FederationsService extends Service {
       .catch((err) => this.emit('debug', `[FEDERATIONS] ignored ${body && body.type}: ${err.message}`));
   }
 
+  /**
+   * Answer a federation frame a linked signer asked this Hub to sign (a
+   * delegation request): accept the invite, or approve the withdrawal
+   * (still within `maxWithdrawalSats`). Returns the frame this Hub sent.
+   * @param {Object} body The inner CONTRACT_MESSAGE body.
+   * @param {string} author Its verified author (the requester's cosigner key).
+   * @returns {Promise<Object>} The signed `Message` this Hub published.
+   */
+  async answerDelegated (body, author) {
+    const signer = pubkeyXOnly(author);
+    if (!signer || !this._self) throw new Error('this Hub cannot sign federation frames');
+    if (!body || !Federation.isMessage(body)) throw new Error('not a federation frame');
+    const id = String(body.federationId || '').toLowerCase();
+    if (body.type === TYPES.invite) {
+      await this._enqueue(() => this._handle(body, signer, { delegated: true }));
+      this._sentFrames.delete(`response:${id}`);
+      await this.respond(id, true);
+      return this._sentFrames.get(`response:${id}`) || null;
+    }
+    if (body.type === TYPES.withdrawal) {
+      await this._enqueue(() => this._handle(body, signer, { delegated: true }));
+      const record = this._record(id);
+      const { requestId } = Federation.verifyWithdrawalRequest(record.descriptor, body);
+      this._sentFrames.delete(`signature:${requestId}`);
+      await this.approveWithdrawal(id, requestId);
+      return this._sentFrames.get(`signature:${requestId}`) || null;
+    }
+    throw new Error(`${body.type} is not signed on request`);
+  }
+
+  /**
+   * Network of a federation this Hub knows, or null.
+   * @param {string} federationId
+   * @returns {string|null}
+   */
+  networkOf (federationId) {
+    const descriptor = this._descriptorFor(federationId);
+    return descriptor && descriptor.network ? String(descriptor.network) : null;
+  }
+
   /** @private */
-  async _handle (body, signer) {
+  async _handle (body, signer, opts = {}) {
     if (!signer || !this._self || signer === this._self) return;
     if (body.contract !== body.federationId) throw new Error('contract must be the federation id');
-    if (body.type === TYPES.invite) return this._onInvite(body, signer);
+    if (body.type === TYPES.invite) return this._onInvite(body, signer, opts);
     const record = this._records.get(String(body.federationId || '').toLowerCase());
     if (!record) return;
     Federation.verifySender(record.descriptor, body, signer);
     switch (body.type) {
       case TYPES.response: return this._onResponse(record, body, signer);
       case TYPES.sync: return this._onSync(record);
-      case TYPES.withdrawal: return this._onWithdrawal(record, body, signer);
+      case TYPES.withdrawal: return this._onWithdrawal(record, body, signer, opts);
       case TYPES.signature: return this._onSignature(record, body, signer);
       case TYPES.broadcast: return this._onBroadcast(record, body);
       default:
@@ -859,7 +1077,7 @@ class FederationsService extends Service {
   }
 
   /** @private */
-  async _onInvite (body, signer) {
+  async _onInvite (body, signer, opts = {}) {
     const descriptor = Federation.verifyInvite(body, signer);
     if (!Federation.isValidator(descriptor, this._self)) return;
     this._checkNetwork(descriptor.network);
@@ -869,6 +1087,7 @@ class FederationsService extends Service {
       this._sendResponse(record);
       return;
     }
+    this._makeRoomForInvite();
     record = this._newRecord(body.federationId, descriptor, cleanText(body.name, 80));
     record.members[signer].status = 'accepted';
     for (const m of Array.isArray(body.members) ? body.members : []) {
@@ -879,9 +1098,43 @@ class FederationsService extends Service {
     }
     this._refreshStatus(record);
     await this._save(record);
-    this.emit('invite', this._view(record));
+    this.emit('invite', Object.assign(this._view(record), { inviter: signer, network: descriptor.network, delegated: !!opts.delegated }));
     // Ask the others for their answers.
     this._send(Federation.syncMessage(record.id), `sync:${record.id}`, true);
+  }
+
+  /**
+   * Anyone can list this Hub's public cosigner key in an invite, so invites
+   * the operator has not answered are bounded: the oldest is dropped first.
+   * @private
+   */
+  _makeRoomForInvite () {
+    const max = Math.max(1, Number(this.settings.maxPendingInvites) || 1);
+    const pending = [...this._records.values()]
+      .filter((r) => r.members[this._self] && r.members[this._self].status === 'invited')
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    while (pending.length >= max) this._records.delete(pending.shift().id);
+  }
+
+  /** @private Whether this Hub has joined (published or accepted) the federation. */
+  _isMember (federationId) {
+    const record = this._records.get(federationId);
+    const me = record && record.members[this._self];
+    return !!(me && me.status === 'accepted');
+  }
+
+  /** @private */
+  _allowSigner (signer) {
+    const limit = Math.max(1, Number(this.settings.framesPerSignerPerMinute) || 1);
+    const now = Date.now();
+    if (this._signerFrames.size > 10000) {
+      for (const [k, v] of this._signerFrames) if (now - v.start >= 60000) this._signerFrames.delete(k);
+    }
+    let slot = this._signerFrames.get(signer);
+    if (!slot || now - slot.start >= 60000) slot = { start: now, count: 0 };
+    slot.count++;
+    this._signerFrames.set(signer, slot);
+    return slot.count <= limit;
   }
 
   /** @private */
@@ -908,7 +1161,7 @@ class FederationsService extends Service {
   }
 
   /** @private */
-  async _onWithdrawal (record, body, signer) {
+  async _onWithdrawal (record, body, signer, opts = {}) {
     this._checkNetwork(record.descriptor.network);
     if (!record.members[this._self]) return;
     const prepared = Federation.verifyWithdrawalRequest(record.descriptor, body);
@@ -924,7 +1177,16 @@ class FederationsService extends Service {
       destinationAddress: String(body.destinationAddress).trim()
     });
     await this._save(record);
-    this.emit('withdrawal', { federationId: record.id, requestId: prepared.requestId });
+    this.emit('withdrawal', {
+      federationId: record.id,
+      requestId: prepared.requestId,
+      requester: signer,
+      amountSats: prepared.amountSats,
+      feeSats: prepared.feeSats,
+      destinationAddress: String(body.destinationAddress).trim(),
+      network: record.descriptor.network,
+      delegated: !!opts.delegated
+    });
   }
 
   /** @private */
@@ -988,6 +1250,7 @@ class FederationsService extends Service {
     const body = parseJson(decoded.message.data);
     if (!Federation.isMessage(body)) throw new Error('not a federation message');
     const signer = pubkeyXOnly(decoded.author);
+    if (!signer || !this._allowSigner(signer)) throw new Error('too many frames from this key; try again in a minute');
     let descriptor;
     if (body.type === TYPES.invite) {
       descriptor = Federation.verifyInvite(body, signer);
@@ -1020,7 +1283,26 @@ class FederationsService extends Service {
   _trimMailbox () {
     const max = Math.max(1, Number(this.settings.mailboxSize) || 1);
     if (this._mailbox.length <= max) return;
-    for (const f of this._mailbox.splice(0, this._mailbox.length - max)) this._mailboxIds.delete(f.id);
+    // Anyone can sign an invite to a federation of their own keys, so a flood
+    // must not push out live coordination: drop invite-only federations nobody
+    // has read first, then federations this Hub has not joined, then the oldest.
+    const live = new Set(this._mailboxRead);
+    for (const f of this._mailbox) if (f.type !== TYPES.invite) live.add(f.federationId);
+    const tiers = [
+      (f) => !live.has(f.federationId) && !this._isMember(f.federationId),
+      (f) => !this._isMember(f.federationId),
+      () => true
+    ];
+    let excess = this._mailbox.length - max;
+    for (const drop of tiers) {
+      if (excess <= 0) break;
+      this._mailbox = this._mailbox.filter((f) => {
+        if (excess <= 0 || !drop(f)) return true;
+        this._mailboxIds.delete(f.id);
+        excess--;
+        return false;
+      });
+    }
     const used = new Set(this._mailbox.map((f) => f.federationId));
     for (const id of [...this._descriptors.keys()]) {
       if (!used.has(id)) this._descriptors.delete(id);
@@ -1066,6 +1348,7 @@ class FederationsService extends Service {
       if (f.seq <= since) continue;
       const descriptor = this._descriptorFor(f.federationId);
       if (!descriptor || !Federation.isValidator(descriptor, x)) continue;
+      this._mailboxRead.add(f.federationId);
       messages.push({ seq: f.seq, fabric: f.fabric, federationId: f.federationId, type: f.type, signer: f.signer, at: f.at });
       if (messages.length >= limit) break;
     }
@@ -1166,7 +1449,7 @@ class FederationsService extends Service {
   async tick () {
     for (const record of this._records.values()) {
       if (!record.members[this._self]) continue;
-      if (record.status === 'pending') {
+      if (record.status === 'pending' && record.members[this._self].status !== 'invited') {
         if (!this._sendInvite(record)) {
           this._send(Federation.syncMessage(record.id), `sync:${record.id}`);
         }

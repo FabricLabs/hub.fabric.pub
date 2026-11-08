@@ -8,5 +8,9 @@ module.exports = {
   documents: {
     list: require('./documents/list_documents'),
     view: require('./documents/view_document')
+  },
+  messages: {
+    list: require('./messages/list_messages'),
+    view: require('./messages/view_message')
   }
 };

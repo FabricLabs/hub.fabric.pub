@@ -213,9 +213,30 @@ describe('Hub sidechain peg flow (startup → deposit → withdraw)', function (
       JSON.stringify(Object.keys(prepared)));
     assert.strictEqual(Number(prepared.destSats), WITHDRAW_SATS);
 
+    // A dry run burns nothing, so it gets no spend.
+    const dry = hub._rpcPrepareFederationVaultWithdrawalPsbt({
+      adminToken: 'test-admin',
+      withdrawalRequest: proposed.withdrawalRequest,
+      fundedTxHex,
+      vaultConfirmedSats: DEPOSIT_SATS,
+      dryRun: true
+    });
+    assert.strictEqual(dry.dryRun, true, dry.message);
+    assert.ok(!dry.psbtBase64 && !dry.psbt);
+
     // --- Seal burn ---
     const sealedBurn = await sealPatches(hub, proposed.burnPatches);
     assert.strictEqual(Number(sealedBurn.clock), 2);
+
+    // The daily peg-out cap counts sealed burns, not an in-process counter.
+    process.env.FABRIC_FEDERATION_PEGOUT_DAILY_MAX_SATS = String(WITHDRAW_SATS + 1000);
+    try {
+      hub._federationPegOutDaily = null;
+      assert.match(String(hub._federationPegOutLimitsOk(2000).error), /daily peg-out max/);
+      assert.strictEqual(hub._federationPegOutLimitsOk(500).ok, true);
+    } finally {
+      delete process.env.FABRIC_FEDERATION_PEGOUT_DAILY_MAX_SATS;
+    }
 
     const afterBurn = hub._getSidechainStateJson();
     const reserveBurn = Federation.readReserve(afterBurn.content);

@@ -35,7 +35,12 @@ const GLOBAL_SETTINGS = [
   'DISK_ALLOCATION_MB',
   'COST_PER_BYTE_SATS',
   /** When true, hub HTTP binds 0.0.0.0; when false, 127.0.0.1 (unless FABRIC_HUB_INTERFACE / INTERFACE is set). Changing via PUT rebinds the listener at runtime when env does not override. */
-  'HTTP_SHARED_MODE'
+  'HTTP_SHARED_MODE',
+  /** Tor onion service (`functions/hubTor.js`); changing one via PUT restarts it. */
+  'TOR_ENABLE',
+  'TOR_MODE',
+  'TOR_CONTROL_PORT',
+  'TOR_ADVERTISE'
 ];
 
 /** Setting names that must not leave the Hub over unauthenticated GET /settings. */
@@ -222,7 +227,7 @@ class SetupService {
     const settings = this._loadSettings();
     const pairs = Object.entries(settings);
     for (const [key, val] of Object.entries(initialConfig)) {
-      if (key !== 'IS_CONFIGURED' && (GLOBAL_SETTINGS.includes(key) || key.startsWith('NODE_') || key.startsWith('BITCOIN_') || key.startsWith('LIGHTNING_') || key.startsWith('DISK_') || key.startsWith('COST_PER_BYTE_'))) {
+      if (key !== 'IS_CONFIGURED' && (GLOBAL_SETTINGS.includes(key) || key.startsWith('NODE_') || key.startsWith('BITCOIN_') || key.startsWith('LIGHTNING_') || key.startsWith('DISK_') || key.startsWith('COST_PER_BYTE_') || key.startsWith('TOR_'))) {
         const stored = typeof val === 'string' ? val : JSON.stringify(val);
         const without = pairs.filter((entry) => entry[0] !== key);
         without.push([key, stored]);

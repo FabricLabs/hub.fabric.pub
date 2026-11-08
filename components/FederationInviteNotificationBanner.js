@@ -1,8 +1,10 @@
 'use strict';
 
 const React = require('react');
+const { Link } = require('react-router-dom');
 const { Button, Icon, Message } = require('semantic-ui-react');
 const { formatFederationInviteSpendingSummary } = require('../functions/federationContractInvite');
+const { federationHref } = require('../functions/federationView');
 const t = require('../locales/en');
 
 /**
@@ -50,6 +52,11 @@ function FederationInviteNotificationBanner (props) {
             <Icon name="eye" aria-hidden="true" />
             {t.federation.inviteBanner.review}
           </Button>
+          {detail.federationId ? (
+            <Button as={Link} to={federationHref(detail.federationId)} basic size="small">
+              {t.federation.named.openPage}
+            </Button>
+          ) : null}
           <Button type="button" basic size="small" onClick={() => onDismiss()}>
             {t.common.actions.dismiss}
           </Button>

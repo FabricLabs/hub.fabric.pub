@@ -42,6 +42,7 @@ function SettingsHome (props) {
     showOperatorCards && { key: 'bitcoin', to: '/services/bitcoin', icon: 'bitcoin' },
     showOperatorCards && hasHubAdminPeerNav && { key: 'collaboration', to: '/settings/collaboration', icon: 'users' },
     showOperatorCards && { key: 'security', to: '/settings/security', icon: 'shield' },
+    showOperatorCards && { key: 'signing', to: '/settings/signing', icon: 'handshake outline' },
     showOperatorCards && { key: 'admin', to: '/settings/admin', icon: 'settings' },
     showOperatorCards && uf.sidechain && { key: 'statechain', to: '/sidechains', icon: 'random' },
     showOperatorCards && uf.sidechain && { key: 'beaconFederation', to: '/settings/admin/beacon-federation', icon: 'star' },

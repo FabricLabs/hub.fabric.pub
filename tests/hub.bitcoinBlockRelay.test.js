@@ -86,7 +86,9 @@ describe('Hub BitcoinBlock Fabric relay', function () {
     assert.ok(m, 'relayed a message');
     const raw = m.data != null ? m.data : m.body;
     assert.ok(raw != null, 'message has stringifiable body');
-    const parsed = JSON.parse(typeof raw === 'string' ? raw : String(raw));
+    assert.ok(raw != null);
+    // Field body (Peer drops JSON bodies of BitcoinBlock); read it back as the JSON object.
+    const parsed = require('@fabric/core/types/message').tryParseLegacyBody(m).value;
     assert.strictEqual(parsed.height, 2743);
     assert.strictEqual(parsed.tip, tip);
     assert.strictEqual(parsed.network, 'regtest');

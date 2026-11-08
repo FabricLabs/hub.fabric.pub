@@ -1257,7 +1257,8 @@ describe('Playnet market (simulation + optional mesh)', function () {
 
           const pub = await rpc(httpBases[0], 'PublishDocument', [{
             id: docId,
-            purchasePriceSats: purchaseSats
+            purchasePriceSats: purchaseSats,
+            adminToken: tokens[0]
           }]);
           assert.ok(pub && pub.document && pub.document.published, `round ${r} PublishDocument`);
 
@@ -1323,7 +1324,7 @@ describe('Playnet market (simulation + optional mesh)', function () {
             l1BlockCounter
           );
 
-          const claim = await rpc(httpBases[0], 'ClaimPurchase', [{ documentId: docId, txid: purchTxid }]);
+          const claim = await rpc(httpBases[0], 'ClaimPurchase', [{ documentId: docId, txid: purchTxid, claimToken: purchInv.claimToken }]);
           assert.strictEqual(claim.type, 'ClaimPurchaseResult', `round ${r} claim`);
           assert.ok(claim.document && claim.document.contentBase64, `round ${r} claim content`);
           if (r === 0) {
@@ -1347,7 +1348,8 @@ describe('Playnet market (simulation + optional mesh)', function () {
         assert.ok(unhappyDocId, 'unhappy CreateDocument');
         await rpc(httpBases[0], 'PublishDocument', [{
           id: unhappyDocId,
-          purchasePriceSats: 2100
+          purchasePriceSats: 2100,
+          adminToken: tokens[0]
         }]);
         const unhappyDistInv = await rpc(httpBases[0], 'CreateDistributeInvoice', [{
           documentId: unhappyDocId,
@@ -1401,7 +1403,8 @@ describe('Playnet market (simulation + optional mesh)', function () {
         assert.strictEqual(unhappyPurchInv.type, 'CreatePurchaseInvoiceResult', 'unhappy purchase invoice');
         const badClaim = await rpcResult(httpBases[0], 'ClaimPurchase', [{
           documentId: unhappyDocId,
-          txid: 'e'.repeat(64)
+          txid: 'e'.repeat(64),
+          claimToken: unhappyPurchInv.claimToken
         }]);
         assert.ok(
           badClaim && badClaim.status === 'error',
@@ -1430,7 +1433,8 @@ describe('Playnet market (simulation + optional mesh)', function () {
         );
         const happyClaim = await rpc(httpBases[0], 'ClaimPurchase', [{
           documentId: unhappyDocId,
-          txid: unhappyPurchPay
+          txid: unhappyPurchPay,
+          claimToken: unhappyPurchInv.claimToken
         }]);
         assert.strictEqual(happyClaim.type, 'ClaimPurchaseResult', 'unhappy doc claim after real pay');
         assert.ok(
@@ -1451,7 +1455,8 @@ describe('Playnet market (simulation + optional mesh)', function () {
         assert.ok(partitionDocId, 'partition CreateDocument');
         const partPub = await rpc(httpBases[0], 'PublishDocument', [{
           id: partitionDocId,
-          purchasePriceSats: 2900
+          purchasePriceSats: 2900,
+          adminToken: tokens[0]
         }]);
         assert.ok(partPub && partPub.document && partPub.document.published, 'partition PublishDocument');
         const partDistInv = await rpc(httpBases[0], 'CreateDistributeInvoice', [{
@@ -1513,7 +1518,8 @@ describe('Playnet market (simulation + optional mesh)', function () {
         );
         const partClaim = await rpc(httpBases[0], 'ClaimPurchase', [{
           documentId: partitionDocId,
-          txid: partitionPurchaseTxid
+          txid: partitionPurchaseTxid,
+          claimToken: partPurchInv.claimToken
         }]);
         assert.strictEqual(partClaim.type, 'ClaimPurchaseResult', 'partition ClaimPurchase');
         assert.ok(partClaim.document && partClaim.document.contentBase64, 'partition claim content');

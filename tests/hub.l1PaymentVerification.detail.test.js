@@ -98,4 +98,32 @@ describe('Hub _l1PaymentVerificationDetail', function () {
     assert.strictEqual(d.inMempool, false);
     assert.strictEqual(d.matchedSats, 2500);
   });
+
+  it('finds a mined payment that is not ours in the blocks since fromHeight (no txindex)', async function () {
+    const hub = makeHubStub();
+    const txid = 'e'.repeat(64);
+    const blocks = { 100: ['x'], 101: ['y', txid], 102: ['z'], 103: [] };
+    const asked = [];
+    const bitcoin = {
+      walletName: 'hub',
+      _makeRPCRequest: async (method, params) => {
+        if (method === 'getrawtransaction') {
+          if (params[2] === 'hash101') return { confirmations: 3, hex: 'beef', vout: [{ value: 0.00005, scriptPubKey: { address: addr } }] };
+          throw new Error('[-5] No such mempool transaction. Use -txindex or provide a block hash.');
+        }
+        if (method === 'getblockcount') return 103;
+        if (method === 'getblockhash') { asked.push(params[0]); return `hash${params[0]}`; }
+        if (method === 'getblock') return { tx: blocks[params[0].slice(4)] };
+        if (method === 'getrawmempool') return [];
+        throw new Error('unexpected ' + method);
+      },
+      _makeWalletRequest: async () => { throw new Error('[-5] Invalid or non-wallet transaction id'); }
+    };
+    assert.strictEqual((await hub._l1PaymentVerificationDetail(bitcoin, txid, addr, 5000)).verified, false);
+    const d = await hub._l1PaymentVerificationDetail(bitcoin, txid, addr, 5000, { fromHeight: 100 });
+    assert.strictEqual(d.verified, true);
+    assert.strictEqual(d.confirmations, 3);
+    assert.strictEqual(d.hex, 'beef');
+    assert.deepStrictEqual(asked, [103, 102, 101]);
+  });
 });

@@ -24,6 +24,7 @@ const {
 const Invoice = require('./Invoice');
 const GraphDocumentPreview = require('./GraphDocumentPreview');
 const FabricDocumentRecord = require('./FabricDocumentRecord');
+const DocumentRevisions = require('./DocumentRevisions');
 const { loadUpstreamSettings, fetchTransactionByHash, sendBridgePayment } = require('../functions/bitcoinClient');
 const {
   loadHubUiFeatureFlags,
@@ -101,6 +102,9 @@ function DocumentDetail (props) {
 
   const [doc, setDoc] = React.useState(null);
   const [agentNotice, setAgentNotice] = React.useState(null);
+  // A late answer for the previous document must not land on this one.
+  const agentIdRef = React.useRef(id);
+  React.useEffect(() => { agentIdRef.current = id; setAgentNotice(null); }, [id]);
   const [decryptedContent, setDecryptedContent] = React.useState(null);
   const [unlocked, setUnlocked] = React.useState(false);
   const [autoTriedDecrypt, setAutoTriedDecrypt] = React.useState(false);
@@ -676,12 +680,17 @@ function DocumentDetail (props) {
     setUnlocked(true);
   }, [doc, id, decryptedContent, props.hasDocumentKey, props.onGetDecryptedContent, props.onRequestUnlock]);
 
-  const handleHtlcPreimageUnlock = React.useCallback(async () => {
+  // `viaHub`: a per-blob copy opened by the Hub with the seller's key reveal it already holds.
+  const handleHtlcPreimageUnlock = React.useCallback(async (viaHub) => {
     if (!doc || !doc.htlcPendingDecrypt || typeof props.onUnlockHtlcDocument !== 'function') return;
     setHtlcUnlockBusy(true);
     setHtlcUnlockError(null);
     try {
-      const r = await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim());
+      // The prop token first, so a Hub-open works when browser storage holds none.
+      const unlockOptions = { adminToken: readHubAdminTokenFromBrowser(props.adminToken) };
+      const r = viaHub === true
+        ? await props.onUnlockHtlcDocument(id, '', unlockOptions)
+        : await props.onUnlockHtlcDocument(id, htlcPreimageHex.trim(), unlockOptions);
       if (!r || !r.ok) {
         setHtlcUnlockError((r && r.error) || dv.keyUnlock.failed);
       } else {
@@ -694,7 +703,7 @@ function DocumentDetail (props) {
     } finally {
       setHtlcUnlockBusy(false);
     }
-  }, [doc, id, htlcPreimageHex, props.onUnlockHtlcDocument]);
+  }, [doc, id, htlcPreimageHex, props.onUnlockHtlcDocument, props.adminToken]);
 
   const isEncrypted = !!(doc && doc.contentEncrypted);
   const isHtlcPendingDecrypt = !!(doc && doc.htlcPendingDecrypt);
@@ -1266,6 +1275,16 @@ function DocumentDetail (props) {
           </Message>
         )}
 
+        {doc && (doc.sha256 || doc.id) && (
+          <DocumentRevisions
+            documentId={String(doc.sha256 || doc.id)}
+            doc={doc}
+            adminToken={props.adminToken}
+            onChanged={() => { if (typeof props.onGetDocument === 'function') props.onGetDocument(id); }}
+            onNavigate={(path) => navigate(path)}
+          />
+        )}
+
         {doc && FabricDocumentRecord.recordFromHubDocument(doc) && (
           <Segment>
             <Header as="h3">
@@ -1282,6 +1301,7 @@ function DocumentDetail (props) {
               style={{ marginTop: '0.75em' }}
               title={dv.pieces.agentButtonTitle}
               onClick={async () => {
+                const requestedId = id;
                 const record = FabricDocumentRecord.recordFromHubDocument(doc);
                 const token = getAdminTokenFromProps(props);
                 if (!token) {
@@ -1295,10 +1315,12 @@ function DocumentDetail (props) {
                     body: JSON.stringify({ documentId: record.documentId, merkleRootHex: record.merkleRootHex, blobTotal: record.blobTotal })
                   });
                   const j = await r.json().catch(() => ({}));
+                  if (agentIdRef.current !== requestedId) return;
                   if (r.status === 503) throw new Error(dv.pieces.agentDisabled);
                   if (!r.ok) throw new Error(j.error || dv.pieces.agentRefused);
                   setAgentNotice(dv.pieces.agentQueued(record.blobTotal));
                 } catch (e) {
+                  if (agentIdRef.current !== requestedId) return;
                   setAgentNotice(e.message);
                 }
               }}
@@ -1382,8 +1404,24 @@ function DocumentDetail (props) {
                 <Message info style={{ marginTop: '0.75em' }}>
                   <Message.Header>{dv.keyUnlock.title}</Message.Header>
                   <p style={{ margin: '0.5em 0 0.75em', fontSize: '0.95em' }}>
-                    {dv.keyUnlock.body}
+                    {doc.htlcPerBlob ? dv.keyUnlock.perBlobBody : dv.keyUnlock.body}
                   </p>
+                  {doc.htlcPerBlob && (hubAdminTokenPresent ? (
+                    <Button
+                      size="small"
+                      primary
+                      loading={htlcUnlockBusy}
+                      disabled={htlcUnlockBusy}
+                      title={dv.keyUnlock.openViaHubTitle}
+                      onClick={() => handleHtlcPreimageUnlock(true)}
+                      style={{ marginBottom: '0.75em' }}
+                    >
+                      <Icon name="server" />
+                      {dv.keyUnlock.openViaHub}
+                    </Button>
+                  ) : (
+                    <p style={{ margin: '0 0 0.75em', fontSize: '0.9em', color: '#666' }}>{dv.keyUnlock.perBlobNoToken}</p>
+                  ))}
                   {doc.htlcPaymentHashHex && (
                     <div style={{ fontSize: '0.88em', marginBottom: '0.5em', wordBreak: 'break-all' }}>
                       <strong>{dv.keyUnlock.paymentHash}</strong> <code>{doc.htlcPaymentHashHex}</code>
@@ -1406,7 +1444,7 @@ function DocumentDetail (props) {
                     loading={htlcUnlockBusy}
                     disabled={!TXID_HEX_64.test(htlcPreimageHex.trim())}
                     title={dv.keyUnlock.buttonTitle}
-                    onClick={handleHtlcPreimageUnlock}
+                    onClick={() => handleHtlcPreimageUnlock(false)}
                   >
                     <Icon name="key" />
                     {dv.keyUnlock.button}

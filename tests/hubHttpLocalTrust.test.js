@@ -9,11 +9,13 @@ const {
   buildContentSecurityPolicy,
   createBrowserSecretsGuard,
   createLoopbackHostGuard,
+  createWebSocketOriginCheck,
   hostnameFromHostHeader,
   isCrossOriginRead,
   isRebindSafeHost,
   isTrustedLoopbackRequest,
-  setsBrowserIdentity
+  setsBrowserIdentity,
+  webSocketOriginsFromEnv
 } = require('../functions/hubHttpLocalTrust');
 
 function fakeReq (remoteAddress, headers = {}, extra = {}) {
@@ -192,5 +194,29 @@ describe('functions/hubHttpLocalTrust', () => {
     assert.ok(csp.includes("object-src 'none'"));
     assert.ok(csp.includes("frame-ancestors 'self'"));
     assert.ok(buildContentSecurityPolicy({ allowInlineScripts: true }).includes("script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'"));
+  });
+
+  it('createWebSocketOriginCheck keeps other sites off the loopback WebSocket', () => {
+    const check = createWebSocketOriginCheck({
+      allowedOrigins: ['http://localhost:3000/'],
+      passportExtensionIds: ['abcdefghijklmnop']
+    });
+    const local = { host: '127.0.0.1:8080' };
+    assert.strictEqual(check(fakeReq('127.0.0.1', local)), true, 'non-browser client');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'http://127.0.0.1:8080' })), true, 'Hub page');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'https://evil.example' })), false);
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'http://127.0.0.1:9998' })), false, 'another local port');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'http://localhost:3000' })), true, 'FABRIC_HUB_WS_ORIGINS');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'chrome-extension://abcdefghijklmnop' })), true, 'Passport');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'chrome-extension://zzzzzzzzzzzzzzzz' })), false, 'other extension');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { ...local, origin: 'moz-extension://0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b' })), true, 'Firefox Passport');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { host: 'evil.example:8080', origin: 'http://evil.example:8080' })), false, 'DNS rebinding');
+    assert.strictEqual(check(fakeReq('203.0.113.5', { host: 'hub.example', origin: 'https://cdn.example' })), true, 'public surface (CDN builds)');
+    assert.strictEqual(check(fakeReq('127.0.0.1', { host: 'hub.example', 'x-forwarded-for': '203.0.113.5', origin: 'https://cdn.example' })), true, 'behind a proxy');
+  });
+
+  it('webSocketOriginsFromEnv reads a comma list', () => {
+    assert.deepStrictEqual(webSocketOriginsFromEnv({ FABRIC_HUB_WS_ORIGINS: ' http://a:1, ,http://b:2 ' }), ['http://a:1', 'http://b:2']);
+    assert.deepStrictEqual(webSocketOriginsFromEnv({}), []);
   });
 });

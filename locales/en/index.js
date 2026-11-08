@@ -12,5 +12,7 @@ module.exports = {
   bitcoin: require('./bitcoin'),
   payments: require('./payments'),
   settings: require('./settings'),
-  federation: require('./federation')
+  federation: require('./federation'),
+  messages: require('./messages'),
+  delegation: require('./delegation')
 };

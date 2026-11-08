@@ -44,6 +44,13 @@ function blockHashFromHeader (headerHex) {
   return Buffer.from(crypto.createHash('sha256').update(once).digest()).reverse().toString('hex');
 }
 
+/** @private x-only hex of an x-only or compressed pubkey, or null */
+function xOnlyHex (pubkey) {
+  const hex = String(pubkey || '').toLowerCase();
+  if (/^(02|03)[0-9a-f]{64}$/.test(hex)) return hex.slice(2);
+  return HEX64.test(hex) ? hex : null;
+}
+
 /** @private txid of a raw transaction hex, or null */
 function txidFromHex (txHex) {
   try {
@@ -65,6 +72,8 @@ class ChallengeService extends Service {
       // Blocks after the issuing tip by which a provider must answer (timelocked
       // non-response: the provider's pre-signed penalty carries this nLockTime).
       deadlineBlocks: 144,
+      // Anyone can post a self-signed commitment, so the store is bounded (oldest dropped first).
+      maxCommitments: 10000,
       network: 'regtest'
     }, settings);
 
@@ -509,7 +518,12 @@ class ChallengeService extends Service {
   commit (body) {
     if (!body || body.type !== 'AvailabilityCommitment') return { ok: false, error: 'not an AvailabilityCommitment' };
     if (!Witness.verifyArtifact(body)) return { ok: false, error: 'commitment signature invalid' };
+    const publisher = xOnlyHex(this.publisherPubkey());
+    if (publisher && xOnlyHex(body.publisherPubkey) !== publisher) return { ok: false, error: 'commitment names another publisher' };
     const hash = Witness.artifactHash(body);
+    if (this._commitments.has(hash)) return { ok: true, hash, duplicate: true };
+    const max = Math.max(1, Number(this.settings.maxCommitments) || 10000);
+    while (this._commitments.size >= max) this._commitments.delete(this._commitments.keys().next().value);
     this._commitments.set(hash, body);
     this.emit('commitment', body);
     return { ok: true, hash };
@@ -518,9 +532,12 @@ class ChallengeService extends Service {
   commitmentFor (merkleRootHex, providerPubkey) {
     const root = String(merkleRootHex || '').toLowerCase();
     const pk = String(providerPubkey || '').toLowerCase();
+    const publisher = xOnlyHex(this.publisherPubkey());
     let best = null;
     for (const c of this._commitments.values()) {
       if (c.merkleRootHex !== root || c.pubkey !== pk) continue;
+      // Fraud proofs bind a challenge to the commitment's publisher; one made to another publisher cannot back ours.
+      if (!publisher || xOnlyHex(c.publisherPubkey) !== publisher) continue;
       if (!best || Number(c.untilEpoch || 0) > Number(best.untilEpoch || 0)) best = c;
     }
     return best;
@@ -606,6 +623,14 @@ class ChallengeService extends Service {
     // fraud (wrong leaf or swept non-response) into a bounty reveal.
     if (row.response || (row.verdict && row.verdict.fraud)) {
       return Object.assign({ duplicate: true }, row.verdict || { ok: false, reason: 'challenge already resolved' });
+    }
+    // Only the provider's own signed answer to this challenge settles it: a junk
+    // response must not lock the challenge against the real answer or the sweep.
+    if (!Witness.verifyArtifact(response, row.challenge.providerPubkey)) {
+      return { ok: false, refused: true, reason: 'response signature invalid', fraud: null };
+    }
+    if (String(response.challengeHash) !== Witness.artifactHash(row.challenge)) {
+      return { ok: false, refused: true, reason: 'response answers another challenge', fraud: null };
     }
     const verdict = this.challenger.validate(row.challenge, response, ctx);
     row.response = response;
@@ -754,7 +779,7 @@ class ChallengeService extends Service {
       const Message = require('@fabric/core/types/message');
       const pubkey = this.publisherPubkey();
       const body = { contract: this.settings.contract, type, actor: pubkey ? { publicKey: pubkey, id: pubkey } : undefined, object };
-      const msg = Message.fromVector(['CONTRACT_MESSAGE', JSON.stringify(body)]);
+      const msg = Message.fromLegacyBody('CONTRACT_MESSAGE', body);
       if (this.key && this.key.private) msg.signWithKey(this.key);
       hub.agent.relayFrom('_hub', msg).catch(() => {});
       return true;

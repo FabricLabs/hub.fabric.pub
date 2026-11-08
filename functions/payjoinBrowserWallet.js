@@ -25,6 +25,12 @@ const ecpair = ECPairFactory(ecc);
 const { SATS_PER_BTC } = require('../constants');
 const { sortPsbtInputBags, sortPsbtOutputBags } = require('./psbtFabric');
 const { parseBitcoinUri } = require('@fabric/core/functions/bip21');
+const { checkPayjoinEndpoint } = require('./payjoinEndpointPolicy');
+
+/** Largest receiver response read before giving up (a PSBT this size is ~100 inputs). */
+const DEFAULT_MAX_RESPONSE_BYTES = 100000;
+/** Default time to wait for a receiver. */
+const DEFAULT_TIMEOUT_MS = 30000;
 
 /** 0x81 — commit to all outputs; only this input is bound. Not used by BIP78 payjoin, which re-signs with SIGHASH_ALL. */
 const SIGHASH_ALL_ANYONECANPAY = bitcoin.Transaction.SIGHASH_ALL | bitcoin.Transaction.SIGHASH_ANYONECANPAY;
@@ -49,12 +55,18 @@ function bip32NetworkForKeys (xpub, networkName) {
 }
 
 /**
- * Parse a BIP-21 URI that includes an http(s) BIP-78 `pj=` endpoint.
+ * Parse a BIP-21 URI that includes a BIP-78 `pj=` endpoint the payer may use
+ * ({@link checkPayjoinEndpoint}: https or .onion, no userinfo; plain http and
+ * local hosts only off mainnet when `allowInsecure`).
  *
  * @param {string} uri
+ * @param {Object} [opts]
+ * @param {string} [opts.networkName] payer network (mainnet when omitted)
+ * @param {boolean} [opts.allowInsecure] off mainnet: allow `http:` endpoints
+ * @param {boolean} [opts.privateHosts=true] false when a server dials the endpoint
  * @returns {Object|null} `{ address, amountSats, pjUrl, label, message }` or null
  */
-function parseBitcoinUriForPayjoin (uri) {
+function parseBitcoinUriForPayjoin (uri, opts = {}) {
   let parsed;
   try {
     parsed = parseBitcoinUri(uri);
@@ -63,6 +75,12 @@ function parseBitcoinUriForPayjoin (uri) {
   }
   const pjUrl = parsed.extras && parsed.extras.pj ? String(parsed.extras.pj) : '';
   if (!pjUrl || !/^https?:\/\//i.test(pjUrl)) return null;
+  const policy = checkPayjoinEndpoint(pjUrl, {
+    networkName: opts.networkName,
+    allowInsecure: opts.allowInsecure != null ? !!opts.allowInsecure : opts.networkName != null,
+    privateHosts: opts.privateHosts
+  });
+  if (!policy.ok) return null;
   const amountBtc = parsed.amount != null ? Number(parsed.amount) : NaN;
   const amountSats = Number.isFinite(amountBtc) ? Math.round(amountBtc * SATS_PER_BTC) : null;
   return {
@@ -126,18 +144,36 @@ function payjoinEndpointWithParams (pjUrl, params = {}) {
  * POST original PSBT (base64) to BIP78 receiver; returns proposed PSBT base64 body.
  * @param {string} pjUrl
  * @param {string} psbtBase64
- * @param {{ fetchFn?: typeof fetch, params?: Object }} [opts] `params` — BIP78 sender parameters ({@link payjoinEndpointWithParams})
+ * @param {{ fetchFn?: typeof fetch, params?: Object, timeoutMs?: number, maxResponseBytes?: number }} [opts] `params` — BIP78 sender parameters ({@link payjoinEndpointWithParams})
  */
 async function postPayjoinProposal (pjUrl, psbtBase64, opts = {}) {
   const fetchFn = opts.fetchFn || (typeof fetch === 'function' ? fetch.bind(typeof globalThis !== 'undefined' ? globalThis : window) : null);
   if (!fetchFn) throw new Error('fetch is not available for Payjoin POST.');
   const endpoint = opts.params ? payjoinEndpointWithParams(pjUrl, opts.params) : String(pjUrl).trim();
-  const res = await fetchFn(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: String(psbtBase64 || '')
-  });
-  const text = await res.text();
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_TIMEOUT_MS;
+  const maxBytes = Number(opts.maxResponseBytes) > 0 ? Number(opts.maxResponseBytes) : DEFAULT_MAX_RESPONSE_BYTES;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let res;
+  let text;
+  try {
+    res = await fetchFn(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: String(psbtBase64 || ''),
+      redirect: 'error',
+      signal: controller ? controller.signal : undefined
+    });
+    const declared = Number(res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-length') : NaN);
+    if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Payjoin response is larger than ${maxBytes} bytes.`);
+    text = await res.text();
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error(`Payjoin endpoint did not answer within ${timeoutMs} ms.`);
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (String(text || '').length > maxBytes) throw new Error(`Payjoin response is larger than ${maxBytes} bytes.`);
   if (!res.ok) {
     throw new Error(`Payjoin endpoint returned ${res.status}: ${text.slice(0, 400)}`);
   }
@@ -349,6 +385,20 @@ function derivationChild (roots, ders) {
   return root ? root.derive(chain).derive(idx) : null;
 }
 
+/** Consensus money supply cap, in sats. */
+const MAX_MONEY_SATS = 2100000000000000n;
+
+/** @private same classes as the receiver ({@link module:payjoinReceiverContribution.scriptTypeOf}) */
+function scriptTypeOfScript (script) {
+  const s = Buffer.from(script || []);
+  if (s.length === 34 && s[0] === 0x51 && s[1] === 0x20) return 'p2tr';
+  if (s.length === 22 && s[0] === 0x00 && s[1] === 0x14) return 'p2wpkh';
+  if (s.length === 34 && s[0] === 0x00 && s[1] === 0x20) return 'p2wsh';
+  if (s.length === 23 && s[0] === 0xa9 && s[1] === 0x14 && s[22] === 0x87) return 'p2sh';
+  if (s.length === 25 && s[0] === 0x76 && s[1] === 0xa9) return 'p2pkh';
+  return 'unknown';
+}
+
 /** @private */
 function outpointOfTxInput (txInput) {
   return `${Buffer.from(txInput.hash).reverse().toString('hex')}:${txInput.index}`;
@@ -359,13 +409,16 @@ function outpointOfTxInput (txInput) {
  * locktime, every original input present with its `nSequence` and no
  * signature, every receiver input signed, no outputs added or removed, our
  * outputs untouched apart from the allowed fee contribution, the payee's not
- * reduced, and the fee not lowered.
+ * reduced, and the fee not lowered. Our inputs keep their relative order
+ * (rust-payjoin `MissingOrShuffledInputs`) and every receiver input is of our
+ * script type when ours share one.
  * @param {string} originalBase64 finalized original PSBT
  * @param {string} proposalBase64 receiver's proposal
  * @param {Object} [opts]
  * @param {string} [opts.networkName]
  * @param {string} [opts.payAddress] payee address (its output may grow)
  * @param {Object} [opts.params] BIP78 parameters sent with the original
+ * @param {Function} [opts.isOwnedScript] `(scriptBuffer) => boolean`: true when a receiver input pays from our wallet
  * @returns {{ senderFeeContributionSats: number, receiverInputs: number, originalFeeSats: number, proposalFeeSats: number }}
  */
 function checkPayjoinProposal (originalBase64, proposalBase64, opts = {}) {
@@ -382,14 +435,24 @@ function checkPayjoinProposal (originalBase64, proposalBase64, opts = {}) {
     if (data.nonWitnessUtxo) return BigInt(bitcoin.Transaction.fromBuffer(Buffer.from(data.nonWitnessUtxo)).outs[txInput.index].value);
     return null;
   };
+  const originalOrder = original.txInputs.map(outpointOfTxInput);
+  const scriptOf = (data, txInput) => {
+    if (data.witnessUtxo) return Buffer.from(data.witnessUtxo.script);
+    if (data.nonWitnessUtxo) return Buffer.from(bitcoin.Transaction.fromBuffer(Buffer.from(data.nonWitnessUtxo)).outs[txInput.index].script);
+    return null;
+  };
+  const ourTypes = new Set(original.txInputs.map((txInput, i) => scriptTypeOfScript(scriptOf(original.data.inputs[i], txInput))));
+  const ourType = ourTypes.size === 1 ? [...ourTypes][0] : null;
   let totalIn = 0n;
   let seen = 0;
   let receiverInputs = 0;
   proposal.txInputs.forEach((txInput, i) => {
     const data = proposal.data.inputs[i];
-    const ours = originalInputs.get(outpointOfTxInput(txInput));
+    const outpoint = outpointOfTxInput(txInput);
+    const ours = originalInputs.get(outpoint);
     if (txInput.sequence !== sequence) throw new Error(`Payjoin proposal input ${i} has a different nSequence.`);
     if (ours) {
+      if (originalOrder[seen] !== outpoint) throw new Error('Payjoin proposal reordered our inputs.');
       seen++;
       if (data.partialSig || data.finalScriptSig || data.finalScriptWitness || data.tapKeySig) throw new Error(`Payjoin proposal input ${i} carries a signature for one of our inputs.`);
       totalIn += valueOf(ours.data, ours.txInput);
@@ -399,6 +462,10 @@ function checkPayjoinProposal (originalBase64, proposalBase64, opts = {}) {
     if (!data.finalScriptSig && !data.finalScriptWitness) throw new Error(`Payjoin receiver input ${i} is not finalized.`);
     const value = valueOf(data, txInput);
     if (value == null) throw new Error(`Payjoin receiver input ${i} has no UTXO data.`);
+    if (value < 0n || value > MAX_MONEY_SATS) throw new Error(`Payjoin receiver input ${i} value is out of range.`);
+    const script = scriptOf(data, txInput);
+    if (ourType && scriptTypeOfScript(script) !== ourType) throw new Error(`Payjoin receiver input ${i} is not of our script type (${ourType}).`);
+    if (typeof opts.isOwnedScript === 'function' && opts.isOwnedScript(script)) throw new Error(`Payjoin receiver input ${i} spends one of our coins.`);
     totalIn += value;
   });
   if (seen !== originalInputs.size) throw new Error('Payjoin proposal dropped one of our inputs.');
@@ -504,5 +571,9 @@ module.exports = {
   signOurPayjoinInputs,
   finalizeAndExtractHex,
   estimateP2wpkhFeeSats,
+  outpointOfTxInput,
+  scriptTypeOfScript,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  DEFAULT_TIMEOUT_MS,
   SIGHASH_ALL_ANYONECANPAY
 };

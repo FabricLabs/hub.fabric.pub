@@ -86,6 +86,8 @@ const FABRIC_PROTOCOL = 'fabric';
 const BITCOIN_PROTOCOL = 'bitcoin';
 
 const HUB_STOP_TIMEOUT_MS = 30000;
+// After a timed-out stop: how long to wait for the exit after SIGTERM, and again after SIGKILL.
+const HUB_KILL_GRACE_MS = 5000;
 const HUB_RESTART_WINDOW_MS = 5 * 60 * 1000;
 const HUB_MAX_RESTARTS = 5;
 const HUB_STATUS_POLL_MS = 30000;
@@ -979,7 +981,7 @@ function answerHubRootKeyRequest (child, msg) {
   } catch (_) {}
 }
 
-/** Passport asked the Hub to sign in or link: only a native dialog here can approve it. */
+/** A signer asked to pair with the Hub, or a linked signer asked it to sign: only a native dialog here can approve it. */
 async function answerFabricSignRequest (child, msg) {
   let approved = false;
   // Close the dialog when the request expires, so a late click can't approve it.
@@ -1009,7 +1011,9 @@ async function answerFabricSignRequest (child, msg) {
 }
 
 function onHubExit (child, code) {
-  if (hubProcess === child) hubProcess = null;
+  // A child killed after a stop timeout exits late; by then it is not the current Hub.
+  if (hubProcess !== child) return;
+  hubProcess = null;
   if (hubStopPromise || isQuitting) {
     setHubStatus('stopped');
     return;
@@ -1035,6 +1039,12 @@ function onHubExit (child, code) {
 async function restartHub () {
   if (usesExternalHub || isQuitting) return;
   if (hubProcess) await stopHub();
+  // A Hub that survived SIGKILL still holds the port and data dir: do not fork another.
+  if (hubProcess) {
+    console.error('[DESKTOP] Hub did not exit; not starting a second one');
+    setHubStatus('error');
+    return;
+  }
   spawnHub();
   try {
     await waitForHub();
@@ -1067,7 +1077,7 @@ async function promptHubCrashed (code) {
 
 /**
  * Ask the Hub to shut down (it stops Bitcoin / Lightning / LevelDB cleanly), then kill it if it
- * has not exited within `timeoutMs`.
+ * has not exited within `timeoutMs`. `hubProcess` stays set while the child has not exited.
  * @returns {Promise<void>}
  */
 function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
@@ -1079,15 +1089,33 @@ function stopHub (timeoutMs = HUB_STOP_TIMEOUT_MS) {
   const child = hubProcess;
   if (usesExternalHub || !child) return Promise.resolve();
   setHubStatus('stopping');
+  let exited = false;
+  const exit = new Promise((resolve) => child.once('exit', () => { exited = true; resolve(); }));
+  const within = (ms) => Promise.race([exit, new Promise((resolve) => setTimeout(resolve, ms).unref())]);
   hubStopPromise = new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       console.warn(`[DESKTOP] Hub did not stop within ${timeoutMs}ms; killing it`);
       try {
         child.kill();
       } catch (_) {}
+      // A restart must not fork a second Hub on the same port and data dir while
+      // this one still runs: wait for its exit, then SIGKILL and wait again.
+      await within(HUB_KILL_GRACE_MS);
+      if (!exited && child.pid) {
+        console.warn('[DESKTOP] Hub still running after SIGTERM; sending SIGKILL');
+        try {
+          process.kill(child.pid, 'SIGKILL');
+        } catch (_) {}
+        await within(HUB_KILL_GRACE_MS);
+      }
+      // Cleared only once it exited (`onHubExit` clears it too), so a restart sees one that did not.
+      if (exited && hubProcess === child) {
+        hubProcess = null;
+        setHubStatus('stopped');
+      }
       resolve();
     }, timeoutMs);
-    child.once('exit', () => {
+    exit.then(() => {
       clearTimeout(timer);
       resolve();
     });
@@ -1137,7 +1165,7 @@ async function handleFabricProtocolUrl (urlStr) {
 
   const host = url.hostname;
   if (host === 'link') {
-    console.warn('[DESKTOP] fabric://link is handled by the renderer / device-link UI; open Hub Identity to complete.');
+    console.warn('[DESKTOP] fabric://link is retired; pair from Passport (Linked signers) with this Hub instead.');
     return;
   }
   if (host !== 'message' && host !== 'msg') {

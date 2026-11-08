@@ -17,6 +17,7 @@ const {
 const { formatSatsDisplay } = require('../functions/formatSats');
 const {
   readUiNotifications,
+  countUnread,
   UPDATED_EVENT,
   STORAGE_KEY
 } = require('../functions/uiNotifications');
@@ -150,6 +151,7 @@ function TopPanel (props) {
   };
 
   const [notifList, setNotifList] = React.useState(() => readUiNotifications());
+  const unreadCount = countUnread(notifList);
   const [uiTick, setUiTick] = React.useState(0);
   const balanceHoverRefreshAtRef = React.useRef(0);
   React.useEffect(() => subscribeHubUiFeatureFlags(() => setUiTick((n) => n + 1)), []);
@@ -438,8 +440,8 @@ function TopPanel (props) {
               to="/notifications"
               size="small"
               title={
-                notifList.length
-                  ? s.notifications.titleCount(notifList.length)
+                unreadCount
+                  ? s.notifications.titleCount(unreadCount)
                   : s.notifications.titleEmpty
               }
               aria-label={s.notifications.label}
@@ -456,15 +458,15 @@ function TopPanel (props) {
             >
               <Icon name="bell outline" />
             </Button>
-            {notifList.length > 0 && (
+            {unreadCount > 0 && (
               <Label
                 circular
                 color="red"
                 size="mini"
                 style={{ position: 'absolute', top: -6, right: -6, margin: 0, minWidth: '1.5em' }}
-                title={s.notifications.badgeTitle(notifList.length)}
+                title={s.notifications.badgeTitle(unreadCount)}
               >
-                {notifList.length > 99 ? '99+' : String(notifList.length)}
+                {unreadCount > 99 ? '99+' : String(unreadCount)}
               </Label>
             )}
           </div>

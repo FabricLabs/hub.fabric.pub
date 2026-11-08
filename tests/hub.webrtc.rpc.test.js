@@ -207,11 +207,11 @@ describe('Hub WebRTC RPC methods', function () {
     assert.ok(methods.RegisterWebRTCPeer, 'RegisterWebRTCPeer should be registered');
     assert.ok(methods.ListWebRTCPeers, 'ListWebRTCPeers should be registered');
 
-    const r1 = methods.RegisterWebRTCPeer({
+    const r1 = methods.RegisterWebRTCPeer({}, {
       peerId: 'fabric-bridge-a',
       metadata: { userAgent: 'UA-A' }
     });
-    const r2 = methods.RegisterWebRTCPeer({
+    const r2 = methods.RegisterWebRTCPeer({}, {
       peerId: 'fabric-bridge-b',
       metadata: { userAgent: 'UA-B' }
     });
@@ -227,12 +227,42 @@ describe('Hub WebRTC RPC methods', function () {
 
   });
 
+  it('routes WebRTC signals only to the connection that registered the target', async function () {
+    const { methods } = harness;
+    const EventEmitter = require('events');
+    const socket = () => Object.assign(new EventEmitter(), { readyState: 1, sent: [], send (b) { this.sent.push(b); } });
+    const a = socket();
+    const b = socket();
+    const bystander = socket();
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: a }, { peerId: 'route-a' }).status, 'success');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: b }, { peerId: 'route-b' }).status, 'success');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: bystander }, { peerId: 'route-c' }).status, 'success');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: bystander }, { peerId: 'route-a' }).status, 'error', 'an id held by another live connection');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: null }, { peerId: 'route-a', metadata: { userAgent: 'planted' } }).status, 'error', 'nor may an HTTP caller rewrite it');
+    assert.notStrictEqual((harness.hub.http.webrtcPeers.get('route-a').metadata || {}).userAgent, 'planted');
+    assert.strictEqual(methods.RegisterWebRTCPeer({ connection: null }, { peerId: 'http-registry' }).status, 'success', 'HTTP registry clients still register their own ids');
+
+    const signal = { type: 'offer', sdp: 'v=0' };
+    assert.strictEqual(methods.SendWebRTCSignal({ connection: a }, { fromPeerId: 'route-a', toPeerId: 'route-b', signal }).status, 'success');
+    assert.strictEqual(b.sent.length, 1);
+    assert.strictEqual(bystander.sent.length, 0);
+    assert.strictEqual(a.sent.length, 0);
+
+    const spoofed = methods.SendWebRTCSignal({ connection: bystander }, { fromPeerId: 'route-a', toPeerId: 'route-b', signal });
+    assert.strictEqual(spoofed.status, 'error');
+    assert.strictEqual(methods.SendWebRTCSignal({ connection: null }, { fromPeerId: 'route-a', toPeerId: 'route-b', signal }).status, 'error', 'HTTP has no connection');
+    assert.strictEqual(b.sent.length, 1);
+
+    b.emit('close');
+    assert.strictEqual(methods.SendWebRTCSignal({ connection: a }, { fromPeerId: 'route-a', toPeerId: 'route-b', signal }).status, 'error');
+  });
+
   it('prunes stale peer registrations and returns freshest peers first', async function () {
     const { methods, hub } = harness;
     const now = Date.now();
 
-    methods.RegisterWebRTCPeer({ peerId: 'fresh-a', metadata: { userAgent: 'UA-A' } });
-    methods.RegisterWebRTCPeer({ peerId: 'fresh-b', metadata: { userAgent: 'UA-B' } });
+    methods.RegisterWebRTCPeer({}, { peerId: 'fresh-a', metadata: { userAgent: 'UA-A' } });
+    methods.RegisterWebRTCPeer({}, { peerId: 'fresh-b', metadata: { userAgent: 'UA-B' } });
 
     // Simulate one stale, disconnected browser registration.
     hub.http.webrtcPeers.set('stale-peer', {
@@ -262,9 +292,9 @@ describe('Hub WebRTC RPC methods', function () {
   it('caps candidate list size to prevent oversized peer fanout', async function () {
     const { methods } = harness;
 
-    methods.RegisterWebRTCPeer({ peerId: 'self-peer', metadata: {} });
+    methods.RegisterWebRTCPeer({}, { peerId: 'self-peer', metadata: {} });
     for (let i = 0; i < 30; i++) {
-      methods.RegisterWebRTCPeer({ peerId: `candidate-${i}`, metadata: {} });
+      methods.RegisterWebRTCPeer({}, { peerId: `candidate-${i}`, metadata: {} });
     }
 
     const listed = methods.ListWebRTCPeers({ excludeSelf: true, peerId: 'self-peer' });
@@ -276,7 +306,7 @@ describe('Hub WebRTC RPC methods', function () {
   it('includes lastSeen and registeredAt on candidates for cross-node relay ordering', function () {
     const { methods, hub } = harness;
     const now = Date.now();
-    methods.RegisterWebRTCPeer({ peerId: 'relay-order-a', metadata: { tag: 'a' } });
+    methods.RegisterWebRTCPeer({}, { peerId: 'relay-order-a', metadata: { tag: 'a' } });
     const entry = hub.http.webrtcPeers.get('relay-order-a');
     entry.lastSeen = now - 2000;
     entry.registeredAt = now - 5000;
@@ -358,8 +388,12 @@ describe('Hub WebRTC RPC methods', function () {
     const byName = await methods.GetDocument('browser.min.js');
     assert.strictEqual(byName.type, 'GetDocumentResult');
     assert.strictEqual(byName.document, null);
-    assert.strictEqual(byName.documentId, 'browser.min.js');
-    assert.ok(/not found/i.test(byName.message));
+    assert.strictEqual(byName.documentId, null, 'a file name is not a document id');
+    assert.ok(/id required/i.test(byName.message));
+
+    const unknown = await methods.GetDocument('f'.repeat(64));
+    assert.strictEqual(unknown.document, null);
+    assert.ok(/not found/i.test(unknown.message));
   });
 
   it('publishes document metadata only into documents collection', async function () {
@@ -517,13 +551,13 @@ describe('Hub WebRTC RPC methods', function () {
 
     assert.ok(methods.SendWebRTCSignal, 'SendWebRTCSignal should be registered');
 
-    const bad = methods.SendWebRTCSignal({ fromPeerId: 'a', toPeerId: 'b' });
+    const bad = methods.SendWebRTCSignal({}, { fromPeerId: 'a', toPeerId: 'b' });
     assert.strictEqual(bad.status, 'error');
     assert.ok(/required/i.test(bad.message));
 
   });
 
-  it('broadcasts WebRTCSignal payload as JSONCallResult', async function () {
+  it('broadcasts WebRTCSignal payload as JSONCallResult on an older @fabric/http (no connection context)', async function () {
     const { methods, broadcasts } = harness;
 
     const signal = {
@@ -537,7 +571,7 @@ describe('Hub WebRTC RPC methods', function () {
       }
     };
 
-    const result = methods.SendWebRTCSignal({
+    const result = methods.SendWebRTCSignal({}, {
       fromPeerId: 'fabric-bridge-a',
       toPeerId: 'fabric-bridge-b',
       signal
@@ -564,6 +598,10 @@ describe('Hub WebRTC RPC methods', function () {
     const sentVectors = [];
     hub._sendVectorToPeer = (target, vector) => {
       sentVectors.push({ target, vector });
+    };
+    // File frames go out as field bodies; record them as the [type, JSON] vector they replace.
+    hub._sendMessageToPeer = (target, msg) => {
+      sentVectors.push({ target, vector: ['P2P_FILE_SEND', JSON.stringify(Message.tryParseLegacyBody(msg).value)] });
     };
 
     const oneMB = 1024 * 1024;

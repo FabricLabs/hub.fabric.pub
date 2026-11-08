@@ -327,7 +327,7 @@ async function seedPublishedDocument (baseUrl, adminToken) {
   }]);
   const doc = created && created.document;
   if (!doc || !doc.id) throw new Error('CreateDocument: missing id');
-  await rpc(baseUrl, 'PublishDocument', [{ id: doc.id, purchasePriceSats: 25 }], adminToken);
+  await rpc(baseUrl, 'PublishDocument', [{ id: doc.id, purchasePriceSats: 1000, adminToken }], adminToken);
   return doc.id;
 }
 

@@ -144,6 +144,39 @@ describe('ChallengeService (availability market, Phase 3)', function () {
     assert.strictEqual(svc.ingestContractMessage({ type: 'FraudProof', kind: 'wrong-leaf', artifacts: {} }).ok, false);
   });
 
+  it('a response not signed by the provider leaves the challenge open for the real answer', function () {
+    const { svc, provider, doc, hashes, root } = fixture(5);
+    const challenge = svc.issue({ merkleRootHex: root, blobHashes: hashes, providerPubkey: provider.xOnly });
+    const Witness = require('@fabric/core/types/witness');
+    const junk = new Challenge().respond(challenge, { blobHashes: hashes, bytes: doc.bytesFor(challenge.blobIndex), epoch: 6, providerPrivateKey: crypto.randomBytes(32) });
+    const refused = svc.respond(junk);
+    assert.strictEqual(refused.ok, false);
+    assert.strictEqual(refused.refused, true);
+    assert.strictEqual(svc.getIssued(Witness.artifactHash(challenge)).response || null, null);
+    assert.strictEqual(svc.listIssued()[0].status, 'open');
+    const real = new Challenge().respond(challenge, { blobHashes: hashes, bytes: doc.bytesFor(challenge.blobIndex), epoch: 6, providerPrivateKey: provider.priv });
+    assert.strictEqual(svc.respond(real, { bytes: doc.bytesFor(challenge.blobIndex) }).ok, true);
+    assert.strictEqual(svc.listIssued()[0].status, 'passed');
+  });
+
+  it('keeps at most maxCommitments commitments, dropping the oldest', function () {
+    const { svc, provider, hashes, root, publisherPubkey } = fixture(5);
+    svc.settings.maxCommitments = 2;
+    const made = [1, 2, 3].map((n) => Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: n, providerPrivateKey: provider.priv, publisherPubkey }));
+    for (const c of made) assert.strictEqual(svc.commit(c).ok, true);
+    assert.strictEqual(svc.commit(made[2]).duplicate, true);
+    assert.deepStrictEqual(svc.listCommitments().map((c) => c.untilEpoch), [2, 3]);
+  });
+
+  it('uses only commitments made to this Hub as publisher', function () {
+    const { svc, provider, hashes, root, publisherPubkey } = fixture(9);
+    const stranger = Buffer.from(schnorr.getPublicKey(crypto.randomBytes(32))).toString('hex');
+    assert.strictEqual(svc.ingestContractMessage(Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: 500, providerPrivateKey: provider.priv, publisherPubkey: stranger })).ok, false);
+    assert.strictEqual(svc.commitmentFor(root, provider.xOnly), null);
+    svc.ingestContractMessage(Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: 100, providerPrivateKey: provider.priv, publisherPubkey: `02${publisherPubkey}` }));
+    assert.strictEqual(svc.commitmentFor(root, provider.xOnly).untilEpoch, 100);
+  });
+
   it('epoch-only silence is late but never a proof (nothing on-chain anchors it)', async function () {
     const { svc, hub, provider, doc, hashes, root, publisherPubkey } = fixture(20);
     const commitment = Challenge.commit({ merkleRootHex: root, blobTotal: hashes.length, fromEpoch: 0, untilEpoch: 100, providerPrivateKey: provider.priv, publisherPubkey });

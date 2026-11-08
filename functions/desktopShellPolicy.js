@@ -100,6 +100,13 @@ function isPrivateAddress (address) {
     const lower = ip.toLowerCase();
     const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
     if (mapped) return isPrivateAddress(mapped[1]);
+    // WHATWG URL writes IPv4-mapped literals in hex: [::ffff:127.0.0.1] → [::ffff:7f00:1]
+    const hex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hex) {
+      const high = parseInt(hex[1], 16);
+      const low = parseInt(hex[2], 16);
+      return isPrivateAddress([high >> 8, high & 0xff, low >> 8, low & 0xff].join('.'));
+    }
     return lower === '::' ||
       lower === '::1' ||
       /^f[cd]/.test(lower) ||

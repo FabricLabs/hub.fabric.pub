@@ -4,9 +4,17 @@
  * @fileoverview Periodic Hub heap / retainer telemetry for operator logs.
  * Log-only: does not truncate durable `messages/`, documents, or STATE, so
  * full replay stays intact. Agents parse single-line `[HUB:HEAP] {json}`.
+ *
+ * Also on-demand and threshold V8 heap snapshots for leak hunting. A
+ * snapshot pauses the process while it is written and briefly needs about as
+ * much memory again as the heap; open the `.heapsnapshot` in Chrome DevTools
+ * (Memory tab) and compare two of them.
  */
 
+const fs = require('fs');
+const path = require('path');
 const v8 = require('v8');
+const { monitorEventLoopDelay, performance } = require('perf_hooks');
 const hubHeapBounds = require('./hubHeapBounds');
 
 const LOG_PREFIX = '[HUB:HEAP]';
@@ -63,11 +71,156 @@ function resolveHeapTelemetryIntervalMs (settings, env) {
 }
 
 /**
+ * @param {*} value object (keys) or array (length)
+ * @returns {number}
+ */
+function entryCount (value) {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value.size === 'number') return value.size;
+  return mapSize(value);
+}
+
+/**
+ * Total listeners across every event name of an EventEmitter.
+ * @param {*} emitter
+ * @returns {number|null}
+ */
+function listenerTotal (emitter) {
+  if (!emitter || typeof emitter.eventNames !== 'function' || typeof emitter.listenerCount !== 'function') return null;
+  let total = 0;
+  for (const name of emitter.eventNames()) total += emitter.listenerCount(name);
+  return total;
+}
+
+/**
+ * Active libuv handles and requests by type (timers, sockets, …).
+ * @returns {Object<string, number>|null}
+ */
+function activeResources () {
+  if (typeof process.getActiveResourcesInfo !== 'function') return null;
+  const counts = {};
+  for (const type of process.getActiveResourcesInfo()) counts[type] = (counts[type] || 0) + 1;
+  return counts;
+}
+
+const LOOP_RESOLUTION_MS = 20;
+let loopDelay = null;
+let loopUtilization = null;
+
+/**
+ * Event-loop delay and utilization since the previous call (the first call
+ * starts the histogram and reports null). Each call resets the window.
+ * @returns {object|null}
+ */
+function collectEventLoop () {
+  if (!loopDelay) {
+    try {
+      loopDelay = monitorEventLoopDelay({ resolution: LOOP_RESOLUTION_MS });
+      loopDelay.enable();
+      loopUtilization = performance.eventLoopUtilization();
+    } catch (_) {
+      loopDelay = null;
+    }
+    return null;
+  }
+  // The histogram records each whole timer interval, so the resolution is subtracted.
+  const ms = (ns) => Math.max(0, Math.round(Number(ns) / 1e4 - LOOP_RESOLUTION_MS * 100) / 100);
+  const utilization = performance.eventLoopUtilization(loopUtilization);
+  loopUtilization = performance.eventLoopUtilization();
+  const out = {
+    p50Ms: ms(loopDelay.percentile(50)),
+    p99Ms: ms(loopDelay.percentile(99)),
+    maxMs: ms(loopDelay.max),
+    meanMs: ms(loopDelay.mean),
+    utilization: Math.round(utilization.utilization * 1000) / 1000
+  };
+  loopDelay.reset();
+  return out;
+}
+
+/**
+ * Work started but not finished: block notifications, slow RPCs, scans.
+ * @param {object} hub
+ * @returns {object}
+ */
+function collectPendingWork (hub) {
+  const stats = (x) => (x && typeof x.stats === 'function' ? x.stats() : null);
+  return {
+    bitcoinBlocks: stats(hub && hub._bitcoinBlockQueue),
+    bitcoinTxOutSet: stats(hub && hub._bitcoinTxOutSet),
+    bitcoinSlowRPC: Number((hub && hub._bitcoinSlowRPCInflight) || 0),
+    bitcoinScans: entryCount(hub && hub._bitcoinScanInflight)
+  };
+}
+
+/**
+ * In-memory caches inside core's Bitcoin service, which grow per block.
+ * @param {object} hub
+ * @returns {object|null}
+ */
+function collectBitcoinServiceRetainers (hub) {
+  const bitcoin = hub && hub.bitcoin;
+  if (!bitcoin) return null;
+  const state = bitcoin._state || {};
+  const content = state.content || {};
+  return {
+    rawBlocks: entryCount(state.blocks),
+    blocks: entryCount(content.blocks),
+    transactions: entryCount(content.transactions),
+    headers: entryCount(bitcoin.headers),
+    listeners: listenerTotal(bitcoin)
+  };
+}
+
+/**
+ * Change in every numeric field present in both objects.
+ * @private
+ * @param {object} [current]
+ * @param {object} [previous]
+ * @returns {object}
+ */
+function numericDeltas (current, previous) {
+  const out = {};
+  for (const [key, value] of Object.entries(current || {})) {
+    const before = previous ? previous[key] : undefined;
+    if (Number.isFinite(value) && Number.isFinite(before)) out[key] = value - before;
+  }
+  return out;
+}
+
+/**
+ * Memory and retainer change since the previous snapshot (heap and RSS also per hour).
+ * @param {object} current
+ * @param {object} [previous]
+ * @returns {object|null}
+ */
+function growthSince (current, previous) {
+  if (!previous || !previous.memory || !previous.at) return null;
+  const hours = (Date.parse(current.at) - Date.parse(previous.at)) / 3600000;
+  if (!(hours > 0)) return null;
+  const heapUsed = current.memory.heapUsed - previous.memory.heapUsed;
+  const rss = current.memory.rss - previous.memory.rss;
+  const external = current.memory.external - previous.memory.external;
+  const arrayBuffers = Number(current.memory.arrayBuffers || 0) - Number(previous.memory.arrayBuffers || 0);
+  return {
+    sinceSec: Math.round(hours * 3600),
+    heapUsed,
+    rss,
+    external,
+    arrayBuffers,
+    heapUsedPerHour: Math.round(heapUsed / hours),
+    rssPerHour: Math.round(rss / hours),
+    retainers: numericDeltas(current.retainers, previous.retainers)
+  };
+}
+
+/**
  * Cheap retainer-oriented counts from a live Hub (or stub). No disk I/O.
  * Does not JSON.stringify STATE — callers should pass last commit byte length.
  * @param {object} hub
  * @param {object} [opts]
  * @param {number} [opts.stateContentBytes] Last commit `STATE` UTF-8 length
+ * @param {object} [opts.previous] Previous snapshot, for `growth`
  * @returns {object}
  */
 function collectHubHeapTelemetry (hub, opts = {}) {
@@ -122,7 +275,7 @@ function collectHubHeapTelemetry (hub, opts = {}) {
     ? Number(opts.stateContentBytes)
     : (hub && hub._lastStateWriteBytes != null ? Number(hub._lastStateWriteBytes) : null);
 
-  return {
+  const snapshot = {
     at: new Date().toISOString(),
     pid: process.pid,
     uptimeSec: Math.floor(process.uptime()),
@@ -164,6 +317,15 @@ function collectHubHeapTelemetry (hub, opts = {}) {
       sidechainClock,
       stateContentBytes: Number.isFinite(stateContentBytes) ? stateContentBytes : null
     },
+    bitcoinService: collectBitcoinServiceRetainers(hub),
+    pending: collectPendingWork(hub),
+    eventLoop: collectEventLoop(),
+    listeners: {
+      hub: listenerTotal(hub),
+      agent: listenerTotal(agent),
+      http: listenerTotal(http)
+    },
+    resources: activeResources(),
     caps: {
       activityMessages: hubHeapBounds.MAX_ACTIVITY_MESSAGES,
       fabricMessages: hubHeapBounds.MAX_FABRIC_MESSAGE_LOG,
@@ -176,6 +338,8 @@ function collectHubHeapTelemetry (hub, opts = {}) {
       note: 'Log-only snapshot; messages/ STATE documents remain for full replay'
     }
   };
+  snapshot.growth = growthSince(snapshot, opts.previous);
+  return snapshot;
 }
 
 /**
@@ -207,6 +371,87 @@ function logHubHeapTelemetry (hub, opts) {
   }
 }
 
+const DEFAULT_SIGNAL = 'SIGUSR2';
+const DEFAULT_MAX_SNAPSHOTS = 3;
+
+/**
+ * @param {object} [settings] Hub settings (`heapSnapshot`)
+ * @param {object} [env]
+ * @returns {{ signal: string|null, thresholdBytes: number, max: number }}
+ */
+function resolveHeapSnapshotSettings (settings, env) {
+  const e = env || process.env;
+  const cfg = (settings && settings.heapSnapshot) || {};
+  const rawSignal = e.FABRIC_HUB_HEAP_SNAPSHOT_SIGNAL != null ? e.FABRIC_HUB_HEAP_SNAPSHOT_SIGNAL : cfg.signal;
+  const signal = rawSignal === '0' || rawSignal === false || rawSignal === 'false'
+    ? null
+    : String(rawSignal || DEFAULT_SIGNAL);
+  const mb = Number(e.FABRIC_HUB_HEAP_SNAPSHOT_MB != null ? e.FABRIC_HUB_HEAP_SNAPSHOT_MB : cfg.thresholdMb);
+  const max = Number(e.FABRIC_HUB_HEAP_SNAPSHOT_MAX != null ? e.FABRIC_HUB_HEAP_SNAPSHOT_MAX : cfg.max);
+  return {
+    signal,
+    thresholdBytes: Number.isFinite(mb) && mb > 0 ? Math.floor(mb * 1024 * 1024) : 0,
+    max: Number.isFinite(max) && max >= 0 ? Math.floor(max) : DEFAULT_MAX_SNAPSHOTS
+  };
+}
+
+/** File-name labels a snapshot may carry; any other reason is written as `snapshot`. */
+const SNAPSHOT_LABELS = Object.freeze({ signal: 'signal', threshold: 'threshold' });
+
+/**
+ * Write one snapshot under `dir`. The file name is built only from fixed
+ * parts (pid, time, a {@link SNAPSHOT_LABELS} label), never from input.
+ * @param {string} dir Absolute directory (the Hub resolves `<store>/heap` once)
+ * @param {string} reason `signal` or `threshold`
+ * @returns {string|null} file path, or null on failure
+ */
+function writeHeapSnapshot (dir, reason) {
+  const label = Object.prototype.hasOwnProperty.call(SNAPSHOT_LABELS, reason) ? SNAPSHOT_LABELS[reason] : 'snapshot';
+  try {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw new Error('snapshot directory must be an absolute path');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = `${dir.replace(/[\\/]+$/, '')}${path.sep}hub-${process.pid}-${stamp}-${label}.heapsnapshot`;
+    const started = Date.now();
+    v8.writeHeapSnapshot(file);
+    console.log(LOG_PREFIX, `snapshot (${label}) written in ${Date.now() - started} ms: ${file}`);
+    return file;
+  } catch (err) {
+    console.warn(LOG_PREFIX, 'snapshot failed:', err && err.message ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Tracks the heap threshold: each snapshot written doubles the next threshold, up to `max` snapshots.
+ * @param {{ thresholdBytes: number, max: number }} cfg
+ * @returns {{ check: Function, record: Function, taken: Function }}
+ */
+function createHeapThreshold (cfg) {
+  let next = cfg.thresholdBytes;
+  let taken = 0;
+  return {
+    /**
+     * @param {number} heapUsed
+     * @returns {boolean} true when a snapshot is due now
+     */
+    check (heapUsed) {
+      return next > 0 && taken < cfg.max && heapUsed >= next;
+    },
+    /**
+     * Count a snapshot once it is written (until then `check` stays due).
+     * @param {number} heapUsed
+     */
+    record (heapUsed) {
+      taken++;
+      while (next <= heapUsed) next *= 2;
+    },
+    taken () {
+      return taken;
+    }
+  };
+}
+
 module.exports = {
   LOG_PREFIX,
   DEFAULT_INTERVAL_MS,
@@ -216,5 +461,14 @@ module.exports = {
   collectHubHeapTelemetry,
   formatHubHeapTelemetryLine,
   logHubHeapTelemetry,
-  mapSize
+  mapSize,
+  growthSince,
+  collectPendingWork,
+  collectEventLoop,
+  collectBitcoinServiceRetainers,
+  DEFAULT_SIGNAL,
+  DEFAULT_MAX_SNAPSHOTS,
+  resolveHeapSnapshotSettings,
+  writeHeapSnapshot,
+  createHeapThreshold
 };

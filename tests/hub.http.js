@@ -991,29 +991,31 @@ describe('@fabric/hub', function () {
           }
         });
 
-        it('the local signer routes are not served outside the desktop app', async function () {
+        it('the retired local signer routes and the delegation admin routes are not served without the admin token', async function () {
           for (const [method, route] of [
             ['GET', '/services/fabric/identity'],
             ['POST', '/services/fabric/sign'],
-            ['POST', '/services/fabric/link']
+            ['POST', '/services/fabric/link'],
+            ['GET', '/services/delegation/requests'],
+            ['GET', '/services/delegation/rules'],
+            ['PUT', '/services/delegation/rules'],
+            ['GET', '/services/delegation/signers']
           ]) {
-            const response = await makeRequest(method, route, method === 'POST' ? {} : null, jsonApi);
+            const response = await makeRequest(method, route, method === 'GET' ? null : {}, jsonApi);
             assert.notStrictEqual(response.status, 200, `${method} ${route}`);
           }
         });
       });
 
       it('should allow document lifecycle RPC calls when activity logging is enabled', async function () {
-        // Requires @fabric/http with HTTP JSON-RPC (`jsonRpc` + `POST /services/rpc`). Older pins only expose WebSocket JSONCall.
         const probe = await makeRequest('POST', '/services/rpc', {
           jsonrpc: '2.0',
           id: 1,
           method: 'GetSetupStatus',
           params: []
         }, { Accept: 'application/json' });
-        if (probe.status !== 200 || !(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result)) {
-          return this.skip();
-        }
+        assert.strictEqual(probe.status, 200, 'HTTP JSON-RPC is mounted');
+        assert.ok(probe.body && probe.body.jsonrpc === '2.0' && probe.body.result);
 
         const createBody = {
           name: 'activity-log-test.txt',

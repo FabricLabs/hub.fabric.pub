@@ -20,7 +20,7 @@ const Key = require('@fabric/core/types/key');
 const SIGNING_TAGS = require('@fabric/core/functions/signingTags');
 const { P2P_PEER_GOSSIP, P2P_PEERING_OFFER, P2P_CHAT_MESSAGE, P2P_PEER_ALIAS, P2P_FILE_SEND, MAGIC_BYTES } = require('@fabric/core/constants');
 const fabricBridgeEnvelope = require('../functions/fabricBridgeEnvelope');
-const { pushUiNotification } = require('../functions/uiNotifications');
+const { pushUiNotification, isWalletTransactionNotification } = require('../functions/uiNotifications');
 const { loadHubUiFeatureFlags } = require('../functions/hubUiFeatureFlags');
 const {
   isDocumentInventoryDocumentsOfferResponse,
@@ -32,6 +32,7 @@ const t = require('../locales/en');
 
 const notices = t.notices;
 const { toast } = require('../functions/toast');
+const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { DOCUMENT_OFFER } = require('../functions/messageTypes');
 const { parseFederationContractInvite, parseFederationContractInviteResponse } = require('../functions/federationContractInvite');
 const { extractPeerXpub, shortenPublicId, normalizePeerAddressInput, findFabricPeerRow } = require('../functions/peerIdentity');
@@ -68,6 +69,19 @@ const {
   FabricTransportSession
 } = require('../functions/fabricTransportSession');
 const { chatTextOf, normalizeP2pChatMessage } = require('../functions/fabricChatNormalize');
+
+/**
+ * A per-blob (v2) sealed delivery header, as `functions/documentFileShare.isPerBlobHeader`
+ * checks it (that module needs Node crypto, so it stays out of the browser bundle).
+ * @param {*} header `htlcFileV1`
+ * @returns {boolean}
+ */
+function isPerBlobHtlcHeader (header) {
+  const hex64 = (value) => /^[0-9a-f]{64}$/.test(String(value || '').toLowerCase());
+  return !!(header && typeof header === 'object' && Number(header.v) === 2 && header.perBlob === true &&
+    hex64(header.merkleRootHex) && hex64(header.paymentHashHex) &&
+    Number.isSafeInteger(Number(header.blobTotal)) && Number(header.blobTotal) > 0);
+}
 
 /** Ping/pong keep genesis parent on browser-originated durable frames. */
 const BRIDGE_PARENT_CHAIN_SKIP = new Set([
@@ -1399,6 +1413,12 @@ class Bridge extends React.Component {
     if (encrypted != null) {
       toStore.contentEncrypted = encrypted;
       delete toStore.contentBase64;
+    } else if (hasContent && this._getDocumentKey()) {
+      // Encryption failed with a key present: plaintext would outlive the lock
+      // (clearDecryptedDocuments only strips records that carry contentEncrypted).
+      console.warn('[BRIDGE]', 'Not storing document content that could not be encrypted:', targetId);
+      delete toStore.contentBase64;
+      if (existing.contentEncrypted != null) toStore.contentEncrypted = existing.contentEncrypted;
     } else if (!hasContent && merged.contentEncrypted != null) {
       toStore.contentEncrypted = merged.contentEncrypted;
       delete toStore.contentBase64;
@@ -1499,6 +1519,7 @@ class Bridge extends React.Component {
         mime: doc.mime,
         size: doc.size,
         sha256: doc.sha256,
+        merkleRootHex: doc.merkleRootHex,
         created: doc.created,
         target: doc.target,
         htlcSettlement: doc.htlcSettlement,
@@ -1507,6 +1528,17 @@ class Bridge extends React.Component {
       };
       if (doc.htlcFileV1 && Number(doc.htlcFileV1.v) === 1 && doc.htlcFileV1.iv && doc.htlcFileV1.paymentHashHex) {
         state.htlcFileV1 = doc.htlcFileV1;
+      } else if (doc.htlcFileV1 && Number(doc.htlcFileV1.v) === 2) {
+        // v2: each blob has its own key, wrapped under K. Only the Hub that bought it holds the wraps.
+        // A malformed header or a delivery without its parts could never be opened: drop it.
+        if (!isPerBlobHtlcHeader(doc.htlcFileV1) || !Array.isArray(doc.parts)) {
+          this._p2pFileReceivers.delete(transferId);
+          console.warn('[BRIDGE] Dropping a per-blob delivery with a malformed header or no parts');
+          return;
+        }
+        state.htlcFileV1 = doc.htlcFileV1;
+        state.meta.htlcFileV1 = doc.htlcFileV1;
+        state.meta.parts = doc.parts;
       }
     }
     state.chunks[index] = doc.contentBase64;
@@ -1528,6 +1560,7 @@ class Bridge extends React.Component {
 
     if (state.htlcFileV1) {
       const h = state.htlcFileV1;
+      const perBlob = isPerBlobHtlcHeader(h);
       this.globalState.documents = this.globalState.documents || {};
       const existing = this.globalState.documents[targetId] || {};
       this.globalState.documents[targetId] = {
@@ -1536,7 +1569,9 @@ class Bridge extends React.Component {
         id: targetId,
         htlcPendingDecrypt: true,
         htlcPaymentHashHex: String(h.paymentHashHex).toLowerCase(),
-        htlcIvBase64: h.iv,
+        ...(perBlob
+          ? { htlcPerBlob: true, htlcHubDocumentId: rawId }
+          : { htlcIvBase64: h.iv }),
         htlcCiphertextBase64: this._uint8ToBase64(merged),
         receivedFromPeer: true
       };
@@ -1571,14 +1606,16 @@ class Bridge extends React.Component {
    * @param {string} preimageHex - 64 hex chars
    * @returns {Promise<{ ok: boolean, error?: string }>}
    */
-  async unlockHtlcEncryptedDocument (documentId, preimageHex) {
-    if (typeof crypto === 'undefined' || !crypto.subtle) {
-      return { ok: false, error: notices.htlc.noWebCrypto };
-    }
+  async unlockHtlcEncryptedDocument (documentId, preimageHex, options = {}) {
     const id = documentId;
     const doc = this.globalState.documents && this.globalState.documents[id];
     if (!doc || !doc.htlcPendingDecrypt) {
       return { ok: false, error: notices.htlc.notPending };
+    }
+    // Per-blob keys are wrapped on the Hub that bought the copy; the browser never sees them.
+    if (doc.htlcPerBlob) return this.openPurchasedDocumentViaHub(id, preimageHex, options);
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+      return { ok: false, error: notices.htlc.noWebCrypto };
     }
     const preimageU8 = this._hexToUint8(preimageHex);
     if (!preimageU8) {
@@ -1611,7 +1648,73 @@ class Bridge extends React.Component {
     delete cleaned.htlcPaymentHashHex;
     delete cleaned.htlcIvBase64;
     delete cleaned.htlcCiphertextBase64;
+    // _storeDocument merges into the stored record; drop it first so the htlc fields go.
+    this.globalState.documents[id] = cleaned;
     this._storeDocument(id, { ...cleaned, contentBase64, receivedFromPeer: true });
+    this._persistDocuments();
+    window.dispatchEvent(new CustomEvent('globalStateUpdate', {
+      detail: {
+        operation: { op: 'add', path: `/documents/${id}`, value: this.globalState.documents[id] },
+        globalState: this.globalState
+      }
+    }));
+    return { ok: true };
+  }
+
+  /**
+   * Open a per-blob (v2) purchase through this page's Hub (`OpenPurchasedDocument`), which
+   * holds the wrapped blob keys and the seller's key reveal. Needs the Hub admin token.
+   * @param {string} documentId local document id
+   * @param {string} [preimageHex] the key from the seller's claim, when no reveal arrived
+   * @returns {Promise<{ ok: boolean, error?: string }>}
+   */
+  async openPurchasedDocumentViaHub (documentId, preimageHex, options = {}) {
+    const id = documentId;
+    const doc = this.globalState.documents && this.globalState.documents[id];
+    if (!doc || !doc.htlcPendingDecrypt) return { ok: false, error: notices.htlc.notPending };
+    const adminToken = this._hubIsPageOrigin()
+      ? readHubAdminTokenFromBrowser(options && options.adminToken)
+      : '';
+    if (!adminToken) return { ok: false, error: notices.htlc.openOnBuyingHub };
+    const origin = typeof window !== 'undefined' && window.location && window.location.origin ? window.location.origin : '';
+    if (!origin || typeof fetch !== 'function') return { ok: false, error: notices.htlc.openOnBuyingHub };
+    // The plaintext is stored only under the document key, so it never outlives a lock.
+    if (!this._getDocumentKey()) return { ok: false, error: notices.htlc.unlockIdentity };
+    const params = [{
+      id: doc.htlcHubDocumentId || doc.sha256 || id,
+      adminToken,
+      ...(preimageHex ? { preimageHex: String(preimageHex).trim().toLowerCase() } : {})
+    }];
+    let result;
+    try {
+      const res = await fetch(`${origin}/services/rpc`, {
+        method: 'POST',
+        headers: this._hubJsonRpcHttpHeaders(),
+        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'OpenPurchasedDocument', params })
+      });
+      const body = await res.json().catch(() => null);
+      result = body && body.result;
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+    if (!result || result.status !== 'success' || !result.document || !result.document.contentBase64) {
+      return { ok: false, error: (result && result.message) || notices.htlc.decryptFailed };
+    }
+    // The identity may have locked while the Hub answered: keep the copy pending to retry after unlock.
+    if (!this._getDocumentKey()) return { ok: false, error: notices.htlc.unlockIdentity };
+    const cleaned = { ...doc };
+    for (const k of Object.keys(cleaned)) {
+      if (k.startsWith('htlc')) delete cleaned[k];
+    }
+    delete cleaned.parts;
+    this.globalState.documents[id] = cleaned;
+    this._storeDocument(id, {
+      ...cleaned,
+      mime: result.document.mime || cleaned.mime,
+      size: result.document.size,
+      contentBase64: result.document.contentBase64,
+      receivedFromPeer: true
+    });
     this._persistDocuments();
     window.dispatchEvent(new CustomEvent('globalStateUpdate', {
       detail: {
@@ -1627,13 +1730,21 @@ class Bridge extends React.Component {
     const keys = Object.keys(messages);
     const filtered = {};
     for (const k of keys) filtered[k] = messages[k];
-    // Cap at 500 messages to avoid localStorage bloat
-    const toStore = keys.length > 500
-      ? Object.fromEntries(keys.sort((a, b) => {
-          const ta = (filtered[a] && filtered[a].object && filtered[a].object.created) || 0;
-          const tb = (filtered[b] && filtered[b].object && filtered[b].object.created) || 0;
-          return ta - tb;
-        }).slice(-500).map((k) => [k, filtered[k]]))
+    // Cap at 500 messages to avoid localStorage bloat; wallet transaction notices are always kept.
+    const isWalletNotice = (k) => {
+      const m = filtered[k];
+      return !!(m && m.type === 'CLIENT_NOTICE' && isWalletTransactionNotification(m.object));
+    };
+    const createdMs = (k) => {
+      const c = filtered[k] && filtered[k].object && filtered[k].object.created;
+      const ms = typeof c === 'number' ? c : Date.parse(String(c || ''));
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    const capped = keys.filter((k) => !isWalletNotice(k));
+    const toStore = capped.length > 500
+      ? Object.fromEntries(keys.filter(isWalletNotice)
+          .concat(capped.sort((a, b) => createdMs(a) - createdMs(b)).slice(-500))
+          .map((k) => [k, filtered[k]]))
       : filtered;
     if (!this._messageCollection) this._messageCollection = new BridgeMessageCollection();
     this._messageCollection.loadMap(toStore);
@@ -2032,6 +2143,31 @@ class Bridge extends React.Component {
     return '';
   }
 
+  /**
+   * Whether this Bridge talks to the Hub that served the page: the admin token
+   * kept in this browser was issued by that Hub only.
+   * @returns {boolean}
+   */
+  /**
+   * Extra JSON-RPC param carrying the admin token for operator-only Hub methods
+   * (`AddPeer`, `RemovePeer`, `SetPeerNickname`); empty when this page is not the Hub's own.
+   * @returns {Object}
+   */
+  _operatorRpcAuth () {
+    const adminToken = this._hubIsPageOrigin() ? readHubAdminTokenFromBrowser() : '';
+    return adminToken ? { adminToken } : {};
+  }
+
+  _hubIsPageOrigin () {
+    if (typeof window === 'undefined' || !window.location) return false;
+    const host = this.settings && this.settings.host;
+    if (!host) return true;
+    const loc = window.location;
+    const pagePort = Number(loc.port) || (loc.protocol === 'https:' ? 443 : 80);
+    return String(host).toLowerCase() === String(loc.hostname).toLowerCase() &&
+      Number(this.settings.port) === pagePort;
+  }
+
   _parseHubAddressString (input) {
     try {
       const raw = input == null ? '' : String(input).trim();
@@ -2101,7 +2237,8 @@ class Bridge extends React.Component {
 
   _sendSubscribe (path) {
     if (!path) return;
-    const message = Message.fromVector(['SUBSCRIBE', path]);
+    // Unregistered names always went out as P2P_BASE_MESSAGE; say so explicitly.
+    const message = Message.fromVector(['P2P_BASE_MESSAGE', path]);
     const messageBuffer = message.toBuffer();
     this.sendSignedMessage(messageBuffer);
   }
@@ -3782,7 +3919,7 @@ class Bridge extends React.Component {
       return;
     }
 
-    const message = Message.fromVector(['UNSUBSCRIBE', path]);
+    const message = Message.fromVector(['P2P_BASE_MESSAGE', path]);
     const messageBuffer = message.toBuffer();
     this.sendSignedMessage(messageBuffer);
 
@@ -4109,6 +4246,10 @@ class Bridge extends React.Component {
                 const purchaseDid = String(result.documentId);
                 if (this._pendingCreatePurchaseInvoiceBackendIds) {
                   this._pendingCreatePurchaseInvoiceBackendIds.delete(purchaseDid);
+                }
+                if (result.claimToken) {
+                  if (!this._purchaseClaimTokens) this._purchaseClaimTokens = new Map();
+                  this._purchaseClaimTokens.set(purchaseDid, { invoiceId: result.invoiceId, claimToken: result.claimToken });
                 }
                 window.dispatchEvent(new CustomEvent('purchaseInvoiceReady', {
                   detail: {
@@ -4724,7 +4865,7 @@ class Bridge extends React.Component {
    * Send network status request (backward compatibility)
    */
   sendNetworkStatusRequest () {
-    const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [] })]);
+    const message = Message.fromVector(['JSONCall', JSON.stringify({ method: 'GetNetworkStatus', params: [this._operatorRpcAuth()] })]);
     const buffer = message.toBuffer();
     if (this.settings.debug) {
       console.debug('[BRIDGE]', 'Sending network status request, bytes:', buffer && buffer.length);
@@ -4842,7 +4983,7 @@ class Bridge extends React.Component {
     try {
       const payload = {
         method: 'AddPeer',
-        params: [{ address: normalizedAddr }]
+        params: [{ address: normalizedAddr }, this._operatorRpcAuth()]
       };
 
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
@@ -4871,7 +5012,7 @@ class Bridge extends React.Component {
     const resolved = typeof idOrAddress === 'object' && idOrAddress ? (idOrAddress.id || idOrAddress.address) : idOrAddress;
     if (!resolved) return;
     try {
-      const payload = { method: 'RemovePeer', params: [resolved] };
+      const payload = { method: 'RemovePeer', params: [resolved, this._operatorRpcAuth()] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
       setTimeout(() => {
@@ -5137,6 +5278,33 @@ class Bridge extends React.Component {
    * @param {string} [documentId] - optional published document id to remove from the hub catalog.
    * @returns {Promise<{ ok: boolean, message?: string, result?: object }>}
    */
+  /** Editable documents client (versions, provenance, edits) on this Hub's origin. */
+  documentContracts () {
+    if (!this._documentContractsClient) {
+      const { createDocumentContractsClient } = require('../functions/documentContractsClient');
+      this._documentContractsClient = createDocumentContractsClient({
+        headers: () => this._hubJsonRpcHttpHeaders()
+      });
+    }
+    return this._documentContractsClient;
+  }
+
+  fetchDocumentRevisions (documentId) {
+    return this.documentContracts().revisions(documentId);
+  }
+
+  fetchDocumentProvenance (documentId) {
+    return this.documentContracts().provenance(documentId);
+  }
+
+  sendCreateDocumentContractRequest (documentId, opts = {}) {
+    return this.documentContracts().makeEditable(documentId, opts);
+  }
+
+  sendEditDocumentRequest (documentId, change = {}) {
+    return this.documentContracts().edit(documentId, change);
+  }
+
   async emitTombstone (messageId, adminToken, documentId) {
     let mid, token, docId;
     const isOpts = messageId !== null && typeof messageId === 'object' && !Array.isArray(messageId) &&
@@ -5440,7 +5608,7 @@ class Bridge extends React.Component {
       }
     } catch (_) { /* best-effort mesh alias */ }
     try {
-      const payload = { method: 'SetPeerNickname', params: [resolved, clean] };
+      const payload = { method: 'SetPeerNickname', params: [resolved, clean, this._operatorRpcAuth()] };
       const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
       this.sendSignedMessage(message.toBuffer());
       // Ensure UI updates even if push misses for some reason
@@ -5491,45 +5659,6 @@ class Bridge extends React.Component {
       }, 400);
     } catch (error) {
       console.error('[BRIDGE]', 'Error sending RequestFabricPeerResync:', safeIdentityErr(error));
-    }
-  }
-
-  /**
-   * Operator: send `P2P_FLUSH_CHAIN` to connected peers above the hub's trusted registry score.
-   * @param {{ snapshotBlockHash: string, network?: string, label?: string }} object
-   * @param {string} adminToken - hub admin token (required by JSON-RPC)
-   */
-  sendFlushChainToTrustedPeersRequest (object, adminToken) {
-    const snap = object && object.snapshotBlockHash ? String(object.snapshotBlockHash).trim() : '';
-    if (!/^[0-9a-fA-F]{64}$/.test(snap)) {
-      console.warn('[BRIDGE] sendFlushChainToTrustedPeersRequest: snapshotBlockHash must be 64 hex');
-      return;
-    }
-    const token = adminToken != null ? String(adminToken).trim() : '';
-    if (!token) {
-      console.warn('[BRIDGE] sendFlushChainToTrustedPeersRequest: adminToken required');
-      return;
-    }
-    try {
-      const param = {
-        snapshotBlockHash: snap.toLowerCase(),
-        adminToken: token
-      };
-      if (object.network != null && String(object.network).trim()) param.network = String(object.network).trim();
-      if (object.label != null && String(object.label).trim()) param.label = String(object.label).trim();
-      const payload = {
-        method: 'SendFlushChainToTrustedPeers',
-        params: [param]
-      };
-      const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
-      this.sendSignedMessage(message.toBuffer());
-      setTimeout(() => {
-        try {
-          if (typeof this.sendNetworkStatusRequest === 'function') this.sendNetworkStatusRequest();
-        } catch (e) {}
-      }, 400);
-    } catch (error) {
-      console.error('[BRIDGE]', 'Error sending SendFlushChainToTrustedPeers:', safeIdentityErr(error));
     }
   }
 
@@ -5951,8 +6080,15 @@ class Bridge extends React.Component {
     }
 
     try {
-      const params = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats))
-        ? [{ id: resolved, purchasePriceSats: Number(opts.purchasePriceSats) }]
+      // Pricing and re-listing need the operator's admin token.
+      const adminToken = this._hubIsPageOrigin() ? readHubAdminTokenFromBrowser() : '';
+      const priced = typeof opts === 'object' && opts && Number.isFinite(Number(opts.purchasePriceSats));
+      const params = priced || adminToken
+        ? [{
+          id: resolved,
+          ...(priced ? { purchasePriceSats: Number(opts.purchasePriceSats) } : {}),
+          ...(adminToken ? { adminToken } : {})
+        }]
         : [resolved];
       const backendKey = String(resolved);
       if (this._pendingPublishDocumentBackendIds) {
@@ -6063,10 +6199,11 @@ class Bridge extends React.Component {
     }
     const doc = this.globalState && this.globalState.documents && this.globalState.documents[logical];
     const backendId = (doc && doc.sha256) ? doc.sha256 : logical;
+    const claim = this._purchaseClaimTokens && this._purchaseClaimTokens.get(String(backendId));
     return new Promise((resolve) => {
       this._pendingClaimCallbacks.set(backendId, { resolve });
       try {
-        const payload = { method: 'ClaimPurchase', params: [{ documentId: backendId, txid }] };
+        const payload = { method: 'ClaimPurchase', params: [{ documentId: backendId, txid, ...(claim || {}) }] };
         const message = Message.fromVector(['JSONCall', JSON.stringify(payload)]);
         this.sendSignedMessage(message.toBuffer());
       } catch (error) {

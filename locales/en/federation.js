@@ -433,7 +433,8 @@ module.exports = {
       status: {
         pending: 'Waiting for approvals',
         broadcast: 'Sent',
-        failed: 'Could not be sent'
+        failed: 'Could not be sent',
+        declined: 'Declined by a signing rule'
       },
       txid: (txid) => `Transaction ${txid}`
     },
@@ -442,6 +443,91 @@ module.exports = {
       none: 'Nothing waiting for approval.',
       body: (name, amount, to) => `${name}: ${amount} to ${to}`,
       fee: (amount) => `Fee ${amount}`
+    },
+    openPage: 'Open federation'
+  },
+
+  yours: {
+    title: 'Your federations',
+    intro: 'Federations whose vault your cosigner key helps control. Only the signers of a federation, and this Hub’s operator, can see it here.',
+    loading: 'Loading your federations…',
+    loadFailed: (reason) => `Could not load your federations: ${reason}`,
+    none: 'Your cosigner key is not a signer of any federation this Hub knows.',
+    signedOut: 'Sign in with Passport to see the federations you sign for.',
+    needCosigner: 'Your sign-in did not share your cosigner key, so the Hub cannot tell which federations are yours.',
+    showMine: 'Show federations I sign for',
+    signingIn: 'Waiting for Passport…',
+    passportMissing: 'Passport is not installed in this browser.',
+    passportOutdated: 'Update Passport to sign in to this Hub.',
+    signInFailed: (reason) => `Passport sign-in failed${reason ? `: ${reason}` : ''}`,
+    purpose: 'See the federations you sign for',
+    stillNoCosigner: 'Passport signed you in but did not share a cosigner key. Allow it in Passport and try again.'
+  },
+
+  page: {
+    back: 'All federations',
+    loading: 'Loading federation…',
+    notFound: 'This Hub has no federation by that id that you can see. Only its signers and this Hub’s operator can open it.',
+    loadFailed: (reason) => `Could not load this federation: ${reason}`,
+    titleFallback: (id) => `Federation ${id}`,
+    id: 'Federation id',
+    network: 'Network',
+    policy: 'Approvals needed',
+    status: 'Status',
+    relayed: 'Relayed by this Hub',
+    relayedHelp: 'This Hub is not a member. It passes this federation’s messages along and shows its vault.',
+    viewer: {
+      operator: 'You are this Hub’s operator.',
+      member: 'You are one of the signers.'
+    },
+    copy: 'Copy',
+    signers: {
+      title: 'Signers',
+      signer: 'Signer',
+      status: 'Status',
+      you: 'You',
+      hub: 'This Hub',
+      publisher: 'Created it',
+      unknownStatus: '—'
+    },
+    vaults: {
+      title: 'Vault',
+      current: 'Current vault',
+      previous: 'Earlier vault',
+      previousHelp: 'Left behind when the signers changed. Its coins still need the old signers.',
+      balance: (amount) => `Balance: ${amount}`,
+      balanceUnknown: (reason) => `Balance unavailable${reason ? `: ${reason}` : ''}`,
+      coins: 'Coins',
+      noCoins: 'No confirmed coins.',
+      coin: 'Coin',
+      amount: 'Amount',
+      height: 'Block'
+    },
+    withdrawals: {
+      title: 'Withdrawals',
+      none: 'No withdrawals yet.',
+      row: (amount, to) => `${amount} to ${to}`,
+      progress: (text) => `${text} signatures`,
+      youSigned: 'You signed',
+      yourTurn: 'Waiting for your signature. Sign it in Passport or GoonCitizen; they pick it up from this Hub’s mailbox.',
+      requestedBy: (who) => `Requested by ${who}`,
+      fee: (amount) => `Fee ${amount}`
+    },
+    descriptor: {
+      title: 'Descriptor',
+      help: 'The canonical description every member signs against. Its hash is the federation id, and every member derives the same vault from it.'
+    },
+    messages: {
+      title: 'Messages',
+      help: 'Signed messages for this federation that passed through this Hub’s mailbox, oldest first.',
+      none: 'No messages in the mailbox.',
+      open: 'Open',
+      copyFabric: 'Copy fabric: link',
+      more: 'Show more',
+      signer: (who) => `Signed by ${who}`
+    },
+    actions: {
+      title: 'Operator actions'
     }
   },
 

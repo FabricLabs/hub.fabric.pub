@@ -10,6 +10,10 @@
  * - TTL + first-wins claim for multi-operator drain races
  *
  * Not a public Payjoin Directory / HPKE / OHTTP implementation.
+ *
+ * The mailbox id is 32 random bytes and is the only capability: whoever
+ * holds it can poll, enqueue, and claim. Listing every mailbox is for the
+ * operator only, and the number of open mailboxes is capped.
  */
 
 const crypto = require('crypto');
@@ -21,6 +25,8 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_BLOB_BYTES = 256 * 1024;
 const DEFAULT_MAX_ENTRIES = 64;
 const DEFAULT_CLAIM_TTL_MS = 30 * 1000;
+const DEFAULT_MAX_MAILBOXES = 256;
+const MAX_TTL_MS = 24 * 60 * 60 * 1000;
 const ROLES = Object.freeze(['receiver_ready', 'payer_reply', 'receiver_reply']);
 
 function sha256Hex (buf) {
@@ -72,6 +78,7 @@ class PayjoinAsyncMailbox {
    * @param {number} [opts.maxBlobBytes]
    * @param {number} [opts.maxEntries]
    * @param {number} [opts.claimTtlMs]
+   * @param {number} [opts.maxMailboxes] open (unexpired) mailboxes at once
    */
   constructor (opts = {}) {
     this.fs = opts.fs || null;
@@ -79,6 +86,7 @@ class PayjoinAsyncMailbox {
     this.maxBlobBytes = Math.max(1024, Number(opts.maxBlobBytes || DEFAULT_MAX_BLOB_BYTES));
     this.maxEntries = Math.max(1, Math.min(512, Number(opts.maxEntries || DEFAULT_MAX_ENTRIES)));
     this.claimTtlMs = Math.max(1000, Number(opts.claimTtlMs || DEFAULT_CLAIM_TTL_MS));
+    this.maxMailboxes = Math.max(1, Number(opts.maxMailboxes || DEFAULT_MAX_MAILBOXES));
     /** @type {Record<string, object>} */
     this._mailboxes = {};
   }
@@ -95,15 +103,21 @@ class PayjoinAsyncMailbox {
 
   createMailbox (input = {}) {
     const now = Date.now();
-    const ttlMs = Math.max(5000, Number(input.ttlMs || this.defaultTtlMs));
-    const sessionId = input.sessionId != null ? String(input.sessionId).trim() : '';
+    const ttlMs = Math.min(MAX_TTL_MS, Math.max(5000, Number(input.ttlMs || this.defaultTtlMs)));
+    const sessionId = input.sessionId != null ? String(input.sessionId).trim().slice(0, 128) : '';
+    const open = Object.values(this._mailboxes).filter((doc) => doc && !this._isExpired(doc, now)).length;
+    if (open >= this.maxMailboxes) {
+      const err = new Error('Too many open Payjoin mailboxes. Try again later.');
+      err.code = 'MAILBOX_LIMIT';
+      throw err;
+    }
     const payload = {
       created: new Date(now).toISOString(),
       expiresAt: new Date(now + ttlMs).toISOString(),
       sessionId: sessionId || undefined
     };
-    const actor = new Actor({ content: payload });
-    const id = actor.id;
+    // Random, not derived from the (guessable) creation time: the id is the capability.
+    const id = crypto.randomBytes(32).toString('hex');
     const doc = {
       id,
       created: payload.created,

@@ -288,7 +288,7 @@ function walletSigningKeys (identity) {
 
 /**
  * Fabric signer of an unlocked identity, in the `{ id, fabricKey }` shape core
- * `fabricIdentitySchnorr` signs with (device links, IdentityCrossSign).
+ * `fabricIdentitySchnorr` signs with.
  * @param {object} identity
  * @returns {{ id: string, fabricKey: object }|null}
  */

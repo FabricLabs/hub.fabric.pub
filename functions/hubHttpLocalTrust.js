@@ -148,6 +148,48 @@ function isCrossOriginRead (req) {
 }
 
 /**
+ * `websocket.verifyOrigin` for the Hub (see `@fabric/http`). A WebSocket upgrade bypasses the
+ * Express middleware, so it gets its own guard. Over loopback (no proxy headers) the upgrade
+ * must use a rebind-safe `Host` and come from the Hub's own origin, a non-browser client (no
+ * `Origin`), or an origin in `allowedOrigins`. LAN and proxied upgrades are the Hub's public
+ * surface and pass, so CDN builds can still join a public Hub.
+ *
+ * Passport keeps a Hub WebSocket open from its extension origin: `chrome-extension://<id>` for
+ * the ids in `passportExtensionIds`, and any `moz-extension://` (Firefox ids differ per install),
+ * the same callers the delegate accepts.
+ * @param {Object} [opts]
+ * @param {string[]} [opts.allowedHosts]
+ * @param {string[]} [opts.allowedOrigins] Exact origins, e.g. `http://localhost:3000`.
+ * @param {string[]} [opts.passportExtensionIds] Chrome extension ids of Passport builds.
+ * @returns {function(Object): boolean}
+ */
+function createWebSocketOriginCheck (opts = {}) {
+  const allowedHosts = opts.allowedHosts || [];
+  const allowedOrigins = new Set((opts.allowedOrigins || [])
+    .concat((opts.passportExtensionIds || []).map((id) => `chrome-extension://${id}`))
+    .map((o) => String(o || '').trim().replace(/\/+$/, '').toLowerCase())
+    .filter(Boolean));
+  return function verifyHubWebSocketOrigin (req) {
+    if (!isLoopbackAddress(remoteAddressOf(req)) || hasProxyForwardHeaders(req)) return true;
+    const h = (req && req.headers) || {};
+    if (!isRebindSafeHost(h.host, allowedHosts)) return false;
+    const origin = h.origin ? String(h.origin).trim().toLowerCase() : '';
+    if (origin && (allowedOrigins.has(origin) || /^moz-extension:\/\/[0-9a-f-]+$/.test(origin))) return true;
+    return !isCrossOriginRead(req);
+  };
+}
+
+/**
+ * Exact browser origins allowed to open the Hub WebSocket over loopback besides its own
+ * (`FABRIC_HUB_WS_ORIGINS`, comma list).
+ * @param {Object} [env]
+ * @returns {string[]}
+ */
+function webSocketOriginsFromEnv (env = process.env) {
+  return String(env.FABRIC_HUB_WS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
  * Whether a `config.local.js` source sets the dev browser identity (operator mnemonic or its
  * passphrase) on a line that is not a comment.
  * @param {string} source
@@ -250,11 +292,13 @@ module.exports = {
   buildContentSecurityPolicy,
   createBrowserSecretsGuard,
   createLoopbackHostGuard,
+  createWebSocketOriginCheck,
   hasProxyForwardHeaders,
   hostnameFromHostHeader,
   isCrossOriginRead,
   isLoopbackAddress,
   isRebindSafeHost,
   isTrustedLoopbackRequest,
-  setsBrowserIdentity
+  setsBrowserIdentity,
+  webSocketOriginsFromEnv
 };

@@ -82,4 +82,33 @@ describe('Bridge wallet updates (balance chip + receive notices)', function () {
     const kinds = stateUpdatesFor('/messages/').map((ev) => ev.detail.operation.value.object.kind);
     assert.deepStrictEqual(kinds, ['wallet_receive_mempool', 'wallet_receive_confirmed'], 'one notice per phase, repeats are silent');
   });
+
+  it('keeps every wallet transaction notice when the message log is capped', function () {
+    const bridge = new Bridge({ responseCapture: () => {} });
+    const start = Date.parse('2026-01-01T00:00:00.000Z');
+    const messages = {
+      'client-wallet-old': {
+        type: 'CLIENT_NOTICE',
+        object: { content: 'Received', created: new Date(start).toISOString(), kind: 'wallet_receive_confirmed', localOnly: true }
+      },
+      'client-l1-inv-old': {
+        type: 'CLIENT_NOTICE',
+        object: { content: 'Invoice paid', created: new Date(start + 1).toISOString(), kind: 'l1_invoice', localOnly: true }
+      }
+    };
+    for (let i = 0; i < 520; i++) {
+      messages[`chat-${i}`] = {
+        type: 'P2P_CHAT_MESSAGE',
+        object: { content: `hi ${i}`, created: new Date(start + 1000 + i).toISOString() }
+      };
+    }
+    bridge.globalState.messages = messages;
+    bridge._persistMessages();
+    const kept = bridge.globalState.messages;
+    assert.ok(kept['client-wallet-old'], 'wallet receive notice kept');
+    assert.ok(kept['client-l1-inv-old'], 'invoice payment notice kept');
+    assert.ok(!kept['chat-0'], 'oldest other messages are cut');
+    assert.ok(kept['chat-519'], 'newest other messages stay');
+    assert.strictEqual(Object.keys(kept).length, 502);
+  });
 });
