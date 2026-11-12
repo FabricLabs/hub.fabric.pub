@@ -248,10 +248,9 @@ function ContractView (props) {
       setAnchorError(null);
       if (result && result.fabricMessageWireHex && typeof window !== 'undefined') {
         try {
-          window.dispatchEvent(new CustomEvent('fabric:delegationSignRequest', {
+          window.dispatchEvent(new CustomEvent('fabric:messagePrompt', {
             detail: {
               wireHex: result.fabricMessageWireHex,
-              delegationSignRequest: result.delegationSignRequest || null,
               source: 'RunExecutionContract'
             }
           }));
@@ -507,10 +506,10 @@ function ContractView (props) {
                   </div>
                 </Message>
               )}
-              {hubRun && !hubRunError && hubRun.delegationSignRequestError && (
+              {hubRun && !hubRunError && hubRun.messagePromptError && (
                 <Message warning style={{ marginBottom: '1em' }}>
                   <Message.Header>{cv.hubRun.signingHeading}</Message.Header>
-                  <p style={{ margin: '0.35em 0 0' }}>{String(hubRun.delegationSignRequestError)}</p>
+                  <p style={{ margin: '0.35em 0 0' }}>{String(hubRun.messagePromptError)}</p>
                   <p style={{ margin: '0.5em 0 0', fontSize: '0.9em', color: '#666' }}>
                     {cv.hubRun.signingBody}
                   </p>

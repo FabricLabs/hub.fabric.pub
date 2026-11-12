@@ -5,7 +5,6 @@
  * Pairing remains /device-links; this is the network-visible BIP340 proof.
  */
 
-const Key = require('@fabric/core/types/key');
 const {
   readStorageJSON,
   writeStorageJSON
@@ -59,7 +58,7 @@ function removeLinkedDevice (peerFabricId) {
 }
 
 /**
- * @param {object} key unlocked Fabric Key
+ * @param {object} key unlocked signer (`{ id, fabricKey }` from `identitySigner`, or a core Identity)
  * @param {string} peerPubkey linked device's compressed pubkey
  * @param {{ sessionId: string, nonce: string, origin: string }} binding the device-link session both sides signed
  * @param {string} [kind] IdentityCrossSign (default) or IdentityCrossSignRevoke
@@ -92,23 +91,12 @@ async function publishHubIdentityCrossSign (key, peerPubkey, binding, kind) {
   }
 }
 
-function unlockedHubKey () {
-  try {
-    if (typeof window === 'undefined' || !window.sessionStorage) return null;
-    const unlocked = JSON.parse(window.sessionStorage.getItem('fabric.identity.unlocked') || 'null');
-    if (!unlocked || !unlocked.xprv) return null;
-    return new Key({ xprv: unlocked.xprv });
-  } catch (_) {
-    return null;
-  }
-}
-
 /**
  * Publish IdentityCrossSignRevoke then drop the local roster row.
  * @param {object} device linked-device row
- * @param {object} [keyOpt] unlocked Fabric Key (IdentityManager); else session unlock
+ * @param {object} key unlocked signer (`{ id, fabricKey }` from `identitySigner`)
  */
-async function revokeLinkedDevice (device, keyOpt) {
+async function revokeLinkedDevice (device, key) {
   const peerPubkey = device && (device.peerPubkey || device.pubkey);
   const binding = {
     sessionId: device && device.sessionId,
@@ -119,7 +107,6 @@ async function revokeLinkedDevice (device, keyOpt) {
   if (!binding.sessionId || !binding.nonce || !binding.origin || !peerPubkey) {
     return { ok: false, error: 'This device was linked with an older version. Link it again, then revoke.' };
   }
-  const key = keyOpt || unlockedHubKey();
   if (!key) {
     return { ok: false, error: 'Unlock your Fabric identity before revoking a device.' };
   }
@@ -137,6 +124,5 @@ module.exports = {
   removeLinkedDevice,
   peerIdOf,
   publishHubIdentityCrossSign,
-  unlockedHubKey,
   revokeLinkedDevice
 };

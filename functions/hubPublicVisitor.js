@@ -1,13 +1,13 @@
 'use strict';
 
 const { readStorageJSON } = require('./fabricBrowserState');
-const { hasExternalSigningDelegation } = require('./fabricDelegationLocal');
+const { hasPassportSession } = require('./passportSession');
+const { STORAGE_KEY, readStoredIdentity } = require('./hubAccountVault');
 
 function hasPersistedFabricIdentity () {
   if (typeof window === 'undefined') return false;
   try {
-    const p = readStorageJSON('fabric.identity.local', null);
-    return !!(p && (p.id || p.xpub));
+    return !!readStoredIdentity(readStorageJSON(STORAGE_KEY, null)).identity;
   } catch (e) {
     return false;
   }
@@ -32,7 +32,7 @@ function hasUnlockedHubSigningIdentity ({ localIdentity, propsAuth }) {
  * desktop-linked profile), we return **false** so the normal shell renders — TopPanel shows
  * Unlock / watch-only / signed-in — instead of replacing routes with {@link PublicVisitorGate}.
  *
- * Signing-protected flows still require `xprv` in memory or delegation elsewhere.
+ * Signing-protected flows still require `xprv` in memory.
  *
  * @param {{ localIdentity?: object|null, propsAuth?: object|null }} args
  * @returns {boolean}
@@ -41,14 +41,14 @@ function computePublicHubVisitor ({ localIdentity, propsAuth }) {
   if (hasUnlockedHubSigningIdentity({ localIdentity, propsAuth })) return false;
   if (
     localIdentity &&
-    (localIdentity.id || localIdentity.xpub)
+    localIdentity.id
   ) {
     return false;
   }
   // Before HubInterface hydrates `localIdentity`, a locked/watch-only record on
   // disk must not be treated as an anonymous public visitor.
   if (hasPersistedFabricIdentity()) return false;
-  if (hasExternalSigningDelegation()) return false;
+  if (hasPassportSession()) return false;
   return true;
 }
 

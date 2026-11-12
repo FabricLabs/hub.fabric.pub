@@ -29,4 +29,32 @@ describe('PeeringService', function () {
     assert.ok(att.signature && att.signature.length === 128);
     assert.strictEqual(PeeringService.verifyOracleAttestation(att), true);
   });
+
+  it('names the federation key in the signed claim, apart from the identity key', function () {
+    const key = new Key({});
+    const cosigner = new Key({});
+    const hub = {
+      http: { clock: 1, agent: { listenAddress: null, listening: false } },
+      agent: { id: 'fab-peer-id', identity: { id: 'identity-hex' }, connections: {} },
+      settings: { alias: '@fabric/hub' },
+      federations: { pubkey: cosigner.pubkey }
+    };
+    const svc = new PeeringService({});
+    svc.attach({ key, hub });
+    const checked = PeeringService.verifyHubAttestation({ oracleAttestation: svc.buildOracleAttestation() });
+    assert.strictEqual(checked.ok, true);
+    assert.strictEqual(checked.pubkey, String(key.pubkey).toLowerCase());
+    assert.strictEqual(checked.claim.federationPubkey, cosigner.pubkey);
+    assert.notStrictEqual(checked.claim.federationPubkey, checked.pubkey);
+
+    const forged = svc.buildOracleAttestation();
+    forged.claim.federationPubkey = new Key({}).pubkey;
+    assert.strictEqual(PeeringService.verifyHubAttestation(forged).ok, false);
+  });
+
+  it('claims no federation key when Federations are off', function () {
+    const svc = new PeeringService({});
+    svc.attach({ key: new Key({}), hub: { http: { agent: null }, agent: null, settings: {} } });
+    assert.strictEqual(svc.buildClaim().federationPubkey, null);
+  });
 });

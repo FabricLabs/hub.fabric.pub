@@ -166,7 +166,7 @@ async function waitWalletBalanceBtc (httpBase, minBtc, timeoutMs = 90000) {
 }
 
 function hubPubHex (hub) {
-  const k = hub._rootKey && hub._rootKey.pubkey;
+  const k = hub._cosignerKey && hub._cosignerKey.pubkey;
   if (!k) return '';
   return Buffer.isBuffer(k) ? k.toString('hex') : String(k).trim();
 }
@@ -290,7 +290,7 @@ function fabricId (hub) {
     assert.strictEqual(bootA.status, 200, bootA.raw);
     tokenA = bootA.body.token;
     assert.ok(tokenA, 'admin token A');
-    assert.ok(Token.verifySigned(tokenA, hubA._rootKey), 'admin token verifies against hub A identity');
+    assert.ok(Token.verifySigned(tokenA, hubA._fabricKey), 'admin token verifies against hub A identity key');
 
     await waitBitcoinHttpAvailable(httpA, 120000);
 
@@ -346,7 +346,7 @@ function fabricId (hub) {
     const bootB = await httpJson(httpB, 'POST', '/settings', { NODE_NAME: 'PlaynetBeaconB', LIGHTNING_MANAGED: false, bitcoinManaged: true });
     assert.strictEqual(bootB.status, 200, bootB.raw);
     tokenB = bootB.body.token;
-    assert.ok(Token.verifySigned(tokenB, hubB._rootKey));
+    assert.ok(Token.verifySigned(tokenB, hubB._fabricKey));
 
     const baseC = merge({}, settings, {
       port: fabricPortC,
@@ -384,7 +384,7 @@ function fabricId (hub) {
     const bootC = await httpJson(httpC, 'POST', '/settings', { NODE_NAME: 'PlaynetBeaconC', LIGHTNING_MANAGED: false, bitcoinManaged: true });
     assert.strictEqual(bootC.status, 200);
     tokenC = bootC.body.token;
-    assert.ok(Token.verifySigned(tokenC, hubC._rootKey));
+    assert.ok(Token.verifySigned(tokenC, hubC._fabricKey));
 
     const heightA = await btcFund._makeRPCRequest('getblockcount', []);
     const heightB = await btcB._makeRPCRequest('getblockcount', []);
@@ -416,7 +416,7 @@ function fabricId (hub) {
       contractId: 'beacon-federation-playnet',
       note: 'synthetic reject path',
       invitedAt: Date.now()
-    }, hubA._rootKey);
+    }, hubA._fabricKey);
     assert.strictEqual(verifyFederationContractPayloadSignature(signedMirror).ok, true);
 
     const decline = signFederationContractPayload({
@@ -426,7 +426,7 @@ function fabricId (hub) {
       accept: false,
       responderPubkey: pkB,
       respondedAt: Date.now()
-    }, hubB._rootKey);
+    }, hubB._fabricKey);
     assert.strictEqual(verifyFederationContractPayloadSignature(decline).ok, true);
     await rpc(httpB, 'SendPeerMessage', [{ id: fabA }, { content: JSON.stringify(decline), actor: { id: fabB } }]);
 
@@ -443,7 +443,7 @@ function fabricId (hub) {
       accept: true,
       responderPubkey: pkB,
       respondedAt: Date.now()
-    }, hubB._rootKey);
+    }, hubB._fabricKey);
     assert.strictEqual(verifyFederationContractPayloadSignature(accept).ok, true);
     await rpc(httpB, 'SendPeerMessage', [{ id: fabA }, { content: JSON.stringify(accept), actor: { id: fabB } }]);
 
@@ -472,7 +472,7 @@ function fabricId (hub) {
       accept: true,
       responderPubkey: pkC,
       respondedAt: Date.now()
-    }, hubC._rootKey);
+    }, hubC._fabricKey);
     assert.strictEqual(verifyFederationContractPayloadSignature(acceptC).ok, true);
     await rpc(httpC, 'SendPeerMessage', [{ id: fabA }, { content: JSON.stringify(acceptC), actor: { id: fabC } }]);
     await rpc(httpA, 'AddDistributedFederationMember', [{ adminToken: tokenA, pubkey: pkC }]);

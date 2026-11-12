@@ -209,7 +209,7 @@ module.exports = {
       desktop: {
         title: 'Desktop sign-in:',
         before: 'If you log in with the Fabric Hub desktop app, manage its sign-in tokens and audits under',
-        link: 'Security & delegation',
+        link: 'Security',
         after: '.'
       }
     },
@@ -483,8 +483,8 @@ module.exports = {
     keysTitle: 'Keys and this page',
     keysBody: 'Your receive addresses and the balance in the top bar come from your Fabric identity’s public key. Make a payment spends the Hub wallet with the admin token, not keys stored in this browser. Signing a Payjoin payment in this browser needs your identity unlocked with its full key.',
     keysWallet: 'Bitcoin wallet and derivation',
-    keysSecurity: 'Security & delegation',
-    keysSecurityAfter: 'Revoke desktop delegation on shared computers.',
+    keysSecurity: 'Security',
+    keysSecurityAfter: 'Sign out of Passport and revoke linked devices on shared computers.',
     walkthroughTitle: 'Pay an invoice from a second tab',
     steps: {
       funds: {
@@ -567,7 +567,7 @@ module.exports = {
     payIntro: 'On-chain payments come from the Hub wallet and need the admin token. To pay with Payjoin from your own keys, paste a bitcoin: payment link that includes Payjoin details and sign in this browser while your identity is unlocked. You can also pay a Lightning invoice.',
     adminTitle: 'Sending from the Hub wallet needs the admin token',
     adminBefore: 'You can still request payments and view history here. To send, confirm your identity under',
-    adminLink: 'Security & delegation',
+    adminLink: 'Security',
     adminAfter: ', then add the admin token under Settings → Admin.',
     preferPayjoinSend: 'Prefer Payjoin when paying',
     federationMemoBefore: 'Record as a federation payment (adds the spending criteria from',
@@ -757,13 +757,12 @@ module.exports = {
       campaignArbiterSign: 'Admin Bearer: Hub arbiter co-signs (body: psbtBase64)',
       campaignBroadcast: 'Finalize the 2-of-2 payout and broadcast it (body: psbtBase64)',
       campaignRefund: 'Admin Bearer: after the refund height, returns a signed arbiter refund (body: destinationAddress, fundedTxid, vout?, feeSats?)',
-      sessionCreate: 'Desktop login: create a session (body: origin). Off loopback, the request must match that origin (Origin, Referer, or Sec-Fetch-Site and Host)',
-      session: 'Poll a desktop login (pending, then signed once, then 404). After redeeming, GET /sessions/:delegationToken needs a matching Bearer token. Off loopback, Electron sends the Hub origin from the fabric:// link; localhost and 127.0.0.1 on the same port count as the same origin',
-      sessionAudit: 'Delegation audit (Bearer must equal the session ID): pending queue, DELEGATION_* Fabric log slice, Hub verify pubkey',
-      sessionRevoke: 'Revoke a delegation (loopback, or Bearer matching the ID); 404 if the token is unknown',
-      sessionSign: 'Desktop completes login: loopback TCP, or Origin/Referer/Host matching the session (LAN Hub); localhost and 127.0.0.1 on the same port count as the same origin',
-      sessions: 'Delegation sessions and pendingDelegationMessages (Fabric message IDs; loopback only)',
-      rpc: 'JSON-RPC: PostDelegationSignatureMessage, GetDelegationSignatureMessage, ResolveDelegationSignatureMessage (delegation token or session ID); Fabric log DELEGATION_SIGNATURE_*',
+      sessionChallenge: 'Passport sign-in: issue a PASSPORT_CHALLENGE for this origin (body: request?, purpose?) and set the binding cookie',
+      sessionCreate: 'Passport sign-in: verify a signed PASSPORT_ASSERTION (body: assertion) and set the HttpOnly session cookie',
+      sessionSelf: 'Desktop app only: sign this Hub’s own UI in as the Hub identity (loopback)',
+      session: 'The signed-in session (identity id, network, signer, shared wallet xpubs)',
+      sessionRevoke: 'Sign out: end the session and clear its cookie',
+      rpc: 'JSON-RPC 2.0 over HTTP (same methods as the WebSocket bridge)',
       lightning: 'Lightning status',
       lightningChannels: 'Channels and listfunds outputs',
       lightningClose: 'Close a channel (CLN close)',

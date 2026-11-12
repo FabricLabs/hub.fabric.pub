@@ -11,8 +11,10 @@
  *   npm run deploy -- --network regtest --local --playnet restart
  *
  * Instances (see `scripts/lib/localNetwork.js`): `seed` (Bitcoin P2P listen +
- * Beacon miner, regtest only), `hub-fabric-pub`, and `hub-goon-vc`, each with
- * its own generated key under `stores/local-network/<network>/<instance>/`.
+ * Beacon miner, regtest only), `hub-fabric-pub`, `hub-goon-vc`, and `operator`
+ * (the local member), each with its own generated key under
+ * `stores/local-network/<network>/<instance>/`. With remotes the two stand-ins
+ * are left out: the real Hubs take their place.
  * On regtest the managed bitcoinds form a private network (`-addnode` to the
  * seed).
  *
@@ -20,7 +22,10 @@
  * instance dial the public Hubs (hub.fabric.pub, hub.goon.vc) over Fabric, and
  * `start` / `status` compare them with this tree: bundle, key, chain. The seed's
  * bitcoind also addnodes each remote (port 18444 on regtest); the most-work
- * chain wins, so a longer public chain replaces this network's chain.
+ * chain wins, so a longer public chain replaces this network's chain. The seed
+ * then neither pre-mines nor runs its Beacon, so nothing mines onto the public chain.
+ * `--additive` joins without replacing anything: stand-ins, miner, and this
+ * network's chain stay, and only Fabric peers to the public Hubs are added.
  * Running instances keep their old peers until `restart`.
  *
  * `start` writes `stores/local-network/<network>/network-profile.json` (HTTP
@@ -39,7 +44,7 @@ const { execFile } = require('child_process');
 const net = require('./lib/localNetwork');
 
 /** Public Hubs `--playnet` peers with. */
-const PLAYNET_HUBS = Object.freeze(['hub.fabric.pub', 'hub.goon.vc']);
+const PLAYNET_HUBS = Object.freeze(['hub.fabric.pub', 'hub.goon.vc:7779']);
 
 /** Bitcoin P2P port of a remote Hub's bitcoind (no mainnet: never addnode a public Hub there). */
 const BITCOIN_P2P_PORTS = Object.freeze({ regtest: 18444, signet: 38333, testnet: 18333 });
@@ -63,6 +68,7 @@ function parseArgs (argv) {
     else if (a.startsWith('--network=')) out.network = a.slice('--network='.length);
     else if (a === '--local') out.local = true;
     else if (a === '--playnet') out.playnet = true;
+    else if (a === '--additive') out.additive = true;
     else if (a === '--remote') out.remotes = (out.remotes || []).concat(String(argv[++i] || '').split(',').filter(Boolean));
     else if (a === '--keys') out.keys = true;
     else if (a === '--json') out.json = true;
@@ -85,7 +91,8 @@ function usage () {
     '  reset    stop, then delete chains and Hub stores (keeps keys unless --keys)',
     '',
     `  --playnet  also peer with ${PLAYNET_HUBS.join(', ')} (Fabric, and Bitcoin P2P off mainnet) and compare them with this tree`,
-    '  --remote   peer with this public Hub instead (repeatable; HTTPS for its API, port 7777 unless given)'
+    '  --remote   peer with this public Hub instead (repeatable; HTTPS for its API, port 7777 unless given)',
+    '  --additive keep the whole local network (stand-ins, miner, own chain) and only add Fabric peers to the public Hubs'
   ].join('\n'));
 }
 
@@ -108,13 +115,14 @@ function context (opts) {
   const profile = net.networkProfile(opts.network);
   if (opts.base != null) profile.base = Number(opts.base);
   const root = net.networkRoot(profile.name, opts.root);
-  const instances = net.instancesFor(profile.name, profile.base).map((i) => Object.assign(i, {
+  const remotes = (opts.remotes || ((opts.playnet || opts.additive) ? PLAYNET_HUBS : [])).map(parseRemote);
+  const additive = !!opts.additive && remotes.length > 0;
+  const instances = net.instancesFor(profile.name, profile.base, { remotes: remotes.length > 0 && !additive }).map((i) => Object.assign(i, {
     dir: path.join(root, i.name),
     tokenFile: path.join(root, i.name, 'admin-token.txt'),
     fragmentFile: path.join(root, i.name, 'fragment.json')
   }));
-  const remotes = (opts.remotes || (opts.playnet ? PLAYNET_HUBS : [])).map(parseRemote);
-  return { profile, root, instances, remotes, profileFile: path.join(root, 'network-profile.json') };
+  return { profile, root, instances, remotes, additive, profileFile: path.join(root, 'network-profile.json') };
 }
 
 async function fetchJson (url, opts = {}) {
@@ -492,7 +500,9 @@ async function start (ctx) {
   const remoteDials = sharedListeners(resolved).map((g) => g[0].fabric);
   // Most work wins: joining a longer public chain reorgs this network onto it.
   const btcPort = BITCOIN_P2P_PORTS[ctx.profile.name];
-  const remoteBitcoin = btcPort ? sharedListeners(resolved).map((g) => `${g[0].host}:${btcPort}`) : [];
+  const remoteBitcoin = btcPort && !ctx.additive ? sharedListeners(resolved).map((g) => `${g[0].host}:${btcPort}`) : [];
+  // Additive: this network keeps its own chain and miner and only adds Fabric peers.
+  const ownChain = !ctx.remotes.length || ctx.additive;
   for (const instance of ctx.instances) {
     fs.mkdirSync(instance.dir, { recursive: true });
     const key = net.ensureInstanceKey(instance.dir);
@@ -508,6 +518,8 @@ async function start (ctx) {
       key,
       seedPort: seed ? seed.ports.btcP2p : null,
       fabricPeers,
+      // Never mine onto a public chain.
+      mine: ownChain,
       // The others sync from the seed.
       bitcoinPeers: instance.name === 'seed' ? remoteBitcoin : []
     });
@@ -521,13 +533,14 @@ async function start (ctx) {
     // First-time setup gates managed bitcoind, so the admin token comes first.
     const token = await net.bootstrapAdmin(instance.ports.http, instance.label, instance.tokenFile, {
       network: ctx.profile.name,
-      listen: instance.name === 'seed'
+      listen: instance.name === 'seed',
+      prune: ctx.profile.prune || 0
     });
     if (token) console.log(`[deploy] ${instance.name}: admin token → ${instance.tokenFile}`);
     await net.waitBitcoinOnline(instance.ports.http, 240000);
   }
 
-  if (seed) await matureSeed(ctx, seed);
+  if (seed && ownChain) await matureSeed(ctx, seed);
 
   let health = [];
   let remotes = [];

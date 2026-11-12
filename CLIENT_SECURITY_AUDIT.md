@@ -93,12 +93,9 @@ Chat content is rendered as React children (not `dangerouslySetInnerHTML`), so R
 
 **Location:** `components/HubInterface.js`, `components/IdentityManager.js`
 
-**Issue:** Private keys (`xprv`) and encrypted identity data are stored in:
+**Issue (Passport v2 status):** `localStorage` (`fabric.identity.local`) holds only a core `FabricAccountVault`: the master xprv sealed with the lock password, plus the public data of each account used (`functions/hubAccountVault.js`). No mnemonic is kept, and nothing private is written unsealed — the old plaintext `sessionStorage` copy (`fabric.identity.unlocked`) is gone. Once unlocked, the master and the identity key live in page memory until Lock, auto-lock, or reload.
 
-- `localStorage` (`fabric.identity.local`) — encrypted with user password when `passwordProtected`
-- `sessionStorage` (`fabric.identity.unlocked`) — plaintext xprv when unlocked
-
-**Risk:** XSS can read these. Password-protected storage uses AES-256-CBC with a key derived from user password + salt, which is reasonable for at-rest protection but does not mitigate XSS.
+**Risk:** XSS can still read keys from memory while the identity is unlocked, and can read the sealed vault to attack the lock password offline.
 
 **Recommendation:** Document the threat model. For high-security deployments, consider Web Crypto–based key storage or hardware-backed solutions. Ensure no sensitive keys are logged.
 

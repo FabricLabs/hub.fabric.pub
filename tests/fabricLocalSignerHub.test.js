@@ -5,9 +5,12 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const Key = require('@fabric/core/types/key');
 const Identity = require('@fabric/core/types/identity');
+const { FIXTURE_SEED } = require('@fabric/core/constants');
+const { importSeed, deriveAccount } = require('@fabric/core/functions/accountKeys');
+const { createChallenge, createSignRequest, verifyAssertion } = require('@fabric/core/functions/passport');
 const {
   createParentPortApprover,
-  hubOwnOrigins,
+  passportExtensionIds,
   hubFabricIdentity,
   mountFabricLocalSignerHub
 } = require('../functions/fabricLocalSignerHub');
@@ -19,30 +22,19 @@ const {
 const { signCrossSign } = require('../functions/identityCrossSignVerify');
 const { ingestIdentityCrossSign } = require('../functions/identityClusterHttp');
 
-function load (name) {
-  try {
-    return require(name);
-  } catch (_) {
-    return null;
-  }
-}
-
-const siteLogin = load('@fabric/core/functions/fabricSiteLogin');
-const siteLoginVerify = load('@fabric/http/functions/fabricSiteLoginVerify');
-const localSigner = load('@fabric/http/functions/fabricLocalSigner');
-
 const SITE = 'https://shop.example';
+const CHROME_ID = 'abcdefghijklmnopabcdefghijklmnop';
+const PASSPORT_ORIGIN = `chrome-extension://${CHROME_ID}`;
+const MASTER = importSeed(FIXTURE_SEED);
 
 function mockRes () {
   const out = { statusCode: 0, body: null };
   return {
     out,
     setHeader () {},
-    writeHead (code) { out.statusCode = code; },
     end (body) { out.body = body; out.done = true; },
-    status (code) { out.statusCode = code; return this; },
-    send (body) { out.body = body; out.done = true; return this; },
-    json (body) { out.body = JSON.stringify(body); out.done = true; return this; }
+    set statusCode (code) { out.statusCode = code; },
+    get statusCode () { return out.statusCode; }
   };
 }
 
@@ -53,21 +45,27 @@ function bodyOf (res) {
 function localReq (extra = {}) {
   return Object.assign({
     method: 'POST',
+    url: '/services/fabric/sign',
     socket: { remoteAddress: '127.0.0.1' },
-    headers: { host: '127.0.0.1:8080' }
+    headers: { host: '127.0.0.1:8080', origin: PASSPORT_ORIGIN }
   }, extra);
 }
 
 async function waitFor (res) {
-  for (let i = 0; i < 100 && !res.out.done; i++) await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 200 && !res.out.done; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
 function fakeHub () {
   const routes = {};
   return {
     routes,
-    settings: { alias: 'Test Hub', http: { port: 8080 } },
-    _rootKey: new Key(),
+    settings: {
+      alias: 'Test Hub',
+      http: { port: 8080 },
+      bitcoin: { network: 'regtest' },
+      passport: { extensionIds: [CHROME_ID] }
+    },
+    _rootKey: new Key({ xprv: MASTER }),
     http: { _addRoute (method, path, fn) { routes[`${method} ${path}`] = fn; } }
   };
 }
@@ -85,15 +83,24 @@ function link (hub, device) {
   assert.strictEqual(ingestIdentityCrossSign(hub, theirs, theirs.pubkeyHex).ok, true);
 }
 
+function signRequestFor (device, params = {}) {
+  const challenge = createChallenge({ origin: SITE, network: params.network || 'regtest', request: params.request });
+  const sign = createSignRequest({ challenge: challenge.uri, origin: SITE, account: params.account, disclose: params.disclose }, device.fabricKey);
+  return { challenge, sign };
+}
+
 describe('@fabric/hub Passport local signer', function () {
   it('builds a native approval dialog that defaults to Decline', function () {
-    const sign = fabricSignApprovalDialog({ kind: 'sign', origin: SITE, purpose: 'Sign in', device: 'ab'.repeat(32) });
+    const sign = fabricSignApprovalDialog({ kind: 'sign', origin: SITE, purpose: 'Sign in', device: 'ab'.repeat(32), network: 'regtest', account: 0, shares: ['identity'] });
     assert.match(sign.message, /shop\.example/);
     assert.strictEqual(sign.defaultId, 1);
     assert.strictEqual(sign.cancelId, 1);
     assert.strictEqual(sign.buttons.length, 2);
-    const linkDialog = fabricSignApprovalDialog({ kind: 'link', purpose: 'Laptop\u202e' });
+    const wallet = fabricSignApprovalDialog({ kind: 'sign', origin: SITE, shares: ['identity', 'wallet'] });
+    assert.match(wallet.detail, /wallet/i);
+    const linkDialog = fabricSignApprovalDialog({ kind: 'link', label: 'Laptop\u202e', code: '012345' });
     assert.match(linkDialog.message, /Link/);
+    assert.match(linkDialog.detail, /012345/);
     assert.ok(!linkDialog.message.includes('\u202e'));
     assert.strictEqual(APPROVAL_REQUEST, 'fabric-sign-request');
     assert.strictEqual(APPROVAL_RESULT, 'fabric-sign-result');
@@ -104,24 +111,30 @@ describe('@fabric/hub Passport local signer', function () {
     const sent = [];
     port.postMessage = (msg) => sent.push(msg);
     const approve = createParentPortApprover(port);
-    const pending = approve({ kind: 'link', purpose: 'Laptop', expiresAt: Date.now() + 5000 });
+    const pending = approve({ kind: 'link', label: 'Laptop', code: '123456', expiresAt: Date.now() + 5000 });
     assert.strictEqual(sent.length, 1);
     assert.strictEqual(sent[0].type, APPROVAL_REQUEST);
     assert.strictEqual(sent[0].kind, 'link');
+    assert.strictEqual(sent[0].code, '123456');
+    assert.ok(sent[0].expiresAt <= Date.now() + 5000, 'the dialog closes when the request expires');
     port.emit('message', { data: { type: APPROVAL_RESULT, id: 'someone-else', approved: true } });
     port.emit('message', { data: { type: APPROVAL_RESULT, id: sent[0].id, approved: true } });
     assert.strictEqual(await pending, true);
     assert.strictEqual(createParentPortApprover(null), null);
   });
 
-  it('treats the loopback port and configured public origin as the Hub itself', function () {
+  it('pins Chrome Passport builds from settings and env', function () {
     const hub = fakeHub();
-    hub.settings.payjoin = { publicOrigin: 'https://hub.example/pay' };
-    const own = hubOwnOrigins(hub);
-    assert.ok(own.has('http://127.0.0.1:8080'));
-    assert.ok(own.has('http://localhost:8080'));
-    assert.ok(own.has('https://hub.example'));
-    assert.ok(!own.has(SITE));
+    const ids = passportExtensionIds(hub, { FABRIC_PASSPORT_EXTENSION_IDS: ` ${'b'.repeat(32)} ,` });
+    assert.deepStrictEqual(ids, [CHROME_ID, 'b'.repeat(32)]);
+  });
+
+  it('signs with the account identity key, not the master key', function () {
+    const hub = fakeHub();
+    const identity = hubFabricIdentity(hub);
+    const expected = deriveAccount(MASTER, { account: 0, network: 'regtest' });
+    assert.strictEqual(identity.fabricKey.pubkey, expected.identity.pubkey);
+    assert.notStrictEqual(identity.fabricKey.pubkey, hub._rootKey.pubkey);
   });
 
   it('does not mount without an approver (CLI Hub)', function () {
@@ -130,72 +143,57 @@ describe('@fabric/hub Passport local signer', function () {
     assert.deepStrictEqual(Object.keys(hub.routes), []);
   });
 
-  describe('with the local signer installed', function () {
-    before(function () {
-      if (!localSigner || !siteLogin || !siteLoginVerify || typeof signCrossSign !== 'function') this.skip();
+  it('signs a Passport assertion for a device in the Hub identity cluster after approval', async function () {
+    const hub = fakeHub();
+    const prompts = [];
+    const signer = mountFabricLocalSignerHub(hub, { approve: (p) => { prompts.push(p); return true; }, env: {} });
+    assert.ok(signer);
+    assert.ok(hub.routes['GET /services/fabric/identity']);
+    assert.ok(hub.routes['POST /services/fabric/sign']);
+    assert.ok(hub.routes['POST /services/fabric/link']);
+
+    const device = new Identity(new Key());
+    const { challenge, sign } = signRequestFor(device);
+
+    const refused = mockRes();
+    hub.routes['POST /services/fabric/sign'](localReq({ body: sign.uri }), refused);
+    await waitFor(refused);
+    assert.strictEqual(refused.out.statusCode, 403, 'unlinked devices are refused');
+    assert.strictEqual(prompts.length, 0);
+
+    link(hub, device);
+    const signed = mockRes();
+    hub.routes['POST /services/fabric/sign'](localReq({ body: sign.uri }), signed);
+    await waitFor(signed);
+    const body = bodyOf(signed);
+    assert.strictEqual(signed.out.statusCode, 200, body && body.error);
+    assert.strictEqual(prompts.length, 1);
+    assert.strictEqual(prompts[0].origin, SITE);
+    assert.deepStrictEqual(prompts[0].shares, ['identity']);
+    const verified = verifyAssertion(body.fabric, {
+      origin: SITE,
+      nonce: challenge.nonce,
+      challengeHash: challenge.hash,
+      network: 'regtest',
+      allow: challenge.request,
+      challengeExpiresAt: challenge.expiresAt
     });
+    assert.strictEqual(verified.ok, true, verified.error);
+    assert.strictEqual(verified.signer, 'hub');
+    assert.strictEqual(verified.identity.pubkey, hubFabricIdentity(hub).fabricKey.pubkey);
+    assert.strictEqual(verified.wallet, null, 'nothing beyond the identity without consent');
+  });
 
-    it('signs a site login for a device in the Hub identity cluster after approval', async function () {
-      const hub = fakeHub();
-      const prompts = [];
-      const signer = mountFabricLocalSignerHub(hub, { approve: (p) => { prompts.push(p); return true; } });
-      assert.ok(signer);
-      assert.ok(hub.routes['GET /services/fabric/identity']);
-      assert.ok(hub.routes['POST /services/fabric/sign']);
-      assert.ok(hub.routes['POST /services/fabric/link']);
-
-      const device = new Identity(new Key());
-      const request = siteLogin.createSiteLoginRequest({ origin: SITE });
-      const ask = siteLogin.createFabricSignRequest({ request: request.uri, origin: SITE }, device.fabricKey);
-
-      const refused = mockRes();
-      await hub.routes['POST /services/fabric/sign'](localReq({ body: ask.uri }), refused);
-      await waitFor(refused);
-      assert.strictEqual(refused.out.statusCode, 403, 'unlinked devices are refused');
-      assert.strictEqual(prompts.length, 0);
-
-      link(hub, device);
-      const signed = mockRes();
-      await hub.routes['POST /services/fabric/sign'](localReq({ body: ask.uri }), signed);
-      await waitFor(signed);
-      const body = bodyOf(signed);
-      assert.strictEqual(signed.out.statusCode, 200, body && body.error);
-      assert.strictEqual(prompts.length, 1);
-      assert.strictEqual(prompts[0].origin, SITE);
-      const verified = siteLoginVerify.verifyFabricSiteLogin(body.fabric, { origin: SITE, nonce: request.nonce });
-      assert.strictEqual(verified.ok, true, verified.error);
-      assert.strictEqual(verified.signer, 'hub');
-      assert.strictEqual(verified.pubkeyHex, hubFabricIdentity(hub).fabricKey.pubkey);
-      assert.strictEqual(verified.identity.xpub, null, 'other sites never get the Hub xpub');
-    });
-
-    it('hands the Hub xpub only to its own origin', async function () {
-      const hub = fakeHub();
-      mountFabricLocalSignerHub(hub, { approve: () => true });
-      const device = new Identity(new Key());
-      link(hub, device);
-      const origin = 'http://127.0.0.1:8080';
-      const request = siteLogin.createSiteLoginRequest({ origin });
-      const ask = siteLogin.createFabricSignRequest({ request: request.uri, origin }, device.fabricKey);
-      const res = mockRes();
-      await hub.routes['POST /services/fabric/sign'](localReq({ body: ask.uri }), res);
-      await waitFor(res);
-      const verified = siteLoginVerify.verifyFabricSiteLogin(bodyOf(res).fabric, { origin, nonce: request.nonce });
-      assert.strictEqual(verified.ok, true, verified.error);
-      assert.ok(verified.identity.xpub);
-    });
-
-    it('refuses callers that carry a page Origin', async function () {
-      const hub = fakeHub();
-      mountFabricLocalSignerHub(hub, { approve: () => true });
-      const res = mockRes();
-      await hub.routes['GET /services/fabric/identity'](localReq({
-        method: 'GET',
-        url: '/services/fabric/identity',
-        headers: { host: '127.0.0.1:8080', origin: 'https://evil.example' }
-      }), res);
-      await waitFor(res);
-      assert.strictEqual(res.out.statusCode, 403);
-    });
+  it('refuses callers that carry a page Origin', async function () {
+    const hub = fakeHub();
+    mountFabricLocalSignerHub(hub, { approve: () => true, env: {} });
+    const res = mockRes();
+    hub.routes['GET /services/fabric/identity'](localReq({
+      method: 'GET',
+      url: '/services/fabric/identity',
+      headers: { host: '127.0.0.1:8080', origin: 'https://evil.example' }
+    }), res);
+    await waitFor(res);
+    assert.strictEqual(res.out.statusCode, 403);
   });
 });

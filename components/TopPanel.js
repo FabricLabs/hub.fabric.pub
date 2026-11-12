@@ -15,7 +15,6 @@ const {
   Segment
 } = require('semantic-ui-react');
 const { formatSatsDisplay } = require('../functions/formatSats');
-const { plaintextMasterFromStored } = require('../functions/fabricHubLocalIdentity');
 const {
   readUiNotifications,
   UPDATED_EVENT,
@@ -27,7 +26,7 @@ const {
 } = require('../functions/hubUiFeatureFlags');
 const { readHubAdminTokenFromBrowser } = require('../functions/hubAdminTokenBrowser');
 const { readStorageJSON } = require('../functions/fabricBrowserState');
-const { buildLocalFabricIdentityPayload } = require('../functions/fabricHubLocalIdentity');
+const { STORAGE_KEY: IDENTITY_STORAGE_KEY, readStoredIdentity } = require('../functions/hubAccountVault');
 const { isLikelyBip32ExtendedKey } = require('../functions/isLikelyBip32ExtendedKey');
 const { useHubHttpAvailable, useHubMeshAvailable } = require('./hubUiRuntime');
 const t = require('../locales/en');
@@ -81,35 +80,23 @@ function TopPanel (props) {
   const isAuthed = hasPrivate;
   const showSignedInControls = isAuthed;
   // Fallback for short-lived parent state gaps right after identity create/login:
-  // if props lag for a render, derive id/xpub from persisted local storage so the
+  // if props lag for a render, read the stored vault / Passport record so the
   // chip does not flash back to "Login".
-  // Must use the same resolution rules as HubInterface / IdentityManager — not raw JSON fields —
-  // or the chip can show Watch-only/Locked while the shell has no effective identity (e.g. strict
-  // no-plaintext-at-rest records, or cleared/forgotten state that still has stray keys).
   const persistedIdentity = React.useMemo(() => {
     try {
       if (typeof window === 'undefined') return null;
-      const parsed = readStorageJSON('fabric.identity.local', null);
-      if (!parsed || (!parsed.id && !parsed.xpub)) return null;
-      const bl = buildLocalFabricIdentityPayload(parsed);
-      if (!bl.resolved || !bl.record) return null;
-      const r = bl.record;
+      const { identity } = readStoredIdentity(readStorageJSON(IDENTITY_STORAGE_KEY, null));
+      if (!identity) return null;
       return {
-        id: r.id != null ? String(r.id) : undefined,
-        xpub: r.xpub != null ? String(r.xpub) : undefined
+        id: String(identity.id),
+        pubkey: identity.pubkey || undefined,
+        passwordProtected: !!identity.passwordProtected,
+        linkedFromPassport: !!identity.linkedFromPassport
       };
     } catch (e) {
       return null;
     }
-  }, [hasLocalIdentity, localIdentity && localIdentity.xpub, auth && auth.xpub]);
-  const plaintextXprvOnDisk = React.useMemo(() => {
-    try {
-      const p = readStorageJSON('fabric.identity.local', null);
-      return !!(p && plaintextMasterFromStored(p));
-    } catch (e) {
-      return false;
-    }
-  }, [hasLocalIdentity, localIdentity && localIdentity.xpub, hasLockedIdentity]);
+  }, [hasLocalIdentity, localIdentity && localIdentity.id, auth && auth.id]);
   const identitySource = localIdentity || auth || persistedIdentity;
   const profilePeerId = (() => {
     const id = identitySource && identitySource.id != null ? String(identitySource.id).trim() : '';
@@ -127,27 +114,31 @@ function TopPanel (props) {
     }
     if (typeof onManageIdentity === 'function') onManageIdentity();
   };
-  const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && (persistedIdentity.id || persistedIdentity.xpub)));
+  const hasAnyLocalIdentity = !!(hasLocalIdentity || (persistedIdentity && persistedIdentity.id));
   // Password-protected identity without xprv in memory → show Locked (unlock flow).
-  // xpub / watch-only (no password) → show Watch-only (upgrade/import path), not "Locked".
-  const passwordProtectedIdentity = !!(localIdentity && localIdentity.passwordProtected);
+  const passwordProtectedIdentity = !!(
+    (localIdentity && localIdentity.passwordProtected) ||
+    (!localIdentity && persistedIdentity && persistedIdentity.passwordProtected)
+  );
   const isPasswordLocked = hasAnyLocalIdentity && !isAuthed && (hasLockedIdentity || passwordProtectedIdentity);
+  // Passport sign-in: keys stay in Passport; this browser holds the identity id (and wallet xpubs only when shared).
+  const isPassportIdentity = hasAnyLocalIdentity && !isAuthed && !isPasswordLocked &&
+    !!(identitySource && identitySource.linkedFromPassport && identitySource.id);
   const isWatchOnlyIdentity = hasAnyLocalIdentity && !isAuthed && !passwordProtectedIdentity && !!identitySource &&
-    !hasLockedIdentity;
+    !hasLockedIdentity && !isPassportIdentity;
   const isLockedState = isPasswordLocked || isWatchOnlyIdentity;
   /** True when we can derive a client wallet id and show a live balance in the chip. */
   const canShowClientBalance = !!(
     identitySource &&
-    identitySource.xpub &&
+    identitySource.wallet &&
     (hasAnyLocalIdentity || isAuthed)
   );
-  /** Password-locked identities may still have xpub in memory; do not imply a live balance until unlock. */
+  /** Locked identities keep their wallet xpubs; do not imply a live balance until unlock. */
   const showLiveBalanceInChip = canShowClientBalance && !isPasswordLocked;
   const identityLabel = (() => {
     if (!identitySource) return s.identity.login;
     if (identitySource.username) return identitySource.username;
     if (identitySource.id) return formatIdentityValue(identitySource.id);
-    if (identitySource.xpub) return formatIdentityValue(identitySource.xpub);
     if (identitySource.address) return formatIdentityValue(identitySource.address);
     return s.identity.fallback;
   })();
@@ -478,7 +469,7 @@ function TopPanel (props) {
             )}
           </div>
         ) : null}
-        {(showHubNav && (showSignedInControls || isLockedState)) ? (
+        {(showHubNav && (showSignedInControls || isLockedState || isPassportIdentity)) ? (
           <Popup
             on="hover"
             hoverable
@@ -585,7 +576,7 @@ function TopPanel (props) {
                   title={s.identity.connectionTitle}
                 />
                 <Dropdown.Divider />
-                {localIdentity && localIdentity.xprv && (localIdentity.passwordProtected || plaintextXprvOnDisk) ? (
+                {localIdentity && localIdentity.xprv && localIdentity.passwordProtected ? (
                   <Dropdown.Item
                     icon="lock"
                     text={s.identity.lock}
@@ -599,6 +590,21 @@ function TopPanel (props) {
                 <Dropdown.Item icon="trash" text={s.identity.destroy} onClick={() => { onDestroyIdentity && onDestroyIdentity(); }} />
               </Dropdown.Menu>
             </Dropdown>
+        ) : isPassportIdentity ? (
+          <Button
+            size="small"
+            primary
+            onClick={() => {
+              if (onManageIdentity) onManageIdentity();
+              else if (onLogin) onLogin();
+            }}
+            title={s.identity.buttonTitlePassport}
+            aria-label={s.identity.buttonLabelPassport}
+            data-testid="hub-identity-chip-passport"
+          >
+            <Icon name="id badge" aria-hidden="true" />
+            <span data-testid="hub-identity-chip-label">{identityLabel}</span>
+          </Button>
         ) : (
           <Button
             size="small"

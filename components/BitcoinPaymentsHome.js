@@ -52,7 +52,6 @@ const {
   mergePaymentMemoWithFederation
 } = require('../functions/federationSpendingPrefs');
 const { safeBriefMessage } = require('../functions/fabricSafeLog');
-const { hasExternalSigningDelegation } = require('../functions/fabricDelegationLocal');
 const t = require('../locales/en');
 
 const L = t.payments.home;
@@ -223,8 +222,8 @@ class BitcoinPaymentsHome extends React.Component {
   };
 
   componentDidUpdate (prevProps, prevState) {
-    const prev = prevProps && prevProps.identity && prevProps.identity.xpub;
-    const next = this.props && this.props.identity && this.props.identity.xpub;
+    const prev = prevProps && prevProps.identity && prevProps.identity.wallet && prevProps.identity.wallet.segwit && prevProps.identity.wallet.segwit.xpub;
+    const next = this.props && this.props.identity && this.props.identity.wallet && this.props.identity.wallet.segwit && this.props.identity.wallet.segwit.xpub;
     const identityWalletChanged = prev !== next;
     const pq = String((prevProps && prevProps.payjoinSessionFromQuery) || '').trim();
     const nq = String((this.props && this.props.payjoinSessionFromQuery) || '').trim();
@@ -638,6 +637,7 @@ class BitcoinPaymentsHome extends React.Component {
       }
       let maxChangeIdx = -1;
       for (const u of utxos) {
+        if (u.account === 'standard') continue;
         const ci = chainIndexFromDescriptor(u.desc);
         if (ci && ci.chain === 1) maxChangeIdx = Math.max(maxChangeIdx, ci.index);
       }
@@ -647,9 +647,11 @@ class BitcoinPaymentsHome extends React.Component {
 
       const getPrevTxHex = (txid) => fetchTransactionHex(this.state.upstream, txid);
 
+      const standardXprv = String(w.standardXprv || '').trim();
       const built = await buildOriginalSignedPayjoinPsbt({
         xprv,
         xpub,
+        standardXprv,
         networkName: network,
         utxos,
         payAddress,
@@ -676,7 +678,7 @@ class BitcoinPaymentsHome extends React.Component {
       if (proposed) {
         try {
           checkPayjoinProposal(built.psbtBase64, proposed, { networkName: network, payAddress, params: built.params });
-          hex = finalizeAndExtractHex(signOurPayjoinInputs(proposed, built.ourInputs, xprv, xpub, network), network);
+          hex = finalizeAndExtractHex(signOurPayjoinInputs(proposed, built.ourInputs, xprv, xpub, network, standardXprv), network);
         } catch (e) {
           built.declined = L.errors.proposalRefused(e && e.message ? e.message : String(e));
         }
@@ -763,7 +765,7 @@ class BitcoinPaymentsHome extends React.Component {
     const identityForWallet = (this.props && this.props.identity) || {};
     const walletCtx = getSpendWalletContext(identityForWallet);
     const btcWatchOnly = !!(walletCtx && walletCtx.xpub && !walletCtx.xprv);
-    const extSigning = hasExternalSigningDelegation();
+    const extSigning = !!(identityForWallet && identityForWallet.linkedFromPassport && !identityForWallet.xprv);
     return (
       <div className='fade-in'>
         <Segment loading={this.state.loading}>

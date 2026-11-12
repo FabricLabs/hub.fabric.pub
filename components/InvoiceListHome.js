@@ -54,8 +54,8 @@ class InvoiceListHome extends React.Component {
   }
 
   componentDidUpdate (prevProps) {
-    const prevXpub = prevProps && prevProps.identity && prevProps.identity.xpub;
-    const nextXpub = this.props && this.props.identity && this.props.identity.xpub;
+    const prevXpub = prevProps && prevProps.identity && prevProps.identity.wallet && prevProps.identity.wallet.segwit && prevProps.identity.wallet.segwit.xpub;
+    const nextXpub = this.props && this.props.identity && this.props.identity.wallet && this.props.identity.wallet.segwit && this.props.identity.wallet.segwit.xpub;
     if (prevXpub !== nextXpub) this.forceUpdate();
   }
 

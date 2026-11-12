@@ -109,7 +109,7 @@ function Invoice (props) {
   const [joinmarketUri, setJoinmarketUri] = React.useState('');
 
   const upstream = React.useMemo(() => loadUpstreamSettings(), []);
-  const idXpub = identity && identity.xpub ? String(identity.xpub) : '';
+  const idXpub = identity && identity.wallet && identity.wallet.segwit ? String(identity.wallet.segwit.xpub) : '';
   const idXprv = identity && identity.xprv ? String(identity.xprv) : '';
   const wallet = React.useMemo(
     () => getSpendWalletContext(identity),

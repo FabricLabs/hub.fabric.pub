@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * @fileoverview Pure helpers for the Electron desktop shell: tray status lines, pending delegation
+ * @fileoverview Pure helpers for the Electron desktop shell: tray status lines, sign-in prompt
  * notifications, and restoring window bounds onto a display that still exists.
  */
 
@@ -65,7 +65,6 @@ function lightningStatusLine (lightning) {
  * @param {Object|null} [input.peering] `GET /services/peering` body
  * @param {Object|null} [input.bitcoin]
  * @param {Object|null} [input.lightning]
- * @param {number} [input.pendingSignatures]
  * @returns {string[]}
  */
 function trayStatusLines (input = {}) {
@@ -80,36 +79,7 @@ function trayStatusLines (input = {}) {
   if (btc) lines.push(btc);
   const ln = lightningStatusLine(input.lightning);
   if (ln) lines.push(ln);
-  const pending = finiteNumber(input.pendingSignatures) || 0;
-  if (pending > 0) lines.push(`${pending} signature request${pending === 1 ? '' : 's'} waiting`);
   return lines;
-}
-
-/**
- * Pending delegation signature requests from loopback `GET /sessions`, minus ones already announced.
- * @param {Object|null} sessionsPayload
- * @param {Set<string>} seen message ids already announced (updated in place)
- * @returns {{ pending: number, fresh: Array<{ messageId: string, origin: string, purpose: string }> }}
- */
-function pendingDelegationRequests (sessionsPayload, seen) {
-  const sessions = sessionsPayload && Array.isArray(sessionsPayload.sessions) ? sessionsPayload.sessions : [];
-  const fresh = [];
-  const live = new Set();
-  for (const s of sessions) {
-    const rows = s && Array.isArray(s.pendingDelegationMessages) ? s.pendingDelegationMessages : [];
-    for (const r of rows) {
-      const id = r && r.messageId != null ? String(r.messageId) : '';
-      if (!id) continue;
-      live.add(id);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      fresh.push({ messageId: id, origin: String(r.origin || s.origin || ''), purpose: String(r.purpose || '') });
-    }
-  }
-  for (const id of Array.from(seen)) {
-    if (!live.has(id)) seen.delete(id);
-  }
-  return { pending: live.size, fresh };
 }
 
 /**
@@ -150,7 +120,6 @@ module.exports = {
   bitcoinStatusLine,
   hubStatusLabel,
   lightningStatusLine,
-  pendingDelegationRequests,
   restorableWindowBounds,
   trayStatusLines
 };

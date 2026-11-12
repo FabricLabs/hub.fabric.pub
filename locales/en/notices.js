@@ -43,13 +43,6 @@ module.exports = {
     confirmedTitle: 'Invoice paid',
     mempoolTitle: 'Invoice payment pending'
   },
-  delegation: {
-    requestTitle: 'Signature request',
-    requestSubtitle: 'Open Security & delegation to approve or reject it.',
-    approved: 'Signature approved',
-    timedOut: 'Signature request timed out',
-    rejected: 'Signature request rejected'
-  },
   transport: {
     hubHeader: 'Hub',
     meshHeader: 'Mesh peer',

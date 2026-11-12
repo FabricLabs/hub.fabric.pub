@@ -2,7 +2,6 @@
 
 /**
  * `fabric:` protocol — opaque **fabric:&lt;frame&gt;** (base64url or hex) carries only a serialized {@link Message} (no `//` host).
- * Legacy: `fabric://login?…`, `fabric://message?hex=…` (see `scripts/desktop.js`).
  * @see `functions/fabricMessageEnvelope.js` for JSON body envelope v1.
  */
 

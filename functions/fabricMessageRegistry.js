@@ -9,7 +9,7 @@
  *
  * @see MESSAGE_TRANSPORT.md
  * @see PAYMENTS_PROTOCOL.md
- * @see ./messageTypes.js — shared constants for domain `type` strings (incl. delegation activity + Fabric log alignment).
+ * @see ./messageTypes.js — shared constants for domain `type` strings (Fabric log alignment).
  */
 
 const Stability = Object.freeze({
@@ -115,9 +115,7 @@ const INNER_DOMAIN_PENDING_PROMOTION = [
   { innerType: 'P2P_PEER_GOSSIP', typicalCarrier: 'GenericMessage / P2P_RELAY', stability: Stability.stable },
   { innerType: 'P2P_PEERING_OFFER', typicalCarrier: 'GenericMessage / P2P_RELAY', stability: Stability.stable },
   { innerType: 'Tombstone', typicalCarrier: 'GenericMessage (hub broadcast) + Fabric log type', stability: Stability.stable, notes: 'Hub `EmitTombstone`; object carries activityMessageId and/or documentId.' },
-  { innerType: 'WebRTCSignal', typicalCarrier: 'JSONCall result payload', stability: Stability.transitional, notes: 'Could become dedicated outer type for fanout.' },
-  { innerType: 'DELEGATION_SIGNATURE_REQUEST', typicalCarrier: 'Hub fabric message log (collections.messages)', stability: Stability.stable, notes: 'Browser asks Hub identity to sign; desktop resolves via ResolveDelegationSignatureMessage.' },
-  { innerType: 'DELEGATION_SIGNATURE_RESOLUTION', typicalCarrier: 'Hub fabric message log', stability: Stability.stable, notes: 'Approved/rejected; references parentMessageId.' }
+  { innerType: 'WebRTCSignal', typicalCarrier: 'JSONCall result payload', stability: Stability.transitional, notes: 'Could become dedicated outer type for fanout.' }
 ];
 
 function outerTypeNames () {

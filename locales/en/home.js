@@ -122,7 +122,7 @@ module.exports = {
     shoutbox: {
       title: 'Public mesh shoutbox',
       notifications: 'Notifications',
-      visitor: 'Messages here are public and unencrypted. Log in to see notifications, activity, and delegation.'
+      visitor: 'Messages here are public and unencrypted. Sign in to see notifications and activity.'
     },
     connect: {
       title: 'Connect to a browser peer',
@@ -144,7 +144,7 @@ module.exports = {
       title: 'Security',
       body: 'A portable identity in your browser using standard Bitcoin keys, a password lock, and end-to-end encrypted documents',
       operatorBefore: ', plus optional desktop signing in',
-      link: 'Security & delegation'
+      link: 'Security'
     },
     collaboration: {
       title: 'Collaboration',
@@ -176,7 +176,7 @@ module.exports = {
     lightningTitle: 'Create, decode, and pay Lightning invoices through the Hub',
     explorerTitle: 'Recent blocks and the mempool',
     crowdfundsTitle: 'Taproot campaign vaults, donation PSBTs, and Payjoin to a campaign',
-    securityTitle: 'Desktop signing sessions and delegation tokens'
+    securityTitle: 'Your Passport sign-in and linked devices'
   },
   downloads: {
     title: 'Downloads',
@@ -185,7 +185,7 @@ module.exports = {
   notifications: {
     title: 'Notifications',
     activityLogTitle: 'Hub messages, chat, and Bitcoin blocks',
-    securityTitle: 'Desktop signing sessions, delegation tokens, and session history',
+    securityTitle: 'Your Passport sign-in and linked devices',
     bitcoinTitle: 'Bitcoin dashboard',
     summary: 'Short-lived wallet, Payjoin, and Hub alerts. This is the same list as the bell in the top bar.',
     summaryActivity: 'Hub messages, chat, and Bitcoin blocks are in the activity log.',
@@ -203,7 +203,7 @@ module.exports = {
     title: 'Activities',
     summary: 'Hub messages, chat, Bitcoin blocks, and network events. Wallet, Payjoin, and other short alerts are in Notifications (the bell in the top bar).',
     notificationsTitle: 'Wallet, Payjoin, and Hub alerts (the same list as the bell)',
-    securityTitle: 'Desktop signing sessions, delegation tokens, and session history',
+    securityTitle: 'Your Passport sign-in and linked devices',
     bitcoinTitle: 'Bitcoin dashboard',
     paymentsTitle: 'Payjoin and payments',
     invoicesTitle: 'Create and track invoices',
@@ -221,7 +221,6 @@ module.exports = {
   },
   stream: {
     title: 'Activity stream',
-    signingTitle: 'Signing requests',
     olderMessages: (n) => `Scroll up for ${plural(n, 'older message')}`,
     viewTransaction: 'View transaction',
     transactionPagesOff: `Turn on block and transaction pages under ${featureVisibility} to open this transaction.`,
@@ -229,13 +228,6 @@ module.exports = {
     purge: 'Remove from activity log',
     purgeTitle: 'Remove this entry from the Hub activity log. Needs the admin token for this Hub.',
     purgeDocumentTitle: 'Remove this entry and unpublish the document from this Hub. Needs the admin token for this Hub.',
-    signing: 'Signing',
-    delegationChannelTitle: 'Delegation requests share this stream with public chat',
-    waitingDesktop: '— waiting for the Fabric Hub desktop app…',
-    approved: '— approved',
-    rejected: '— rejected',
-    timedOut: '— timed out',
-    noPreview: 'No preview',
     sending: '(sending…)',
     queued: '(queued)',
     peersOff: `Turn on Peers under ${featureVisibility} to open peer pages.`,
@@ -251,14 +243,6 @@ module.exports = {
     newBlock: 'New block',
     block: 'Block',
     transactions: (n) => plural(n, 'transaction'),
-    signingEmpty: 'No signing requests yet.',
-    signingEmptyAlertsBefore: 'Wallet, Payjoin, and other short alerts are on the',
-    signingEmptyAlertsLink: 'Notifications',
-    signingEmptyAlertsAfter: 'page (the bell in the top bar).',
-    signingEmptyActivitiesOff: `Turn on Activities under ${featureVisibility} to see the full feed and alerts.`,
-    signingEmptySecurityBefore: 'Open',
-    signingEmptySecurityLink: 'Security & delegation',
-    signingEmptySecurityAfter: 'to list or revoke desktop signing sessions.',
     empty: 'No activity yet. Chat, document events, and Bitcoin blocks appear here once the Hub and network are active.',
     emptyFiltered: (filter) => `No ${filter} activity yet.`,
     shoutboxNote: 'Public chat goes to every peer on the mesh unencrypted, and relays can read it. Do not post anything private here.',

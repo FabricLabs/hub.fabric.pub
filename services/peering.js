@@ -106,12 +106,18 @@ class PeeringService extends Service {
     const p2pConn = agent && agent.connections ? Object.keys(agent.connections).length : 0;
     const maxPeers = (agent && agent.settings && agent.settings.constraints &&
       agent.settings.constraints.peers && agent.settings.constraints.peers.max) || MAX_PEERS;
+    let federationPubkey = null;
+    try {
+      federationPubkey = h.federations && h.federations.pubkey ? String(h.federations.pubkey) : null;
+    } catch (_) {}
 
     return {
       kind: KIND_PEERING,
       version: 1,
       fabricPeerId: agent && agent.id ? String(agent.id) : null,
       fabricIdentityId: agent && agent.identity && agent.identity.id ? String(agent.identity.id) : null,
+      // Named federations sign with the cosigner key, not the identity key that signs this claim.
+      federationPubkey,
       hub: {
         alias: h.settings && h.settings.alias ? h.settings.alias : '@fabric/hub',
         clock: http.clock != null ? http.clock : null
@@ -158,7 +164,8 @@ class PeeringService extends Service {
 
   /**
    * Check another Hub's `GET /services/peering` (or `/attestation`) answer and
-   * return the key that signed it.
+   * return the key that signed it (the Hub identity key). Its federation key is
+   * `claim.federationPubkey`.
    * @param {Object} body `{ oracleAttestation }` or the attestation itself
    * @returns {{ ok: boolean, pubkey: (string|null), claim: (Object|null), error: (string|undefined) }}
    */

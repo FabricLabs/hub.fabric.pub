@@ -347,7 +347,8 @@ function mergeBitcoinExtraParams (network, extra, existing) {
 function buildBitcoinExtraParams (parsed) {
   const extra = [];
   // Core 29.x: `-blocksonly` rejects txs from network peers (RPC/wallet still work).
-  if (!parsed.txrelay) extra.push('-blocksonly=1');
+  // It also soft-sets `-walletbroadcast=0`, which would leave Hub wallet sends unsent.
+  if (!parsed.txrelay) extra.push('-blocksonly=1', '-walletbroadcast=1');
   if (parsed.dbcache) extra.push(`-dbcache=${parsed.dbcache}`);
   if (parsed.maxconnections) extra.push(`-maxconnections=${parsed.maxconnections}`);
   if (parsed.maxuploadtarget > 0) extra.push(`-maxuploadtarget=${parsed.maxuploadtarget}`);

@@ -7,10 +7,7 @@ const { payments } = require('bitcoinjs-lib');
 const { encodeBitcoinUri } = require('@fabric/core/functions/bip21');
 const {
   readStorageJSON,
-  writeStorageJSON,
-  readStorageString,
-  writeStorageString,
-  removeStorageKey
+  writeStorageJSON
 } = require('./fabricBrowserState');
 
 const SETTINGS_KEY = 'fabric.bitcoin.upstream';
@@ -18,127 +15,9 @@ const PAYJOIN_PREFS_KEY = 'fabric.bitcoin.payjoinPreferences';
 const LOCAL_WALLET_KEY = 'fabric.bitcoin.wallets';
 const BALANCE_CACHE_KEY = 'fabric.bitcoin.balanceCache';
 const BALANCE_CACHE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes - use cache if fetch fails and cache is newer
-/** @deprecated Migrated once into receive + send keys; removed after read. */
-const SESSION_BIP44_ACCOUNT_KEY = 'fabric.bitcoin.bip44Account';
-/** Legacy sessionStorage (payment derivation uses fixed account index 0; keys kept for migration/tests). */
-const SESSION_BIP44_RECEIVE_KEY = 'fabric.bitcoin.bip44ReceiveAccount';
-/** @see SESSION_BIP44_RECEIVE_KEY */
-const SESSION_BIP44_SEND_KEY = 'fabric.bitcoin.bip44SendAccount';
-/** Legacy localStorage defaults (Settings UI no longer writes; payment path is fixed account 0). */
-const LOCAL_BIP44_RECEIVE_DEFAULT_KEY = 'fabric.bitcoin.defaultBip44ReceiveAccount';
-/** @see LOCAL_BIP44_RECEIVE_DEFAULT_KEY */
-const LOCAL_BIP44_SEND_DEFAULT_KEY = 'fabric.bitcoin.defaultBip44SendAccount';
-/**
- * Default BIP44 account index under the identity master when not using Fabric multi-account mode,
- * or when {@link fabricAccountIndex} is unset (`m/44'/0'/n'/0/*`, `m/44'/0'/n'/1/*`).
- */
-const BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX = 0;
-
-/**
- * Browser Hub Bitcoin balance/spend/receive use this account index under the master xprv.
- * When {@link fabricIdentityMode} is `account`, this follows {@link fabricAccountIndex} so the top-bar
- * balance matches the active Fabric account.
- * @param {object} identity
- * @returns {number}
- */
-function getBitcoinBip44AccountForIdentity (identity = {}) {
-  if (identity && identity.fabricIdentityMode === 'account') {
-    const raw = identity.fabricAccountIndex;
-    if (raw != null && raw !== '') {
-      const ai = Math.floor(Number(raw));
-      if (Number.isFinite(ai) && ai >= 0 && ai <= 0x7fffffff) return ai;
-    }
-  }
-  return BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX;
-}
-/** Fired when session BIP44 keys change (legacy; payment wallet uses a fixed account and ignores session for derivation). */
-const BITCOIN_WALLET_BRANCH_CHANGED = 'fabricBitcoinWalletBranchChanged';
-/**
- * After a successful unlock, we persist the derived BIP44 payment-account xpub so a locked identity
- * (master xpub only) still resolves the same walletId / descriptors as the active browser session.
- */
-const SPEND_XPUB_WATCH_KEY = 'fabric.bitcoin.spendXpubWatch';
+const STANDARD_WATCH_GAP = 20;
 const { safeIdentityErr } = require('./fabricSafeLog');
-
-function fabricBitcoinWatchMasterXpub (identity = {}) {
-  if (identity && identity.fabricIdentityMode === 'account' && identity.masterXpub) {
-    return String(identity.masterXpub).trim();
-  }
-  return identity && identity.xpub ? String(identity.xpub).trim() : '';
-}
-
-function loadSpendXpubWatchForIdentity (identity = {}) {
-  const fabricId = identity && identity.id ? String(identity.id).trim() : '';
-  const masterXpub = fabricBitcoinWatchMasterXpub(identity);
-  try {
-    if (typeof window === 'undefined') return null;
-    const p = readStorageJSON(SPEND_XPUB_WATCH_KEY, null);
-    if (!p) return null;
-    if (!p || typeof p !== 'object' || !p.spendAccountXpub) return null;
-    const spendX = String(p.spendAccountXpub).trim();
-    if (!spendX) return null;
-    if (fabricId) {
-      if (String(p.fabricIdentityId || '').trim() !== fabricId) return null;
-    } else if (p.masterXpub && masterXpub && String(p.masterXpub).trim() !== masterXpub) {
-      return null;
-    }
-    return spendX;
-  } catch (_) {
-    return null;
-  }
-}
-
-function saveSpendXpubWatchForIdentity (identity = {}, wallet = {}) {
-  const fabricId = identity && identity.id ? String(identity.id).trim() : '';
-  const masterXpub = fabricBitcoinWatchMasterXpub(identity);
-  const spendAccountXpub = wallet && wallet.xpub ? String(wallet.xpub).trim() : '';
-  if (!spendAccountXpub || !fabricIdentityHasUnlockedSigningForBitcoin(identity)) return;
-  try {
-    if (typeof window === 'undefined') return;
-    writeStorageJSON(SPEND_XPUB_WATCH_KEY, {
-      fabricIdentityId: fabricId || null,
-      masterXpub: masterXpub || null,
-      spendAccountXpub,
-      walletId: wallet.walletId ? String(wallet.walletId) : null
-    });
-  } catch (_) {}
-}
-
-function clearSpendXpubWatch () {
-  try {
-    if (typeof window !== 'undefined') removeStorageKey(SPEND_XPUB_WATCH_KEY);
-  } catch (_) {}
-}
-
-function emitBitcoinWalletBranchChangedFromSession (detailRole) {
-  try {
-    if (typeof window === 'undefined' || !window.dispatchEvent) return;
-    const r =
-      detailRole === 'receive' || detailRole === 'send' || detailRole === 'both' ? detailRole : 'both';
-    window.dispatchEvent(new CustomEvent(BITCOIN_WALLET_BRANCH_CHANGED, {
-      detail: {
-        role: r,
-        receive: loadSessionBip44Account({ role: 'receive' }),
-        send: loadSessionBip44Account({ role: 'send' })
-      }
-    }));
-  } catch (_) {}
-}
-
-function migrateLegacyBip44IfNeeded () {
-  try {
-    if (typeof window === 'undefined' || !window.sessionStorage) return;
-    const legacy = window.sessionStorage.getItem(SESSION_BIP44_ACCOUNT_KEY);
-    if (legacy == null || legacy === '') return;
-    if (!window.sessionStorage.getItem(SESSION_BIP44_SEND_KEY)) {
-      window.sessionStorage.setItem(SESSION_BIP44_SEND_KEY, legacy);
-    }
-    if (!window.sessionStorage.getItem(SESSION_BIP44_RECEIVE_KEY)) {
-      window.sessionStorage.setItem(SESSION_BIP44_RECEIVE_KEY, legacy);
-    }
-    window.sessionStorage.removeItem(SESSION_BIP44_ACCOUNT_KEY);
-  } catch (_) {}
-}
+const { walletSigningKeys } = require('./hubAccountVault');
 
 function normalizeBaseUrl (value) {
   const raw = String(value || '').trim();
@@ -261,317 +140,58 @@ function deriveWalletIdFromXpub (xpub = '') {
   return crypto.createHash('sha256').update(preimage).digest('hex');
 }
 
-/** Hub/client wallet id for the Fabric identity master xpub (before per-account derivation). */
-function identityRootWalletId (identity = {}) {
-  const xpub = identity && identity.xpub ? String(identity.xpub).trim() : '';
-  if (!xpub) return '';
-  return deriveWalletIdFromXpub(xpub);
-}
-
-function receiveAccountTagFromContext (wallet = {}) {
-  const n = wallet.bitcoinBip44Account;
-  if (n == null || n === '') return 'master';
-  const idx = Number(n);
-  if (!Number.isFinite(idx)) return 'master';
-  return String(Math.floor(idx));
-}
-
 /**
- * localStorage bucket for the receive-address chain: one identity, one BIP44 account’s external 0/* pool.
- * Keys by identity root so switching “next receive” account does not orphan prior indices.
+ * Wallet context for Hub Bitcoin APIs: the identity's account wallet only.
+ * New addresses (receive and change) come from the SegWit account
+ * (`m/84'/B'/n'`, {@link xpub}); the standard account (`m/44'/B'/n'`,
+ * {@link standardXpub}) is watched for balance and coins. With the identity
+ * unlocked, both account keys are included for signing.
+ * @param {object} identity In-memory identity (`wallet`, `masterXprv` when unlocked)
+ * @returns {{ walletId: string, fingerprint: string, xpub: string, standardXpub: string, hasPrivateKey: boolean, descriptors: object|null, account: (number|null), network: (string|null), xprv?: string, standardXprv?: string }}
  */
-function receiveAddressPoolStorageKey (identity, wallet = {}) {
-  const legacyKey = String(wallet.walletId || wallet.id || '').trim();
-  const root = identityRootWalletId(identity);
-  if (!root || !legacyKey) return { poolKey: legacyKey, legacyKey };
-  const tag = receiveAccountTagFromContext(wallet);
-  return { poolKey: `${root}|recv|${tag}`, legacyKey };
-}
-
-function _bip44IndexFromStoredString (raw) {
-  if (raw == null || !String(raw).trim()) return null;
-  const s = String(raw).trim().toLowerCase();
-  if (s === 'master' || s === 'legacy') return null;
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0 || n > 0x7fffffff) return null;
-  return n;
-}
-
-/**
- * Read persisted default BIP44 branch from localStorage (Settings). Does not consider sessionStorage.
- * @param {'receive'|'send'} role
- * @returns {string|null} 'master', '0'…'3', or null if unset (same as master for derivation)
- */
-function loadPersistedDefaultBip44Raw (role) {
-  try {
-    if (typeof window === 'undefined') return null;
-    const key = role === 'receive' ? LOCAL_BIP44_RECEIVE_DEFAULT_KEY : LOCAL_BIP44_SEND_DEFAULT_KEY;
-    const v = readStorageString(key);
-    if (v == null || !String(v).trim()) return null;
-    return String(v).trim();
-  } catch (_) {
-    return null;
-  }
-}
-
-/**
- * @param {'receive'|'send'} role
- * @returns {number|null} null = master xpub; else BIP44 account index
- */
-function _effectiveDefaultBip44Index (role) {
-  return _bip44IndexFromStoredString(loadPersistedDefaultBip44Raw(role));
-}
-
-/**
- * Save default receive/send BIP44 branch (Settings). value: 'master', 0–3, or null to clear.
- * @param {'receive'|'send'} role
- */
-function savePersistedDefaultBip44Account (role, value) {
-  const key = role === 'receive' ? LOCAL_BIP44_RECEIVE_DEFAULT_KEY : LOCAL_BIP44_SEND_DEFAULT_KEY;
-  try {
-    migrateLegacyBip44IfNeeded();
-    if (typeof window === 'undefined') return false;
-    if (value === null || value === undefined || value === '') {
-      removeStorageKey(key);
-    } else {
-      const s = typeof value === 'string' ? value.trim().toLowerCase() : value;
-      if (s === 'master' || s === 'legacy') {
-        writeStorageString(key, 'master');
-      } else {
-        const n = Number(value);
-        if (!Number.isFinite(n) || n < 0) removeStorageKey(key);
-        else writeStorageString(key, String(Math.floor(n)));
-      }
-    }
-  } catch (_) {
-    return false;
-  }
-  emitBitcoinWalletBranchChangedFromSession('both');
-  return true;
-}
-
-/**
- * True if this tab has an explicit sessionStorage override (URL query or legacy picker).
- * @param {'receive'|'send'} role
- */
-function hasBip44SessionOverride (role) {
-  try {
-    migrateLegacyBip44IfNeeded();
-    if (typeof window === 'undefined' || !window.sessionStorage) return false;
-    const k = role === 'receive' ? SESSION_BIP44_RECEIVE_KEY : SESSION_BIP44_SEND_KEY;
-    const raw = window.sessionStorage.getItem(k);
-    return raw != null && String(raw).trim() !== '';
-  } catch (_) {
-    return false;
-  }
-}
-
-/**
- * Effective BIP44 account after session override and Settings defaults.
- * @param {'receive'|'send'} role
- * @returns {number|null} null = Fabric master xpub; 0+ = m/44'/0'/n'
- */
-function loadSessionBip44Account (opts = {}) {
-  const role = opts && opts.role === 'receive' ? 'receive' : 'send';
-  try {
-    migrateLegacyBip44IfNeeded();
-    if (typeof window === 'undefined' || !window.sessionStorage) {
-      return _effectiveDefaultBip44Index(role);
-    }
-    const key = role === 'receive' ? SESSION_BIP44_RECEIVE_KEY : SESSION_BIP44_SEND_KEY;
-    const raw = window.sessionStorage.getItem(key);
-    if (raw == null || !String(raw).trim()) {
-      return _effectiveDefaultBip44Index(role);
-    }
-    const s = String(raw).trim().toLowerCase();
-    if (s === 'master' || s === 'legacy') return null;
-    const n = parseInt(raw, 10);
-    if (!Number.isFinite(n) || n < 0 || n > 0x7fffffff) {
-      return _effectiveDefaultBip44Index(role);
-    }
-    return n;
-  } catch (e) {
-    return _effectiveDefaultBip44Index(role);
-  }
-}
-
-/**
- * Per-tab sessionStorage override. Pass null to remove override (use Settings default).
- * Pass 'master' to force master xpub for this tab even when Settings default is an account.
- * @param {number|string|null|undefined} value - account index, 'master', or null/'' to clear override
- * @param {{ role?: 'receive'|'send' }} [opts] - default role send (Payments / Bitcoin home).
- */
-function saveSessionBip44Account (value, opts = {}) {
-  const role = opts && opts.role === 'receive' ? 'receive' : 'send';
-  const key = role === 'receive' ? SESSION_BIP44_RECEIVE_KEY : SESSION_BIP44_SEND_KEY;
-  try {
-    migrateLegacyBip44IfNeeded();
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      if (value === null || value === undefined || value === '') {
-        window.sessionStorage.removeItem(key);
-      } else if (typeof value === 'string' && String(value).trim().toLowerCase() === 'master') {
-        window.sessionStorage.setItem(key, 'master');
-      } else if (typeof value === 'string' && String(value).trim().toLowerCase() === 'legacy') {
-        window.sessionStorage.setItem(key, 'master');
-      } else {
-        const n = Number(value);
-        if (!Number.isFinite(n) || n < 0) {
-          window.sessionStorage.removeItem(key);
-        } else {
-          window.sessionStorage.setItem(key, String(Math.floor(n)));
-        }
-      }
-    }
-  } catch (e) {}
-  emitBitcoinWalletBranchChangedFromSession(role);
-}
-
-/**
- * Derive extended keys at m/44'/0'/accountIndex' from the Fabric identity master (matches @fabric/core Key Bitcoin path shape).
- * @param {string} masterXprv
- * @param {string} masterXpub - used to pick test/main network for bip32 decode
- * @param {number} accountIndex
- */
-function deriveFabricBitcoinAccountKeys (masterXprv, masterXpub, accountIndex) {
-  const idx = Math.floor(Number(accountIndex));
-  if (!Number.isFinite(idx) || idx < 0) throw new Error('Invalid BIP44 account index.');
-  const decodeNetwork = getNetworkFromXpub(masterXpub || masterXprv);
-  const bip32 = new BIP32(ecc);
-  const master = bip32.fromBase58(String(masterXprv).trim(), decodeNetwork);
-  const path = `m/44'/0'/${idx}'`;
-  const acct = master.derivePath(path);
-  return {
-    xprv: acct.toBase58(),
-    xpub: acct.neutered().toBase58(),
-    path
-  };
-}
-
-/**
- * Fabric master key for Bitcoin BIP44 (m/44'/0'/n') is always the HD root (master xpriv).
- * When {@link fabricIdentityMode} is `account`, {@link masterXprv} holds that root; {@link xprv} is the
- * Fabric-protocol signing key at `fabricIdentityDerivationPath` (7777/7778) and must not be used for Bitcoin derivation.
- */
-function bitcoinDerivationSecretsFromFabricIdentity (identity = {}) {
-  if (identity && identity.fabricIdentityMode === 'account' &&
-      typeof identity.masterXprv === 'string' && identity.masterXprv.trim()) {
-    return {
-      xprvForBitcoin: String(identity.masterXprv).trim(),
-      xpubHint: identity.masterXpub ? String(identity.masterXpub).trim() : ''
-    };
-  }
-  return {
-    xprvForBitcoin: identity && identity.xprv ? String(identity.xprv).trim() : '',
-    xpubHint: identity && identity.xpub ? String(identity.xpub).trim() : ''
-  };
-}
-
-function fabricIdentityHasUnlockedSigningForBitcoin (identity = {}) {
-  if (identity && identity.fabricIdentityMode === 'account') {
-    return !!String(identity.masterXprv || '').trim();
-  }
-  return !!String(identity && identity.xprv || '').trim();
-}
-
-/**
- * Wallet context for Hub Bitcoin APIs (walletId, xpub, …).
- * One browser wallet (one identity): {@link getSpendWalletContext} / {@link getNextReceiveWalletContext} always use
- * {@link BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX} under the master. Callers may pass `fixedBitcoinBip44Account` to override;
- * otherwise session + Settings defaults apply (legacy / advanced use).
- * @param {object} identity - Fabric identity (master xpub / xprv on the identity object)
- * @param {{ role?: 'receive'|'send', fixedBitcoinBip44Account?: number }} [opts] - role affects legacy session lookup only when fixed index omitted.
- * For Hub browser payments, {@link getSpendWalletContext} passes {@link getBitcoinBip44AccountForIdentity}(identity) so it tracks Fabric account index when enabled.
- */
-function getWalletContextFromIdentity (identity = {}, opts = {}) {
-  const masterMat = bitcoinDerivationSecretsFromFabricIdentity(identity);
-  let xpub = masterMat.xpubHint;
-  let xprv = masterMat.xprvForBitcoin;
+function getSpendWalletContext (identity = {}) {
+  const wallet = identity && identity.wallet && typeof identity.wallet === 'object' ? identity.wallet : null;
+  const xpub = wallet && wallet.segwit && wallet.segwit.xpub ? String(wallet.segwit.xpub).trim() : '';
+  const standardXpub = wallet && wallet.standard && wallet.standard.xpub ? String(wallet.standard.xpub).trim() : '';
   const id = identity && identity.id ? String(identity.id) : '';
-  const address = identity && identity.address ? String(identity.address) : '';
-  const role = opts && opts.role === 'receive' ? 'receive' : 'send';
-  const fixed = opts && opts.fixedBitcoinBip44Account;
-  const accountN =
-    fixed != null && Number.isFinite(Number(fixed)) && Number(fixed) >= 0
-      ? Math.floor(Number(fixed))
-      : loadSessionBip44Account({ role });
-
-  if (accountN != null && xprv) {
-    try {
-      const d = deriveFabricBitcoinAccountKeys(xprv, xpub, accountN);
-      xpub = d.xpub;
-      xprv = d.xprv;
-    } catch (e) {
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn('[bitcoinClient] BIP44 tab account derive failed; using master key.', safeIdentityErr(e));
-      }
-    }
-  }
-
-  if (!fabricIdentityHasUnlockedSigningForBitcoin(identity)) {
-    const watchedSpend = loadSpendXpubWatchForIdentity(identity);
-    if (watchedSpend) {
-      xpub = watchedSpend;
-      xprv = '';
-    } else if (identity && identity.passwordProtected) {
-      // Locked Fabric identity: payment account xpub is not derivable from the stored master xpub alone.
-      // Avoid querying the wrong descriptor set until an unlock persists saveSpendXpubWatchForIdentity().
-      xpub = '';
-      xprv = '';
-    }
-  }
-
-  // Use Fabric ID that matches internal wallet name: SHA256(SHA256(xpub)) when xpub present
   const walletId = xpub
     ? deriveWalletIdFromXpub(xpub)
-    : (address && /^[a-fA-F0-9]{64}$/.test(address) ? address : null) ||
-      (id && /^[a-fA-F0-9]{64}$/.test(id) ? id : null) ||
-      (() => {
-        const basis = id || 'anonymous';
-        const fingerprint = crypto.createHash('sha256').update(basis).digest('hex').slice(0, 16);
-        return `fabric-${fingerprint}`;
-      })();
-
+    : `fabric-${crypto.createHash('sha256').update(id || 'anonymous').digest('hex').slice(0, 16)}`;
   const fingerprint = crypto.createHash('sha256').update(xpub || id || 'anonymous').digest('hex').slice(0, 16);
-
-  /**
-   * BIP84-style descriptors for the identity's receive and change chains.
-   * Used by the address API (scantxoutset) to retrieve per-user balance when txindex is available.
-   * Format: wpkh(xpub/0/*) receive, wpkh(xpub/1/*) change.
-   */
-  const descriptors = xpub
-    ? [
-        { desc: `wpkh(${xpub}/0/*)`, chain: 'receive', path: 'm/0/*' },
-        { desc: `wpkh(${xpub}/1/*)`, chain: 'change', path: 'm/1/*' }
-      ]
-    : [];
-
-  const hasPrivateKey = !!String(xprv || '').trim();
+  const account = identity && identity.fabricAccountIndex != null && identity.fabricAccountIndex !== ''
+    ? Math.floor(Number(identity.fabricAccountIndex))
+    : null;
   const out = {
     walletId,
     fingerprint,
     xpub,
-    hasPrivateKey,
-    descriptors,
-    bitcoinBip44Account: accountN
+    standardXpub,
+    hasPrivateKey: false,
+    descriptors: wallet && wallet.descriptors ? wallet.descriptors : null,
+    account: Number.isFinite(account) ? account : null,
+    network: identity && identity.network ? String(identity.network) : null
   };
-  if (String(xprv || '').trim()) out.xprv = String(xprv).trim();
+  if (xpub) {
+    let keys = null;
+    try {
+      keys = walletSigningKeys(identity);
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[bitcoinClient] wallet key derivation failed:', safeIdentityErr(e));
+      }
+    }
+    if (keys && keys.segwit.xpub === xpub) {
+      out.xprv = keys.segwit.xprv;
+      out.standardXprv = keys.standard.xprv;
+      out.hasPrivateKey = true;
+    }
+  }
   return out;
 }
 
-/** One browser wallet: xpub/walletId for balance, UTXOs, spends, change chain (BIP44 account from Fabric account index when in account mode). */
-function getSpendWalletContext (identity = {}) {
-  return getWalletContextFromIdentity(identity, {
-    role: 'send',
-    fixedBitcoinBip44Account: getBitcoinBip44AccountForIdentity(identity)
-  });
-}
-
-/** Same account as spends; xpub/walletId for the next external receive address (invoices, deposits). */
+/** Same account as spends; new external receive addresses come from its SegWit chain. */
 function getNextReceiveWalletContext (identity = {}) {
-  return getWalletContextFromIdentity(identity, {
-    role: 'receive',
-    fixedBitcoinBip44Account: getBitcoinBip44AccountForIdentity(identity)
-  });
+  return getSpendWalletContext(identity);
 }
 
 function getNetworkFromXpub (xpub = '') {
@@ -742,8 +362,9 @@ function deriveReceiveAddressFromXpub (xpub = '', index = 0, networkName = '') {
 
 /**
  * Derive address from xpub at chain/index. Chain 0 = receive, 1 = change.
+ * @param {string} [script] `wpkh` (default) or `pkh`
  */
-function deriveAddressFromXpub (xpub = '', chain = 0, index = 0, networkName = '') {
+function deriveAddressFromXpub (xpub = '', chain = 0, index = 0, networkName = '', script = 'wpkh') {
   if (!xpub) return null;
   const bip32 = new BIP32(ecc);
   const decodeNetwork = getNetworkFromXpub(xpub);
@@ -751,13 +372,16 @@ function deriveAddressFromXpub (xpub = '', chain = 0, index = 0, networkName = '
   const child = account.derive(Number(chain)).derive(Number(index));
   const pubkey = child.publicKey;
   const addressNetwork = (networkName && getNetworkForBitcoinJs(networkName)) || decodeNetwork;
-  const payment = payments.p2wpkh({ pubkey, network: addressNetwork });
+  const payment = script === 'pkh'
+    ? payments.p2pkh({ pubkey, network: addressNetwork })
+    : payments.p2wpkh({ pubkey, network: addressNetwork });
   if (!payment || !payment.address) return null;
   return payment.address;
 }
 
 /**
- * Derive watch addresses for mempool scan. Returns addresses for receive (0/*) and change (1/*).
+ * Derive watch addresses for mempool scan: receive (0/*) and change (1/*) of
+ * the SegWit account, plus pkh and wpkh of the standard account (gap 20).
  * Used to detect unconfirmed incoming payments.
  */
 function deriveWatchAddresses (wallet = {}, networkName = '', maxReceive = 25, maxChange = 25) {
@@ -772,50 +396,30 @@ function deriveWatchAddresses (wallet = {}, networkName = '', maxReceive = 25, m
     const a = deriveAddressFromXpub(xpub, 1, i, networkName);
     if (a) addrs.push(a);
   }
+  const standardXpub = String(wallet.standardXpub || '').trim();
+  if (standardXpub) {
+    for (const script of ['pkh', 'wpkh']) {
+      for (const chain of [0, 1]) {
+        for (let i = 0; i < STANDARD_WATCH_GAP; i++) {
+          const a = deriveAddressFromXpub(standardXpub, chain, i, networkName, script);
+          if (a) addrs.push(a);
+        }
+      }
+    }
+  }
   return addrs;
 }
 
 function deriveAndStoreReceiveAddress (wallet = {}, options = {}) {
-  const identity = options && options.identity;
   const networkName = options && options.network;
   const xpub = String(wallet.xpub || '').trim();
   const legacyKey = String(wallet.walletId || wallet.id || '').trim();
   if (!legacyKey || !xpub) return null;
 
-  let storageKey = legacyKey;
-  if (identity && typeof identity === 'object' && identity.xpub) {
-    const { poolKey } = receiveAddressPoolStorageKey(identity, wallet);
-    if (poolKey) storageKey = poolKey;
-  }
-
+  const storageKey = legacyKey;
   const store = loadLocalWalletStore();
-  let current = (store[storageKey] && typeof store[storageKey] === 'object') ? store[storageKey] : {};
-  let migratedFromLegacy = false;
-
-  if (
-    (!Array.isArray(current.receiveAddresses) || current.receiveAddresses.length === 0) &&
-    storageKey !== legacyKey &&
-    store[legacyKey] &&
-    typeof store[legacyKey] === 'object'
-  ) {
-    const leg = store[legacyKey];
-    if (Array.isArray(leg.receiveAddresses) && leg.receiveAddresses.length > 0) {
-      current = { ...leg, xpub };
-      migratedFromLegacy = true;
-    }
-  }
-
+  const current = (store[storageKey] && typeof store[storageKey] === 'object') ? store[storageKey] : {};
   const addresses = Array.isArray(current.receiveAddresses) ? current.receiveAddresses : [];
-
-  if (migratedFromLegacy && addresses.length > 0 && storageKey !== legacyKey) {
-    store[storageKey] = {
-      ...current,
-      id: legacyKey,
-      xpub,
-      updatedAt: new Date().toISOString()
-    };
-    saveLocalWalletStore(store);
-  }
 
   if (addresses.length > 0) {
     const latest = addresses[addresses.length - 1];
@@ -848,37 +452,19 @@ function deriveAndStoreReceiveAddress (wallet = {}, options = {}) {
 }
 
 function reserveNextReceiveAddress (wallet = {}, options = {}) {
-  const identity = options && options.identity;
   const networkName = options && options.network;
   const xpub = String(wallet.xpub || '').trim();
   const legacyKey = String(wallet.walletId || wallet.id || '').trim();
   if (!legacyKey || !xpub) return null;
 
-  let storageKey = legacyKey;
-  if (identity && typeof identity === 'object' && identity.xpub) {
-    const { poolKey } = receiveAddressPoolStorageKey(identity, wallet);
-    if (poolKey) storageKey = poolKey;
-  }
-
+  const storageKey = legacyKey;
   const store = loadLocalWalletStore();
-  let current = (store[storageKey] && typeof store[storageKey] === 'object') ? store[storageKey] : {
+  const current = (store[storageKey] && typeof store[storageKey] === 'object') ? store[storageKey] : {
     id: legacyKey,
     xpub,
     currentIndex: -1,
     receiveAddresses: []
   };
-
-  if (
-    (!Array.isArray(current.receiveAddresses) || current.receiveAddresses.length === 0) &&
-    storageKey !== legacyKey &&
-    store[legacyKey] &&
-    typeof store[legacyKey] === 'object'
-  ) {
-    const leg = store[legacyKey];
-    if (Array.isArray(leg.receiveAddresses) && leg.receiveAddresses.length > 0) {
-      current = { ...leg, xpub };
-    }
-  }
 
   const prevAddrs = Array.isArray(current.receiveAddresses) ? current.receiveAddresses : [];
   const nextIndex = Number(current.currentIndex !== undefined && current.currentIndex !== null
@@ -1233,6 +819,7 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
     if (!baseUrl) return {};
     const params = new URLSearchParams();
     params.set('xpub', xpub);
+    if (wallet.standardXpub) params.set('standardXpub', String(wallet.standardXpub).trim());
     const network = options.network != null ? String(options.network) : '';
     if (network) {
       const addrs = deriveWatchAddresses(wallet, network, 25, 25);
@@ -1296,7 +883,7 @@ async function fetchWalletSummary (settings = {}, wallet = {}, options = {}) {
  * Fetch wallet summary with cache fallback. Uses cached balance when fetch fails.
  * Keys never leave the browser; only xpub is sent for watch-only balance.
  * @param {object} settings - Upstream settings
- * @param {object} wallet - Wallet context (walletId, xpub from getWalletContextFromIdentity)
+ * @param {object} wallet - Wallet context (walletId, xpub from getSpendWalletContext)
  * @param {object} [options] - { maxCacheAgeMs: number } - use 0 to skip cache
  * @returns {Promise<object>} Summary with balanceSats, confirmedSats, unconfirmedSats; uses cache on fetch failure
  */
@@ -1346,10 +933,7 @@ async function fetchAddressBalance (settings = {}, address = '') {
 }
 
 async function fetchReceiveAddress (settings = {}, wallet = {}, options = {}) {
-  const local = deriveAndStoreReceiveAddress(wallet, {
-    network: options.network,
-    identity: options.identity
-  });
+  const local = deriveAndStoreReceiveAddress(wallet, { network: options.network });
   if (local && local.currentAddress) return local.currentAddress;
 
   const baseUrl = normalizeAddressesBaseUrl(settings.paymentsBaseUrl);
@@ -1377,6 +961,7 @@ async function fetchUTXOs (settings = {}, wallet = {}, options = {}) {
     if (!baseUrl) return [];
     const params = new URLSearchParams();
     params.set('xpub', xpub);
+    if (wallet.standardXpub) params.set('standardXpub', String(wallet.standardXpub).trim());
     const network = options.network != null ? String(options.network) : '';
     if (network) {
       const addrs = deriveWatchAddresses(wallet, network, 25, 25);
@@ -1419,6 +1004,7 @@ async function fetchWalletTransactions (settings = {}, wallet = {}, options = {}
     const authTok = resolveBitcoinClientAuthToken(settings, baseUrl);
     const params = new URLSearchParams();
     params.set('xpub', xpub);
+    if (wallet.standardXpub) params.set('standardXpub', String(wallet.standardXpub).trim());
     params.set('limit', String(limit));
     const network = options.network != null ? String(options.network) : '';
     if (network) {
@@ -1663,88 +1249,43 @@ async function postCrowdfundingRefundPrepare (settings = {}, campaignId = '', bo
 }
 
 /**
- * Compressed secp256k1 pubkey hex for m/44'/0'/0'/0/0 (BIP44 payment account external #0) — Taproot crowdfund beneficiary.
- * Uses the same account + external path as {@link getSpendWalletContext} / Payments. With a master xprv on the identity,
- * derives m/44'/0'/0'/0/0; when locked, uses the persisted spend-account xpub from wallet context if present.
- * Empty string if unavailable.
+ * Compressed secp256k1 pubkey hex of the wallet's first SegWit receive key
+ * (`m/84'/B'/n'/0/0`) — the Taproot crowdfund beneficiary. Locked identities
+ * still have the account xpub. Empty string if unavailable.
  */
 function getCrowdfundingBeneficiaryPubkeyHex (identity = {}) {
   const w = getSpendWalletContext(identity);
-  const mat = bitcoinDerivationSecretsFromFabricIdentity(identity);
-  const masterXprv = String(mat.xprvForBitcoin || '').trim();
-  const masterXpub = String(mat.xpubHint || '').trim();
-
-  let accountXprv = '';
-  let accountXpub = '';
-
-  if (masterXprv) {
-    try {
-      const accountN = getBitcoinBip44AccountForIdentity(identity);
-      const d = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, accountN);
-      accountXprv = String(d.xprv || '').trim();
-      accountXpub = String(d.xpub || '').trim();
-    } catch (e) {
-      // Some runtime identity snapshots provide non-master xprv material.
-      // Fall back to watch-only account xpub derivation so "Fill from wallet" still works.
-      accountXpub = String(w.xpub || masterXpub || '').trim();
-      if (!accountXpub) return '';
-    }
-  } else {
-    // Crowdfund "beneficiary pubkey" should still derive from a logged-in identity xpub,
-    // even when wallet context intentionally suppresses watch-only API descriptors.
-    accountXpub = String(w.xpub || masterXpub || '').trim();
-    if (!accountXpub) return '';
-  }
-
+  const xpub = String(w.xpub || '').trim();
+  if (!xpub) return '';
   try {
-    const net = getNetworkFromXpub(accountXpub || accountXprv);
-    const bip32Inst = new BIP32(ecc);
-    const root = accountXprv
-      ? bip32Inst.fromBase58(accountXprv, net)
-      : bip32Inst.fromBase58(accountXpub, net);
-    const child = root.derive(0).derive(0);
-    return Buffer.from(child.publicKey).toString('hex');
+    const root = new BIP32(ecc).fromBase58(xpub, getNetworkFromXpub(xpub));
+    return Buffer.from(root.derive(0).derive(0).publicKey).toString('hex');
   } catch (e) {
     return '';
   }
 }
 
 /**
- * 32-byte secp256k1 secret for m/44'/0'/0'/0/0 — same leaf as {@link getCrowdfundingBeneficiaryPubkeyHex}.
- * Only when identity master xprv can derive the payment account; null if locked / watch-only.
+ * 32-byte secp256k1 secret for the same leaf as {@link getCrowdfundingBeneficiaryPubkeyHex}.
+ * Only while the identity is unlocked; null otherwise.
  * @param {object} identity
  * @returns {Buffer|null}
  */
 function getCrowdfundingBeneficiaryPrivateKey32 (identity = {}) {
-  const mat = bitcoinDerivationSecretsFromFabricIdentity(identity);
-  const masterXprv = String(mat.xprvForBitcoin || '').trim();
-  const masterXpub = String(mat.xpubHint || '').trim();
-  if (!masterXprv) return null;
-  let accountXprv = '';
-  let accountXpub = '';
+  const w = getSpendWalletContext(identity);
+  const xprv = String(w.xprv || '').trim();
+  if (!xprv) return null;
   try {
-    const accountN = getBitcoinBip44AccountForIdentity(identity);
-    const d = deriveFabricBitcoinAccountKeys(masterXprv, masterXpub, accountN);
-    accountXprv = String(d.xprv || '').trim();
-    accountXpub = String(d.xpub || '').trim();
-  } catch (e) {
-    return null;
-  }
-  if (!accountXprv) return null;
-  try {
-    const net = getNetworkFromXpub(accountXpub || accountXprv);
-    const bip32Inst = new BIP32(ecc);
-    const root = bip32Inst.fromBase58(accountXprv, net);
+    const root = new BIP32(ecc).fromBase58(xprv, getNetworkFromXpub(w.xpub));
     const child = root.derive(0).derive(0);
-    if (!child.privateKey) return null;
-    return Buffer.from(child.privateKey);
+    return child.privateKey ? Buffer.from(child.privateKey) : null;
   } catch (e) {
     return null;
   }
 }
 
 /**
- * Default on-chain payout destination: BIP44 account 0 external address index 0 (wpkh), matching beneficiary pubkey path.
+ * Default on-chain payout destination: the wallet's first SegWit receive address, matching the beneficiary pubkey.
  * @param {object} identity
  * @param {string} networkName - Hub network name (regtest, testnet, mainnet, …)
  * @returns {string} address or ''
@@ -1769,7 +1310,7 @@ function signCrowdfundingPayoutPsbtBeneficiary (psbtBase64 = '', identity = {}, 
   if (!b64) throw new Error('PSBT base64 is required.');
   const priv = getCrowdfundingBeneficiaryPrivateKey32(identity);
   if (!priv) {
-    throw new Error('Unlock identity so the BIP44 payment key (m/44\'/0\'/0\'/0/0) is available to sign.');
+    throw new Error('Unlock your identity so the wallet key (m/84\'/B\'/n\'/0/0) is available to sign.');
   }
   const bitcoin = require('bitcoinjs-lib');
   const crowdfundingTaproot = require('./crowdfundingTaproot');
@@ -2101,20 +1642,7 @@ module.exports = {
   loadPayjoinPreferences,
   savePayjoinPreferences,
   deriveWalletIdFromXpub,
-  loadSessionBip44Account,
-  saveSessionBip44Account,
-  loadPersistedDefaultBip44Raw,
-  savePersistedDefaultBip44Account,
-  hasBip44SessionOverride,
-  BITCOIN_PAYMENTS_BIP44_ACCOUNT_INDEX,
-  BITCOIN_WALLET_BRANCH_CHANGED,
-  deriveFabricBitcoinAccountKeys,
   resolveBitcoinClientAuthToken,
-  loadSpendXpubWatchForIdentity,
-  saveSpendXpubWatchForIdentity,
-  clearSpendXpubWatch,
-  getWalletContextFromIdentity,
-  getBitcoinBip44AccountForIdentity,
   getSpendWalletContext,
   getNextReceiveWalletContext,
   deriveAndStoreReceiveAddress,

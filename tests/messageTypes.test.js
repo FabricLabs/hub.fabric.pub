@@ -4,11 +4,9 @@ const assert = require('assert');
 const mt = require('../functions/messageTypes');
 
 describe('messageTypes', function () {
-  it('isDelegationSignatureRequestActivity accepts canonical and legacy alias', function () {
-    assert.strictEqual(mt.isDelegationSignatureRequestActivity(null), false);
-    assert.strictEqual(mt.isDelegationSignatureRequestActivity({ type: 'P2P_CHAT_MESSAGE' }), false);
-    assert.strictEqual(mt.isDelegationSignatureRequestActivity({ type: mt.DELEGATION_SIGNATURE_REQUEST }), true);
-    assert.strictEqual(mt.isDelegationSignatureRequestActivity({ type: mt.LEGACY_DELEGATION_SIGN_REQUEST }), true);
+  it('has no delegation signing types (Passport v2 removed Hub delegation)', function () {
+    assert.strictEqual(mt.DELEGATION_SIGNATURE_REQUEST, undefined);
+    assert.strictEqual(mt.isDelegationSignatureRequestActivity, undefined);
   });
 
   it('contract log + federation activity names align with core applicationNamespaces when linked', function () {

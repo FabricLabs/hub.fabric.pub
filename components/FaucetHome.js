@@ -57,7 +57,7 @@ class FaucetHome extends React.Component {
 
   async fundMyWallet () {
     const identity = (this.props && this.props.identity) || {};
-    if (!identity.xpub) {
+    if (!identity.wallet) {
       this.setState({
         faucetResult: { error: t.common.identity.needIdentity },
         faucetNotice: ''

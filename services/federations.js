@@ -116,6 +116,7 @@ class FederationsService extends Service {
     this._rpc = null;
     this._walletSend = null;
     this._relay = null;
+    this._deliver = null;
     this._records = new Map();
     this._mailbox = [];
     this._mailboxIds = new Set();
@@ -135,6 +136,7 @@ class FederationsService extends Service {
    * @param {Object} [deps.key] Hub root `Key` (`pubkey`, `private`)
    * @param {Function} [deps.publish] `(body) => Message|null` sign and flood a `CONTRACT_MESSAGE` (truthy = sent)
    * @param {Function} [deps.relay] `(message) => void` flood a frame another key signed
+   * @param {Function} [deps.deliver] `(url, fabricUri) => Promise` post an own frame to a member Hub's mailbox
    * @param {Function} [deps.rpc] `(method, params) => result` node RPC
    * @param {Function} [deps.walletSend] `({ address, amountSats, feeRateSatVb, label }) => txid`
    * @returns {FederationsService}
@@ -146,6 +148,7 @@ class FederationsService extends Service {
     if (typeof deps.rpc === 'function') this._rpc = deps.rpc;
     if (typeof deps.walletSend === 'function') this._walletSend = deps.walletSend;
     if (typeof deps.relay === 'function') this._relay = deps.relay;
+    if (typeof deps.deliver === 'function') this._deliver = deps.deliver;
     return this;
   }
 
@@ -485,11 +488,34 @@ class FederationsService extends Service {
         } catch (err) {
           this.emit('warning', `[FEDERATIONS] own frame not kept: ${err.message}`);
         }
+        this._deliverToMembers(body, sent);
       }
       return !!sent;
     } catch (err) {
       this.emit('warning', `[FEDERATIONS] publish failed: ${err.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Members reached by URL get the frame in their mailbox too: the mesh may
+   * have no path to them (several Hubs behind one Fabric listener).
+   * @private
+   */
+  _deliverToMembers (body, message) {
+    if (!this._deliver) return;
+    let record = null;
+    try {
+      const id = body.federationId || (body.descriptor ? Federation.descriptorId(body.descriptor) : null);
+      record = id ? this._records.get(id) : null;
+    } catch (_) {}
+    if (!record) return;
+    const uri = encodeFabricUri(message);
+    for (const [pubkey, member] of Object.entries(record.members)) {
+      if (String(member.pubkey || pubkey).slice(-64) === this._self || !member.url) continue;
+      Promise.resolve()
+        .then(() => this._deliver(member.url, uri))
+        .catch((err) => this.emit('warning', `[FEDERATIONS] mailbox delivery to ${member.url} failed: ${err && err.message ? err.message : err}`));
     }
   }
 

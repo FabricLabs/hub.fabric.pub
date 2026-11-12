@@ -2,120 +2,109 @@
 
 const assert = require('assert');
 
-describe('fabricBrowserIdentityDev.storeUnlockedIdentityFromMnemonic', function () {
+function memoryStorage () {
+  return {
+    _data: {},
+    getItem (k) { return this._data[k] == null ? null : this._data[k]; },
+    setItem (k, v) { this._data[k] = String(v); },
+    removeItem (k) { delete this._data[k]; }
+  };
+}
+
+describe('fabricBrowserIdentityDev.applyFabricDevBrowserSeedBootstrap', function () {
   const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
   beforeEach(function () {
     global.window = {
+      FABRIC_DEV_BROWSER_SEED: phrase,
       addEventListener () {},
       removeEventListener () {},
-      localStorage: {
-        _data: {},
-        getItem (k) {
-          return this._data[k] == null ? null : this._data[k];
-        },
-        setItem (k, v) {
-          this._data[k] = String(v);
-        },
-        removeItem (k) {
-          delete this._data[k];
-        }
-      },
-      sessionStorage: {
-        _data: {},
-        getItem (k) {
-          return this._data[k] == null ? null : this._data[k];
-        },
-        setItem (k, v) {
-          this._data[k] = String(v);
-        },
-        removeItem (k) {
-          delete this._data[k];
-        }
-      }
+      localStorage: memoryStorage(),
+      sessionStorage: memoryStorage()
     };
+    try { require('../functions/fabricBrowserState').resetFabricBrowserStateStore(); } catch (_) {}
   });
 
   afterEach(function () {
     delete global.window;
   });
 
-  it('stores watch-only identity in localStorage and unlocked key in sessionStorage', function () {
-    const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
-    const r = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: true });
+  it('derives an unlocked account identity in memory and writes nothing to storage', function () {
+    const { applyFabricDevBrowserSeedBootstrap } = require('../functions/fabricBrowserIdentityDev');
+    const r = applyFabricDevBrowserSeedBootstrap({ network: 'regtest' });
     assert.strictEqual(r.ok, true);
-    assert.ok(r.identity && r.identity.masterXprv);
-    assert.ok(r.identity.xprv);
-
-    const parsed = JSON.parse(window.localStorage._data['fabric.identity.local']);
-    assert.strictEqual(parsed.fabricIdentityMode, 'account');
-    assert.strictEqual(parsed.id, r.identity.id);
-    assert.strictEqual(parsed.xpub, r.identity.xpub);
-    assert.strictEqual(typeof parsed.masterXprv, 'undefined');
-    assert.strictEqual(typeof parsed.xprv, 'undefined');
-    const unlocked = JSON.parse(window.sessionStorage._data['fabric.identity.unlocked']);
-    assert.strictEqual(String(unlocked.id), String(r.identity.id));
-    assert.strictEqual(String(unlocked.xpub), String(r.identity.xpub));
-    assert.strictEqual(String(unlocked.xprv), String(r.identity.xprv));
+    assert.ok(r.identity.xprv, 'identity leaf private key');
+    assert.ok(r.identity.masterXprv, 'master kept in memory for account switching');
+    assert.strictEqual(r.identity.fabricAccountIndex, 0);
+    assert.strictEqual(r.identity.network, 'regtest');
+    assert.strictEqual(r.identity.devSeed, true);
+    assert.strictEqual(r.identity.xpub, undefined, 'no identity xpub on the identity');
+    assert.ok(/^tpub/.test(r.identity.wallet.segwit.xpub), 'testnet wallet xpub');
+    assert.deepStrictEqual(window.localStorage._data, {});
+    assert.deepStrictEqual(window.sessionStorage._data, {});
   });
 
-  it('refuses second store without force', function () {
-    const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
-    const r1 = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: true });
-    assert.strictEqual(r1.ok, true);
-    const r2 = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: false });
-    assert.strictEqual(r2.ok, false);
-    assert.ok(r2.error && r2.error.includes('already'));
+  it('derives a different identity on another network for the same account', function () {
+    const { applyFabricDevBrowserSeedBootstrap } = require('../functions/fabricBrowserIdentityDev');
+    const regtest = applyFabricDevBrowserSeedBootstrap({ network: 'regtest' });
+    const mainnet = applyFabricDevBrowserSeedBootstrap({ network: 'mainnet' });
+    assert.notStrictEqual(regtest.identity.id, mainnet.identity.id);
+    assert.ok(/^xpub/.test(mainnet.identity.wallet.segwit.xpub));
   });
 
-  it('uses optional BIP39 extension passphrase in derivation (different identity id than without)', function () {
-    const { storeUnlockedIdentityFromMnemonic } = require('../functions/fabricBrowserIdentityDev');
-    const rNoPass = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: true });
-    assert.strictEqual(rNoPass.ok, true);
-    const idNoPass = rNoPass.identity.id;
-
-    window.localStorage._data = {};
-    window.sessionStorage._data = {};
-    const rWithPass = storeUnlockedIdentityFromMnemonic({
-      seed: phrase,
-      passphrase: 'test-bip39-extension-passphrase',
-      force: true
-    });
-    assert.strictEqual(rWithPass.ok, true);
-    assert.notStrictEqual(rWithPass.identity.id, idNoPass, 'BIP39 passphrase must change derived keys (BIP-39 salt)');
-    assert.notStrictEqual(rWithPass.identity.xpub, rNoPass.identity.xpub);
+  it('uses the BIP39 passphrase in derivation', function () {
+    const { applyFabricDevBrowserSeedBootstrap } = require('../functions/fabricBrowserIdentityDev');
+    const plain = applyFabricDevBrowserSeedBootstrap();
+    window.FABRIC_DEV_BROWSER_PASSPHRASE = 'test-bip39-extension-passphrase';
+    const salted = applyFabricDevBrowserSeedBootstrap();
+    assert.notStrictEqual(salted.identity.id, plain.identity.id);
   });
 
-  it('does not clear wipe-marker for a different seed', function () {
+  it('skips when no seed is configured', function () {
+    delete window.FABRIC_DEV_BROWSER_SEED;
+    const { applyFabricDevBrowserSeedBootstrap } = require('../functions/fabricBrowserIdentityDev');
+    const r = applyFabricDevBrowserSeedBootstrap();
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.skipped, true);
+  });
+
+  it('leaves a stored identity alone unless forced', function () {
+    const { applyFabricDevBrowserSeedBootstrap } = require('../functions/fabricBrowserIdentityDev');
+    const r = applyFabricDevBrowserSeedBootstrap({ hasStoredIdentity: true });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.reason, 'stored-identity');
+    window.FABRIC_DEV_BROWSER_IDENTITY = 'force';
+    assert.strictEqual(applyFabricDevBrowserSeedBootstrap({ hasStoredIdentity: true }).ok, true);
+  });
+
+  it('stays off after Remove identity wipes that seed, even when forced', function () {
     const {
-      storeUnlockedIdentityFromMnemonic,
-      suppressDevSeed,
+      applyFabricDevBrowserSeedBootstrap,
+      suppressActiveDevSeed,
       isDevSeedSuppressed
     } = require('../functions/fabricBrowserIdentityDev');
-    const other = 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong';
-    suppressDevSeed(phrase);
+    const { clearFabricBrowserIdentityLocal } = require('../functions/fabricBrowserState');
+    window.FABRIC_DEV_BROWSER_IDENTITY = 'force';
+    clearFabricBrowserIdentityLocal();
+    suppressActiveDevSeed();
+    clearFabricBrowserIdentityLocal();
     assert.strictEqual(isDevSeedSuppressed(phrase), true);
-    const r = storeUnlockedIdentityFromMnemonic({ seed: other, force: true });
-    assert.strictEqual(r.ok, true);
-    assert.strictEqual(isDevSeedSuppressed(phrase), true);
+    const r = applyFabricDevBrowserSeedBootstrap();
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.suppressed, true);
   });
 
-  it('clears wipe-marker only when restoring that suppressed seed', function () {
+  it('a wipe marker for one seed does not block another', function () {
     const {
-      storeUnlockedIdentityFromMnemonic,
+      applyFabricDevBrowserSeedBootstrap,
       suppressDevSeed,
-      isDevSeedSuppressed
+      clearDevSeedSuppression
     } = require('../functions/fabricBrowserIdentityDev');
+    suppressDevSeed('zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong');
+    assert.strictEqual(applyFabricDevBrowserSeedBootstrap().ok, true);
     suppressDevSeed(phrase);
-    const blocked = storeUnlockedIdentityFromMnemonic({ seed: phrase, force: true });
-    assert.strictEqual(blocked.ok, false);
-    assert.strictEqual(blocked.suppressed, true);
-    const restored = storeUnlockedIdentityFromMnemonic({
-      seed: phrase,
-      force: true,
-      ignoreSuppression: true
-    });
-    assert.strictEqual(restored.ok, true);
-    assert.strictEqual(isDevSeedSuppressed(phrase), false);
+    assert.strictEqual(applyFabricDevBrowserSeedBootstrap().ok, false);
+    clearDevSeedSuppression();
+    assert.strictEqual(applyFabricDevBrowserSeedBootstrap().ok, true);
   });
 });

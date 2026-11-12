@@ -71,6 +71,7 @@ const parseFilesystemJson = require('../functions/parseFilesystemJson');
 const { withDefaultSeedPeers } = require('../functions/hubDefaultPeers');
 const { looksLikeBulkSecurityAdvisory } = require('../functions/bulkSecurityAdvisory');
 const { isOperatorAdminToken } = require('../functions/operatorAdminToken');
+const { hubServerKeys } = require('../functions/hubAccount');
 const hubHeapBounds = require('../functions/hubHeapBounds');
 const hubHeapTelemetry = require('../functions/hubHeapTelemetry');
 const {
@@ -144,8 +145,15 @@ const {
   P2P_PEER_ALIAS,
   MAX_PEERS,
   HEADER_SIZE,
+  MAX_MESSAGE_SIZE,
   P2P_CHAIN_SYNC_REQUEST
 } = require('@fabric/core/constants');
+const { fitHubNetworkStatus } = require('../functions/hubNetworkStatus');
+
+// JSONCall / JSONCallResult envelope (method, hash, ids) around a status body.
+const NETWORK_STATUS_MAX_BYTES = MAX_MESSAGE_SIZE - 1024;
+// Walk the whole UTXO set; on signet and mainnet they outlast core's 15 s RPC timeout.
+const BITCOIN_SLOW_RPC_METHODS = new Set(['scantxoutset', 'gettxoutsetinfo']);
 
 // Hard limits and validation patterns
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MiB per document/file payload
@@ -238,14 +246,8 @@ function payjoinContributionFlag (body = {}) {
   const value = body.receiverContribution != null ? body.receiverContribution : body.autoAcpBoost;
   return value != null ? !!value : undefined;
 }
-const { mountFabricDesktopAuthHttp } = require('../functions/fabricDesktopAuth');
+const { mountHubPassport } = require('../functions/hubPassport');
 const { mountFabricDeviceLinkHttp } = require('../functions/fabricDeviceLink');
-const {
-  mountFabricDelegationHttp,
-  postDelegationSignatureMessage,
-  getDelegationSignatureMessage,
-  resolveDelegationSignatureMessage
-} = require('../functions/fabricDelegation');
 // const Queue = require('../types/queue');
 
 // Routes (Request Handlers)
@@ -538,10 +540,19 @@ class Hub extends Service {
       }
     } catch (_) { /* older @fabric/core pin */ }
 
+    // The root only derives. The identity key signs Fabric messages and admin
+    // tokens; the cosigner key is the Hub's federation / Beacon validator.
     this._rootKey = new Key(this.settings.key);
+    {
+      const serverKeys = hubServerKeys(this);
+      this._keyNetwork = serverKeys.network;
+      this._fabricKey = serverKeys.identity;
+      this._cosignerKey = serverKeys.cosigner;
+    }
 
     // Internals
-    this.agent = new Peer(this.settings);
+    // Same network as `_fabricKey`, so the Peer identity is the Hub identity key.
+    this.agent = new Peer({ ...this.settings, network: this._keyNetwork });
     this._installFabricChainSyncRequestBridge();
     /** fromPeerId → { count, windowStart } for RelayFromWebRTC rate limiting */
     this._webrtcRelayRate = new Map();
@@ -557,8 +568,8 @@ class Hub extends Service {
 
     // Fabric Setup
     this._fabric = {
-      ephemera: this._rootKey,
-      token: new Token({ issuer: this._rootKey })
+      ephemera: this._fabricKey,
+      token: new Token({ issuer: this._fabricKey })
     };
 
     // Fabric
@@ -767,10 +778,9 @@ class Hub extends Service {
       debug: !!this.settings.debug,
       interval: Number(this.settings.beacon && this.settings.beacon.interval ? this.settings.beacon.interval : 600000),
       regtest: true,
-      key: {
-        xprv: this._rootKey.xprv,
-        xpub: this._rootKey.xpub
-      }
+      key: this._cosignerKey
+        ? { xprv: this._cosignerKey.xprv, xpub: this._cosignerKey.xpub }
+        : {}
     });
 
     // File Uploads
@@ -803,16 +813,9 @@ class Hub extends Service {
     /** @type {Map<string, Object>} */
     this._crowdfundingCampaigns = new Map();
     this._crowdfundingLoaded = false;
-    /** Pending browser ↔ Fabric Hub desktop login sessions (see functions/fabricDesktopAuth.js). */
-    /** @type {Map<string, Object>} */
-    this._desktopAuthSessions = new Map();
     /** Mutual device-link sessions (see functions/fabricDeviceLink.js). */
     /** @type {Map<string, Object>} */
     this._deviceLinkSessions = new Map();
-    /** @type {Map<string, Object>} */
-    this._delegationRegistry = new Map();
-    /** @type {Map<string, Object>} */
-    this._delegationSignatureMessages = new Map();
     /** Previous signed AMP `Message.id` for `_appendFabricMessage` (D-020). */
     this._outboundMessageTip = null;
     this.changes = new Logger({
@@ -828,18 +831,16 @@ class Hub extends Service {
     // Fabric
     this.contract = new Contract({
       state: this.settings.state,
-      key: {
-        xprv: this._rootKey.xprv
-      }
+      key: this._fabricKey ? { xprv: this._fabricKey.xprv } : {}
     });
 
     // Storage and Network
-    this.fs = new Filesystem({ ...this.settings.fs, key: { xprv: this._rootKey.xprv } });
+    this.fs = new Filesystem({ ...this.settings.fs, key: this._fabricKey ? { xprv: this._fabricKey.xprv } : undefined });
     installFilesystemPublishHeapGuard(this.fs);
     // Setup must read persisted `STATE` from disk via `SetupService._loadStateContent`, not only the in-memory
     // `settings.state` template. Otherwise `getSetupStatus()` runs before `start()` merges disk (`needsSetup` stays
     // true on early GET /settings / desktop reload). Passing `state: null` forces filesystem reads.
-    this.setup = new SetupService({ fs: this.fs, key: this._rootKey, state: null });
+    this.setup = new SetupService({ fs: this.fs, key: this._fabricKey, state: null });
     /** Sidechain document + logical clock; see @fabric/core/functions/sidechainState */
     this._sidechainState = sidechainState.loadState(this.fs);
     /** Serialize patch submits + reorg rewind (linearize statechain mutations). */
@@ -1970,7 +1971,7 @@ class Hub extends Service {
     this._sendGenericFabricEnvelopeToPeer(originConn, responsePayload);
     try {
       const wsMsg = Message.fromVector(['GenericMessage', JSON.stringify(responsePayload)]);
-      if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
+      if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
       if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
     } catch (_) {}
 
@@ -2080,7 +2081,7 @@ class Hub extends Service {
         : (this._outboundMessageTip || Message.ZERO_PARENT);
       Message.setMessageParent(chainMessage, parent);
       entry.parent = Message.parentHexOf(chainMessage);
-      if (this._rootKey && this._rootKey.private) chainMessage.signWithKey(this._rootKey);
+      if (this._fabricKey) chainMessage.signWithKey(this._fabricKey);
       if (!skip && chainMessage.id) {
         this._outboundMessageTip = chainMessage.id;
         entry.frameId = chainMessage.id;
@@ -2319,7 +2320,7 @@ class Hub extends Service {
       };
 
       const msg = Message.fromVector(['JSONPatch', JSON.stringify(patch)]);
-      if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+      if (this._fabricKey) msg.signWithKey(this._fabricKey);
       if (this.http && typeof this.http.broadcast === 'function') {
         this.http.broadcast(msg);
       }
@@ -2427,7 +2428,7 @@ class Hub extends Service {
           path: `/messages/${messageId}`
         };
         const msg = Message.fromVector(['JSONPatch', JSON.stringify(patch)]);
-        if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+        if (this._fabricKey) msg.signWithKey(this._fabricKey);
         if (this.http && typeof this.http.broadcast === 'function') {
           this.http.broadcast(msg);
         }
@@ -2456,7 +2457,7 @@ class Hub extends Service {
         }
       });
       const tombEvt = Message.fromVector(['GenericMessage', tombBody]);
-      if (this._rootKey && this._rootKey.private) tombEvt.signWithKey(this._rootKey);
+      if (this._fabricKey) tombEvt.signWithKey(this._fabricKey);
       if (this.http && typeof this.http.broadcast === 'function') {
         this.http.broadcast(tombEvt);
       }
@@ -2609,6 +2610,52 @@ class Hub extends Service {
       instances: parsed.instances,
       applied
     };
+  }
+
+  /**
+   * RPC call that may outlast core's 15 s client timeout, such as `scantxoutset`
+   * over a full (non-regtest) UTXO set. Uses a copy of core's own client, auth
+   * included, with a 5 minute timeout.
+   * @private
+   */
+  _bitcoinSlowRPC (bitcoin, method, params = [], fallback = null) {
+    const base = bitcoin && bitcoin.rpc;
+    if (!base || !base.options || typeof base.request !== 'function') {
+      return fallback ? fallback(method, params) : Promise.reject(new Error('RPC manager does not exist'));
+    }
+    if (!this._bitcoinSlowClient || this._bitcoinSlowClientBase !== base) {
+      const jayson = require('jayson/lib/client');
+      const options = Object.assign({}, base.options, { timeout: 300000 });
+      this._bitcoinSlowClient = (bitcoin.settings && bitcoin.settings.secure) ? jayson.https(options) : jayson.http(options);
+      this._bitcoinSlowClientBase = base;
+    }
+    return new Promise((resolve, reject) => {
+      this._bitcoinSlowClient.request(method, params, (err, response) => {
+        if (err) return reject(err);
+        if (!response) return reject(new Error(`No response from RPC call ${method}`));
+        if (response.error) {
+          const re = response.error;
+          const error = new Error(re && re.message ? re.message : JSON.stringify(re));
+          if (re && re.code != null) error.code = re.code;
+          return reject(error);
+        }
+        resolve(response.result);
+      });
+    });
+  }
+
+  /**
+   * Send the RPC methods that walk the whole UTXO set through
+   * `_bitcoinSlowRPC`, core's own sync (`gettxoutsetinfo`) included.
+   * @private
+   */
+  _routeSlowBitcoinRPC (bitcoin) {
+    if (!bitcoin || typeof bitcoin._makeRPCRequestOnce !== 'function' || bitcoin._hubSlowRPCRouted) return;
+    const once = bitcoin._makeRPCRequestOnce.bind(bitcoin);
+    bitcoin._makeRPCRequestOnce = (method, params = []) => (BITCOIN_SLOW_RPC_METHODS.has(method)
+      ? this._bitcoinSlowRPC(bitcoin, method, params, once)
+      : once(method, params));
+    bitcoin._hubSlowRPCRouted = true;
   }
 
   _getBitcoinService () {
@@ -3288,7 +3335,7 @@ class Hub extends Service {
       const federationThreshold = validators.length ? thresholdRaw : Math.max(1, thresholdRaw);
       this.beacon.attach({
         fs: this.fs,
-        key: this._rootKey,
+        key: this._cosignerKey,
         federationValidators: validators,
         federationThreshold,
         federationSignatureScheme: this._distributedFederationSignatureSchemeEffective(),
@@ -3372,8 +3419,8 @@ class Hub extends Service {
     }
     try {
       let hubId = (this.agent && this.agent.id) ? String(this.agent.id).trim() : '';
-      if (!hubId && this._rootKey && this._rootKey.pubkey) {
-        hubId = String(this._rootKey.pubkey).trim();
+      if (!hubId && this._fabricKey && this._fabricKey.pubkey) {
+        hubId = String(this._fabricKey.pubkey).trim();
       }
       out.hubFabricPeerId = hubId || null;
     } catch (_) {
@@ -3557,7 +3604,7 @@ class Hub extends Service {
     }
     const payload = JSON.stringify(body);
     const msg = Message.fromVector(['GenericMessage', payload]);
-    if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+    if (this._fabricKey) msg.signWithKey(this._fabricKey);
     if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
     if (this.agent && typeof this.agent.relayFrom === 'function') {
       this.agent.relayFrom('_hub', msg).catch(() => {});
@@ -3618,8 +3665,8 @@ class Hub extends Service {
     if (!this.beacon || !signRequest || !signRequest.commitmentDigest) return null;
     const validators = this._distributedFederationValidatorsFromEnv();
     if (!validators.length) return null;
-    if (!this._rootKey || !this._rootKey.private) return null;
-    const pk = this._rootKey.pubkey ? String(this._rootKey.pubkey).trim() : null;
+    if (!this._cosignerKey || !this._cosignerKey.private) return null;
+    const pk = this._cosignerKey.pubkey ? String(this._cosignerKey.pubkey).trim() : null;
     if (!pk || !validators.includes(pk)) return null;
 
     if (signRequest.epoch && !this._federationEpochMatchesLocalDigests(signRequest.epoch)) {
@@ -3709,7 +3756,7 @@ class Hub extends Service {
       if (typeof this.http.broadcast !== 'function') return;
       const payload = JSON.stringify({ type, object: object || {} });
       const msg = Message.fromVector(['GenericMessage', payload]);
-      if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+      if (this._fabricKey) msg.signWithKey(this._fabricKey);
       this.http.broadcast(msg);
     } catch (err) {
       if (this.settings && this.settings.debug) {
@@ -4048,9 +4095,8 @@ class Hub extends Service {
   }
 
   /**
-   * Local developer env is the production publisher: Hub `_rootKey` (HD master)
-   * and Peer `agent.key` (BIP44 child) share `FABRIC_XPRV`. Accept tokens minted
-   * from either.
+   * Admin tokens are signed by the Hub identity key (`m/44'/F'/0'/0/0` of
+   * `FABRIC_XPRV` on the Hub's network — the Peer's identity), never the root.
    * @param {string} token
    * @returns {boolean}
    */
@@ -4060,7 +4106,7 @@ class Hub extends Service {
     if (this.setup && typeof this.setup.verifyAdminToken === 'function' && this.setup.verifyAdminToken(t)) {
       return true;
     }
-    return isOperatorAdminToken(t, [this._rootKey, this.agent && this.agent.key]);
+    return isOperatorAdminToken(t, [this._fabricKey]);
   }
 
   async _acceptTrackedApplicationContract (params = {}) {
@@ -4908,14 +4954,14 @@ class Hub extends Service {
   }
 
   /**
-   * Soft-tier publisher for federation vault + Beacon ARC (hub root key, else first validator).
+   * Soft-tier publisher for federation vault + Beacon ARC (hub cosigner key, else first validator).
    * @param {string[]} [validators]
    * @returns {string|null}
    */
   _federationAuthorityPublisher (validators = []) {
     try {
-      if (this._rootKey && this._rootKey.pubkey) {
-        return String(this._rootKey.pubkey).trim().toLowerCase();
+      if (this._cosignerKey && this._cosignerKey.pubkey) {
+        return String(this._cosignerKey.pubkey).trim().toLowerCase();
       }
     } catch (_) { /* fall through */ }
     if (validators && validators.length) {
@@ -7116,7 +7162,7 @@ class Hub extends Service {
     try {
       const patch = { op: 'add', path: '/bitcoin', value: this._sanitizeBitcoinStatusForPublic(status) };
       const msg = Message.fromVector(['JSONPatch', JSON.stringify(patch)]);
-      if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+      if (this._fabricKey) msg.signWithKey(this._fabricKey);
       if (this.http && typeof this.http.broadcast === 'function') {
         this.http.broadcast(msg);
       }
@@ -9051,27 +9097,48 @@ class Hub extends Service {
     }
   }
 
-  async _scanWalletDescriptors (bitcoin, xpub, network = 'mainnet') {
+  /**
+   * `scantxoutset` over an account wallet: wpkh receive + change of the SegWit
+   * account xpub and, when given, pkh + wpkh receive + change of the standard
+   * account xpub. Each unspent is tagged `account` (`segwit` | `standard`) and
+   * `script` (`wpkh` | `pkh`).
+   * @param {object} bitcoin
+   * @param {string} xpub SegWit account xpub (`m/84'/B'/n'`)
+   * @param {string} [network]
+   * @param {string} [standardXpub] Standard account xpub (`m/44'/B'/n'`)
+   */
+  async _scanWalletDescriptors (bitcoin, xpub, network = 'mainnet', standardXpub = '') {
     const normalizedXpub = this._normalizeXpubForNetwork(xpub, network);
-    const receiveDesc = `wpkh(${normalizedXpub}/0/*)`;
-    const changeDesc = `wpkh(${normalizedXpub}/1/*)`;
-    const scanKey = `${network}:${normalizedXpub}`;
+    const normalizedStandard = standardXpub ? this._normalizeXpubForNetwork(standardXpub, network) : '';
+    const descs = [
+      { desc: `wpkh(${normalizedXpub}/0/*)`, account: 'segwit', script: 'wpkh' },
+      { desc: `wpkh(${normalizedXpub}/1/*)`, account: 'segwit', script: 'wpkh' }
+    ];
+    if (normalizedStandard) {
+      for (const script of ['pkh', 'wpkh']) {
+        descs.push({ desc: `${script}(${normalizedStandard}/0/*)`, account: 'standard', script });
+        descs.push({ desc: `${script}(${normalizedStandard}/1/*)`, account: 'standard', script });
+      }
+    }
+    const scanKey = `${network}:${normalizedXpub}:${normalizedStandard}`;
+    const fingerprints = {
+      segwit: this._xpubFingerprintHex(normalizedXpub),
+      standard: normalizedStandard ? this._xpubFingerprintHex(normalizedStandard) : ''
+    };
 
     const existing = this._bitcoinScanInflight.get(scanKey);
     if (existing) return existing;
 
     const task = (async () => {
-      const [receiveInfo, changeInfo] = await Promise.all([
-        bitcoin._makeRPCRequest('getdescriptorinfo', [receiveDesc]).catch(() => ({ descriptor: receiveDesc })),
-        bitcoin._makeRPCRequest('getdescriptorinfo', [changeDesc]).catch(() => ({ descriptor: changeDesc }))
-      ]);
-
-      const scanObjects = [
-        { desc: receiveInfo.descriptor || receiveDesc, range: [0, 999] },
-        { desc: changeInfo.descriptor || changeDesc, range: [0, 999] }
-      ];
-
-      return bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+      const infos = await Promise.all(descs.map((d) => (
+        bitcoin._makeRPCRequest('getdescriptorinfo', [d.desc]).catch(() => ({ descriptor: d.desc }))
+      )));
+      const scanObjects = descs.map((d, i) => ({ desc: (infos[i] && infos[i].descriptor) || d.desc, range: [0, 999] }));
+      const result = await bitcoin._makeRPCRequest('scantxoutset', ['start', scanObjects]);
+      if (result && Array.isArray(result.unspents)) {
+        result.unspents = result.unspents.map((u) => Object.assign({}, u, this._walletUnspentTags(u, fingerprints)));
+      }
+      return result;
     })();
 
     this._bitcoinScanInflight.set(scanKey, task);
@@ -9080,6 +9147,60 @@ class Hub extends Service {
       return await task;
     } finally {
       this._bitcoinScanInflight.delete(scanKey);
+    }
+  }
+
+  /**
+   * @param {string} xpub
+   * @returns {string} Hex fingerprint of the key itself (the origin Core reports for its children), or ''.
+   */
+  _xpubFingerprintHex (xpub) {
+    try {
+      const bytes = Buffer.from(bs58check.decode(String(xpub)));
+      if (bytes.length !== 78) return '';
+      const pubkey = bytes.subarray(45, 78);
+      const h160 = crypto.createHash('ripemd160').update(crypto.createHash('sha256').update(pubkey).digest()).digest();
+      return h160.subarray(0, 4).toString('hex');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /**
+   * Account and script of a scanned unspent, from its descriptor's key origin.
+   * @param {object} unspent
+   * @param {{ segwit: string, standard: string }} fingerprints
+   * @returns {{ account: string, script: string }}
+   */
+  _walletUnspentTags (unspent, fingerprints) {
+    const desc = String((unspent && unspent.desc) || '');
+    const script = /^pkh\(/i.test(desc) ? 'pkh' : 'wpkh';
+    const origin = /\[([0-9a-f]{8})/i.exec(desc);
+    const fp = origin ? origin[1].toLowerCase() : '';
+    const account = fingerprints.standard && fp === fingerprints.standard ? 'standard' : 'segwit';
+    return { account, script };
+  }
+
+  /**
+   * Standard account xpub sent beside the SegWit one (`X-Fabric-Xpub-Standard`,
+   * body `standardXpub`, or `?standardXpub=`). Only a well-formed extended
+   * public key is accepted.
+   * @param {object} req
+   * @returns {string}
+   */
+  _bitcoinStandardXpubFromRequest (req) {
+    const h = (req && req.headers) || {};
+    const body = req && req.body && typeof req.body === 'object' ? req.body : null;
+    const raw = (typeof h['x-fabric-xpub-standard'] === 'string' && h['x-fabric-xpub-standard'].trim()) ||
+      (body && body.standardXpub != null && String(body.standardXpub).trim()) ||
+      (req && req.query && req.query.standardXpub != null && String(req.query.standardXpub).trim()) ||
+      '';
+    if (!raw) return '';
+    try {
+      const bytes = Buffer.from(bs58check.decode(raw));
+      return bytes.length === 78 && bytes[45] !== 0 ? raw : '';
+    } catch (_) {
+      return '';
     }
   }
 
@@ -9166,9 +9287,9 @@ class Hub extends Service {
    * @param {string} addressesParam comma-separated watch addresses
    * @returns {Promise<object>} JSON fields (no walletId)
    */
-  async _bitcoinXpubWatchSummaryPayload (bitcoin, xpub, addressesParam = '') {
+  async _bitcoinXpubWatchSummaryPayload (bitcoin, xpub, addressesParam = '', standardXpub = '') {
     const network = bitcoin.network || 'regtest';
-    const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
+    const result = await this._scanWalletDescriptors(bitcoin, xpub, network, standardXpub);
     const totalBTC = result && typeof result.total_amount === 'number' ? result.total_amount : 0;
     const confirmedSats = Math.round(totalBTC * 100000000);
 
@@ -9216,9 +9337,9 @@ class Hub extends Service {
    * @param {string} xpub
    * @returns {Promise<object>} { network, utxos, keysHeldByServer }
    */
-  async _bitcoinXpubWatchUtxosPayload (bitcoin, xpub) {
+  async _bitcoinXpubWatchUtxosPayload (bitcoin, xpub, standardXpub = '') {
     const network = bitcoin.network || 'regtest';
-    const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
+    const result = await this._scanWalletDescriptors(bitcoin, xpub, network, standardXpub);
     const raw = (result && Array.isArray(result.unspents)) ? result.unspents : [];
     const utxos = raw.map((u) => ({
       txid: u.txid,
@@ -9227,7 +9348,9 @@ class Hub extends Service {
       amountSats: Math.round(Number(u.amount || 0) * 100000000),
       desc: u.desc,
       scriptPubKey: u.scriptPubKey,
-      height: u.height
+      height: u.height,
+      account: u.account,
+      script: u.script
     }));
     return { network, utxos, keysHeldByServer: false };
   }
@@ -9239,9 +9362,9 @@ class Hub extends Service {
    * @param {number} limit
    * @returns {Promise<object>} { network, transactions, keysHeldByServer }
    */
-  async _bitcoinXpubWatchTransactionsPayload (bitcoin, xpub, addressesParam = '', limit = 50) {
+  async _bitcoinXpubWatchTransactionsPayload (bitcoin, xpub, addressesParam = '', limit = 50, standardXpub = '') {
     const network = bitcoin.network || 'regtest';
-    const result = await this._scanWalletDescriptors(bitcoin, xpub, network);
+    const result = await this._scanWalletDescriptors(bitcoin, xpub, network, standardXpub);
     const unspents = (result && Array.isArray(result.unspents)) ? result.unspents : [];
     const confirmedTxids = new Set(unspents.map((u) => u.txid).filter(Boolean));
 
@@ -9348,7 +9471,7 @@ class Hub extends Service {
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
       try {
         const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
-        const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam);
+        const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
         if (this.settings.debug) console.error('[HUB] scantxoutset xpub API:', err && err.message);
@@ -9374,7 +9497,7 @@ class Hub extends Service {
       }
       if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
       try {
-        const body = await this._bitcoinXpubWatchUtxosPayload(bitcoin, xpub);
+        const body = await this._bitcoinXpubWatchUtxosPayload(bitcoin, xpub, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
         if (this.settings.debug) console.error('[HUB] scantxoutset xpub UTXOs:', err && err.message);
@@ -9402,7 +9525,7 @@ class Hub extends Service {
       const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
       try {
         const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
-        const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit);
+        const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit, this._bitcoinStandardXpubFromRequest(req));
         return res.json(body);
       } catch (err) {
         if (this.settings.debug) console.error('[HUB] xpub transactions API:', err && err.message);
@@ -9468,7 +9591,7 @@ class Hub extends Service {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
           const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
-          const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam);
+          const body = await this._bitcoinXpubWatchSummaryPayload(bitcoin, xpub, addressesParam, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
           if (this.settings.debug) console.error('[HUB] scantxoutset for client wallet:', err && err.message);
@@ -9643,7 +9766,7 @@ class Hub extends Service {
       if (isClientWallet) {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
-          const body = await this._bitcoinXpubWatchUtxosPayload(bitcoin, xpub);
+          const body = await this._bitcoinXpubWatchUtxosPayload(bitcoin, xpub, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
           if (this.settings.debug) console.error('[HUB] scantxoutset for client wallet UTXOs:', err && err.message);
@@ -9693,7 +9816,7 @@ class Hub extends Service {
         if (!this._authorizeBitcoinXpubQueryHttp(req, res)) return;
         try {
           const addressesParam = (req.query && req.query.addresses) ? String(req.query.addresses).trim() : '';
-          const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit);
+          const body = await this._bitcoinXpubWatchTransactionsPayload(bitcoin, xpub, addressesParam, limit, this._bitcoinStandardXpubFromRequest(req));
           return res.json({ ...body, walletId });
         } catch (err) {
           if (this.settings.debug) console.error('[HUB] wallet transactions for xpub:', err && err.message);
@@ -9780,9 +9903,12 @@ class Hub extends Service {
 
       let txid;
       try {
-        txid = feeRateSatVb != null
-          ? await this._hubWalletSend({ address: to, amountSats: Math.round(amountSats), feeRateSatVb, label: 'bridge_payment', meta: { memo: memo || undefined } })
-          : await bitcoin._processSpendMessage({ destination: to, amount: amountBTC, comment: memo });
+        if (feeRateSatVb != null) {
+          txid = await this._hubWalletSend({ address: to, amountSats: Math.round(amountSats), feeRateSatVb, label: 'bridge_payment', meta: { memo: memo || undefined } });
+        } else {
+          txid = await bitcoin._processSpendMessage({ destination: to, amount: amountBTC, comment: memo });
+          await this._broadcastWalletTx(bitcoin, txid);
+        }
       } catch (err) {
         return res.status(400).json({ status: 'error', message: err && err.message ? err.message : String(err) });
       }
@@ -9812,18 +9938,22 @@ class Hub extends Service {
         const body = req.body || {};
         const token = SetupService.extractBearerToken(req) ||
           String(body.adminToken || body.token || '').trim();
-        if (!this.setup || typeof this.setup.verifyAdminToken !== 'function' ||
-            !this.setup.verifyAdminToken(token)) {
-          return res.status(401).json({
-            status: 'error',
-            message: 'Admin token required for faucet (regtest Hub wallet spend).'
-          });
-        }
+        const isAdmin = !!(token && this.setup && typeof this.setup.verifyAdminToken === 'function' &&
+          this.setup.verifyAdminToken(token));
 
         const bitcoin = this._getBitcoinService();
         if (!bitcoin) return res.status(503).json({ status: 'error', message: 'Bitcoin service unavailable' });
         if (bitcoin.network !== 'regtest') {
           return res.status(400).json({ status: 'error', message: 'Faucet is only available on regtest.' });
+        }
+
+        if (!isAdmin) {
+          if (!this._faucetLimiter) {
+            this._faucetLimiter = bitcoinFaucetCapability.createFaucetLimiter();
+          }
+          const who = String(req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
+          const refusal = this._faucetLimiter.take(who);
+          if (refusal) return res.status(429).json({ status: 'error', message: refusal });
         }
 
         const FAUCET_MAX_SATS = bitcoinFaucetCapability.FAUCET_MAX_SATS;
@@ -9872,6 +10002,7 @@ class Hub extends Service {
         try {
           if (txid) this._mergePersistedTxLabel(String(txid), 'faucet_payment', { destination: to });
         } catch (_) {}
+        await this._broadcastWalletTx(bitcoin, txid);
 
         return res.json({
           status: 'success',
@@ -10010,7 +10141,7 @@ class Hub extends Service {
    * @returns {Message|null}
    */
   _publishCoinjoinMessage (body, opts = {}) {
-    const key = opts.anonymous ? new Key({ private: crypto.randomBytes(32).toString('hex') }) : this._rootKey;
+    const key = opts.anonymous ? new Key({ private: crypto.randomBytes(32).toString('hex') }) : this._fabricKey;
     return this._publishContractMessage(body, key, 'COINJOIN');
   }
 
@@ -10052,9 +10183,9 @@ class Hub extends Service {
   }
 
   /**
-   * Fetch and verify another Hub's root key from its peering attestation.
+   * Fetch another Hub's federation (cosigner) key from its signed peering attestation.
    * @param {string} url Hub origin (http/https)
-   * @returns {Promise<{ pubkey: string, url: string, alias: (string|null), fabricPeerId: (string|null) }>}
+   * @returns {Promise<{ pubkey: string, identityPubkey: string, url: string, alias: (string|null), fabricPeerId: (string|null) }>}
    * @private
    */
   async _resolveHubIdentity (url) {
@@ -10094,8 +10225,18 @@ class Hub extends Service {
     const checked = PeeringService.verifyHubAttestation(body);
     if (!checked.ok) throw new Error(`${origin}: ${checked.error}`);
     const claim = checked.claim || {};
+    const federationPubkey = String(claim.federationPubkey || '').trim().toLowerCase();
+    if (!/^0[23][0-9a-f]{64}$/.test(federationPubkey)) {
+      throw new Error(`${origin} does not publish a federation key (Federations are off there, or it runs an older Hub). Add it by key instead.`);
+    }
     const alias = claim.hub && claim.hub.alias ? String(claim.hub.alias).slice(0, 80) : null;
-    return { pubkey: checked.pubkey, url: origin, alias, fabricPeerId: claim.fabricPeerId || null };
+    return {
+      pubkey: federationPubkey,
+      identityPubkey: checked.pubkey,
+      url: origin,
+      alias,
+      fabricPeerId: claim.fabricPeerId || null
+    };
   }
 
   /**
@@ -10169,7 +10310,29 @@ class Hub extends Service {
     try {
       if (txid && opts.label) this._mergePersistedTxLabel(String(txid), opts.label, { destination: String(opts.address), ...(opts.meta || {}) });
     } catch (_) {}
+    await this._broadcastWalletTx(bitcoin, txid);
     return txid;
+  }
+
+  /**
+   * Submit a Hub wallet transaction to the mempool. A node running with
+   * `-walletbroadcast=0` (Core's default under `-blocksonly`) only records it in the wallet.
+   * @param {Object} bitcoin Bitcoin service
+   * @param {string} txid
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _broadcastWalletTx (bitcoin, txid) {
+    if (!txid || typeof txid !== 'string') return;
+    const tx = await bitcoin._makeWalletRequest('gettransaction', [txid], bitcoin.walletName);
+    if (!tx || !tx.hex || Number(tx.confirmations) !== 0) return;
+    try {
+      await bitcoin._makeRPCRequest('sendrawtransaction', [tx.hex]);
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      if (/already in (the )?(mempool|block ?chain|utxo set)|txn-already-known|txn-already-in-mempool/i.test(message)) return;
+      throw new Error(`Transaction ${txid} is in the Hub wallet but was not broadcast: ${message}`);
+    }
   }
 
   /** @private */
@@ -11717,7 +11880,7 @@ class Hub extends Service {
     const _fedThrRaw = this._distributedFederationThresholdEffective();
     this.beacon.attach({
       fs: this.fs,
-      key: this._rootKey,
+      key: this._cosignerKey,
       federationValidators: _fedVals,
       federationThreshold: _fedVals.length ? _fedThrRaw : Math.max(1, _fedThrRaw),
       federationSignatureScheme: this._distributedFederationSignatureSchemeEffective(),
@@ -12140,6 +12303,7 @@ class Hub extends Service {
         this._state.content.services.bitcoin = this._state.content.services.bitcoin || {};
         this._state.content.services.bitcoin.status = this._sanitizeBitcoinStatusForPublic({ available: false, status: 'STARTING', message: 'Starting Bitcoin...' });
         this._repairManagedRegtestSettingsJsonIfCorrupt();
+        this._routeSlowBitcoinRPC(this.bitcoin);
         console.log('[HUB] Starting Bitcoin (blocking until ready or timeout)...');
         const result = await this._startBitcoinServiceWithTimeout();
         if (result && result.started) {
@@ -12180,9 +12344,18 @@ class Hub extends Service {
       if (this.federations && !(this.settings.namedFederations && this.settings.namedFederations.enable === false)) {
         this.federations.attach({
           fs: this.fs,
-          key: this._rootKey,
-          publish: (body) => this._publishContractMessage(body, this._rootKey, 'FEDERATION'),
+          key: this._cosignerKey,
+          publish: (body) => this._publishContractMessage(body, this._cosignerKey, 'FEDERATION'),
           relay: (message) => this.agent.relayFrom('_hub', message),
+          deliver: async (url, fabric) => {
+            const res = await fetch(`${String(url).replace(/\/+$/, '')}/services/federations/messages`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({ fabric }),
+              signal: AbortSignal.timeout(15000)
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          },
           rpc: (method, params) => {
             const bitcoin = this._getBitcoinService();
             if (!bitcoin || typeof bitcoin._makeRPCRequest !== 'function') throw new Error('Bitcoin is not available');
@@ -12208,7 +12381,7 @@ class Hub extends Service {
 
       if (this.peering && this.settings.peering && this.settings.peering.enable !== false) {
         this.peering.attach({
-          key: this._rootKey,
+          key: this._fabricKey,
           hub: this
         });
         this._wireHttpOptionsContract();
@@ -12359,12 +12532,12 @@ class Hub extends Service {
       }
 
       if (this.market && !(this.settings.market && this.settings.market.enable === false)) {
-        this.market.attach({ hub: this, fs: this.fs, key: this._rootKey });
+        this.market.attach({ hub: this, fs: this.fs, key: this._fabricKey });
         await this.market.start();
       }
 
       if (this.challenge && this.settings.challenge && this.settings.challenge.enable !== false) {
-        this.challenge.attach({ hub: this, fs: this.fs, book: this.market ? this.market.book : null, key: this._rootKey });
+        this.challenge.attach({ hub: this, fs: this.fs, book: this.market ? this.market.book : null, key: this._fabricKey });
         await this.challenge.start();
         if (this._state.content.services) {
           const caps = this.challenge.getCapabilities();
@@ -12643,8 +12816,7 @@ class Hub extends Service {
       this.http._addRoute('POST', '/services/binaries', this._handleManagedBinariesInstallRequest.bind(this));
       this.http._addRoute('POST', '/services/binaries/check', this._handleManagedBinariesCheckRequest.bind(this));
 
-      mountFabricDelegationHttp(this);
-      mountFabricDesktopAuthHttp(this);
+      mountHubPassport(this);
       mountFabricDeviceLinkHttp(this);
       require('../functions/identityClusterHttp').mountIdentityClusterHttp(this);
       require('../functions/fabricLocalSignerHub').mountFabricLocalSignerHub(this);
@@ -12875,7 +13047,7 @@ class Hub extends Service {
         const json = JSON.stringify(payload);
         try {
           const msg = Message.fromVector(['ContractProposal', json]);
-          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
           const p2pMsg = Message.fromVector(['ContractProposal', json]).signWithKey(this.agent.key);
           this.agent.relayFrom('_client', p2pMsg);
@@ -13162,7 +13334,7 @@ class Hub extends Service {
         try {
           this._cacheChatMessage(chatPayload);
           const relay = Message.fromVector(['ChatMessage', JSON.stringify(chatPayload)]);
-          if (this._rootKey && this._rootKey.private) relay.signWithKey(this._rootKey);
+          if (this._fabricKey) relay.signWithKey(this._fabricKey);
           // Broadcast to all WebSocket clients (HTTP edge may use JSON ChatMessage)
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(relay);
@@ -14535,15 +14707,15 @@ class Hub extends Service {
             try {
               const msg = buildGenericMessageFromEnvelope(top.envelope);
               out.fabricMessageWireHex = msg.toBuffer().toString('hex');
-              out.delegationSignRequest = {
+              out.messagePrompt = {
                 envelope: top.envelope,
                 display: top.envelope.display || null
               };
             } catch (err) {
-              out.delegationSignRequestError = err && err.message ? err.message : String(err);
+              out.messagePromptError = err && err.message ? err.message : String(err);
             }
           } else {
-            out.delegationSignRequestError = validation.error || 'invalid envelope';
+            out.messagePromptError = validation.error || 'invalid envelope';
           }
         }
         return out;
@@ -15141,13 +15313,13 @@ class Hub extends Service {
           documentMarket: this._documentMarketSnapshot(),
           // settings: this.settings,
           state: this.http.state,
-          xpub: this._rootKey.xpub
+          pubkey: this._fabricKey ? String(this._fabricKey.pubkey) : null
         };
       };
 
       this.http._registerMethod('GetNetworkStatus', async (...params) => {
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return buildNetworkStatus();
+        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetSetupStatus', (...params) => {
@@ -15225,25 +15397,11 @@ class Hub extends Service {
         return Object.assign({ type: 'DrainContractMessageQueueResult', status: 'ok' }, result);
       });
 
-      // Delegation signing: Fabric message log (`DELEGATION_SIGNATURE_*`) + JSON-RPC (no HTTP “sign-request” resources).
-      this.http._registerMethod('PostDelegationSignatureMessage', async (...params) => {
-        const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
-        return postDelegationSignatureMessage(this, p);
-      });
-      this.http._registerMethod('GetDelegationSignatureMessage', (...params) => {
-        const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
-        return getDelegationSignatureMessage(this, p);
-      });
-      this.http._registerMethod('ResolveDelegationSignatureMessage', async (...params) => {
-        const p = params[0] && typeof params[0] === 'object' ? params[0] : {};
-        return resolveDelegationSignatureMessage(this, p);
-      });
-
       this.http._registerMethod('ListPeers', async (...params) => {
         // For the UI we return the same shape as GetNetworkStatus
         // so the bridge/networkStatus wiring can remain consistent.
         await this._collectBitcoinStatus({ force: false }).catch(() => {});
-        return buildNetworkStatus();
+        return fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
       });
 
       this.http._registerMethod('GetWorkerStatus', (...params) => {
@@ -15418,12 +15576,12 @@ class Hub extends Service {
       // Push network status to all WebSocket clients when peer connections change
       const pushNetworkStatus = () => {
         try {
-          const status = buildNetworkStatus();
+          const status = fitHubNetworkStatus(buildNetworkStatus(), NETWORK_STATUS_MAX_BYTES);
           const msg = Message.fromVector(['JSONCall', JSON.stringify({
             method: 'JSONCallResult',
             params: [null, status]
           })]);
-          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(msg);
           }
@@ -15693,12 +15851,12 @@ class Hub extends Service {
           };
           // Browser path: keep JSON hops envelope for Bridge.
           const relayMsg = Message.fromVector(['P2P_RELAY', JSON.stringify(relayPayload)]);
-          if (this._rootKey && this._rootKey.private) relayMsg.signWithKey(this._rootKey);
+          if (this._fabricKey) relayMsg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(relayMsg);
           }
           // Peer mesh path: raw inner Message bytes (preserves fabric-message signatures).
-          const signKey = (this.agent && this.agent.key) || this._rootKey;
+          const signKey = (this.agent && this.agent.key) || this._fabricKey;
           const innerBuf = buildInnerWireBuffer(original, originalType, signKey);
           const p2pRelay = wrapPeerP2pRelay(innerBuf, signKey);
           this.agent.relayFrom('_webrtc', p2pRelay);
@@ -15751,7 +15909,7 @@ class Hub extends Service {
         if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
         const payload = JSON.stringify({ type: 'P2P_FILE_SEND', object: normalized });
         const msg = Message.fromVector(['FileMessage', payload]);
-        if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+        if (this._fabricKey) msg.signWithKey(this._fabricKey);
         if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
         this.recordActivity({
           type: 'Receive',
@@ -15836,7 +15994,7 @@ class Hub extends Service {
 
           const payload = JSON.stringify(normalized);
           const msg = Message.fromVector(['ChatMessage', payload]);
-          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(msg);
           }
@@ -15861,7 +16019,7 @@ class Hub extends Service {
             object: { name: alias }
           });
           const msg = Message.fromVector(['GenericMessage', payload]);
-          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') this.http.broadcast(msg);
           if (typeof pushNetworkStatus === 'function') pushNetworkStatus();
         } catch (err) {
@@ -16005,7 +16163,7 @@ class Hub extends Service {
           if (!message || typeof message !== 'object') return;
           const payload = JSON.stringify(message);
           const msg = Message.fromVector(['GenericMessage', payload]);
-          if (this._rootKey && this._rootKey.private) msg.signWithKey(this._rootKey);
+          if (this._fabricKey) msg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') {
             this.http.broadcast(msg);
           }
@@ -16201,7 +16359,7 @@ class Hub extends Service {
           try {
             const payload = JSON.stringify(responsePayload);
             const wsMsg = Message.fromVector(['GenericMessage', payload]);
-            if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
+            if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
             if (typeof this.http.broadcast === 'function') {
               this.http.broadcast(wsMsg);
             }
@@ -16313,7 +16471,7 @@ class Hub extends Service {
           }
           const payload = JSON.stringify(message);
           const wsMsg = Message.fromVector(['GenericMessage', payload]);
-          if (this._rootKey && this._rootKey.private) wsMsg.signWithKey(this._rootKey);
+          if (this._fabricKey) wsMsg.signWithKey(this._fabricKey);
           if (typeof this.http.broadcast === 'function') this.http.broadcast(wsMsg);
         } catch (e) {
           console.error('[HUB] inventoryResponse fan-out failed:', e);
